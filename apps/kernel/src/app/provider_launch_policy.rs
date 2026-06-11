@@ -1,4 +1,5 @@
 use rand::distributions::{Alphanumeric, DistString};
+use std::path::{Path, PathBuf};
 
 use crate::agent::AgentInstance;
 use crate::config::DaemonConfig;
@@ -118,6 +119,53 @@ pub(crate) fn generate_runtime_mcp_auth_token() -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
 }
 
+pub(crate) fn workspace_live_sync_protected_roots(
+    session: &RuntimeSession,
+    working_directory: Option<&Path>,
+    host_machine_id: &str,
+    host_daemon_id: &str,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(root) = working_directory
+        .and_then(resolve_git_root)
+        .or_else(|| working_directory.map(PathBuf::from))
+    {
+        push_unique_root(&mut roots, root);
+    }
+    for link in session.workspace_links() {
+        for attachment in link.attachments() {
+            if attachment.machine_id() == host_machine_id
+                && attachment.kernel_id() == host_daemon_id
+            {
+                push_unique_root(&mut roots, PathBuf::from(attachment.repo_root()));
+            }
+        }
+    }
+    roots
+}
+
+fn resolve_git_root(path: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    let root = root.trim();
+    (!root.is_empty()).then(|| PathBuf::from(root))
+}
+
+fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    if !roots.iter().any(|existing| existing == &root) {
+        roots.push(root);
+    }
+}
+
 fn normalize_resume_model_for_adapter(adapter_key: &str, model: &str) -> String {
     let trimmed = model.trim();
     if adapter_key == "codex" {
@@ -127,5 +175,120 @@ fn normalize_resume_model_for_adapter(adapter_key: &str, model: &str) -> String 
             .to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_live_sync_protected_roots_include_working_directory_and_local_links() {
+        let mut session = crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "/repo/main",
+            "machine-1",
+            "daemon-1",
+        );
+        session.create_workspace_link(crate::session::WorkspaceLinkDefinition::new(
+            "link-1",
+            "session-1",
+            "shared",
+            "local",
+        ));
+        session
+            .workspace_link_mut("link-1")
+            .expect("link should exist")
+            .attach(crate::session::WorkspaceLinkAttachment::new(
+                "link-1",
+                "local",
+                "machine-1",
+                "daemon-1",
+                "/repo/attached",
+                None,
+                None,
+            ));
+        session
+            .workspace_link_mut("link-1")
+            .expect("link should exist")
+            .attach(crate::session::WorkspaceLinkAttachment::new(
+                "link-1",
+                "peer",
+                "remote-machine",
+                "remote-daemon",
+                "/remote/repo",
+                None,
+                None,
+            ));
+
+        let roots = workspace_live_sync_protected_roots(
+            &session,
+            Some(Path::new("/repo/main")),
+            "machine-1",
+            "daemon-1",
+        );
+
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("/repo/main"), PathBuf::from("/repo/attached"),]
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_protected_roots_do_not_include_sibling_repos() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-live-sync-root-scope-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let selected = base.join("selected");
+        let selected_child = selected.join("src");
+        let sibling = base.join("sibling");
+        std::fs::create_dir_all(&selected_child).expect("selected repo fixture should exist");
+        std::fs::create_dir_all(&sibling).expect("sibling repo fixture should exist");
+        run_git_init(&selected);
+        run_git_init(&sibling);
+        let session = crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            selected_child.to_string_lossy().to_string(),
+            "machine-1",
+            "daemon-1",
+        );
+
+        let roots = workspace_live_sync_protected_roots(
+            &session,
+            Some(selected_child.as_path()),
+            "machine-1",
+            "daemon-1",
+        );
+
+        let canonical_selected = selected
+            .canonicalize()
+            .expect("selected repo should canonicalize");
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(roots, vec![canonical_selected]);
+    }
+
+    fn run_git_init(path: &Path) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("init")
+            .arg("-b")
+            .arg("main")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init should run");
+        assert!(
+            status.success(),
+            "git init should succeed in {}",
+            path.display()
+        );
     }
 }

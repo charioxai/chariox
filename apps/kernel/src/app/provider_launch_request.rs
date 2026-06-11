@@ -59,6 +59,15 @@ impl DaemonApp {
                 .unwrap_or_else(|| PathBuf::from(session.worktree_id()));
             request = request.with_working_directory(working_directory);
         }
+        if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
+            let workspace_live_sync_roots = crate::app::workspace_live_sync_protected_roots(
+                &session,
+                request.working_directory.as_deref(),
+                &self.config.host_machine_id,
+                &self.config.daemon_id,
+            );
+            request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
+        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id
@@ -90,5 +99,116 @@ impl DaemonApp {
             mcp_servers,
         )?);
         Ok(request)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::LaunchProviderRequest;
+    use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn app_launch_preparation_scopes_workspace_live_sync_roots_to_selected_repo_and_local_links() {
+        let base = std::env::temp_dir().join(format!(
+            "arroba-app-live-sync-root-scope-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let selected = base.join("selected");
+        let selected_child = selected.join("src");
+        let sibling = base.join("sibling");
+        let attached = base.join("attached");
+        std::fs::create_dir_all(&selected_child).expect("selected repo fixture should exist");
+        std::fs::create_dir_all(&sibling).expect("sibling repo fixture should exist");
+        std::fs::create_dir_all(&attached).expect("attached repo fixture should exist");
+        run_git_init(&selected);
+        run_git_init(&sibling);
+        run_git_init(&attached);
+
+        let app =
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
+        let session = app
+            .sessions_mut()
+            .create_session(CreateSessionRequest::new(
+                selected.to_string_lossy(),
+                selected_child.to_string_lossy(),
+            ))
+            .expect("session should be created");
+        app.sessions_mut()
+            .set_workspace_live_sync_mode(
+                session.id(),
+                crate::config::WorkspaceLiveSyncMode::Tracked,
+            )
+            .expect("workspace live sync mode should update");
+        app.sessions_mut()
+            .create_workspace_link(session.id(), "shared".to_string(), "local".to_string())
+            .expect("workspace link should be created");
+        app.sessions_mut()
+            .attach_workspace_link(
+                session.id(),
+                "shared",
+                "local".to_string(),
+                "machine-test".to_string(),
+                "daemon-test".to_string(),
+                attached.to_string_lossy().to_string(),
+                None,
+                None,
+            )
+            .expect("local workspace link should attach");
+        app.sessions_mut()
+            .attach_workspace_link(
+                session.id(),
+                "shared",
+                "peer".to_string(),
+                "remote-machine".to_string(),
+                "remote-daemon".to_string(),
+                "/remote/repo".to_string(),
+                None,
+                None,
+            )
+            .expect("remote workspace link should attach");
+
+        let prepared = app
+            .prepare_app_provider_launch_request(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "model",
+                )
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+                "test.launch",
+            )
+            .expect("provider launch should prepare");
+
+        let canonical_selected = selected
+            .canonicalize()
+            .expect("selected repo should canonicalize");
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(
+            prepared.workspace_live_sync_roots,
+            vec![canonical_selected, attached]
+        );
+    }
+
+    fn run_git_init(path: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .arg("init")
+            .arg("-b")
+            .arg("main")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init should run");
+        assert!(
+            status.success(),
+            "git init should succeed in {}",
+            path.display()
+        );
     }
 }
