@@ -12,6 +12,10 @@ Chronological notes to preserve execution context between contributors/agents.
 
 - Revalidated local Docker slice lifecycle on current OSS `main` HEAD `66f4515ba`: `pnpm --filter @arroba/cli run slice:lifecycle-drill` passed. The run covered headed slice creation, worker-kernel discovery, noVNC endpoint readiness, Codex/OpenCode/Claude provider-auth summary extraction, Codex device-login startup inside the slice, provider-auth removal and alias slash-command UX, waiting-room idle slice deletion, independent provider accounts across slices, wrong-worktree rejection for sessions and agents, multi-session/multi-agent reuse of one slice, active-agent delete blocking, and cleanup of the drill-owned containers and artifact root.
 
+### Current-head Hetzner remote home-extension validation
+
+- Revalidated the actual Hetzner worker remote home-extension matrix on current OSS `main` HEAD `7d7e0c5` using isolated checkout `/tmp/arroba-remote-home-extension-head-1781135946-38328`. Built `arroba-kernel` and `arroba-relay` in that checkout, then ran `node apps/cli/scripts/live-remote-home-extension-matrix-drill.mjs --include-hetzner --only hetzner-single,hetzner-collab --continue-on-failure --hetzner-repo /tmp/arroba-remote-home-extension-head-1781135946-38328`; both scenarios passed. The run covered single-user and scoped-relay collaboration over the real remote worker, home-owned script/MCP/connector projection and execution on home, and stale projected-tool revoke enforcement. The isolated remote checkout and drill-owned remote roots/processes were removed afterward.
+
 ## 2026-06-10
 
 ### Current-head local remote home-extension validation
