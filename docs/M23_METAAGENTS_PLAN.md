@@ -557,7 +557,9 @@ Current web product drill coverage:
   verifies the terminal Freeform pane/footer marks the focused agent as `meta`,
   opens the side-panel spawn dialog, verifies the metaagent control, verifies
   metaagent/slice mutual exclusion, and verifies duplicate metaagent spawn is
-  rejected through the product flow.
+  rejected through the product flow. It then spawns a regular agent through the
+  side-panel product UI and verifies the workflow canvas add dock lists that
+  regular agent while excluding the metaagent.
 
 Remote/slice drills:
 
