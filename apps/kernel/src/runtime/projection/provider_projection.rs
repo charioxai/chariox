@@ -28,16 +28,20 @@ impl ProviderRunProjectionStore {
             .cloned()
     }
 
-    pub(crate) fn get_by_runtime_mcp_auth_token(
+    pub(crate) fn active_runs_by_runtime_mcp_auth_token(
         &self,
         auth_token: &str,
-    ) -> Option<RuntimeProviderRun> {
+    ) -> Vec<RuntimeProviderRun> {
         self.runs
             .lock()
             .expect("provider run projection lock should not be poisoned")
             .values()
-            .find(|run| run.runtime_mcp_auth_token() == Some(auth_token))
+            .filter(|run| {
+                run.runtime_mcp_auth_token() == Some(auth_token)
+                    && run.state() != ProviderRunState::Ended
+            })
             .cloned()
+            .collect()
     }
 
     pub(crate) fn get_for_agent(
