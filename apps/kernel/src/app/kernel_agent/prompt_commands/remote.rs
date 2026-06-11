@@ -2,7 +2,10 @@ use crate::agent::RemoteAgentBinding;
 use crate::app::{DaemonApp, KernelRemotePromptDispatch};
 use crate::error::DaemonError;
 use crate::session::{PromptCancellation, PromptCompletion, PromptQueueItem};
-use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_client::{
+    send_peer_request_via_temporary_connection,
+    send_peer_request_via_temporary_connection_with_timeout,
+};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
 
@@ -148,34 +151,34 @@ impl<'a> KernelAgentService<'a> {
         let agent = self.app.agents().get_agent(&dispatch.agent_id)?;
         let remote_extension_manifest = self.app.remote_extension_manifest_for_agent(&agent)?;
         let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
-        let result =
-            match self
-                .app
-                .block_on_relay_future(send_peer_request_via_temporary_connection(
-                    &relay_config,
-                    ClientTarget {
-                        daemon_id: Some(dispatch.worker_kernel_id.clone()),
-                        daemon_alias: None,
-                    },
-                    RelayPeerRequest::SubmitLeasedPrompt {
-                        leased_agent_id: dispatch.leased_agent_id.clone(),
-                        prompt: dispatch.prompt.clone(),
-                        attachments,
-                        workflow_context: dispatch.workflow_context.clone(),
-                        git_context: Some(remote_git_turn_context(&dispatch)),
-                        required_mcps: Vec::new(),
-                        remote_extension_manifest,
-                    },
-                )) {
-                Ok(RelayPeerResponse::LeasedPromptSubmitted {
-                    provider_run_id, ..
-                }) => Ok(provider_run_id),
-                Ok(other) => Err(DaemonError::LocalTransport {
-                    operation: "submit remote prepared prompt",
-                    message: format!("unexpected remote prompt response: {other:?}"),
-                }),
-                Err(error) => Err(error),
-            };
+        let result = match self.app.block_on_relay_future(
+            send_peer_request_via_temporary_connection_with_timeout(
+                &relay_config,
+                ClientTarget {
+                    daemon_id: Some(dispatch.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::SubmitLeasedPrompt {
+                    leased_agent_id: dispatch.leased_agent_id.clone(),
+                    prompt: dispatch.prompt.clone(),
+                    attachments,
+                    workflow_context: dispatch.workflow_context.clone(),
+                    git_context: Some(remote_git_turn_context(&dispatch)),
+                    required_mcps: Vec::new(),
+                    remote_extension_manifest,
+                },
+                crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+            ),
+        ) {
+            Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                provider_run_id, ..
+            }) => Ok(provider_run_id),
+            Ok(other) => Err(DaemonError::LocalTransport {
+                operation: "submit remote prepared prompt",
+                message: format!("unexpected remote prompt response: {other:?}"),
+            }),
+            Err(error) => Err(error),
+        };
         self.app
             .finish_kernel_remote_prompt_dispatch(dispatch, result)
     }
@@ -359,37 +362,38 @@ impl<'a> KernelAgentService<'a> {
             }
             let agent = self.app.agents().get_agent(agent_id)?;
             let remote_extension_manifest = self.app.remote_extension_manifest_for_agent(&agent)?;
-            let response =
-                self.app
-                    .block_on_relay_future(send_peer_request_via_temporary_connection(
-                        &relay_config,
-                        ClientTarget {
-                            daemon_id: Some(worker_kernel_id.to_string()),
-                            daemon_alias: None,
+            let response = self.app.block_on_relay_future(
+                send_peer_request_via_temporary_connection_with_timeout(
+                    &relay_config,
+                    ClientTarget {
+                        daemon_id: Some(worker_kernel_id.to_string()),
+                        daemon_alias: None,
+                    },
+                    RelayPeerRequest::SubmitLeasedPrompt {
+                        leased_agent_id: leased_agent_id.to_string(),
+                        prompt: peeked.prompt().to_string(),
+                        attachments: self
+                            .app
+                            .serialize_remote_prompt_attachments(peeked.attachments())?,
+                        workflow_context: if is_workflow_prompt {
+                            Some(
+                                crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
+                                    .remote_workflow_turn_context_for_prompt(
+                                        session_id, agent_id, &peeked,
+                                    )?,
+                            )
+                        } else {
+                            None
                         },
-                        RelayPeerRequest::SubmitLeasedPrompt {
-                            leased_agent_id: leased_agent_id.to_string(),
-                            prompt: peeked.prompt().to_string(),
-                            attachments: self
-                                .app
-                                .serialize_remote_prompt_attachments(peeked.attachments())?,
-                            workflow_context: if is_workflow_prompt {
-                                Some(
-                                    crate::app::RemoteWorkflowTurnContextResolver::new(self.app)
-                                        .remote_workflow_turn_context_for_prompt(
-                                            session_id, agent_id, &peeked,
-                                        )?,
-                                )
-                            } else {
-                                None
-                            },
-                            git_context: Some(remote_git_turn_context_for_prompt(
-                                self.app, session_id, agent_id, &peeked,
-                            )),
-                            required_mcps: Vec::new(),
-                            remote_extension_manifest,
-                        },
-                    ));
+                        git_context: Some(remote_git_turn_context_for_prompt(
+                            self.app, session_id, agent_id, &peeked,
+                        )),
+                        required_mcps: Vec::new(),
+                        remote_extension_manifest,
+                    },
+                    crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
+                ),
+            );
             let remote_provider_run_id = match response {
                 Ok(RelayPeerResponse::LeasedPromptSubmitted {
                     provider_run_id, ..

@@ -6,6 +6,11 @@ use crate::transport::relay_peer::RequiredRemoteMcp;
 use super::mcp_availability::provider_run_mcp_set_matches;
 use super::RemoteLeaseRuntime;
 
+pub(crate) enum LeasedProviderRunMatch {
+    Ready(String),
+    LaunchRequired(LaunchProviderRequest),
+}
+
 impl<'a> RemoteLeaseRuntime<'a> {
     pub(super) fn ensure_home_proxy_manifest_has_no_worker_collisions(
         &self,
@@ -102,12 +107,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(())
     }
 
-    pub(super) fn ensure_leased_provider_run_matches_mcps(
+    pub(crate) fn prepare_leased_provider_run_matches_mcps(
         &mut self,
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
         remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
-    ) -> Result<String, DaemonError> {
+    ) -> Result<LeasedProviderRunMatch, DaemonError> {
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             leased_agent,
             required_mcps,
@@ -135,7 +140,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     )?;
                     self.app.update_provider_run_projection(updated);
                 }
-                return Ok(run.id().to_string());
+                return Ok(LeasedProviderRunMatch::Ready(run.id().to_string()));
             }
             if self
                 .app
@@ -231,7 +236,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Some(&session),
             ),
         );
-        let run = self.app.launch_provider(request)?;
-        Ok(run.id().to_string())
+        Ok(LeasedProviderRunMatch::LaunchRequired(request))
     }
 }

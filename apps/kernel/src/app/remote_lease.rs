@@ -21,6 +21,7 @@ mod relay_context;
 mod skill_sync;
 
 use git_worktree::prepare_remote_git_worktree;
+pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
     app: &'a mut DaemonApp,
@@ -386,5 +387,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
     #[cfg(test)]
     pub(crate) fn leased_agent_count(&self) -> usize {
         self.app.leased_agents.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_projected_output_history_key_for_test(
+        &mut self,
+        leased_agent_id: &str,
+        key: String,
+    ) {
+        if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            agent.projected_output_history_keys.push(key);
+        }
     }
 }

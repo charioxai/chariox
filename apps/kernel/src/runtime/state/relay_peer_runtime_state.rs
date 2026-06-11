@@ -245,16 +245,32 @@ impl KernelRuntimeState {
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let prompt = prompt.to_string();
+        let prepared = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
+                    &leased_agent_id,
+                    &prompt,
+                    attachments,
+                    workflow_context,
+                    git_context,
+                    required_mcps,
+                    remote_extension_manifest,
+                )
+            })
+            .await?;
+        let provider_run_id = match &prepared.provider_run {
+            crate::app::PreparedLeasedProviderRun::Ready(provider_run_id) => {
+                provider_run_id.clone()
+            }
+            crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => self
+                .launch_provider_for_remote_lease_detached(request.clone())
+                .await?
+                .id()
+                .to_string(),
+        };
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).submit_leased_prompt_with_workflow_context(
-                &leased_agent_id,
-                &prompt,
-                attachments,
-                workflow_context,
-                git_context,
-                required_mcps,
-                remote_extension_manifest,
-            )
+            RemoteLeaseRuntime::new(app)
+                .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
         })
         .await
     }

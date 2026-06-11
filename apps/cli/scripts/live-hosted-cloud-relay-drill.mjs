@@ -20,6 +20,9 @@ const runRemoteCli = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI === "1"
 const runRemoteCliPairing = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PAIRING === "1"
 const runTokenRotation = process.env.ARROBA_CLOUD_HOSTED_TOKEN_ROTATION === "1"
 const runWorkspaceLiveSync = process.env.ARROBA_CLOUD_HOSTED_WORKSPACE_LIVE_SYNC === "1"
+const runTrackedWorkspaceLiveSync = process.env.ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC === "1"
+const trackedWorkspaceLiveSyncProvider = process.env.ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC_PROVIDER ?? "codex"
+const trackedWorkspaceLiveSyncModel = process.env.ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC_MODEL ?? "gpt-5.2"
 const remoteCliPairingProvider = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex"
 const remoteCliPairingModel = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex"
 const remoteCliPairingEffort = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low"
@@ -30,8 +33,8 @@ const devAuthSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET ?? ""
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-if (runWorkspaceLiveSync && !runSecondKernel) {
-  throw new Error("ARROBA_CLOUD_HOSTED_WORKSPACE_LIVE_SYNC=1 requires ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1")
+if ((runWorkspaceLiveSync || runTrackedWorkspaceLiveSync) && !runSecondKernel) {
+  throw new Error("hosted Workspace Live Sync drills require ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1")
 }
 
 function log(name, details = null) {
@@ -817,6 +820,7 @@ async function main() {
   const homeDir = path.join(rootDir, "home")
   const arrobaHome = path.join(homeDir, ".arroba")
   const homeCapabilityRoot = path.join(rootDir, "home-capabilities")
+  const homeHistoryDir = path.join(rootDir, "session-history")
   const xdgConfigHome = path.join(homeDir, ".config")
   const xdgStateHome = path.join(homeDir, ".local", "state")
   const xdgRuntimeDir = path.join(homeDir, "run")
@@ -870,7 +874,7 @@ async function main() {
       ARROBA_MACHINE_ID: daemonId,
       ARROBA_MACHINE_ALIAS: daemonAlias,
       ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
-      ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "session-history"),
+      ARROBA_SESSION_HISTORY_DIR: homeHistoryDir,
       ARROBA_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
     }
 
@@ -1036,11 +1040,16 @@ async function main() {
         rootDir,
         workspace,
         session: created.session,
+        kernelUrl,
+        homeHistoryDir,
         python,
         homeCapabilityRoot,
         homeOnlyMcpPort: ports.homeOnlyMcpPort,
         collabExtensions: runMultiUser,
         workspaceLiveSync: runWorkspaceLiveSync,
+        trackedWorkspaceLiveSync: runTrackedWorkspaceLiveSync,
+        trackedWorkspaceLiveSyncProvider,
+        trackedWorkspaceLiveSyncModel,
         homeDaemonAlias: daemonAlias,
         homeClient: localClient,
         ownerProfile: profileRef.current,
@@ -1111,6 +1120,7 @@ async function main() {
       secondKernel: runSecondKernel,
       tokenRotation: runTokenRotation,
       workspaceLiveSync: runWorkspaceLiveSync,
+      trackedWorkspaceLiveSync: runTrackedWorkspaceLiveSync,
     })
     passed = true
   } finally {

@@ -7,78 +7,29 @@ use super::remote_prompt_worker_submission_runtime::submit_remote_prompt_to_work
 use super::*;
 
 impl KernelRuntimeState {
-    pub(super) fn spawn_remote_queued_prompt_projection_drain_if_needed(
+    pub(super) fn spawn_remote_prompt_projection_drain_if_needed(
         &self,
         submission: &crate::app::KernelPromptSubmission,
     ) {
-        let crate::session::PromptSubmissionOutcome::Queued { prompt } = &submission.outcome else {
-            return;
+        let prompt = match &submission.outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt }
+            | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
         };
         let session_id = submission.session.id().to_string();
         let agent_id = prompt.target_agent_id().to_string();
-        self.spawn_remote_queued_prompt_projection_drain(session_id, agent_id);
+        self.spawn_remote_prompt_projection_drain(session_id, agent_id);
     }
 
-    fn spawn_remote_queued_prompt_projection_drain(&self, session_id: String, agent_id: String) {
+    fn spawn_remote_prompt_projection_drain(&self, session_id: String, agent_id: String) {
         let state = self.clone();
         tokio::spawn(async move {
             for _ in 0..120 {
-                let Some((remote_execution, provider_run_id)) =
-                    state.remote_queued_prompt_drain_target(&session_id, &agent_id)
-                else {
-                    return;
-                };
-                let drained = state
-                    .with_app_side_effect(|app| {
-                        let relay_config =
-                            app.relay_config_for_remote_execution(&remote_execution);
-                        app.block_on_relay_future(
-                            crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                                &relay_config,
-                                ClientTarget {
-                                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                                    daemon_alias: None,
-                                },
-                                RelayPeerRequest::DrainLeasedRuntimeProjection {
-                                    leased_agent_id: remote_execution.leased_agent_id.clone(),
-                                    provider_run_id: provider_run_id.clone(),
-                                    pump_output: true,
-                                },
-                            ),
-                        )
-                    })
-                    .await;
-                match drained {
-                    Ok(RelayPeerResponse::LeasedRuntimeProjectionDrained { event }) => {
-                        if let Some(event) = event {
-                            if let Err(error) =
-                                state.project_remote_runtime_projection_event(event).await
-                            {
-                                crate::logging::warn_with_fields(
-                                    "daemon.remote_prompt_dispatch",
-                                    "failed to project drained remote prompt output",
-                                    serde_json::json!({
-                                        "session_id": session_id,
-                                        "agent_id": agent_id,
-                                        "provider_run_id": provider_run_id,
-                                        "error": error.to_string(),
-                                    }),
-                                );
-                            }
-                        }
-                    }
-                    Ok(other) => {
-                        crate::logging::warn_with_fields(
-                            "daemon.remote_prompt_dispatch",
-                            "unexpected remote projection drain response",
-                            serde_json::json!({
-                                "session_id": session_id,
-                                "agent_id": agent_id,
-                                "provider_run_id": provider_run_id,
-                                "response": format!("{other:?}"),
-                            }),
-                        );
-                    }
+                match state
+                    .drain_remote_prompt_projection_once(&session_id, &agent_id)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => return,
                     Err(error) => {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
@@ -86,14 +37,14 @@ impl KernelRuntimeState {
                             serde_json::json!({
                                 "session_id": session_id,
                                 "agent_id": agent_id,
-                                "provider_run_id": provider_run_id,
                                 "error": error.to_string(),
                             }),
                         );
+                        return;
                     }
                 }
                 if state
-                    .remote_queued_prompt_drain_target(&session_id, &agent_id)
+                    .remote_prompt_projection_drain_target(&session_id, &agent_id)
                     .is_none()
                 {
                     return;
@@ -111,7 +62,7 @@ impl KernelRuntimeState {
         });
     }
 
-    fn remote_queued_prompt_drain_target(
+    fn remote_prompt_projection_drain_target(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -125,9 +76,6 @@ impl KernelRuntimeState {
         {
             return None;
         }
-        owned
-            .prompt_state_owner
-            .peek_next_queued_prompt(&session, agent_id)?;
         let remote_execution = owned
             .agent_store
             .get_agent(agent_id)
@@ -136,6 +84,69 @@ impl KernelRuntimeState {
             .cloned()?;
         let provider_run_id = remote_execution.active_worker_provider_run_id.clone()?;
         Some((remote_execution, provider_run_id))
+    }
+
+    pub(super) async fn drain_active_remote_prompt_projections_for_session(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> Result<(), DaemonError> {
+        let mut agent_ids = session
+            .agents()
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        agent_ids.extend(session.prompt_states().keys().cloned());
+        agent_ids.sort();
+        agent_ids.dedup();
+        for agent_id in agent_ids {
+            let _ = self
+                .drain_remote_prompt_projection_once(session.id(), &agent_id)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn drain_remote_prompt_projection_once(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let Some((remote_execution, provider_run_id)) =
+            self.remote_prompt_projection_drain_target(session_id, agent_id)
+        else {
+            return Ok(false);
+        };
+        let response = self
+            .with_app_side_effect(|app| {
+                let relay_config = app.relay_config_for_remote_execution(&remote_execution);
+                app.block_on_relay_future(
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        &relay_config,
+                        ClientTarget {
+                            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                            daemon_alias: None,
+                        },
+                        RelayPeerRequest::DrainLeasedRuntimeProjection {
+                            leased_agent_id: remote_execution.leased_agent_id.clone(),
+                            provider_run_id: provider_run_id.clone(),
+                            pump_output: true,
+                        },
+                    ),
+                )
+            })
+            .await?;
+        match response {
+            RelayPeerResponse::LeasedRuntimeProjectionDrained { event } => {
+                if let Some(event) = event {
+                    self.project_remote_runtime_projection_event(event).await?;
+                }
+                Ok(true)
+            }
+            other => Err(DaemonError::LocalTransport {
+                operation: "drain remote prompt projection",
+                message: format!("unexpected remote projection drain response: {other:?}"),
+            }),
+        }
     }
 
     async fn project_remote_runtime_projection_event(
@@ -171,7 +182,9 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelRemotePromptDispatch,
         result: Result<String, DaemonError>,
     ) -> Result<(), DaemonError> {
-        {
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let should_start_projection_drain = {
             let owned = &self.owned;
             match result {
                 Ok(remote_provider_run_id) => {
@@ -188,7 +201,7 @@ impl KernelRuntimeState {
                         &dispatch.prompt,
                         &dispatch.attachments,
                     );
-                    Ok(())
+                    Ok(true)
                 }
                 Err(error) => {
                     let _ = owned
@@ -212,7 +225,11 @@ impl KernelRuntimeState {
                     Err(error)
                 }
             }
+        }?;
+        if should_start_projection_drain {
+            self.spawn_remote_prompt_projection_drain(session_id, agent_id);
         }
+        Ok(())
     }
 
     pub(crate) fn spawn_remote_prompt_dispatch(
@@ -338,5 +355,101 @@ impl KernelRuntimeState {
             }
             let _ = state.finish_remote_prompt_dispatch(dispatch, result).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+        let app_locked = app.lock().await;
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            app_locked.config_projection_store(),
+            app_locked.session_state_store(),
+            app_locked.agents().clone(),
+            app_locked.attachments().clone(),
+            app_locked.providers().clone(),
+            app_locked.provider_process_tracking_store(),
+            app_locked.slices(),
+            app_locked.session_state_projection_store(),
+            app_locked.provider_run_projection_store(),
+            app_locked.history_store(),
+            app_locked.operational_history_store(),
+            app_locked.durable_state_store(),
+            app_locked.session_history_projection_store(),
+            app_locked.prompt_state_owner(),
+            app_locked.active_turn_store(),
+            app_locked.prompt_activity_store(),
+            app_locked.prompt_workspace_claim_store(),
+            app_locked.structured_output_record_store(),
+            app_locked.terminal_stream_store(),
+            app_locked.workflow_design_event_store(),
+            app_locked.workspace_coordinator(),
+        )
+    }
+
+    #[tokio::test]
+    async fn active_remote_prompt_projection_drain_does_not_require_queued_prompt() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-remote-projection-drain",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: Some("provider-run-worker-1".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "remote prompt\n",
+            crate::session::PromptStatus::Queued,
+        );
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("remote prompt should start locally");
+        assert!(matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+        assert_eq!(
+            app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
+                .expect("queue count should load"),
+            0
+        );
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let drain_target = runtime
+            .remote_prompt_projection_drain_target(session.id(), agent.id())
+            .expect("active remote prompt should have a projection drain target");
+
+        assert_eq!(drain_target.0.leased_agent_id, "leased-agent-1");
+        assert_eq!(drain_target.1, "provider-run-worker-1");
     }
 }

@@ -1,10 +1,27 @@
 use crate::error::DaemonError;
-use crate::execution_lease::{LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext};
+use crate::execution_lease::{LeasedAgent, LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext};
+use crate::provider::LaunchProviderRequest;
+use crate::session::{PromptAttachment, PromptSubmissionOutcome};
 use crate::transport::relay_peer::{
     RelayPromptAttachment, RemoteGitTurnContext, RequiredRemoteMcp,
 };
 
+use super::provider_run::LeasedProviderRunMatch;
 use super::RemoteLeaseRuntime;
+
+pub(crate) enum PreparedLeasedProviderRun {
+    Ready(String),
+    LaunchRequired(LaunchProviderRequest),
+}
+
+pub(crate) struct PreparedLeasedPromptSubmission {
+    pub(crate) leased_agent: LeasedAgent,
+    pub(crate) prompt: String,
+    pub(crate) materialized_attachments: Vec<PromptAttachment>,
+    pub(crate) workflow_context: Option<RemoteWorkflowTurnContext>,
+    pub(crate) git_context: Option<RemoteGitTurnContext>,
+    pub(crate) provider_run: PreparedLeasedProviderRun,
+}
 
 impl<'a> RemoteLeaseRuntime<'a> {
     #[cfg(test)]
@@ -35,6 +52,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
         required_mcps: Vec<RequiredRemoteMcp>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
+        let prepared = self.prepare_leased_prompt_submission(
+            leased_agent_id,
+            prompt,
+            attachments,
+            workflow_context,
+            git_context,
+            required_mcps,
+            remote_extension_manifest,
+        )?;
+        let provider_run_id = match &prepared.provider_run {
+            PreparedLeasedProviderRun::Ready(provider_run_id) => provider_run_id.clone(),
+            PreparedLeasedProviderRun::LaunchRequired(request) => {
+                self.app.launch_provider(request.clone())?.id().to_string()
+            }
+        };
+        self.finish_prepared_leased_prompt_submission(prepared, provider_run_id)
+    }
+
+    pub(crate) fn prepare_leased_prompt_submission(
+        &mut self,
+        leased_agent_id: &str,
+        prompt: &str,
+        attachments: Vec<RelayPromptAttachment>,
+        workflow_context: Option<RemoteWorkflowTurnContext>,
+        git_context: Option<RemoteGitTurnContext>,
+        required_mcps: Vec<RequiredRemoteMcp>,
+        remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    ) -> Result<PreparedLeasedPromptSubmission, DaemonError> {
         let leased_agent = self
             .app
             .leased_agents
@@ -46,35 +91,56 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
-        let provider_run_id = self.ensure_leased_provider_run_matches_mcps(
+        let provider_run = match self.prepare_leased_provider_run_matches_mcps(
             &leased_agent,
             &required_mcps,
             &remote_extension_manifest,
-        )?;
-        if let Some(git_context) = git_context {
-            if self
-                .app
-                .prompt_owner_active_prompt_for_agent(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )?
-                .is_none()
-            {
-                self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
+        )? {
+            LeasedProviderRunMatch::Ready(provider_run_id) => {
+                PreparedLeasedProviderRun::Ready(provider_run_id)
             }
+            LeasedProviderRunMatch::LaunchRequired(request) => {
+                PreparedLeasedProviderRun::LaunchRequired(request)
+            }
+        };
+        Ok(PreparedLeasedPromptSubmission {
+            leased_agent,
+            prompt: prompt.to_string(),
+            materialized_attachments,
+            workflow_context,
+            git_context,
+            provider_run,
+        })
+    }
+
+    pub(crate) fn finish_prepared_leased_prompt_submission(
+        &mut self,
+        prepared: PreparedLeasedPromptSubmission,
+        provider_run_id: String,
+    ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
+        let PreparedLeasedPromptSubmission {
+            leased_agent,
+            prompt,
+            materialized_attachments,
+            workflow_context,
+            git_context,
+            provider_run: _,
+        } = prepared;
+        if let Some(git_context) = git_context {
+            self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
         }
         let outcome = self.app.submit_prompt(
             &leased_agent.backing_session_id,
             &leased_agent.backing_attachment_id,
             Some(&leased_agent.backing_agent_id),
-            prompt,
+            &prompt,
             materialized_attachments,
         )?;
         if let Some(context) = workflow_context {
             self.app.leased_workflow_turns.insert(
                 provider_run_id.clone(),
                 LeasedWorkflowTurnBinding {
-                    leased_agent_id: leased_agent_id.to_string(),
+                    leased_agent_id: leased_agent.id.clone(),
                     provider_run_id: provider_run_id.clone(),
                     context,
                 },

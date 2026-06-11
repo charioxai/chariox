@@ -127,7 +127,7 @@ impl KernelRuntimeState {
                     self.owned
                         .provider_run_projection
                         .get_for_agent(session.id(), agent.id())
-            });
+                });
             let manifest = if let Some(run) = projected_run {
                 if run.state() == crate::provider::ProviderRunState::Starting {
                     busy_agents.push(agent.id().to_string());

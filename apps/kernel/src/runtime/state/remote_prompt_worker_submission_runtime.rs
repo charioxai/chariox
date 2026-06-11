@@ -18,7 +18,6 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         required_mcps.clone(),
         remote_extension_manifest.clone(),
         "unexpected remote prompt response",
-        "remote prompt dispatch timed out waiting for worker response",
     )
     .await;
     if !remote_prompt_dispatch_should_refresh_binding(&result) {
@@ -59,7 +58,6 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         required_mcps,
         remote_extension_manifest,
         "unexpected remote prompt response after binding refresh",
-        "remote prompt dispatch timed out after binding refresh",
     )
     .await
 }
@@ -72,42 +70,35 @@ async fn submit_remote_prompt_to_worker(
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     unexpected_response_message: &'static str,
-    timeout_message: &'static str,
 ) -> Result<String, DaemonError> {
     let config = remote_dispatch_relay_config(state.config_snapshot().await, dispatch);
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &config,
-            ClientTarget {
-                daemon_id: Some(dispatch.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::SubmitLeasedPrompt {
-                leased_agent_id: dispatch.leased_agent_id.clone(),
-                prompt,
-                attachments,
-                workflow_context: dispatch.workflow_context.clone(),
-                git_context: Some(remote_git_turn_context(dispatch)),
-                required_mcps,
-                remote_extension_manifest,
-            },
-        ),
+    match crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        &config,
+        ClientTarget {
+            daemon_id: Some(dispatch.worker_kernel_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::SubmitLeasedPrompt {
+            leased_agent_id: dispatch.leased_agent_id.clone(),
+            prompt,
+            attachments,
+            workflow_context: dispatch.workflow_context.clone(),
+            git_context: Some(remote_git_turn_context(dispatch)),
+            required_mcps,
+            remote_extension_manifest,
+        },
+        crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
     )
     .await
     {
-        Ok(Ok(RelayPeerResponse::LeasedPromptSubmitted {
+        Ok(RelayPeerResponse::LeasedPromptSubmitted {
             provider_run_id, ..
-        })) => Ok(provider_run_id),
-        Ok(Ok(other)) => Err(DaemonError::LocalTransport {
+        }) => Ok(provider_run_id),
+        Ok(other) => Err(DaemonError::LocalTransport {
             operation: "submit remote prepared prompt",
             message: format!("{unexpected_response_message}: {other:?}"),
         }),
-        Ok(Err(error)) => Err(error),
-        Err(_) => Err(DaemonError::LocalTransport {
-            operation: "submit remote prepared prompt",
-            message: timeout_message.to_string(),
-        }),
+        Err(error) => Err(error),
     }
 }
 
@@ -183,5 +174,13 @@ mod tests {
         });
 
         assert!(remote_prompt_dispatch_should_refresh_binding(&result));
+    }
+
+    #[test]
+    fn leased_prompt_submit_timeout_covers_codex_mcp_retry_window() {
+        assert!(
+            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT
+                > std::time::Duration::from_secs(180)
+        );
     }
 }

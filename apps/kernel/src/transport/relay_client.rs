@@ -55,7 +55,7 @@ pub use peer_client::send_peer_request_via_relay;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 pub use peer_client::{
     send_peer_request_via_temporary_connection,
-    send_peer_request_via_temporary_connection_with_timeout,
+    send_peer_request_via_temporary_connection_with_timeout, LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
 };
 use peer_events::{handle_daemon_peer_event, pump_leased_projection_events};
 use peer_requests::handle_daemon_peer_request;

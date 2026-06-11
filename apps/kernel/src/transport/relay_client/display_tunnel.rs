@@ -2,8 +2,8 @@
 
 use super::*;
 
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use std::io::Read;
 use tokio::sync::mpsc;
@@ -462,7 +462,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tokio::net::TcpListener;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     #[test]
     fn local_display_url_rewrites_relay_display_path_to_local_origin() {

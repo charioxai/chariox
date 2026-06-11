@@ -20,7 +20,7 @@ impl KernelRuntimeState {
             if let Some(mut submission) = owned.submit_remote_prepared_prompt(&prepared)? {
                 self.finish_owned_prompt_submission_workflow_start(&mut submission)
                     .await?;
-                self.spawn_remote_queued_prompt_projection_drain_if_needed(&submission);
+                self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                 return Ok(submission);
             }
             let session_id = prepared.session_id.clone();
@@ -49,7 +49,7 @@ impl KernelRuntimeState {
                     if let Some(mut submission) = owned.submit_remote_prepared_prompt(&prepared)? {
                         self.finish_owned_prompt_submission_workflow_start(&mut submission)
                             .await?;
-                        self.spawn_remote_queued_prompt_projection_drain_if_needed(&submission);
+                        self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                         return Ok(submission);
                     }
                 } else {

@@ -111,6 +111,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let Some(after) = crate::git_observer::capture_turn_snapshot(after_context.clone())
             else {
                 if attempts >= retry_delays_ms.len() {
+                    if before.workspace_live_sync_tracked {
+                        self.app.remote_git_turn_snapshots.insert(before);
+                    }
                     return Ok((Vec::new(), None));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(retry_delays_ms[attempts]));
@@ -150,10 +153,115 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     "after_status_fingerprint": after.status_fingerprint.as_str(),
                 }),
             );
+            self.app.remote_git_turn_snapshots.insert(before);
+            return Ok((Vec::new(), None));
         }
         Ok((
             crate::git_observer::observations_after_turn(before, after, candidates),
             tracked_change,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+
+    fn run_test_git(cwd: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_repo_with_file(root: &std::path::Path, path: &str, contents: &str) {
+        std::fs::create_dir_all(root).expect("repo root should exist");
+        run_test_git(root, &["init", "-b", "main"]);
+        run_test_git(root, &["config", "user.email", "arroba@example.test"]);
+        run_test_git(root, &["config", "user.name", "Arroba Test"]);
+        let file = root.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).expect("parent dir should exist");
+        }
+        std::fs::write(&file, contents).expect("seed file should write");
+        run_test_git(root, &["add", "."]);
+        run_test_git(root, &["commit", "-m", "init"]);
+    }
+
+    #[test]
+    fn tracked_leased_git_observation_keeps_snapshot_until_change_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-remote-tracked-git-observation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        init_repo_with_file(&root, "target-origin.txt", "target-origin-a\n");
+
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease("home-kernel", "home-session", "home-agent", "home-user")
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+                Some(root.display().to_string()),
+                None,
+            )
+            .expect("leased agent should be created");
+        let (provider_run_id, _) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased_agent.id, "edit the file", Vec::new())
+            .expect("leased prompt should submit");
+        let git_context = RemoteGitTurnContext {
+            home_session_id: "home-session".to_string(),
+            home_agent_id: "home-agent".to_string(),
+            home_prompt_id: "home-prompt".to_string(),
+            home_turn_id: "home-turn".to_string(),
+            workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+            prompt_summary: "edit the file".to_string(),
+        };
+        RemoteLeaseRuntime::new(&mut app).observe_leased_git_before(
+            &leased_agent,
+            &provider_run_id,
+            git_context,
+        );
+
+        let (_observations, no_change) = RemoteLeaseRuntime::new(&mut app)
+            .observe_leased_git_after(&leased_agent.id, &provider_run_id)
+            .expect("no-op observation should succeed");
+        assert!(
+            no_change.is_none(),
+            "first observation should not invent a tracked change"
+        );
+
+        std::fs::write(
+            root.join("target-origin.txt"),
+            "target-origin-a\nagent change\n",
+        )
+        .expect("agent edit should write");
+        let (_observations, tracked_change) = RemoteLeaseRuntime::new(&mut app)
+            .observe_leased_git_after(&leased_agent.id, &provider_run_id)
+            .expect("second observation should still have baseline");
+        let tracked_change = tracked_change.expect("tracked change should be detected");
+        assert_eq!(tracked_change.changed_paths, vec!["target-origin.txt"]);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

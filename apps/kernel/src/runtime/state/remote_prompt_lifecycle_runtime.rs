@@ -234,7 +234,7 @@ impl KernelRuntimeState {
                 .with_app_side_effect(|app| {
                     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                     app.block_on_relay_future(
-                        crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                             &relay_config,
                             ClientTarget {
                                 daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -254,6 +254,7 @@ impl KernelRuntimeState {
                                 required_mcps,
                                 remote_extension_manifest,
                             },
+                            crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
                         ),
                     )
                 })

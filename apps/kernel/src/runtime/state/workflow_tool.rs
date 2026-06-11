@@ -622,10 +622,7 @@ fn validate_agent_app_action_url(url: &str, allow_external: bool) -> Result<(), 
     let Some(host) = parsed.host_str() else {
         return Err("action URL is missing a host".to_string());
     };
-    if host.eq_ignore_ascii_case("localhost")
-        || host == "::1"
-        || host.starts_with("127.")
-    {
+    if host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.") {
         return Ok(());
     }
     Err("external action URLs require transport.allow_external=true".to_string())
@@ -637,7 +634,9 @@ fn read_limited_response_body(
 ) -> Result<String, String> {
     use std::io::Read as _;
 
-    let mut reader = response.into_reader().take(max_response_bytes.saturating_add(1));
+    let mut reader = response
+        .into_reader()
+        .take(max_response_bytes.saturating_add(1));
     let mut bytes = Vec::new();
     reader
         .read_to_end(&mut bytes)

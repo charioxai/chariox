@@ -215,6 +215,8 @@ impl KernelRuntimeState {
             self.observe_git_after_provider_activity_if_pending(&provider_run_id)
                 .await;
         }
+        self.drain_active_remote_prompt_projections_for_session(&session)
+            .await?;
         let records = owned
             .terminal_stream
             .drain_output_records(session_id, attachment_id);

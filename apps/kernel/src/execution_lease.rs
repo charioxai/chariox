@@ -61,7 +61,9 @@ pub struct LeasedAgent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projected_prompt_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub projected_completion_provider_run_ids: Vec<String>,
+    pub projected_completion_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projected_output_history_keys: Vec<String>,
     pub created_at_ms: u64,
 }
 
@@ -110,7 +112,8 @@ impl LeasedAgent {
             backing_agent_id,
             backing_attachment_id,
             projected_prompt_ids: Vec::new(),
-            projected_completion_provider_run_ids: Vec::new(),
+            projected_completion_keys: Vec::new(),
+            projected_output_history_keys: Vec::new(),
             created_at_ms: unix_epoch_ms(),
         }
     }

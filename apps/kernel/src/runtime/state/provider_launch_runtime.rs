@@ -1,6 +1,100 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) async fn launch_provider_for_remote_lease_detached(
+        &self,
+        launch_request: crate::provider::LaunchProviderRequest,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        let runtime_init_delay_ms;
+        let started = {
+            let owned = &self.owned;
+            let config = owned.config_projection.snapshot();
+            let launch_request =
+                owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "launching remote lease provider run",
+                serde_json::json!({
+                    "adapter_key": launch_request.adapter_key.clone(),
+                    "agent_id": launch_request.agent_id.clone(),
+                    "provider": launch_request.provider.clone(),
+                    "session_id": launch_request.session_id.clone(),
+                }),
+            );
+            let started = owned.start_provider_launch(launch_request)?;
+            let run = started.run.clone();
+            if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+                if let Ok(previous_run) = owned.provider_store.get_run(previous_active_run_id) {
+                    owned.provider_run_projection.update(previous_run);
+                }
+            }
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "prepared remote lease provider run endpoint metadata",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "endpoint_mode": run.endpoint_mode().to_string(),
+                    "session_id": run.session_id(),
+                    "provider": run.provider(),
+                }),
+            );
+            if let Err(error) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+                })
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.app",
+                    "PTY spawn failed for remote lease provider run",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "session_id": run.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                if let Ok(outcome) = owned
+                    .provider_store
+                    .terminate_run_provider_only(run.session_id(), run.id())
+                {
+                    let _ = owned.clear_active_provider_run_session_pointer(
+                        run.session_id(),
+                        outcome.run().id(),
+                    );
+                    owned.provider_run_projection.update(outcome.into_run());
+                }
+                return Err(error);
+            }
+            owned.provider_run_projection.update(run);
+            runtime_init_delay_ms = config.provider_runtime_init_delay_ms;
+            started
+        };
+
+        let accepted = started.run.clone();
+        let state = self.clone();
+        tokio::spawn(async move {
+            if runtime_init_delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
+            }
+            let run = started.run.clone();
+            let binding = tokio::task::spawn_blocking(move || {
+                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+            })
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "initialize remote lease provider runtime",
+                message: error.to_string(),
+            });
+
+            match binding {
+                Ok(Ok(binding)) => state.finish_provider_launch(&started, binding).await,
+                Ok(Err(error)) => state.fail_provider_launch(&started, &error).await,
+                Err(error) => state.fail_provider_launch(&started, &error).await,
+            }
+        });
+        Ok(accepted)
+    }
+
     pub(crate) async fn launch_remote_native_provider_run(
         &self,
         request: &crate::local::LaunchProviderRunRequest,

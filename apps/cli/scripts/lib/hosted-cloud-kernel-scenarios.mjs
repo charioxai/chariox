@@ -3,6 +3,7 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import http from "node:http"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
+import { runNodeDrillChild } from "./drill-child-process.mjs"
 
 async function callRuntimeMcp(serverUrl, authToken, method, params = {}, options = {}) {
   const timeoutMs = options.timeoutMs ?? 60_000
@@ -188,6 +189,54 @@ async function assertHostedWorkspaceLiveSyncProxy({
     mode: "managed",
     relativePath,
   })
+}
+
+async function runHostedTrackedWorkspaceLiveSyncProviderDrill({
+  rootDir,
+  repoRoot,
+  kernelUrl,
+  workerDaemonId,
+  homeHistoryDir,
+  workerHistoryDir,
+  provider,
+  model,
+  timeoutMs,
+  pollMs,
+  log,
+}) {
+  const drillRoot = path.join(rootDir, "hosted-tracked-workspace-live-sync")
+  log("second-kernel-tracked-workspace-live-sync-start", {
+    provider,
+    model,
+    workerDaemonId,
+    drillRoot,
+  })
+  const stdout = await runNodeDrillChild([
+    path.join("apps", "cli", "scripts", "live-workspace-live-sync-drill.mjs"),
+    "--kernel", kernelUrl,
+    "--no-spawn-daemon",
+    "--machine-ref", workerDaemonId,
+    "--history-dir", homeHistoryDir,
+    "--provider-history-dir", workerHistoryDir,
+    "--provider", provider,
+    "--provider-model", `${provider}=${model}`,
+    "--timeout-ms", String(timeoutMs),
+    "--poll-ms", String(pollMs),
+    "--mode", "tracked",
+    "--tracked-target-count", "1",
+    "--tracked-bidirectional",
+    "--root-dir", drillRoot,
+  ], repoRoot, { label: "hosted tracked workspace live sync drill" })
+  const trimmed = stdout.trim()
+  const lastJsonIndex = trimmed.lastIndexOf("\n{")
+  const jsonText = lastJsonIndex >= 0 ? trimmed.slice(lastJsonIndex + 1) : trimmed
+  const result = JSON.parse(jsonText)
+  log("second-kernel-tracked-workspace-live-sync-pass", {
+    provider,
+    durationMs: result.durationMs ?? result.workspaceLiveSync?.durationMs ?? null,
+    mode: result.mode ?? null,
+  })
+  return result
 }
 
 async function createHostedHomeExtensionFixtures({ rootDir, homeCapabilityRoot, homeOnlyMcpPort }) {
@@ -625,11 +674,16 @@ export async function runHostedSecondKernelAssertions({
   rootDir,
   workspace,
   session: existingSession = null,
+  kernelUrl,
+  homeHistoryDir,
   python,
   homeCapabilityRoot,
   homeOnlyMcpPort,
   collabExtensions = false,
   workspaceLiveSync = false,
+  trackedWorkspaceLiveSync = false,
+  trackedWorkspaceLiveSyncProvider = "codex",
+  trackedWorkspaceLiveSyncModel = "gpt-5.2",
   homeDaemonAlias,
   homeClient,
   ownerProfile,
@@ -665,6 +719,7 @@ export async function runHostedSecondKernelAssertions({
   const workerArrobaHome = path.join(workerHome, ".arroba")
   const workerCapabilityRoot = path.join(rootDir, "worker-capabilities")
   const workerWorkspace = path.join(rootDir, "worker-workspace")
+  const workerHistoryDir = path.join(rootDir, "worker-session-history")
 
   log("second-kernel-cloud-pair-machine", { machineId: workerDaemonId, alias: workerAlias })
   await pairCloudMachineDirect({
@@ -694,8 +749,11 @@ export async function runHostedSecondKernelAssertions({
     ARROBA_MACHINE_ALIAS: workerAlias,
     ARROBA_ACCEPT_REMOTE_LEASES: "1",
     ARROBA_DAEMON_SOCKET: path.join(rootDir, "worker-daemon.sock"),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "worker-session-history"),
+    ARROBA_SESSION_HISTORY_DIR: workerHistoryDir,
     ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
+    ...(trackedWorkspaceLiveSyncProvider === "codex"
+      ? { CODEX_HOME: process.env.CODEX_HOME?.trim() || path.join(process.env.HOME ?? "", ".codex") }
+      : {}),
   }
 
   let worker = null
@@ -860,6 +918,24 @@ export async function runHostedSecondKernelAssertions({
         devBrowserCloudLogin,
         installSendRetry,
         expectReject,
+      })
+    }
+    if (trackedWorkspaceLiveSync) {
+      if (!kernelUrl || !homeHistoryDir) {
+        throw new Error("hosted tracked workspace live sync drill requires kernelUrl and homeHistoryDir")
+      }
+      await runHostedTrackedWorkspaceLiveSyncProviderDrill({
+        rootDir,
+        repoRoot,
+        kernelUrl,
+        workerDaemonId,
+        homeHistoryDir,
+        workerHistoryDir,
+        provider: trackedWorkspaceLiveSyncProvider,
+        model: trackedWorkspaceLiveSyncModel,
+        timeoutMs: pollTimeoutMs,
+        pollMs: 1_000,
+        log,
       })
     }
     await homeClient.send(requests.submitPromptRequest(

@@ -8,6 +8,13 @@ use super::*;
 
 static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Leased prompt submission can synchronously start or relaunch the worker
+/// provider. Codex may spend up to roughly 180s across MCP handshake retry
+/// attempts before it can return the real provider run id, and home must not
+/// invent a placeholder run id. Keep this timeout above that provider-start
+/// envelope so remote prompt dispatch reports the authoritative worker result.
+pub const LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(240);
+
 #[derive(Debug)]
 struct RelayPeerRequestTrace {
     request_id: String,
