@@ -710,6 +710,9 @@ async function runClaudeDrill(options, root) {
       visiblePrompt: visiblePromptForTurn(probe, "B"),
       token: probe.tokenB,
     })
+    const midturnSteering = options.includeMidturnSteering
+      ? await claudeMidturnSteeringProbe(child, resultQueue, waiters, { options, contextFile, provider })
+      : null
     const eventText = await readFile(logs.events, "utf8").catch(() => "")
     const transcriptPaths = eventText
       .split("\n")
@@ -733,7 +736,7 @@ async function runClaudeDrill(options, root) {
       tokenB: probe.tokenB,
       first,
       second,
-      midturnSteering: null,
+      midturnSteering,
       hiddenTextVisibleInHistory: transcriptText.includes(probe.tokenA) || transcriptText.includes(probe.tokenB),
       visiblePromptIncludesHiddenText: probe.visiblePrompt.includes(probe.tokenA) || probe.visiblePrompt.includes(probe.tokenB),
       logs,
@@ -784,6 +787,60 @@ async function claudeTurn(child, resultQueue, waiters, { options, contextFile, v
     matched: String(result.result ?? "").includes(token),
     completed: result.subtype === "success" && result.is_error === false,
     stopReason: result.stop_reason ?? null,
+  }
+}
+
+async function claudeMidturnSteeringProbe(child, resultQueue, waiters, { options, contextFile, provider }) {
+  const firstMarker = `ARROBA_STEER_${provider.toUpperCase()}_${randomBytes(4).toString("hex")}_A`
+  const secondMarker = `ARROBA_STEER_${provider.toUpperCase()}_${randomBytes(4).toString("hex")}_B`
+  await writeFile(contextFile, "No hidden context is required for this steering probe.", "utf8")
+  child.stdin.write(JSON.stringify({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{
+        type: "text",
+        text: `Midturn steering probe. Think briefly, then write five short numbered lines, then finish with ${firstMarker}. If another user message arrives before you finish, include its marker too.`,
+      }],
+    },
+  }) + "\n")
+  await sleep(750)
+  let secondSubmit = "accepted"
+  let secondError = null
+  try {
+    child.stdin.write(JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: `Midturn steering follow-up marker: ${secondMarker}` }],
+      },
+    }) + "\n")
+  } catch (error) {
+    secondSubmit = "rejected"
+    secondError = error.message
+  }
+
+  const firstResult = await waitForClaudeResult(resultQueue, waiters, options.timeoutMs)
+  const firstOutput = String(firstResult.result ?? "")
+  let secondResult = null
+  if (!firstOutput.includes(secondMarker) && secondSubmit === "accepted") {
+    secondResult = await waitForClaudeResult(resultQueue, waiters, Math.min(options.timeoutMs, 60_000)).catch((error) => ({ error: error.message }))
+  }
+  const secondOutput = secondResult && !secondResult.error ? String(secondResult.result ?? "") : ""
+  return {
+    firstMarker,
+    secondMarker,
+    secondSubmit,
+    secondError,
+    firstCompleted: firstResult.subtype === "success" && firstResult.is_error === false,
+    firstStopReason: firstResult.stop_reason ?? null,
+    observedInFirst: firstOutput.includes(secondMarker),
+    observedInSecond: secondOutput.includes(secondMarker),
+    secondCompleted: secondResult && !secondResult.error
+      ? secondResult.subtype === "success" && secondResult.is_error === false
+      : false,
+    secondStopReason: secondResult && !secondResult.error ? secondResult.stop_reason ?? null : null,
+    secondResultError: secondResult?.error ?? null,
   }
 }
 
