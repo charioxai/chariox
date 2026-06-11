@@ -17,6 +17,7 @@ import {
   shouldShowRemoteExtensionManifestSync,
 } from "./extension-grant-placement.js"
 import {
+  homeExtensionAuditAgentRef,
   homeExtensionAuditRecoveryAction,
 } from "./home-extension-audit-policy.js"
 
@@ -214,9 +215,11 @@ export function formatHomeExtensionAuditEvents(events: readonly Record<string, u
     const actor = [
       fieldPart("home", payload.home_user_id),
       fieldPart("caller", payload.caller_user_id),
-      fieldPart("agent", payload.agent_id ?? payload.home_agent_id),
+      fieldPart("agent", homeExtensionAuditActorAgent(payload)),
       fieldPart("lease", payload.lease_id),
+      fieldPart("leased", payload.leased_agent_id),
       fieldPart("worker", payload.worker_kernel_id),
+      fieldPart("machine", payload.worker_machine_id),
       fieldPart("run", payload.worker_provider_run_id ?? payload.active_worker_provider_run_id),
     ].filter(Boolean)
     if (actor.length > 0) rows.push(`  actor: ${actor.join(" ")}`)
@@ -262,6 +265,13 @@ function homeExtensionAuditRedactedFields(payload: Record<string, unknown>): str
     Object.hasOwn(payload, "result") || Object.hasOwn(payload, "results") ? "result" : null,
   ].filter(Boolean)
   return fields.join(" ")
+}
+
+function homeExtensionAuditActorAgent(payload: Record<string, unknown>): unknown {
+  const agentRef = homeExtensionAuditAgentRef(payload)
+  return agentRef === "affected agent"
+    ? payload.agent_id ?? payload.home_agent_id
+    : agentRef
 }
 
 function formatHomeExtensionAuditInvocation(value: unknown): string {
