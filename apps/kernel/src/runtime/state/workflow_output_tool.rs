@@ -104,8 +104,9 @@ impl KernelRuntimeOwnedState {
             )
             .err()
         });
+        let workflow_output_json = args.workflow_output_json.clone();
         let output = crate::session::WorkflowOutputPayload::new(
-            args.workflow_output_json,
+            workflow_output_json.clone(),
             Vec::<crate::session::WorkflowArtifactRef>::new(),
         );
         let workflow_run = if is_final {
@@ -132,6 +133,46 @@ impl KernelRuntimeOwnedState {
                 )?
         };
         let mut dispatches = WorkflowPromptDispatches::default();
+        let event_kind = if is_final {
+            "workflow.output.final"
+        } else {
+            "workflow.output.intermediate"
+        };
+        let output_preview = workflow_output_json.chars().take(500).collect::<String>();
+        let source_agent_id = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == context.workflow_node_run_id)
+            .map(|node_run| node_run.agent_id().to_string());
+        let source_attachment_id =
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(&workflow_run_id);
+        dispatches.extend(self.metaagent_workflow_event_prompt_dispatches(
+            &context.session_id,
+            event_kind,
+            source_agent_id.as_deref(),
+            &source_attachment_id,
+            if is_final {
+                format!("Workflow run `{workflow_run_id}` submitted final output")
+            } else {
+                format!("Workflow run `{workflow_run_id}` submitted intermediate output")
+            },
+            if output_preview.trim().is_empty() {
+                format!("Workflow run `{workflow_run_id}` submitted an empty output.")
+            } else {
+                format!(
+                    "Workflow run `{workflow_run_id}` submitted output: {}",
+                    output_preview.trim()
+                )
+            },
+            serde_json::json!({
+                "workflow_run_id": workflow_run.id(),
+                "workflow_node_run_id": context.workflow_node_run_id,
+                "kind": event_kind,
+                "valid": warning.is_none(),
+                "warning": warning.clone(),
+                "output": workflow_output_json,
+            }),
+        ));
         if is_final && warning.is_none() && workflow_run.publication_invocation().is_some() {
             let max_turns = self.workflow_max_turns(&context.session_id);
             let update = self.session_store.write().complete_workflow_node_run(

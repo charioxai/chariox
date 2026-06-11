@@ -169,16 +169,14 @@ impl KernelRuntimeState {
             META_SUBSCRIBE_EVENTS_TOOL => {
                 let args = serde_json::from_value::<MetaSubscribeEventsArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let subscription =
+                    self.owned
+                        .metaagent_events
+                        .subscribe(agent.id(), args.kind, args.filter);
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
-                        "subscription": {
-                            "subscription_id": format!("optional:{}:{}", agent.id(), args.kind),
-                            "kind": args.kind,
-                            "filter": args.filter,
-                            "required": false,
-                            "status": "registered",
-                        }
+                        "subscription": subscription,
                     }),
                 })
             }
@@ -194,39 +192,34 @@ impl KernelRuntimeState {
                         }),
                     });
                 }
+                let removed = self
+                    .owned
+                    .metaagent_events
+                    .unsubscribe(agent.id(), &args.subscription_id);
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
                         "subscription_id": args.subscription_id,
-                        "status": "removed",
+                        "status": if removed.is_some() { "removed" } else { "not_found" },
                     }),
                 })
             }
-            META_LIST_SUBSCRIPTIONS_TOOL => Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "subscriptions": [
-                        {
-                            "subscription_id": format!("required:{}:agent.turn.completed", agent.id()),
-                            "kind": "agent.turn.completed",
-                            "required": true,
-                            "scope": "owned_regular_agents",
-                        },
-                        {
-                            "subscription_id": format!("required:{}:agent.turn.failed", agent.id()),
-                            "kind": "agent.turn.failed",
-                            "required": true,
-                            "scope": "owned_regular_agents",
-                        },
-                        {
-                            "subscription_id": format!("required:{}:runtime.interaction", agent.id()),
-                            "kind": "runtime.interaction",
-                            "required": true,
-                            "scope": "owned_regular_agents",
-                        },
-                    ],
-                }),
-            }),
+            META_LIST_SUBSCRIPTIONS_TOOL => {
+                let mut subscriptions = required_metaagent_subscriptions(agent.id());
+                subscriptions.extend(
+                    self.owned
+                        .metaagent_events
+                        .list_subscriptions(agent.id())
+                        .into_iter()
+                        .map(|subscription| serde_json::json!(subscription)),
+                );
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "subscriptions": subscriptions,
+                    }),
+                })
+            }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
                 let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
                     .map_err(invalid_meta_args)?;
@@ -711,6 +704,29 @@ fn invalid_meta_args(error: serde_json::Error) -> DaemonError {
         operation: "runtime_tool_meta",
         message: format!("invalid tool arguments: {error}"),
     }
+}
+
+fn required_metaagent_subscriptions(metaagent_id: &str) -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "subscription_id": format!("required:{metaagent_id}:agent.turn.completed"),
+            "kind": "agent.turn.completed",
+            "required": true,
+            "scope": "owned_regular_agents",
+        }),
+        serde_json::json!({
+            "subscription_id": format!("required:{metaagent_id}:agent.turn.failed"),
+            "kind": "agent.turn.failed",
+            "required": true,
+            "scope": "owned_regular_agents",
+        }),
+        serde_json::json!({
+            "subscription_id": format!("required:{metaagent_id}:runtime.interaction"),
+            "kind": "runtime.interaction",
+            "required": true,
+            "scope": "owned_regular_agents",
+        }),
+    ]
 }
 
 fn meta_agent_ref_json(agent: &crate::agent::AgentInstance) -> serde_json::Value {

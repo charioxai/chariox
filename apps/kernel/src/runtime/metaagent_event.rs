@@ -22,6 +22,17 @@ pub(crate) struct MetaagentEventRecord {
     pub injected_prompt_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MetaagentEventSubscription {
+    pub subscription_id: String,
+    pub metaagent_id: String,
+    pub kind: String,
+    pub filter: Option<serde_json::Value>,
+    pub required: bool,
+    pub scope: String,
+    pub created_at_ms: u64,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct NewMetaagentEvent {
     pub session_id: String,
@@ -38,7 +49,9 @@ pub(crate) struct NewMetaagentEvent {
 #[derive(Default)]
 struct MetaagentEventState {
     next_sequence: u64,
+    next_subscription_sequence: u64,
     records: BTreeMap<String, MetaagentEventRecord>,
+    subscriptions: BTreeMap<String, MetaagentEventSubscription>,
 }
 
 #[derive(Clone, Default)]
@@ -164,6 +177,80 @@ impl MetaagentEventStore {
             "unacked": unacked,
             "unread": unread,
             "by_kind": by_kind,
+        })
+    }
+
+    pub(crate) fn subscribe(
+        &self,
+        metaagent_id: &str,
+        kind: String,
+        filter: Option<serde_json::Value>,
+    ) -> MetaagentEventSubscription {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        if let Some(subscription) = state
+            .subscriptions
+            .values()
+            .find(|subscription| {
+                subscription.metaagent_id == metaagent_id
+                    && subscription.kind == kind
+                    && subscription.filter == filter
+            })
+            .cloned()
+        {
+            return subscription;
+        }
+        state.next_subscription_sequence += 1;
+        let subscription_id = format!(
+            "optional:{metaagent_id}:{}",
+            state.next_subscription_sequence
+        );
+        let subscription = MetaagentEventSubscription {
+            subscription_id: subscription_id.clone(),
+            metaagent_id: metaagent_id.to_string(),
+            kind,
+            filter,
+            required: false,
+            scope: "session".to_string(),
+            created_at_ms: crate::session::unix_epoch_ms(),
+        };
+        state
+            .subscriptions
+            .insert(subscription_id, subscription.clone());
+        subscription
+    }
+
+    pub(crate) fn unsubscribe(
+        &self,
+        metaagent_id: &str,
+        subscription_id: &str,
+    ) -> Option<MetaagentEventSubscription> {
+        let mut state = self.state.lock().expect("metaagent event store poisoned");
+        if state
+            .subscriptions
+            .get(subscription_id)
+            .is_some_and(|subscription| subscription.metaagent_id == metaagent_id)
+        {
+            return state.subscriptions.remove(subscription_id);
+        }
+        None
+    }
+
+    pub(crate) fn list_subscriptions(&self, metaagent_id: &str) -> Vec<MetaagentEventSubscription> {
+        let state = self.state.lock().expect("metaagent event store poisoned");
+        let mut subscriptions = state
+            .subscriptions
+            .values()
+            .filter(|subscription| subscription.metaagent_id == metaagent_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        subscriptions.sort_by(|left, right| left.subscription_id.cmp(&right.subscription_id));
+        subscriptions
+    }
+
+    pub(crate) fn has_optional_subscription(&self, metaagent_id: &str, kind: &str) -> bool {
+        let state = self.state.lock().expect("metaagent event store poisoned");
+        state.subscriptions.values().any(|subscription| {
+            subscription.metaagent_id == metaagent_id && subscription.kind == kind
         })
     }
 }

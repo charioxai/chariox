@@ -91,7 +91,7 @@ impl KernelRuntimeOwnedState {
             crate::session::PromptStatus::Queued,
         )
         .with_workflow_context(workflow_run.id(), node_run.id());
-        self.workflow_submit_prepared_prompt(
+        let mut dispatches = self.workflow_submit_prepared_prompt(
             crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),
                 prompt,
@@ -99,6 +99,29 @@ impl KernelRuntimeOwnedState {
             },
             workflow_run.id(),
             node_run.id(),
-        )
+        )?;
+        let source_attachment_id =
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id());
+        dispatches.extend(self.metaagent_workflow_event_prompt_dispatches(
+            session_id,
+            "workflow.run.started",
+            Some(node_run.agent_id()),
+            &source_attachment_id,
+            format!("Workflow run `{}` started", workflow_run.id()),
+            format!(
+                "Workflow run `{}` started on entry node `{}`.",
+                workflow_run.id(),
+                node_run.node_id()
+            ),
+            serde_json::json!({
+                "workflow_run_id": workflow_run.id(),
+                "workflow_id": workflow_run.workflow_id(),
+                "endpoint_id": workflow_run.endpoint_id(),
+                "entry_node_run_id": node_run.id(),
+                "entry_node_id": node_run.node_id(),
+                "entry_agent_id": node_run.agent_id(),
+            }),
+        ));
+        Ok(dispatches)
     }
 }

@@ -228,6 +228,58 @@ impl KernelRuntimeOwnedState {
                 | crate::session::WorkflowRunStatus::Failed
                 | crate::session::WorkflowRunStatus::Stopped
         ) {
+            let event_kind = match update.workflow_run.status() {
+                crate::session::WorkflowRunStatus::Completed => "workflow.run.completed",
+                crate::session::WorkflowRunStatus::Failed => "workflow.run.failed",
+                crate::session::WorkflowRunStatus::Stopped => "workflow.run.cancelled",
+                _ => "workflow.run.updated",
+            };
+            let source_agent_id = update
+                .workflow_run
+                .completed_by_node_run_id()
+                .and_then(|node_run_id| {
+                    update
+                        .workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == node_run_id)
+                })
+                .map(|node_run| node_run.agent_id().to_string());
+            let source_attachment_id =
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(
+                    update.workflow_run.id(),
+                );
+            dispatches.extend(self.metaagent_workflow_event_prompt_dispatches(
+                session_id,
+                event_kind,
+                source_agent_id.as_deref(),
+                &source_attachment_id,
+                format!(
+                    "Workflow run `{}` {state_suffix}",
+                    update.workflow_run.id()
+                ),
+                format!(
+                    "Workflow run `{}` {state_suffix}.",
+                    update.workflow_run.id()
+                ),
+                serde_json::json!({
+                    "workflow_run_id": update.workflow_run.id(),
+                    "workflow_id": update.workflow_run.workflow_id(),
+                    "endpoint_id": update.workflow_run.endpoint_id(),
+                    "status": format!("{:?}", update.workflow_run.status()),
+                    "final_output": update.workflow_run.final_output().map(|output| output.message()),
+                    "final_output_valid": update.workflow_run.final_output_valid(),
+                    "final_output_warning": update.workflow_run.final_output_warning(),
+                    "failure_events": update.workflow_run.failure_events(),
+                }),
+            ));
+        }
+        if matches!(
+            update.workflow_run.status(),
+            crate::session::WorkflowRunStatus::Completed
+                | crate::session::WorkflowRunStatus::Failed
+                | crate::session::WorkflowRunStatus::Stopped
+        ) {
             dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         }
         let _ = self.session_snapshot(session_id)?;

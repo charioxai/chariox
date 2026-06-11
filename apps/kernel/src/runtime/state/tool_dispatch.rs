@@ -115,6 +115,15 @@ impl KernelRuntimeState {
                     canonical_tool_name,
                 )?)
             };
+            if is_workflow_tool {
+                return self
+                    .dispatch_authenticated_workflow_runtime_tool_call(
+                        &provider_runs,
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
+            }
             if matches!(
                 canonical_tool_name,
                 crate::transport::runtime_tools::READ_ARTIFACT_TOOL

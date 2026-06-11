@@ -121,6 +121,7 @@ mod pending_runtime_state;
 use pending_runtime_state::*;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
+mod metaagent_event_owned_state;
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
