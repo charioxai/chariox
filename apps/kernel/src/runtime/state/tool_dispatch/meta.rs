@@ -1,13 +1,13 @@
 use super::*;
 
 use crate::transport::runtime_tools::{
-    MetaAckEventArgs, MetaListEventsArgs, MetaReadEventArgs, MetaResolveRuntimeInteractionArgs,
-    MetaSessionOverviewArgs, MetaSubscribeEventsArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs,
-    MetaUnsubscribeEventsArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
-    META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_SUBSCRIPTIONS_TOOL,
-    META_READ_EVENT_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
-    META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
-    META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
+    META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
+    META_LIST_SUBSCRIPTIONS_TOOL, META_READ_EVENT_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL,
+    META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL,
+    META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
+    META_UNSUBSCRIBE_EVENTS_TOOL, MetaAckEventArgs, MetaListEventsArgs, MetaReadEventArgs,
+    MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
+    MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, RuntimeToolResult,
 };
 
 impl KernelRuntimeState {
@@ -342,6 +342,11 @@ impl KernelRuntimeState {
         custom_reply: Option<&str>,
         provider_run_id: Option<&str>,
     ) {
+        let correlation_id = format!(
+            "metaagent:{}:runtime-interaction:{}",
+            metaagent.id(),
+            interaction.id()
+        );
         if let Err(error) = self.owned.durable_state_store.append_event(
             "metaagent.interaction.resolved",
             Some(interaction.id().to_string()),
@@ -358,6 +363,8 @@ impl KernelRuntimeState {
                     "char_count": reply.chars().count(),
                 })),
                 "provider_run_id": provider_run_id,
+                "causation_id": interaction.id(),
+                "correlation_id": correlation_id,
                 "timestamp_ms": crate::session::unix_epoch_ms(),
             }),
         ) {

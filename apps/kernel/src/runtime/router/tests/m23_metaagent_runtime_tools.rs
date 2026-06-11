@@ -310,9 +310,11 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(owned_agents
-        .iter()
-        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
+    assert!(
+        owned_agents.iter().any(|agent| {
+            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
+        })
+    );
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -693,10 +695,12 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(session
-        .agents()
-        .iter()
-        .all(|agent| agent.id() != worker.id()));
+    assert!(
+        session
+            .agents()
+            .iter()
+            .all(|agent| agent.id() != worker.id())
+    );
 }
 
 #[tokio::test]
@@ -1952,6 +1956,12 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
             && event.payload["target_agent_id"] == worker.id()
             && event.payload["interaction_id"] == "interaction-worker"
             && event.payload["choice_id"] == "allow_once"
+            && event.payload["causation_id"] == "interaction-worker"
+            && event.payload["correlation_id"]
+                == format!(
+                    "metaagent:{}:runtime-interaction:interaction-worker",
+                    metaagent.id()
+                )
     }));
 
     let self_interaction = RuntimeInteraction::new(
