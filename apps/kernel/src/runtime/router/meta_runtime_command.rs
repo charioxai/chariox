@@ -1,10 +1,10 @@
 use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
-    AttachToSessionRequest, CancelWorkflowRunRequest, CreateWorkflowRequest,
-    InvokeWorkflowEndpointRequest, ListAgentsRequest, ListWorkflowRunsRequest,
-    ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ResumeWorkflowRunRequest,
-    SpawnAgentRequest,
+    AliasAgentRequest, AttachToSessionRequest, CancelWorkflowRunRequest, CreateWorkflowRequest,
+    DestroyAgentRequest, FocusAgentRequest, InvokeWorkflowEndpointRequest, ListAgentsRequest,
+    ListWorkflowRunsRequest, ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ResumeWorkflowRunRequest, SpawnAgentRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -134,7 +134,13 @@ impl CommandRouter {
             return Err(meta_command_error("empty metaagent command"));
         };
         match command {
-            "agent" => meta_agent_request(session, metaagent, &tokens[1..]),
+            "agent" => {
+                let agents = {
+                    let app = self.app.lock().await;
+                    app.agents().get_session_agents(session.id())
+                };
+                meta_agent_request(session, metaagent, &tokens[1..], &agents)
+            }
             "workflow" => meta_workflow_request(session, &tokens[1..]),
             other => Err(meta_command_error(format!(
                 "`{other}` is registered but not implemented by the metaagent command router"
@@ -205,6 +211,7 @@ fn meta_agent_request(
     session: &crate::session::RuntimeSession,
     metaagent: &crate::agent::AgentInstance,
     args: &[String],
+    agents: &[crate::agent::AgentInstance],
 ) -> Result<LocalDaemonRequest, DaemonError> {
     match args.first().map(String::as_str) {
         Some("list" | "ls") => Ok(LocalDaemonRequest::ListAgents(ListAgentsRequest {
@@ -246,8 +253,77 @@ fn meta_agent_request(
                 metaagent: false,
             }))
         }
-        _ => Err(meta_command_error("usage: agent <list|spawn> ...")),
+        Some("focus") => {
+            let Some(reference) = args.get(1) else {
+                return Err(meta_command_error("usage: agent focus <owned-agent-ref>"));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: agent focus <owned-agent-ref>"));
+            }
+            let agent = meta_owned_regular_agent_from_session(agents, metaagent, reference)?;
+            Ok(LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+            }))
+        }
+        Some("alias" | "name") => {
+            if args.len() < 3 {
+                return Err(meta_command_error(
+                    "usage: agent alias <owned-agent-ref> <alias|clear>",
+                ));
+            }
+            let agent = meta_owned_regular_agent_from_session(agents, metaagent, &args[1])?;
+            let alias = args[2..].join(" ");
+            let alias = if matches!(alias.as_str(), "clear" | "none" | "-") {
+                String::new()
+            } else {
+                alias
+            };
+            Ok(LocalDaemonRequest::AliasAgent(AliasAgentRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                alias,
+            }))
+        }
+        Some("delete" | "destroy" | "remove") => {
+            let Some(reference) = args.get(1) else {
+                return Err(meta_command_error("usage: agent delete <owned-agent-ref>"));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: agent delete <owned-agent-ref>"));
+            }
+            let agent = meta_owned_regular_agent_from_session(agents, metaagent, reference)?;
+            Ok(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+            }))
+        }
+        _ => Err(meta_command_error(
+            "usage: agent <list|spawn|focus|alias|delete|destroy> ...",
+        )),
     }
+}
+
+fn meta_owned_regular_agent_from_session(
+    agents: &[crate::agent::AgentInstance],
+    metaagent: &crate::agent::AgentInstance,
+    reference: &str,
+) -> Result<crate::agent::AgentInstance, DaemonError> {
+    agents
+        .iter()
+        .find(|agent| {
+            !agent.is_metaagent()
+                && agent.owner_user_id() == metaagent.owner_user_id()
+                && (agent.id() == reference
+                    || agent.agent_ref() == reference
+                    || agent.alias() == Some(reference))
+        })
+        .cloned()
+        .ok_or_else(|| {
+            meta_command_error(format!(
+                "agent `{reference}` is not an owned regular agent in this session"
+            ))
+        })
 }
 
 fn meta_workflow_request(

@@ -61,9 +61,19 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     },
     MetaCommandDoc {
         name: "agent spawn",
-        aliases: &["agent spawn"],
-        usage: "agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>]",
-        examples: &["agent spawn reviewer gpt-5.2"],
+        aliases: &[
+            "agent spawn",
+            "agent focus",
+            "agent alias",
+            "agent delete",
+            "agent destroy",
+        ],
+        usage: "agent <list|spawn|focus|alias|delete|destroy> ...",
+        examples: &[
+            "agent spawn reviewer gpt-5.2",
+            "agent alias reviewer code-reviewer",
+            "agent delete code-reviewer",
+        ],
         tags: &["agent", "spawn", "orchestration"],
         scope: "session",
         mutates: true,
@@ -253,9 +263,12 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
 fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExecutionPolicy> {
     match first {
         "agent" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "ls" | "spawn") => Some(MetaCommandExecutionPolicy::Routed),
+            Some(
+                "list" | "ls" | "spawn" | "focus" | "alias" | "name" | "delete" | "destroy"
+                | "remove",
+            ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `agent list` and `agent spawn` are routed for metaagent command execution yet".to_string(),
+                message: "only `agent list`, `agent spawn`, `agent focus`, `agent alias`, and `agent delete` are routed for metaagent command execution yet".to_string(),
             }),
         },
         "workflow" => match tokens.get(1).map(String::as_str) {

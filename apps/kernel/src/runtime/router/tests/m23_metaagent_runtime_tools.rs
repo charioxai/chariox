@@ -498,6 +498,112 @@ async fn metaagent_run_command_routes_core_workflow_commands() {
 }
 
 #[tokio::test]
+async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
+    let env = TestMetaRuntimeEnv::new("run-command-agent-lifecycle");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let peer_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("peer-worker")
+                .with_owner_user_id("user-2"),
+        )
+        .expect("peer worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let aliased = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "agent alias worker renamed-worker"
+            }),
+        )
+        .await
+        .expect("agent alias command should dispatch");
+    assert!(aliased.ok, "{:?}", aliased.payload);
+    assert!(
+        serde_json::to_string(&aliased.payload)
+            .expect("payload should serialize")
+            .contains("renamed-worker"),
+        "{:?}",
+        aliased.payload
+    );
+
+    let peer_delete = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": format!("agent delete {}", peer_worker.agent_ref())
+            }),
+        )
+        .await
+        .expect("peer delete should return structured denial");
+    assert!(!peer_delete.ok);
+    assert!(
+        peer_delete
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        peer_delete.payload
+    );
+
+    let deleted = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "agent delete renamed-worker"
+            }),
+        )
+        .await
+        .expect("owned agent delete command should dispatch");
+    assert!(deleted.ok, "{:?}", deleted.payload);
+    let app = app.lock().await;
+    let session = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should remain");
+    assert!(session
+        .agents()
+        .iter()
+        .all(|agent| agent.id() != worker.id()));
+}
+
+#[tokio::test]
 async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands() {
     let env = TestMetaRuntimeEnv::new("run-command-deny");
     let workspace = env.root.join("workspace");
