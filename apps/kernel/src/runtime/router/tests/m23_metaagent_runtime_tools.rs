@@ -120,6 +120,13 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
     let worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
         .expect("worker should spawn");
+    let peer_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("peer-worker")
+                .with_owner_user_id("user-2"),
+        )
+        .expect("peer worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -141,6 +148,50 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .to_string();
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let owned_interaction = RuntimeInteraction::new(
+        "overview-owned-interaction",
+        worker.id(),
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        Some("Allow owned command?".to_string()),
+        "Allow owned command?",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Allow once",
+            "allow",
+            Some(RuntimeInteractionChoiceStyle::Primary),
+        )],
+        None,
+        None,
+        None,
+    );
+    let _owned_resolution = router
+        .runtime_state
+        .create_runtime_interaction(session.id(), owned_interaction)
+        .await
+        .expect("owned interaction should register");
+    let peer_interaction = RuntimeInteraction::new(
+        "overview-peer-interaction",
+        peer_worker.id(),
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        Some("Allow peer command?".to_string()),
+        "Allow peer command?",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Allow once",
+            "allow",
+            Some(RuntimeInteractionChoiceStyle::Primary),
+        )],
+        None,
+        None,
+        None,
+    );
+    let _peer_resolution = router
+        .runtime_state
+        .create_runtime_interaction(session.id(), peer_interaction)
+        .await
+        .expect("peer interaction should register");
 
     let overview = router
         .runtime_state
@@ -169,6 +220,13 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
             .and_then(serde_json::Value::as_u64),
         Some(3)
     );
+    assert_eq!(
+        overview
+            .payload
+            .pointer("/agents/total")
+            .and_then(serde_json::Value::as_u64),
+        Some(4)
+    );
     let owned_agents = overview
         .payload
         .pointer("/agents/owned")
@@ -180,6 +238,19 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
+    );
+    let pending_interactions = overview
+        .payload
+        .get("pending_interactions")
+        .and_then(serde_json::Value::as_array)
+        .expect("pending interactions should be included");
+    assert_eq!(pending_interactions.len(), 1);
+    assert_eq!(
+        pending_interactions
+            .first()
+            .and_then(|interaction| interaction.get("id"))
+            .and_then(serde_json::Value::as_str),
+        Some("overview-owned-interaction")
     );
 
     let search = router
@@ -355,6 +426,52 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .is_some_and(|message| message.contains("cannot create")),
         "{:?}",
         denied.payload
+    );
+
+    let docs = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_COMMAND_DOCS_TOOL,
+            serde_json::json!({
+                "command": "mcp list"
+            }),
+        )
+        .await
+        .expect("meta command docs should dispatch");
+    assert!(docs.ok);
+    assert_eq!(
+        docs.payload
+            .get("metaagent_policy")
+            .and_then(serde_json::Value::as_str),
+        Some("allow")
+    );
+    assert_eq!(
+        docs.payload
+            .get("routed")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+
+    let not_routed = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "mcp list"
+            }),
+        )
+        .await
+        .expect("registry-backed not-routed commands should return structured tool results");
+    assert!(!not_routed.ok);
+    assert!(
+        not_routed
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("command registry")),
+        "{:?}",
+        not_routed.payload
     );
 }
 

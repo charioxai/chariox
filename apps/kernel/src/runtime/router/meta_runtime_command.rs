@@ -28,6 +28,25 @@ impl CommandRouter {
             Ok(tokens) => tokens,
             Err(error) => return Ok(meta_command_failure_result(&args.command, error)),
         };
+        match crate::runtime::metaagent_command_registry::execution_policy(&tokens) {
+            crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Routed => {}
+            crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::Denied {
+                message,
+            } => {
+                return Ok(meta_command_failure_result(
+                    &args.command,
+                    meta_command_error(message),
+                ))
+            }
+            crate::runtime::metaagent_command_registry::MetaCommandExecutionPolicy::NotRouted {
+                message,
+            } => {
+                return Ok(meta_command_failure_result(
+                    &args.command,
+                    meta_command_error(message),
+                ))
+            }
+        }
         let request = match self
             .meta_command_request(&session, &metaagent, &tokens)
             .await
@@ -65,11 +84,8 @@ impl CommandRouter {
             }
             "agent" => meta_agent_request(session, metaagent, &tokens[1..]),
             "workflow" => meta_workflow_request(session, &tokens[1..]),
-            "session" => Err(meta_command_error(
-                "metaagents cannot create, attach to, switch, or delete sessions",
-            )),
             other => Err(meta_command_error(format!(
-                "`{other}` is not enabled for arroba.meta.run_command yet"
+                "`{other}` is registered but not implemented by the metaagent command router"
             ))),
         }
     }

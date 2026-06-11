@@ -1,130 +1,14 @@
 use super::*;
 
 use crate::transport::runtime_tools::{
-    MetaAckEventArgs, MetaCommandDocsArgs, MetaCommandSearchArgs, MetaListEventsArgs,
-    MetaReadEventArgs, MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs,
-    MetaSubscribeEventsArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
-    RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_LIST_COMMANDS_TOOL,
-    META_LIST_EVENTS_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_READ_EVENT_TOOL,
-    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
-    META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL,
-    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
+    MetaAckEventArgs, MetaListEventsArgs, MetaReadEventArgs, MetaResolveRuntimeInteractionArgs,
+    MetaSessionOverviewArgs, MetaSubscribeEventsArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs,
+    MetaUnsubscribeEventsArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
+    META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_SUBSCRIPTIONS_TOOL,
+    META_READ_EVENT_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
+    META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
+    META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
 };
-
-#[derive(Debug, Clone, Copy)]
-struct MetaCommandDoc {
-    name: &'static str,
-    aliases: &'static [&'static str],
-    usage: &'static str,
-    examples: &'static [&'static str],
-    tags: &'static [&'static str],
-    scope: &'static str,
-    mutates: bool,
-    policy: &'static str,
-    description: &'static str,
-}
-
-const META_COMMANDS: &[MetaCommandDoc] = &[
-    MetaCommandDoc {
-        name: "session overview",
-        aliases: &["context", "agent list", "workflow list"],
-        usage: "Use arroba.meta.session_overview for current session state.",
-        examples: &["arroba.meta.session_overview({})"],
-        tags: &["inspect", "session", "agents", "workflows"],
-        scope: "session",
-        mutates: false,
-        policy: "allow",
-        description: "Inspect current session, owned agents, workflow runs, pending interactions, and event counts.",
-    },
-    MetaCommandDoc {
-        name: "prompt",
-        aliases: &["prompt <agent-ref> <text>"],
-        usage: "prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]",
-        examples: &["prompt agent-2 \"Investigate this failure\" --wait"],
-        tags: &["prompt", "agent", "orchestration"],
-        scope: "session",
-        mutates: true,
-        policy: "allow",
-        description: "Submit a normal Arroba prompt to one of this user's regular agents through the existing prompt path.",
-    },
-    MetaCommandDoc {
-        name: "agent spawn",
-        aliases: &["agent spawn"],
-        usage: "agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>]",
-        examples: &["agent spawn reviewer gpt-5.2"],
-        tags: &["agent", "spawn", "orchestration"],
-        scope: "session",
-        mutates: true,
-        policy: "allow",
-        description: "Create a regular agent owned by the current user. Metaagents cannot spawn another metaagent.",
-    },
-    MetaCommandDoc {
-        name: "workflow",
-        aliases: &["workflow new", "workflow run", "workflow cancel", "workflow resume"],
-        usage: "workflow <new|list|show|run|runs|cancel|resume> ...",
-        examples: &["workflow run qa-flow default \"Run QA\""],
-        tags: &["workflow", "orchestration"],
-        scope: "session",
-        mutates: true,
-        policy: "allow",
-        description: "Create, edit, run, cancel, resume, and observe workflows from above. Metaagents cannot be workflow nodes.",
-    },
-    MetaCommandDoc {
-        name: "mcp",
-        aliases: &["mcp grant", "mcp revoke", "mcp list"],
-        usage: "mcp <install|list|show|import|grant|revoke|grants> ...",
-        examples: &["mcp grant playwright --agent agent-2"],
-        tags: &["extension", "mcp", "capability"],
-        scope: "session",
-        mutates: true,
-        policy: "allow",
-        description: "Manage MCP extension grants for this user's agents through existing kernel extension policy.",
-    },
-    MetaCommandDoc {
-        name: "skill",
-        aliases: &["skill grant", "skill list", "skills"],
-        usage: "skill <install|list|show|import|grant|revoke|grants> ...",
-        examples: &["skill grant browser-qa --agent agent-2"],
-        tags: &["extension", "skill", "capability"],
-        scope: "session",
-        mutates: true,
-        policy: "allow",
-        description: "Manage skill grants for this user's agents through existing kernel extension policy.",
-    },
-    MetaCommandDoc {
-        name: "slice",
-        aliases: &["slice save", "slice restart", "slice stop"],
-        usage: "slice <list|show|save-state|start|stop|reset-state|backup> ...",
-        examples: &["slice save-state dev --restart-agents"],
-        tags: &["slice", "environment"],
-        scope: "session",
-        mutates: true,
-        policy: "allow",
-        description: "Inspect and manage slices. Metaagents cannot run inside a slice but can manage authorized slices.",
-    },
-    MetaCommandDoc {
-        name: "credential",
-        aliases: &["credential set", "credential list"],
-        usage: "credential <list|get|upsert|remove|set-secret|delete-secret> ...",
-        examples: &["credential list"],
-        tags: &["credential", "vault", "sensitive"],
-        scope: "global",
-        mutates: true,
-        policy: "approval",
-        description: "Manage credential handles and vault-backed values. Sensitive mutations should require policy approval.",
-    },
-    MetaCommandDoc {
-        name: "session new",
-        aliases: &["session create"],
-        usage: "session new ...",
-        examples: &[],
-        tags: &["session", "denied"],
-        scope: "global",
-        mutates: true,
-        policy: "deny",
-        description: "Denied for metaagents. Metaagents must operate inside their containing session.",
-    },
-];
 
 impl KernelRuntimeState {
     pub(crate) fn metaagent_context_for_auth_token(
@@ -177,19 +61,34 @@ impl KernelRuntimeState {
                 self.meta_session_overview(&session, &agent, args)
             }
             META_SEARCH_COMMANDS_TOOL | META_LIST_COMMANDS_TOOL => {
-                let args = serde_json::from_value::<MetaCommandSearchArgs>(arguments)
-                    .map_err(invalid_meta_args)?;
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::MetaCommandSearchArgs,
+                >(arguments)
+                .map_err(invalid_meta_args)?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
-                        "commands": filter_meta_commands(args),
+                        "commands": crate::runtime::metaagent_command_registry::search_commands(args),
                     }),
                 })
             }
             META_COMMAND_DOCS_TOOL => {
-                let args = serde_json::from_value::<MetaCommandDocsArgs>(arguments)
-                    .map_err(invalid_meta_args)?;
-                Ok(meta_command_docs(args.command))
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::MetaCommandDocsArgs,
+                >(arguments)
+                .map_err(invalid_meta_args)?;
+                let command_for_error = args.command.clone();
+                Ok(
+                    match crate::runtime::metaagent_command_registry::command_docs(args) {
+                        Some(payload) => RuntimeToolResult { ok: true, payload },
+                        None => RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({
+                                "error": format!("unknown metaagent command `{command_for_error}`")
+                            }),
+                        },
+                    },
+                )
             }
             META_RUN_COMMAND_TOOL => Ok(RuntimeToolResult {
                 ok: false,
@@ -381,7 +280,17 @@ impl KernelRuntimeState {
         let pending_interactions = session
             .active_interactions()
             .iter()
-            .filter(|interaction| interaction.agent_id() != agent.id())
+            .filter(|interaction| {
+                interaction.agent_id() != agent.id()
+                    && self
+                        .owned
+                        .agent_store
+                        .get_agent(interaction.agent_id())
+                        .is_ok_and(|target| {
+                            !target.is_metaagent()
+                                && target.owner_user_id() == agent.owner_user_id()
+                        })
+            })
             .collect::<Vec<_>>();
         Ok(RuntimeToolResult {
             ok: true,
@@ -802,84 +711,6 @@ fn invalid_meta_args(error: serde_json::Error) -> DaemonError {
         operation: "runtime_tool_meta",
         message: format!("invalid tool arguments: {error}"),
     }
-}
-
-fn filter_meta_commands(args: MetaCommandSearchArgs) -> Vec<serde_json::Value> {
-    let query = args.query.map(|value| value.to_lowercase());
-    let tag = args.tag.map(|value| value.to_lowercase());
-    let scope = args.scope.map(|value| value.to_lowercase());
-    let policy = args.policy.map(|value| value.to_lowercase());
-    let limit = args.limit.unwrap_or(50).clamp(1, 100);
-    META_COMMANDS
-        .iter()
-        .filter(|command| {
-            query.as_ref().is_none_or(|query| {
-                command.name.contains(query)
-                    || command.usage.to_lowercase().contains(query)
-                    || command.description.to_lowercase().contains(query)
-                    || command
-                        .aliases
-                        .iter()
-                        .any(|alias| alias.to_lowercase().contains(query))
-            })
-        })
-        .filter(|command| {
-            tag.as_ref().is_none_or(|tag| {
-                command
-                    .tags
-                    .iter()
-                    .any(|candidate| candidate.to_lowercase() == *tag)
-            })
-        })
-        .filter(|command| scope.as_ref().is_none_or(|scope| command.scope == scope))
-        .filter(|command| {
-            args.mutates
-                .is_none_or(|mutates| command.mutates == mutates)
-        })
-        .filter(|command| {
-            policy
-                .as_ref()
-                .is_none_or(|policy| command.policy == policy)
-        })
-        .take(limit)
-        .map(meta_command_json)
-        .collect()
-}
-
-fn meta_command_docs(command: String) -> RuntimeToolResult {
-    let normalized = command.to_lowercase();
-    let Some(command) = META_COMMANDS.iter().find(|candidate| {
-        candidate.name == normalized
-            || candidate
-                .aliases
-                .iter()
-                .any(|alias| alias.to_lowercase() == normalized)
-    }) else {
-        return RuntimeToolResult {
-            ok: false,
-            payload: serde_json::json!({
-                "error": format!("unknown metaagent command `{command}`")
-            }),
-        };
-    };
-    RuntimeToolResult {
-        ok: true,
-        payload: meta_command_json(command),
-    }
-}
-
-fn meta_command_json(command: &MetaCommandDoc) -> serde_json::Value {
-    serde_json::json!({
-        "name": command.name,
-        "aliases": command.aliases,
-        "usage": command.usage,
-        "examples": command.examples,
-        "tags": command.tags,
-        "scope": command.scope,
-        "mutates": command.mutates,
-        "metaagent_policy": command.policy,
-        "description": command.description,
-    })
 }
 
 fn meta_agent_ref_json(agent: &crate::agent::AgentInstance) -> serde_json::Value {
