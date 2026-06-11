@@ -14,7 +14,7 @@ const defaultTimeoutMs = 240_000
 
 function parseArgs(argv) {
   const options = {
-    providers: ["codex", "opencode", "claude"],
+    providers: ["codex", "opencode", "claude-p", "claude-headless"],
     timeoutMs: defaultTimeoutMs,
     worktree: repoRoot,
     keepArtifacts: false,
@@ -55,10 +55,12 @@ function printHelp() {
   console.log(`Usage: node scripts/live-provider-context-injection-drill.mjs [options]
 
 Options:
-  --providers codex,opencode,claude
+  --providers codex,opencode,claude-p,claude-headless
   --provider codex                 Alias for --providers.
   --provider-model codex=gpt-5.4-mini
   --provider-model opencode=opencode/gpt-5.4-mini
+  --provider-model claude-p=sonnet
+  --provider-model claude-headless=sonnet
   --timeout-ms 240000
   --worktree /path/to/worktree
   --keep-artifacts-on-failure

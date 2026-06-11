@@ -9,7 +9,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 
-const DEFAULT_PROVIDERS = ['codex', 'opencode', 'claude']
+const DEFAULT_PROVIDERS = ['codex', 'opencode', 'claude-p', 'claude-headless']
 const DEFAULT_TIMEOUT_MS = 240_000
 const DEFAULT_POLL_MS = 1_000
 
@@ -53,7 +53,8 @@ function printHelp() {
     '  --provider codex',
     '  --provider-model codex=gpt-5.2',
     '  --provider-model opencode=opencode/gpt-5.2',
-    '  --provider-model claude=sonnet',
+    '  --provider-model claude-p=sonnet',
+    '  --provider-model claude-headless=sonnet',
     `  --effort low`,
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     '  --keep-artifacts-on-failure',
@@ -134,7 +135,7 @@ async function terminateChild(child, signal = 'SIGTERM') {
 
 function modelForProvider(provider, options) {
   if (options.providerModels[provider]) return options.providerModels[provider]
-  if (provider === 'claude') return 'sonnet'
+  if (provider === 'claude' || provider === 'claude-p' || provider === 'claude-headless') return 'sonnet'
   if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
   return options.model
 }

@@ -1181,18 +1181,34 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             return Ok(());
         }
-        let hidden = extract_native_hidden_instructions(prompt.prompt());
-        let attachment_context =
-            format_claude_attachment_context(prompt.attachments(), context_file);
-        let _ = fs::write(
-            context_file,
-            join_claude_context([hidden, attachment_context]),
-        );
         let native_attachment_suffix =
             format_claude_native_attachment_prompt_suffix(prompt.attachments(), context_file);
         let visible = redact_native_hidden_instructions(prompt.prompt())
             .trim()
             .to_string();
+        let native_hidden = extract_native_hidden_instructions(prompt.prompt());
+        let attachment_context =
+            format_claude_attachment_context(prompt.attachments(), context_file);
+        let hidden_context = if provider_run.provider() == "claude-headless" {
+            let envelope =
+                crate::prompt_assembly::PromptAssemblyService::from_env()?.assemble_provider_turn(
+                    provider_run,
+                    &visible,
+                    Some(prompt.hidden_system_context()),
+                    prompt.attachments().to_vec(),
+                    crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
+                )?;
+            let skill_context = self.claude_native_prompt_context(session_id, agent_id, &visible)?;
+            join_claude_context([
+                envelope.hidden_system_context,
+                skill_context,
+                native_hidden,
+                attachment_context,
+            ])
+        } else {
+            join_claude_context([native_hidden, attachment_context])
+        };
+        let _ = fs::write(context_file, hidden_context);
         let visible = join_claude_context([native_attachment_suffix, visible]);
         if !visible.is_empty() {
             let input = if provider_run.provider() == "claude-headless" {
