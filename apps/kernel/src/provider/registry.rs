@@ -82,6 +82,25 @@ impl ProviderRegistry {
             keys
         }
     }
+
+    pub fn advertised_provider_ids(&self) -> Vec<String> {
+        let ids = vec![
+            DevStubAdapter::KEY.to_string(),
+            "claude-headless".to_string(),
+            "claude-p".to_string(),
+            CodexAdapter::KEY.to_string(),
+            OpenCodeAdapter::KEY.to_string(),
+        ];
+        #[cfg(not(test))]
+        return ids;
+        #[cfg(test)]
+        {
+            let mut ids = ids;
+            ids.push(ManagedDevStubAdapter::KEY.to_string());
+            ids.push(FailingPtyAdapter::KEY.to_string());
+            ids
+        }
+    }
 }
 
 #[derive(Debug, Default)]

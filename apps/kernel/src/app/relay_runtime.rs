@@ -8,7 +8,7 @@ use crate::error::DaemonError;
 
 impl DaemonApp {
     pub fn relay_registration(&mut self) -> DaemonRegistration {
-        let available_providers = self.providers.registry().registered_adapter_keys();
+        let available_providers = self.providers.registry().advertised_provider_ids();
         let provider_accounts = std::env::var_os("HOME")
             .map(PathBuf::from)
             .map(|home_dir| crate::slice_provider_auth::inspect_home_provider_auth(&home_dir))
