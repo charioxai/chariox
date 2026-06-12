@@ -1364,7 +1364,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, input.as_bytes())?;
             if provider_run.provider() == "claude-headless" {
-                write_claude_native_marker(context_file, &format!("typed:{}", prompt.id()));
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
+                write_claude_headless_submit_retry(context_file, prompt.id(), 0, unix_epoch_ms());
             } else {
                 write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
                 std::thread::sleep(std::time::Duration::from_millis(250));

@@ -879,6 +879,45 @@ async function managedHistoryFiles(historyDirs) {
   return nested.flat()
 }
 
+async function managedProviderToolUpdatesSince({ historyDir, providerHistoryDirs, sinceMs }) {
+  const updates = []
+  const toolStarts = new Map()
+  const historyDirs = managedHistoryDirs(historyDir, providerHistoryDirs)
+  const files = (await managedHistoryFiles(historyDirs)).sort()
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let entry
+      try {
+        entry = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if ((entry.timestamp_ms ?? 0) < sinceMs) continue
+      if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
+      try {
+        let update = JSON.parse(entry.text)
+        const toolKey = entry.merge_key ?? update.id
+        if (update.status === 'started' && update.input !== undefined) {
+          toolStarts.set(toolKey, { input: update.input, tool: update.tool })
+        } else if (toolStarts.has(toolKey)) {
+          const startedUpdate = toolStarts.get(toolKey)
+          update = {
+            ...update,
+            input: update.input ?? startedUpdate.input,
+            tool: update.tool === 'tool_result' ? startedUpdate.tool : update.tool,
+          }
+        }
+        updates.push({ update, entry })
+      } catch {
+        continue
+      }
+    }
+  }
+  return updates
+}
+
 async function waitForManagedReadSnapshot({ historyDir, providerHistoryDirs, artifactPath, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const snapshots = await waitForManagedReadSnapshots({
     historyDir,
@@ -897,44 +936,25 @@ async function waitForManagedReadSnapshot({ historyDir, providerHistoryDirs, art
 
 async function waitForManagedReadSnapshots({ historyDir, providerHistoryDirs, artifactPath, count, sinceMs, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
-  const historyDirs = managedHistoryDirs(historyDir, providerHistoryDirs)
   while (Date.now() - started < timeoutMs) {
     await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     const snapshots = []
-    const files = await managedHistoryFiles(historyDirs)
-    for (const file of files) {
-      const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
-      for (const line of lines) {
-        if (!line.trim()) continue
-        let entry
-        try {
-          entry = JSON.parse(line)
-        } catch {
-          continue
+    const entries = await managedProviderToolUpdatesSince({ historyDir, providerHistoryDirs, sinceMs })
+    for (const { update, entry } of entries) {
+      const tool = String(update.tool ?? '')
+      if (!tool.endsWith('read_artifact') || update.status !== 'completed') continue
+      if (update.input?.path !== artifactPath) continue
+      try {
+        const output = parseManagedToolOutput(update.output)
+        if (typeof output?.snapshot_id === 'string') {
+          snapshots.push({
+            ...output,
+            agent_id: entry.agent_id ?? null,
+            provider_run_id: entry.provider_run_id ?? null,
+          })
         }
-        if ((entry.timestamp_ms ?? 0) < sinceMs) continue
-        if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
-        let update
-        try {
-          update = JSON.parse(entry.text)
-        } catch {
-          continue
-        }
-        const tool = String(update.tool ?? '')
-        if (!tool.endsWith('read_artifact') || update.status !== 'completed') continue
-        if (update.input?.path !== artifactPath) continue
-        try {
-          const output = parseManagedToolOutput(update.output)
-          if (typeof output?.snapshot_id === 'string') {
-            snapshots.push({
-              ...output,
-              agent_id: entry.agent_id ?? null,
-              provider_run_id: entry.provider_run_id ?? null,
-            })
-          }
-        } catch {
-          continue
-        }
+      } catch {
+        continue
       }
     }
     if (snapshots.length >= count) return snapshots.slice(0, count)
@@ -961,37 +981,18 @@ async function waitForManagedEditResult({ historyDir, providerHistoryDirs, artif
 
 async function waitForManagedEditResults({ historyDir, providerHistoryDirs, artifactPath, sinceMs, count, timeoutMs, pollMs, client, sessionId, attachmentId }) {
   const started = Date.now()
-  const historyDirs = managedHistoryDirs(historyDir, providerHistoryDirs)
   while (Date.now() - started < timeoutMs) {
     await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     const results = []
-    const files = await managedHistoryFiles(historyDirs)
-    for (const file of files) {
-      const lines = (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/)
-      for (const line of lines) {
-        if (!line.trim()) continue
-        let entry
-        try {
-          entry = JSON.parse(line)
-        } catch {
-          continue
-        }
-        if ((entry.timestamp_ms ?? 0) < sinceMs) continue
-        if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
-        let update
-        try {
-          update = JSON.parse(entry.text)
-        } catch {
-          continue
-        }
-        const tool = String(update.tool ?? '')
-        if (!tool.endsWith('edit_artifact') || !['completed', 'error'].includes(update.status)) continue
-        if (update.input?.path !== artifactPath) continue
-        try {
-          results.push(parseManagedToolOutput(update.output))
-        } catch {
-          continue
-        }
+    const entries = await managedProviderToolUpdatesSince({ historyDir, providerHistoryDirs, sinceMs })
+    for (const { update } of entries) {
+      const tool = String(update.tool ?? '')
+      if (!tool.endsWith('edit_artifact') || !['completed', 'error', 'failed'].includes(update.status)) continue
+      if (update.input?.path !== artifactPath) continue
+      try {
+        results.push(parseManagedToolOutput(update.output))
+      } catch {
+        continue
       }
     }
     if (results.length >= count) return results.slice(0, count)
