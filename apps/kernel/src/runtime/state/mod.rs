@@ -23,6 +23,7 @@ use crate::error::DaemonError;
 use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
+use crate::runtime::metaagent_event::MetaagentEventStore;
 use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use arroba_relay::protocol::ClientTarget;
@@ -107,21 +108,6 @@ struct SlicePrivateRelayConnector {
     state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     task: std::thread::JoinHandle<()>,
-}
-
-fn shared_metaagent_event_store(
-    app: &Arc<Mutex<DaemonApp>>,
-) -> crate::runtime::metaagent_event::MetaagentEventStore {
-    let started = Instant::now();
-    loop {
-        if let Ok(app) = app.try_lock() {
-            return app.metaagent_event_store();
-        }
-        if started.elapsed() >= Duration::from_secs(5) {
-            panic!("KernelRuntimeState could not acquire the app lock during bootstrap");
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
 }
 
 mod agent_config_owned_state;
@@ -231,6 +217,7 @@ impl KernelRuntimeState {
         structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
         terminal_stream: crate::terminal::TerminalStreamStore,
         workflow_design_events: WorkflowDesignEventStore,
+        metaagent_events: MetaagentEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
         Self::new_with_owned_state_and_lanes(
@@ -256,6 +243,7 @@ impl KernelRuntimeState {
             structured_output_records,
             terminal_stream,
             workflow_design_events,
+            metaagent_events,
             workspace_coordinator,
         )
     }
@@ -283,6 +271,7 @@ impl KernelRuntimeState {
         structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
         terminal_stream: crate::terminal::TerminalStreamStore,
         workflow_design_events: WorkflowDesignEventStore,
+        metaagent_events: MetaagentEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
         let workspace_live_sync_journal =
@@ -301,7 +290,6 @@ impl KernelRuntimeState {
                     crate::git_observer::WorkspaceLiveSyncJournal::default()
                 }
             };
-        let metaagent_events = shared_metaagent_event_store(&app);
         Self {
             app,
             provider_runtime_lanes,

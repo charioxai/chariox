@@ -139,6 +139,7 @@ pub(super) struct RouterProjectionStores {
     pub(super) terminal_health: TerminalStreamHealthStore,
     pub(super) terminal_stream: TerminalStreamStore,
     pub(super) workflow_design_events: WorkflowDesignEventStore,
+    pub(super) metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     pub(super) workspace_coordinator: WorkspaceCoordinator,
     pub(super) prompt_state_owner: PromptStateOwner,
     pub(super) prompt_id_allocator: PromptIdAllocator,
@@ -181,6 +182,7 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         terminal_health: app.terminal_health_store(),
         terminal_stream: app.terminal_stream_store(),
         workflow_design_events: app.workflow_design_event_store(),
+        metaagent_events: app.metaagent_event_store(),
         workspace_coordinator: app.workspace_coordinator(),
         prompt_state_owner: app.prompt_state_owner(),
         prompt_id_allocator: app.prompt_id_allocator(),
@@ -220,6 +222,7 @@ pub(super) fn compose_command_router(
         terminal_health,
         terminal_stream,
         workflow_design_events,
+        metaagent_events,
         workspace_coordinator,
         prompt_state_owner,
         prompt_id_allocator,
@@ -247,6 +250,7 @@ pub(super) fn compose_command_router(
         structured_output_records.clone(),
         terminal_stream.clone(),
         workflow_design_events.clone(),
+        metaagent_events.clone(),
         workspace_coordinator.clone(),
     );
     install_provider_native_interaction_bridge(runtime_state.clone(), &provider_store);
