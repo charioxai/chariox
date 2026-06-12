@@ -56,8 +56,25 @@ pub fn plan_claude_launch(
 fn plan_claude_launch_unlocked(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    let provider = request
+        .map(|request| request.provider.as_str())
+        .unwrap_or("<none>");
+    crate::logging::info_with_fields(
+        "daemon.provider.claude",
+        "planning Claude launch",
+        serde_json::json!({
+            "provider": provider,
+            "has_structured_endpoint": request.and_then(|request| request.structured_endpoint.as_ref()).is_some(),
+            "client_interface": request.map(|request| format!("{:?}", request.client_interface)),
+        }),
+    );
     if let Some(endpoint) = request.and_then(|request| request.structured_endpoint.clone()) {
         let working_directory = request.and_then(|request| request.working_directory.clone());
+        crate::logging::info_with_fields(
+            "daemon.provider.claude",
+            "planned Claude structured proxy launch",
+            serde_json::json!({ "provider": provider }),
+        );
         return Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::External,
             process_label: "claude:structured-stdio-proxy".to_string(),
@@ -71,12 +88,30 @@ fn plan_claude_launch_unlocked(
         });
     }
 
+    crate::logging::info_with_fields(
+        "daemon.provider.claude",
+        "resolving Claude executable",
+        serde_json::json!({ "provider": provider }),
+    );
     let executable = resolve_claude_executable_unlocked()?;
     let request = request.ok_or_else(|| DaemonError::LocalTransport {
         operation: "plan_claude_launch",
         message: "Claude provider launch requires a provider run request".to_string(),
     })?;
-    if !request.client_interface.is_arroba() {
+    crate::logging::info_with_fields(
+        "daemon.provider.claude",
+        "resolved Claude executable",
+        serde_json::json!({
+            "provider": request.provider.as_str(),
+            "executable": executable.display().to_string(),
+        }),
+    );
+    if !request.client_interface.is_arroba() && request.provider != CLAUDE_HEADLESS_PROVIDER_ID {
+        crate::logging::info_with_fields(
+            "daemon.provider.claude",
+            "preparing Claude native TUI files",
+            serde_json::json!({ "provider": request.provider.as_str() }),
+        );
         let native = prepare_claude_native_tui_files()?;
         let mut pty_env = BTreeMap::new();
         pty_env.insert(
@@ -110,6 +145,11 @@ fn plan_claude_launch_unlocked(
         });
     }
     if request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
+        crate::logging::info_with_fields(
+            "daemon.provider.claude",
+            "preparing Claude headless native bridge files",
+            serde_json::json!({ "provider": request.provider.as_str() }),
+        );
         let native = prepare_claude_native_tui_files()?;
         let mut pty_env = BTreeMap::new();
         pty_env.insert(
@@ -132,12 +172,26 @@ fn plan_claude_launch_unlocked(
             "ARROBA_CLAUDE_SETTINGS_FILE".to_string(),
             native.settings_file.display().to_string(),
         );
+        crate::logging::info_with_fields(
+            "daemon.provider.claude",
+            "building Claude headless native bridge args",
+            serde_json::json!({ "provider": request.provider.as_str() }),
+        );
+        let pty_args = claude_native_tui_args(request, &native.settings_file)?;
+        crate::logging::info_with_fields(
+            "daemon.provider.claude",
+            "planned Claude headless native bridge launch",
+            serde_json::json!({
+                "provider": request.provider.as_str(),
+                "arg_count": pty_args.len(),
+            }),
+        );
         return Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "claude:headless".to_string(),
             pty_target: None,
             pty_program: Some(executable.display().to_string()),
-            pty_args: claude_native_tui_args(request, &native.settings_file)?,
+            pty_args,
             pty_env,
             pty_env_remove: claude_provider_env_remove(Some(request)),
             working_directory: request.working_directory.clone(),

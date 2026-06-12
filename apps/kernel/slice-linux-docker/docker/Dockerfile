@@ -60,11 +60,11 @@ COPY --chown=slice:slice apps/kernel /opt/arroba-source/apps/kernel
 COPY --chown=slice:slice apps/relay /opt/arroba-source/apps/relay
 
 USER slice
-RUN CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/arroba-kernel-target \
+RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/arroba-kernel-target \
     cargo build --manifest-path /opt/arroba-source/apps/kernel/Cargo.toml --bin arroba-kernel \
   && cp /tmp/arroba-kernel-target/debug/arroba-kernel /opt/arroba-slice/bin/arroba-kernel \
   && rm -rf /tmp/arroba-kernel-target \
-  && CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/arroba-relay-target \
+  && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/arroba-relay-target \
     cargo build --manifest-path /opt/arroba-source/apps/relay/Cargo.toml --bin arroba-relay \
   && cp /tmp/arroba-relay-target/debug/arroba-relay /opt/arroba-slice/bin/arroba-relay \
   && rm -rf /tmp/arroba-relay-target /home/slice/.cargo/registry /home/slice/.cargo/git

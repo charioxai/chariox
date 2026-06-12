@@ -11,6 +11,7 @@ pub(super) fn normalized_slice_provider(provider: &str) -> Result<String, Daemon
     }
     match provider {
         "all" | "codex" | "opencode" | "claude" => Ok(provider.to_string()),
+        "claude-headless" | "claude-p" => Ok("claude".to_string()),
         value if value.starts_with("opencode:") && value.len() > "opencode:".len() => {
             Ok(value.to_string())
         }
@@ -70,4 +71,18 @@ pub(super) fn slice_auth_summary_matches_provider(
         return summary_provider == "opencode" || summary_provider.starts_with("opencode:");
     }
     summary_provider == requested_provider
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_slice_provider;
+
+    #[test]
+    fn normalizes_claude_provider_modes_to_slice_auth_provider() {
+        assert_eq!(
+            normalized_slice_provider("claude-headless").unwrap(),
+            "claude"
+        );
+        assert_eq!(normalized_slice_provider("claude-p").unwrap(), "claude");
+    }
 }

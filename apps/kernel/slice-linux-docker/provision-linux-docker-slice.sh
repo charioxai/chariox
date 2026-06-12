@@ -68,7 +68,11 @@ run_with_timeout() {
   "$@" &
   local child=$!
   (
-    sleep "$seconds"
+    local elapsed=0
+    while (( elapsed < seconds )); do
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
     if kill -0 "$child" >/dev/null 2>&1; then
       : >"$timeout_marker"
       kill "$child" >/dev/null 2>&1 || true
@@ -100,7 +104,11 @@ run_with_file_stdin_timeout() {
   "$@" <"$input_file" &
   local child=$!
   (
-    sleep "$seconds"
+    local elapsed=0
+    while (( elapsed < seconds )); do
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
     if kill -0 "$child" >/dev/null 2>&1; then
       : >"$timeout_marker"
       kill "$child" >/dev/null 2>&1 || true
@@ -229,7 +237,9 @@ wait_for_container_running() {
 
 available_mb_for_path() {
   local path="$1"
-  run_with_timeout 20 docker exec -u slice "$SLICE_NAME" df -Pm "$path" 2>/dev/null | awk 'NR == 2 { print $4 }'
+  local output
+  output="$(run_with_timeout 20 docker exec -u slice "$SLICE_NAME" df -Pm "$path" 2>/dev/null)" || return 1
+  awk 'NR == 2 { print $4 }' <<<"$output"
 }
 
 require_slice_free_space() {
@@ -379,6 +389,17 @@ ensure_container() {
   refresh_slice_support_files
 }
 
+ensure_auth_target_container() {
+  require_docker
+  if ! container_exists; then
+    fail "container $SLICE_NAME does not exist"
+  fi
+  if ! container_running; then
+    log "starting container $SLICE_NAME"
+    run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null || fail "failed to start container $SLICE_NAME"
+  fi
+}
+
 exec_slice_with_timeout() {
   local seconds="$1"
   shift
@@ -515,7 +536,7 @@ NODE"
 }
 
 import_provider_auth() {
-  ensure_container
+  ensure_auth_target_container
   require_slice_free_space "provider-auth" /home/slice /tmp
   case "$SLICE_AUTH_PROVIDER" in
     all)
@@ -539,7 +560,7 @@ import_provider_auth() {
 }
 
 remove_provider_auth() {
-  ensure_container
+  ensure_auth_target_container
   case "$SLICE_AUTH_PROVIDER" in
     all)
       remove_codex_auth

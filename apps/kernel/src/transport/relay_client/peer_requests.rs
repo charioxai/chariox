@@ -190,7 +190,7 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::LaunchLeasedNativeProviderRun {
             leased_agent_id,
-            adapter_key,
+            adapter_key: _,
             provider,
             account_profile,
             model,
@@ -200,6 +200,7 @@ pub(super) async fn handle_daemon_peer_request(
             required_mcps,
             remote_extension_manifest,
         } => {
+            let adapter_key = crate::provider::adapter_key_for_provider(&provider).to_string();
             let launched = router
                 .relay_launch_leased_native_provider_run(
                     &leased_agent_id,

@@ -95,6 +95,8 @@ impl KernelRuntimeOwnedState {
         mut request: crate::provider::LaunchProviderRequest,
         runtime_mcp_url: String,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        request.adapter_key =
+            crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
         let session = self.session_store.get_session(&request.session_id)?;
         if request.agent_id.is_none() {
             request.agent_id = self

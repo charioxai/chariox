@@ -14,7 +14,8 @@ import {
   createSessionRequest,
   deleteSliceRequest,
   endSessionRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryBlobContentRequest,
+  getSessionHistoryOutlineRequest,
   getSessionStateRequest,
   importSliceProviderAuthRequest,
   listAgentsRequest,
@@ -308,8 +309,7 @@ async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, ex
     let ok = true
     const histories = {}
     for (const agent of agents) {
-      const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 240, 100_000, null, agent.id)), "SessionHistory")
-      const entries = page.entries.map((entry) => entry.entry).filter(Boolean)
+      const entries = await loadAgentHistoryEntries(client, sessionId, agent.id, 20)
       histories[agent.alias] = {
         all: entries.map((entry) => entry.text ?? "").join("\n"),
         prompts: entries.filter((entry) => entry.kind === "user_prompt").map((entry) => entry.text ?? "").join("\n"),
@@ -417,9 +417,8 @@ async function waitForProviderToolCompletion(client, sessionId, attachmentId, ag
   let lastMatch = null
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 300, 100_000, null, agentId)), "SessionHistory")
-    for (const row of page.entries) {
-      const entry = row.entry
+    const entries = await loadAgentHistoryEntries(client, sessionId, agentId, 20)
+    for (const entry of entries) {
       if (!entry || entry.kind !== "provider_tool" || entry.agent_id !== agentId || typeof entry.text !== "string") continue
       let update = null
       try {
@@ -434,6 +433,30 @@ async function waitForProviderToolCompletion(client, sessionId, attachmentId, ag
     await sleep(1_000)
   }
   throw new Error(`timed out waiting for provider tool completion; last=${JSON.stringify(lastMatch)}`)
+}
+
+async function loadAgentHistoryEntries(client, sessionId, agentId, latestPromptCount) {
+  const outline = unwrap(
+    await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], latestPromptCount)),
+    "SessionHistoryOutline",
+  )
+  const entries = []
+  const agent = outline.agents?.find((entry) => entry.agent_id === agentId)
+  for (const turn of agent?.turns ?? []) {
+    for (const row of turn.entries ?? []) {
+      if (row?.entry) entries.push(row.entry)
+    }
+    for (const blob of turn.blobs ?? []) {
+      const content = unwrap(
+        await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id)),
+        "SessionHistoryBlobContent",
+      )
+      for (const row of content.entries ?? []) {
+        if (row?.entry) entries.push(row.entry)
+      }
+    }
+  }
+  return entries
 }
 
 async function waitForFileContent(filePath, expected, timeoutMs = 240_000) {
