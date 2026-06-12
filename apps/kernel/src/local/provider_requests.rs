@@ -208,7 +208,9 @@ impl DaemonApp {
         request: GetProviderAuthStatusRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request.provider.as_str() {
-            "codex" => provider_auth_status_response(request),
+            "codex" | "claude" | "claude-headless" | "claude-p" => {
+                provider_auth_status_response(request)
+            }
             provider => Err(DaemonError::LocalTransport {
                 operation: "get_provider_auth_status",
                 message: format!("provider `{provider}` does not expose an auth status API"),

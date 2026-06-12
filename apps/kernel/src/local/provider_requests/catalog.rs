@@ -2,11 +2,12 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
     claude_provider_catalog, default_provider_command_catalogs, ensure_codex_catalog_endpoint,
-    ensure_opencode_catalog_endpoint, CodexClient, OpenCodeClient, OpenCodeProviderCatalog,
-    OpenCodeProviderInfo,
+    ensure_opencode_catalog_endpoint, resolve_claude_executable, CodexClient,
+    OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use arroba_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -148,10 +149,99 @@ pub(crate) fn provider_auth_status_response(
                 status: client.auth_status()?,
             })
         }
+        "claude" | "claude-headless" | "claude-p" => {
+            Ok(LocalDaemonResponse::ProviderAuthStatus {
+                status: claude_auth_status(&request.provider)?,
+            })
+        }
         provider => Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
             message: format!("provider `{provider}` does not expose an auth status API"),
         }),
+    }
+}
+
+fn claude_auth_status(provider: &str) -> Result<ProviderAuthStatus, DaemonError> {
+    let executable = resolve_claude_executable()?;
+    let output = Command::new(&executable)
+        .args(["auth", "status", "--json"])
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: format!("failed to run Claude auth status: {error}"),
+        })?;
+    if !output.status.success() {
+        return Ok(ProviderAuthStatus {
+            provider: provider.to_string(),
+            auth_state: "not_logged_in".to_string(),
+            account_profile: None,
+            login_hint: Some("Run `claude auth login` to authenticate Claude Code.".to_string()),
+            detected_version: claude_version().ok(),
+        });
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: format!("Claude auth status returned invalid JSON: {error}"),
+        })?;
+    Ok(claude_auth_status_from_value(
+        provider,
+        &value,
+        claude_version().ok(),
+    ))
+}
+
+fn claude_version() -> Result<String, DaemonError> {
+    let executable = resolve_claude_executable()?;
+    let output = Command::new(executable)
+        .arg("--version")
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: format!("failed to read Claude version: {error}"),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: "Claude version command failed".to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn claude_auth_status_from_value(
+    provider: &str,
+    value: &serde_json::Value,
+    detected_version: Option<String>,
+) -> ProviderAuthStatus {
+    let logged_in = value
+        .get("loggedIn")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let account_profile = if logged_in {
+        let mut parts = Vec::new();
+        for key in ["email", "orgName", "subscriptionType", "authMethod"] {
+            if let Some(text) = value.get(key).and_then(serde_json::Value::as_str) {
+                if !text.is_empty() {
+                    parts.push(text.to_string());
+                }
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join(" / "))
+    } else {
+        None
+    };
+    ProviderAuthStatus {
+        provider: provider.to_string(),
+        auth_state: if logged_in {
+            "authenticated".to_string()
+        } else {
+            "not_logged_in".to_string()
+        },
+        account_profile,
+        login_hint: Some("Run `claude auth login` to authenticate Claude Code.".to_string()),
+        detected_version,
     }
 }
 
@@ -383,6 +473,75 @@ mod tests {
     use super::*;
     use crate::provider::OpenCodeProviderModel;
     use serde_json::json;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn provider_auth_status_accepts_claude_provider_modes() {
+        let _guard = crate::env_lock::lock();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-claude-auth-status-{}",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            r#"#!/bin/sh
+set -eu
+if [ "$#" -ge 3 ] && [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","email":"dev@example.test","orgName":"Example Org","subscriptionType":"pro"}'
+  exit 0
+fi
+if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then
+  printf '%s\n' 'claude 1.2.3'
+  exit 0
+fi
+exit 2
+"#,
+        )
+        .expect("fixture should exist");
+        let mut permissions = fs::metadata(&path)
+            .expect("fixture metadata should be readable")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("fixture should be executable");
+        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+
+        let response = provider_auth_status_response(GetProviderAuthStatusRequest {
+            provider: "claude-headless".to_string(),
+        })
+        .expect("claude mode auth status should resolve");
+
+        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        let _ = fs::remove_file(&path);
+
+        match response {
+            LocalDaemonResponse::ProviderAuthStatus { status } => {
+                assert_eq!(status.provider, "claude-headless");
+                assert_eq!(status.auth_state, "authenticated");
+                assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
+                assert!(status
+                    .account_profile
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("dev@example.test"));
+            }
+            response => panic!("unexpected response: {response:?}"),
+        }
+    }
+
+    #[test]
+    fn claude_auth_status_parser_reports_not_logged_in() {
+        let status = claude_auth_status_from_value(
+            "claude-p",
+            &json!({ "loggedIn": false }),
+            Some("claude 1.2.3".to_string()),
+        );
+
+        assert_eq!(status.provider, "claude-p");
+        assert_eq!(status.auth_state, "not_logged_in");
+        assert_eq!(status.account_profile, None);
+        assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
+    }
 
     #[test]
     fn annotates_remote_machine_provider_aliases_without_including_local_machine() {
