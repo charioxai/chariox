@@ -1051,6 +1051,115 @@ async fn first_output_timeout_records_diagnostic_and_closes_prompt() {
 }
 
 #[tokio::test]
+async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-inactivity-timeout",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "zen",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-inactivity-timeout",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-opencode-timeout".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-opencode-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "start, emit a tool, then stall\n",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    crate::transport::flow_control::note_prompt_response_content(&mut app, run.id());
+    app.active_turns.mark_streaming(run.id());
+    if let Some(state) = app.prompt_activity.write().get_mut(run.id()) {
+        state.last_output_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
+        state.saw_response_content = true;
+    } else {
+        panic!("prompt activity should exist for the active run");
+    }
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
+        .await
+        .expect("provider output pump should reap inactive provider turn");
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(
+        session_state.active_prompt_for_agent(agent.id()).is_none(),
+        "inactive provider timeout must close the active prompt"
+    );
+    let run = runtime
+        .owned
+        .provider_store
+        .get_run(run.id())
+        .expect("provider run should still exist");
+    assert!(run
+        .terminal_diagnostic()
+        .expect("timeout diagnostic should be recorded")
+        .contains("Provider prompt produced no output"));
+    let notices = runtime
+        .owned
+        .terminal_stream
+        .drain_notice_records(session.id(), attachment.id());
+    assert!(
+        notices
+            .iter()
+            .any(|record| record.message.contains("after its last activity")),
+        "inactivity timeout diagnostic should be visible to attached clients"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

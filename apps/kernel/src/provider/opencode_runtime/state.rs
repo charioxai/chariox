@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::terminal::TerminalOutputKind;
 
@@ -41,8 +41,8 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) part_message_ids: BTreeMap<String, String>,
     pub(super) event_subscription: OpenCodeEventSubscription,
     pub(super) last_status_kind: Option<String>,
-    pub(super) last_completed_assistant_message_id: Option<String>,
-    pub(super) active_completed_assistant_message_id: Option<String>,
+    pub(super) completed_assistant_message_ids: BTreeSet<String>,
+    pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
 }
 
@@ -63,8 +63,8 @@ impl OpenCodeRuntimeState {
             part_message_ids: BTreeMap::new(),
             event_subscription,
             last_status_kind: None,
-            last_completed_assistant_message_id: None,
-            active_completed_assistant_message_id: None,
+            completed_assistant_message_ids: BTreeSet::new(),
+            active_terminal_assistant_message_id: None,
             active_user_message_id: None,
         }
     }
@@ -83,6 +83,6 @@ impl OpenCodeRuntimeState {
 
     pub(in crate::provider) fn note_prompt_submitted(&mut self, user_message_id: String) {
         self.active_user_message_id = Some(user_message_id);
-        self.active_completed_assistant_message_id = None;
+        self.active_terminal_assistant_message_id = None;
     }
 }

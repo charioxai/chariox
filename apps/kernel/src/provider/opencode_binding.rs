@@ -248,6 +248,26 @@ fn opencode_permission_rules(
             "action": action
         },
         {
+            "permission": "write",
+            "pattern": "*",
+            "action": action
+        },
+        {
+            "permission": "multiedit",
+            "pattern": "*",
+            "action": action
+        },
+        {
+            "permission": "apply_patch",
+            "pattern": "*",
+            "action": action
+        },
+        {
+            "permission": "external_directory",
+            "pattern": "*",
+            "action": action
+        },
+        {
             "permission": "bash",
             "pattern": "*",
             "action": action
@@ -338,8 +358,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        next_opencode_message_id, opencode_prompt_should_allow_native_bash,
-        opencode_prompt_should_disable_native_writes,
+        next_opencode_message_id, opencode_permission_rules,
+        opencode_prompt_should_allow_native_bash, opencode_prompt_should_disable_native_writes,
         opencode_workspace_live_sync_native_writes_allowed,
         opencode_workspace_live_sync_permission_rules, resolve_sync_selection,
         submit_opencode_prompt, OpenCodeConfiguredDefaults, OpenCodeMessage, OpenCodeRuntimeState,
@@ -362,6 +382,50 @@ mod tests {
             "parts": []
         }))
         .expect("message should parse")
+    }
+
+    #[test]
+    fn normal_permission_rules_cover_active_write_permissions() {
+        assert_eq!(
+            opencode_permission_rules(crate::provider::AgentPermissionLevel::Yolo),
+            json!([
+                {
+                    "permission": "edit",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "write",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "multiedit",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "apply_patch",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "external_directory",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "bash",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "task",
+                    "pattern": "*",
+                    "action": "allow"
+                }
+            ])
+        );
     }
 
     #[test]

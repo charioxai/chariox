@@ -62,12 +62,14 @@ pub(in crate::provider) fn drain_opencode_events(
                     && info.role == "assistant"
                     && info.time.completed.is_some()
                     && !info.is_tool_call_only_completion()
-                    && state.last_completed_assistant_message_id.as_deref()
-                        != Some(info.id.as_str())
+                    && state
+                        .completed_assistant_message_ids
+                        .insert(info.id.clone())
                 {
-                    state.last_completed_assistant_message_id = Some(info.id.clone());
-                    if state.active_user_message_id.is_some() {
-                        state.active_completed_assistant_message_id = Some(info.id.clone());
+                    if state.active_user_message_id.is_some()
+                        && info.is_terminal_assistant_completion()
+                    {
+                        state.active_terminal_assistant_message_id = Some(info.id.clone());
                     }
                     completions.push(OpenCodeAssistantCompletion {
                         message_id: info.id.clone(),
@@ -91,7 +93,6 @@ pub(in crate::provider) fn drain_opencode_events(
                         );
                         let snapshot_completions =
                             collect_new_completed_assistant_messages(state, &messages);
-                        note_active_assistant_completion(state, &snapshot_completions);
                         completions.extend(snapshot_completions);
                     }
                 }
@@ -137,7 +138,7 @@ pub(in crate::provider) fn drain_opencode_events(
                     terminal_failure = Some(message.clone());
                     notices.push(message);
                     prompt_completed = true;
-                    state.active_completed_assistant_message_id = None;
+                    state.active_terminal_assistant_message_id = None;
                     state.active_user_message_id = None;
                 }
             }
@@ -166,7 +167,6 @@ pub(in crate::provider) fn drain_opencode_events(
                             chunks.extend(snapshot_chunks.chunks);
                             let status_completions =
                                 collect_new_completed_assistant_messages(state, &messages);
-                            note_active_assistant_completion(state, &status_completions);
                             if !status_completions.is_empty() {
                                 completions.extend(status_completions);
                             }
@@ -174,17 +174,17 @@ pub(in crate::provider) fn drain_opencode_events(
                                 && opencode_messages_complete_active_prompt(state, &messages)
                             {
                                 prompt_completed = true;
-                                state.active_completed_assistant_message_id = None;
+                                state.active_terminal_assistant_message_id = None;
                                 state.active_user_message_id = None;
                             }
                         }
                     }
                     if !prompt_completed
                         && kind == "idle"
-                        && state.active_completed_assistant_message_id.is_some()
+                        && state.active_terminal_assistant_message_id.is_some()
                     {
                         prompt_completed = true;
-                        state.active_completed_assistant_message_id = None;
+                        state.active_terminal_assistant_message_id = None;
                         state.active_user_message_id = None;
                     }
                 }
@@ -246,7 +246,6 @@ pub(in crate::provider) fn drain_opencode_events(
                     }
                     let snapshot_completions =
                         collect_new_completed_assistant_messages(state, &snapshot.messages);
-                    note_active_assistant_completion(state, &snapshot_completions);
                     if !snapshot_completions.is_empty() {
                         completions.extend(snapshot_completions);
                     }
@@ -254,13 +253,13 @@ pub(in crate::provider) fn drain_opencode_events(
                         && opencode_messages_complete_active_prompt(state, &snapshot.messages)
                     {
                         prompt_completed = true;
-                        state.active_completed_assistant_message_id = None;
+                        state.active_terminal_assistant_message_id = None;
                         state.active_user_message_id = None;
                     } else if snapshot.status == "idle"
-                        && state.active_completed_assistant_message_id.is_some()
+                        && state.active_terminal_assistant_message_id.is_some()
                     {
                         prompt_completed = true;
-                        state.active_completed_assistant_message_id = None;
+                        state.active_terminal_assistant_message_id = None;
                         state.active_user_message_id = None;
                     }
                 }
@@ -300,7 +299,6 @@ pub(in crate::provider) fn drain_opencode_events(
             chunks.extend(snapshot_chunks.chunks);
             let snapshot_completions =
                 collect_new_completed_assistant_messages(state, &snapshot.messages);
-            note_active_assistant_completion(state, &snapshot_completions);
             if !snapshot_completions.is_empty() {
                 completions.extend(snapshot_completions);
             }
@@ -316,13 +314,13 @@ pub(in crate::provider) fn drain_opencode_events(
                 && opencode_messages_complete_active_prompt(state, &snapshot.messages)
             {
                 prompt_completed = true;
-                state.active_completed_assistant_message_id = None;
+                state.active_terminal_assistant_message_id = None;
                 state.active_user_message_id = None;
             } else if snapshot.status == "idle"
-                && state.active_completed_assistant_message_id.is_some()
+                && state.active_terminal_assistant_message_id.is_some()
             {
                 prompt_completed = true;
-                state.active_completed_assistant_message_id = None;
+                state.active_terminal_assistant_message_id = None;
                 state.active_user_message_id = None;
             }
         }
@@ -339,16 +337,4 @@ pub(in crate::provider) fn drain_opencode_events(
         resolved_variant,
         resolved_usage_tokens_total,
     })
-}
-
-fn note_active_assistant_completion(
-    state: &mut OpenCodeRuntimeState,
-    completions: &[OpenCodeAssistantCompletion],
-) {
-    if state.active_user_message_id.is_none() {
-        return;
-    }
-    if let Some(completion) = completions.last() {
-        state.active_completed_assistant_message_id = Some(completion.message_id.clone());
-    }
 }

@@ -92,7 +92,8 @@ pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnCo
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_first_output_watchdog::{
     provider_first_output_timeout_candidates, provider_first_output_timeout_diagnostic,
-    ProviderFirstOutputTimeoutCandidate,
+    provider_inactivity_timeout_candidates, provider_inactivity_timeout_diagnostic,
+    ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
 };
 pub(crate) use provider_launch_policy::{
     failed_codex_resume_state_replacement, generate_runtime_mcp_auth_token,

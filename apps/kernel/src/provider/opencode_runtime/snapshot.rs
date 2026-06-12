@@ -72,12 +72,19 @@ pub(super) fn collect_new_completed_assistant_messages(
             && message.info.role == "assistant"
             && message.info.time.completed.is_some()
             && !message.info.is_tool_call_only_completion()
-            && state.last_completed_assistant_message_id.as_deref()
-                != Some(message.info.id.as_str());
+            && !state
+                .completed_assistant_message_ids
+                .contains(message.info.id.as_str());
         if !is_new_completed {
             continue;
         }
-        state.last_completed_assistant_message_id = Some(message.info.id.clone());
+        state
+            .completed_assistant_message_ids
+            .insert(message.info.id.clone());
+        if state.active_user_message_id.is_some() && message.info.is_terminal_assistant_completion()
+        {
+            state.active_terminal_assistant_message_id = Some(message.info.id.clone());
+        }
         completions.push(OpenCodeAssistantCompletion {
             message_id: message.info.id.clone(),
             completed_at_ms: message.info.time.completed.unwrap_or_default(),

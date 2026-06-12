@@ -18,6 +18,7 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         owned.reap_structured_prompt_jobs();
         self.reap_provider_first_output_timeouts(session_id).await?;
+        self.reap_provider_inactivity_timeouts(session_id).await?;
         if !initial_liveness_already_checked
             && self
                 .reconcile_provider_run_exit(session_id, provider_run_id)
@@ -223,6 +224,7 @@ impl KernelRuntimeState {
         let owned = &self.owned;
         owned.reap_structured_prompt_jobs();
         self.reap_provider_first_output_timeouts(session_id).await?;
+        self.reap_provider_inactivity_timeouts(session_id).await?;
         owned.ensure_attachment_in_session(session_id, attachment_id)?;
         self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         let session = owned.session_store.get_session(session_id)?;
@@ -300,6 +302,41 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+
+    async fn reap_provider_inactivity_timeouts(&self, session_id: &str) -> Result<(), DaemonError> {
+        let timed_out = inactivity_timeout_candidates(&self.owned, session_id);
+        for timeout in timed_out {
+            let diagnostic = crate::app::provider_inactivity_timeout_diagnostic(timeout.elapsed_ms);
+            let run = self
+                .owned
+                .provider_store
+                .record_terminal_diagnostic(&timeout.provider_run_id, diagnostic.clone())?;
+            self.owned.provider_run_projection.update(run);
+            let recipients = self
+                .owned
+                .attachment_store
+                .list_session_attachment_ids(session_id);
+            self.owned.record_notice(
+                session_id,
+                Some(&timeout.provider_run_id),
+                recipients,
+                diagnostic.clone(),
+            );
+            crate::logging::warn_with_fields(
+                "daemon.provider",
+                "provider prompt produced no output after prior activity before timeout",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": timeout.agent_id,
+                    "provider_run_id": timeout.provider_run_id,
+                    "elapsed_ms": timeout.elapsed_ms,
+                }),
+            );
+            self.fail_owned_provider_prompt(session_id, &timeout.provider_run_id, &diagnostic)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 fn first_output_timeout_candidates(
@@ -312,6 +349,44 @@ fn first_output_timeout_candidates(
         return Vec::new();
     };
     crate::app::provider_first_output_timeout_candidates(
+        session_id,
+        active_turns.into_values(),
+        &prompt_activity,
+        |turn| {
+            owned
+                .provider_store
+                .get_run(&turn.provider_run_id)
+                .is_ok_and(|run| {
+                    run.session_id() == session_id
+                        && run.agent_instance_id() == Some(turn.agent_id.as_str())
+                        && run.terminal_diagnostic().is_none()
+                        && matches!(
+                            run.state(),
+                            crate::provider::ProviderRunState::Starting
+                                | crate::provider::ProviderRunState::Running
+                                | crate::provider::ProviderRunState::Parked
+                        )
+                })
+        },
+        |turn| {
+            owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &turn.agent_id)
+                .is_some_and(|prompt| prompt.id() == turn.prompt_id)
+        },
+    )
+}
+
+fn inactivity_timeout_candidates(
+    owned: &KernelRuntimeOwnedState,
+    session_id: &str,
+) -> Vec<crate::app::ProviderInactivityTimeoutCandidate> {
+    let prompt_activity = owned.prompt_activity.read().clone();
+    let active_turns = owned.active_turns.snapshot();
+    let Ok(session) = owned.session_store.get_session(session_id) else {
+        return Vec::new();
+    };
+    crate::app::provider_inactivity_timeout_candidates(
         session_id,
         active_turns.into_values(),
         &prompt_activity,

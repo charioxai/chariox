@@ -29,8 +29,10 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        drain_opencode_events, snapshot::latest_assistant_usage_tokens,
-        snapshot::render_snapshot_output_chunks, transcript::render_tool_transcript_update,
+        drain_opencode_events,
+        snapshot::render_snapshot_output_chunks,
+        snapshot::{collect_new_completed_assistant_messages, latest_assistant_usage_tokens},
+        transcript::render_tool_transcript_update,
         OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
     };
 
@@ -366,6 +368,101 @@ mod tests {
             .expect("second drain should succeed");
         assert!(second.prompt_completed);
         assert!(state.active_user_message_id.is_none());
+    }
+
+    #[test]
+    fn idle_after_nonterminal_assistant_completion_keeps_active_prompt_open() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-intermediate",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "finish": "unknown",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("message update should send");
+
+        let first = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("first drain should succeed");
+        assert_eq!(
+            first.completions,
+            vec![OpenCodeAssistantCompletion {
+                message_id: "message-intermediate".to_string(),
+                completed_at_ms: 1,
+            }]
+        );
+        assert!(!first.prompt_completed);
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let second = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("second drain should succeed");
+        assert!(!second.prompt_completed);
+        assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
+    }
+
+    #[test]
+    fn completed_assistant_snapshot_dedupes_full_history_by_message_id() {
+        let (_tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        let messages = vec![
+            serde_json::from_value::<OpenCodeMessage>(json!({
+                "info": {
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "finish": "stop",
+                    "time": { "completed": 1 }
+                },
+                "parts": []
+            }))
+            .expect("message should deserialize"),
+            serde_json::from_value::<OpenCodeMessage>(json!({
+                "info": {
+                    "id": "message-2",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "finish": "stop",
+                    "time": { "completed": 2 }
+                },
+                "parts": []
+            }))
+            .expect("message should deserialize"),
+        ];
+
+        let first = collect_new_completed_assistant_messages(&mut state, &messages);
+        assert_eq!(
+            first
+                .iter()
+                .map(|completion| completion.message_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["message-1", "message-2"]
+        );
+
+        let second = collect_new_completed_assistant_messages(&mut state, &messages);
+        assert!(second.is_empty());
     }
 
     #[test]

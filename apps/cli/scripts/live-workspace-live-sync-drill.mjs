@@ -501,13 +501,14 @@ async function throwIfProviderError({ historyDir, sinceMs }) {
   throw new Error(`provider error while waiting for workspace live sync drill progress: ${summary}`)
 }
 
-async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot, historyDir, providerErrorSinceMs = completionSinceMs }) {
+async function waitForCompletionsAndFiles({ client, sessionId, attachmentId, events, expectedCompletionCount, completionSinceMs = 0, requiredFiles, forbiddenFiles, timeoutMs, pollMs, debugSnapshot, historyDir, providerErrorSinceMs = completionSinceMs, beforePoll = null }) {
   const started = Date.now()
   let lastRequiredCount = 0
   let lastMissingRequired = requiredFiles
   while (Date.now() - started < timeoutMs) {
     await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
     await throwIfProviderError({ historyDir, sinceMs: providerErrorSinceMs })
+    if (beforePoll) await beforePoll()
     const forbiddenExisting = []
     for (const forbiddenFile of forbiddenFiles) {
       if (await fileExists(forbiddenFile)) forbiddenExisting.push(forbiddenFile)
@@ -1771,6 +1772,84 @@ async function runTrackedConflictResolutionPhase({
   }
 }
 
+async function runTrackedOutsideWorkspacePhase({
+  client,
+  session,
+  attachment,
+  events,
+  provider,
+  agent,
+  siblingWritePath,
+  historyDir,
+  timeoutMs,
+  pollMs,
+  submitPromptRequest,
+  respondToInteractionRequest,
+  getSessionStateRequest,
+  remoteSourceSideEffects,
+}) {
+  const completionSinceMs = Date.now()
+  const marker = `${provider.toUpperCase()}_TRACKED_OUTSIDE_WORKSPACE_DONE`
+  const respondedInteractionIds = new Set()
+  const allowOutsideWorkspacePermission = async () => {
+    const state = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+    const currentSession = state.session ?? state
+    const interactions = currentSession.active_interactions ?? []
+    for (const interaction of interactions) {
+      if (interaction.agent_id !== agent.id || interaction.kind !== 'permission' || respondedInteractionIds.has(interaction.id)) {
+        continue
+      }
+      const message = String(interaction.message ?? '')
+      if (!message.includes(siblingWritePath) && !message.includes(`${provider}-tracked-sibling`)) {
+        continue
+      }
+      respondedInteractionIds.add(interaction.id)
+      await client.send(respondToInteractionRequest(session.id, interaction.id, 'allow_once'))
+      await sleep(pollMs)
+    }
+  }
+  await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
+    'This is a live Arroba workspace live sync outside-workspace permission drill.',
+    `Create ${siblingWritePath} containing exactly "${provider}-tracked-sibling\\n".`,
+    'Do not edit files in the current workspace.',
+    `After that direct filesystem write completes, reply exactly ${marker} and nothing else.`,
+  ].join('\n'), []))
+  await waitForCompletionsAndFiles({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    events,
+    expectedCompletionCount: 1,
+    completionSinceMs,
+    requiredFiles: remoteSourceSideEffects ? [] : [siblingWritePath],
+    forbiddenFiles: [],
+    timeoutMs,
+    pollMs,
+    historyDir,
+    providerErrorSinceMs: completionSinceMs,
+    beforePoll: allowOutsideWorkspacePermission,
+  })
+  await waitForHistoryOutputMarkers({
+    historyDir,
+    markerGroups: [[marker]],
+    sinceMs: completionSinceMs,
+    timeoutMs,
+    pollMs,
+  })
+  await waitForAgentsIdle({
+    client,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentIds: [agent.id],
+    getSessionStateRequest,
+    timeoutMs,
+    pollMs,
+  })
+  if (!remoteSourceSideEffects) {
+    await assertFileContent(siblingWritePath, `${provider}-tracked-sibling\n`)
+  }
+}
+
 async function runTrackedWorkspaceLiveSyncDrill({
   client,
   session,
@@ -1791,6 +1870,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
   getSessionStateRequest,
   getWorkspaceLiveSyncStatusRequest,
   listProviderProcessesRequest,
+  respondToInteractionRequest,
   submitPromptRequest,
   startedAt,
   kernelUrl,
@@ -1858,7 +1938,6 @@ async function runTrackedWorkspaceLiveSyncDrill({
     `Modify outputs/${provider}-tracked-rebase.txt so it becomes exactly "alpha\\nbeta\\n${provider}-tracked-source\\nomega\\n".`,
     `Modify outputs/${provider}-tracked-conflict.txt so it becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
     `Create ignored/${provider}-ignored.txt containing exactly "${provider}-ignored\\n".`,
-    `Create ${siblingWritePath} containing exactly "${provider}-tracked-sibling\\n"; this sibling repo is outside the synced workspace and must remain writable.`,
     `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
   ].join('\n'), []))
 
@@ -1874,7 +1953,6 @@ async function runTrackedWorkspaceLiveSyncDrill({
       path.join(workspace, 'outputs', `${provider}-tracked-renamed.txt`),
       ...(options.remoteSourceSideEffects ? [] : [
         path.join(workspace, 'ignored', `${provider}-ignored.txt`),
-        siblingWritePath,
       ]),
     ],
     forbiddenFiles: [],
@@ -1890,9 +1968,6 @@ async function runTrackedWorkspaceLiveSyncDrill({
     timeoutMs,
     pollMs,
   })
-  if (!options.remoteSourceSideEffects) {
-    await assertFileContent(siblingWritePath, `${provider}-tracked-sibling\n`)
-  }
   await waitForAgentsIdle({
     client,
     sessionId: session.id,
@@ -1939,6 +2014,22 @@ async function runTrackedWorkspaceLiveSyncDrill({
         ],
       },
     ],
+  })
+  await runTrackedOutsideWorkspacePhase({
+    client,
+    session,
+    attachment,
+    events,
+    provider,
+    agent,
+    siblingWritePath,
+    historyDir,
+    timeoutMs,
+    pollMs,
+    submitPromptRequest,
+    respondToInteractionRequest,
+    getSessionStateRequest,
+    remoteSourceSideEffects: options.remoteSourceSideEffects,
   })
   let resolution = null
   if (options.trackedBidirectional) {
@@ -2135,6 +2226,7 @@ async function main() {
     getWorkspaceLiveSyncStatusRequest,
     getSessionStateRequest,
     listProviderProcessesRequest,
+    respondToInteractionRequest,
     setWorkspaceLiveSyncModeRequest,
     spawnAgentRequest,
     submitPromptRequest,
@@ -2330,6 +2422,7 @@ async function main() {
         getSessionStateRequest,
         getWorkspaceLiveSyncStatusRequest,
         listProviderProcessesRequest,
+        respondToInteractionRequest,
         submitPromptRequest,
         startedAt,
         kernelUrl,

@@ -56,6 +56,7 @@ pub(crate) fn pump_terminal_output_for_attachment(
 ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
     reap_structured_prompt_jobs(app);
     reap_provider_first_output_timeouts(app, session_id)?;
+    reap_provider_inactivity_timeouts(app, session_id)?;
     crate::app::KernelSessionReadService::new(app)
         .ensure_attachment_in_session(session_id, attachment_id)?;
     pump_session_active_prompt_outputs(app, session_id);
@@ -75,6 +76,16 @@ pub(crate) fn pump_active_prompt_outputs(app: &mut DaemonApp) -> Vec<String> {
             crate::logging::warn_with_fields(
                 "daemon.provider_output",
                 "provider first-output timeout reap failed",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
+        if let Err(error) = reap_provider_inactivity_timeouts(app, session.id()) {
+            crate::logging::warn_with_fields(
+                "daemon.provider_output",
+                "provider inactivity timeout reap failed",
                 serde_json::json!({
                     "session_id": session.id(),
                     "error": error.to_string(),
@@ -129,6 +140,49 @@ fn reap_provider_first_output_timeouts(
     Ok(())
 }
 
+fn reap_provider_inactivity_timeouts(
+    app: &mut DaemonApp,
+    session_id: &str,
+) -> Result<(), DaemonError> {
+    let timed_out = app_inactivity_timeout_candidates(app, session_id);
+    for timeout in timed_out {
+        let diagnostic = crate::app::provider_inactivity_timeout_diagnostic(timeout.elapsed_ms);
+        let run = app
+            .providers
+            .record_terminal_diagnostic(&timeout.provider_run_id, diagnostic.clone())?;
+        app.update_provider_run_projection(run);
+        app.record_notice(
+            session_id,
+            Some(&timeout.provider_run_id),
+            app.attachments.list_session_attachment_ids(session_id),
+            diagnostic.clone(),
+        );
+        crate::logging::warn_with_fields(
+            "daemon.provider",
+            "provider prompt produced no output after prior activity before timeout",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": timeout.agent_id,
+                "provider_run_id": timeout.provider_run_id,
+                "elapsed_ms": timeout.elapsed_ms,
+            }),
+        );
+        let provider_store = app.providers.clone();
+        let active_turns = app.active_turns.clone();
+        let prompt_activity = app.prompt_activity.clone();
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        ProviderOutputPromptSettlement::new(
+            app,
+            provider_store,
+            active_turns,
+            prompt_activity,
+            agent_runtime_projection,
+        )
+        .fail_for_terminal_failure(session_id, &timeout.provider_run_id, &diagnostic)?;
+    }
+    Ok(())
+}
+
 fn app_first_output_timeout_candidates(
     app: &DaemonApp,
     session_id: &str,
@@ -139,6 +193,42 @@ fn app_first_output_timeout_candidates(
         return Vec::new();
     };
     crate::app::provider_first_output_timeout_candidates(
+        session_id,
+        active_turns.into_values(),
+        &prompt_activity,
+        |turn| {
+            app.providers
+                .get_run(&turn.provider_run_id)
+                .is_ok_and(|run| {
+                    run.session_id() == session_id
+                        && run.agent_instance_id() == Some(turn.agent_id.as_str())
+                        && run.terminal_diagnostic().is_none()
+                        && matches!(
+                            run.state(),
+                            ProviderRunState::Starting
+                                | ProviderRunState::Running
+                                | ProviderRunState::Parked
+                        )
+                })
+        },
+        |turn| {
+            app.prompt_state_owner
+                .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
+                .is_some_and(|prompt| prompt.id() == turn.prompt_id)
+        },
+    )
+}
+
+fn app_inactivity_timeout_candidates(
+    app: &DaemonApp,
+    session_id: &str,
+) -> Vec<crate::app::ProviderInactivityTimeoutCandidate> {
+    let prompt_activity = app.prompt_activity.read().clone();
+    let active_turns = app.active_turns.snapshot();
+    let Ok(session) = app.sessions.get_session(session_id) else {
+        return Vec::new();
+    };
+    crate::app::provider_inactivity_timeout_candidates(
         session_id,
         active_turns.into_values(),
         &prompt_activity,
@@ -268,6 +358,93 @@ mod tests {
             "projected remote provider runs are not local PTY pump targets"
         );
     }
+
+    #[test]
+    fn legacy_pump_reaps_inactive_provider_turn() {
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-legacy-inactivity-timeout",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "zen",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-legacy-inactivity-timeout",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-opencode-timeout".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-opencode-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+        let prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "start, emit a tool, then stall\n",
+            crate::session::PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start");
+        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+        crate::transport::flow_control::note_prompt_response_content(&mut app, run.id());
+        app.active_turns.mark_streaming(run.id());
+        if let Some(state) = app.prompt_activity.write().get_mut(run.id()) {
+            state.last_output_at =
+                Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
+            state.saw_response_content = true;
+        } else {
+            panic!("prompt activity should exist for the active run");
+        }
+
+        let _ = pump_terminal_output_for_attachment(&mut app, session.id(), attachment.id())
+            .expect("legacy provider output pump should reap inactive provider turn");
+
+        let session = app
+            .sessions
+            .get_session(session.id())
+            .expect("session should still exist");
+        assert!(
+            session.active_prompt_for_agent(agent.id()).is_none(),
+            "legacy inactivity timeout must close the active prompt"
+        );
+        let run = app
+            .providers
+            .get_run(run.id())
+            .expect("provider run should still exist");
+        assert!(run
+            .terminal_diagnostic()
+            .expect("timeout diagnostic should be recorded")
+            .contains("Provider prompt produced no output"));
+    }
 }
 
 fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
@@ -296,6 +473,8 @@ impl<'a> ProviderOutputPump<'a> {
         self.context.reap_structured_prompt_jobs();
         self.context
             .reap_provider_first_output_timeouts(request.session_id)?;
+        self.context
+            .reap_provider_inactivity_timeouts(request.session_id)?;
         if !request.initial_liveness_already_checked
             && self
                 .context
@@ -512,6 +691,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
 
     fn reap_provider_first_output_timeouts(&mut self, session_id: &str) -> Result<(), DaemonError> {
         reap_provider_first_output_timeouts(self.app, session_id)
+    }
+
+    fn reap_provider_inactivity_timeouts(&mut self, session_id: &str) -> Result<(), DaemonError> {
+        reap_provider_inactivity_timeouts(self.app, session_id)
     }
 
     fn reconcile_provider_run_exit(
