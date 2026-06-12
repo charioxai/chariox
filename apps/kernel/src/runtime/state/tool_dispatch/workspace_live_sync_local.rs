@@ -534,6 +534,12 @@ impl KernelRuntimeState {
         if file_changes.is_empty() {
             return;
         }
+        if session
+            .workspace_link_for_repo_root(&workspace_context.root)
+            .is_none()
+        {
+            return;
+        }
         let agent_id = resolved_agent_id
             .map(str::to_string)
             .or_else(|| provider_run.agent_instance_id().map(str::to_string))
