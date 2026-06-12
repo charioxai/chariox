@@ -466,6 +466,7 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::CreateAgentRequest;
     use crate::provider::LaunchProviderRequest;
     use crate::session::CreateSessionRequest;
 
@@ -632,6 +633,129 @@ mod tests {
 
         assert_eq!(projected_agent.provider(), "claude-code");
         assert_eq!(projected_agent.model(), Some("sonnet"));
+
+        let _ = std::fs::remove_file(state_path);
+    }
+
+    #[test]
+    fn durable_restore_preserves_metaagent_event_inbox_state() {
+        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "restart-metaagent-events-{}.db",
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(state_path.display().to_string());
+
+        let (metaagent_id, event_id, subscription_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            let (session, _default_agent) = app
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            let worker = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+                .expect("worker should spawn");
+            let metaagent = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_alias("meta")
+                        .with_role(crate::agent::AgentRole::Meta),
+                )
+                .expect("metaagent should spawn");
+            let event = app.metaagent_event_store().record(
+                crate::runtime::metaagent_event::NewMetaagentEvent {
+                    session_id: session.id().to_string(),
+                    metaagent_id: metaagent.id().to_string(),
+                    owner_user_id: metaagent.owner_user_id().to_string(),
+                    kind: "agent.turn.completed".to_string(),
+                    source_agent_id: Some(worker.id().to_string()),
+                    title: "Worker completed".to_string(),
+                    summary: "Worker completed a turn".to_string(),
+                    detail: serde_json::json!({ "turn_id": "turn-1" }),
+                    injected_prompt_id: Some("prompt-1".to_string()),
+                },
+            );
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.event.recorded",
+                    Some(event.event_id.clone()),
+                    serde_json::json!({ "record": &event }),
+                )
+                .expect("recorded event should persist");
+            let read_event = app
+                .metaagent_event_store()
+                .read(metaagent.id(), &event.event_id)
+                .expect("event should read");
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.event.read",
+                    Some(read_event.event_id.clone()),
+                    serde_json::json!({ "record": &read_event }),
+                )
+                .expect("read event should persist");
+            let acked_event = app
+                .metaagent_event_store()
+                .ack(metaagent.id(), &[event.event_id.clone()], None)
+                .into_iter()
+                .next()
+                .expect("event should ack");
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.event.acked",
+                    Some(acked_event.event_id.clone()),
+                    serde_json::json!({ "record": &acked_event }),
+                )
+                .expect("acked event should persist");
+            let subscription = app.metaagent_event_store().subscribe(
+                metaagent.id(),
+                "workflow.output.final".to_string(),
+                None,
+            );
+            app.durable_state_store()
+                .append_event(
+                    "metaagent.subscription.created",
+                    Some(subscription.subscription_id.clone()),
+                    serde_json::json!({ "subscription": &subscription }),
+                )
+                .expect("subscription should persist");
+            (
+                metaagent.id().to_string(),
+                event.event_id,
+                subscription.subscription_id,
+            )
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+        let restored_events =
+            app.metaagent_event_store()
+                .list(&metaagent_id, Some("agent.turn.completed"), None, 10);
+        assert_eq!(restored_events.len(), 1);
+        let restored_event = &restored_events[0];
+        assert_eq!(restored_event.event_id, event_id);
+        assert!(
+            restored_event.read_at_ms.is_some(),
+            "read state should survive restart: {restored_event:?}"
+        );
+        assert!(
+            restored_event.ack_at_ms.is_some(),
+            "ack state should survive restart: {restored_event:?}"
+        );
+        assert_eq!(
+            restored_event.injected_prompt_id.as_deref(),
+            Some("prompt-1")
+        );
+        assert_eq!(
+            app.metaagent_event_store()
+                .list(&metaagent_id, None, Some("unacked"), 10)
+                .len(),
+            0
+        );
+        let subscriptions = app
+            .metaagent_event_store()
+            .list_subscriptions(&metaagent_id);
+        assert!(subscriptions.iter().any(|subscription| {
+            subscription.subscription_id == subscription_id
+                && subscription.kind == "workflow.output.final"
+        }));
 
         let _ = std::fs::remove_file(state_path);
     }
