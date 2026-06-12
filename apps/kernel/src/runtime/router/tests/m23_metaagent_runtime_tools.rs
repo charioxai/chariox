@@ -184,6 +184,128 @@ async fn forwarded_remote_metaagent_runtime_tools_use_home_scope() {
 }
 
 #[tokio::test]
+async fn forwarded_remote_metaagent_runtime_tools_reject_forged_worker_context() {
+    let env = TestMetaRuntimeEnv::new("forwarded-remote-forgery");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("remote-meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let metaagent = app
+        .agents()
+        .bind_remote_execution(
+            metaagent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: Some("worker-run-1".to_string()),
+                relay_url: None,
+                relay_token: None,
+            },
+        )
+        .expect("metaagent should be remote-backed");
+    let regular_remote = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("remote-worker"))
+        .expect("regular remote agent should spawn");
+    let regular_remote = app
+        .agents()
+        .bind_remote_execution(
+            regular_remote.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-2".to_string(),
+                leased_agent_id: "leased-agent-2".to_string(),
+                active_worker_provider_run_id: Some("worker-run-2".to_string()),
+                relay_url: None,
+                relay_token: None,
+            },
+        )
+        .expect("regular agent should be remote-backed");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: "home-kernel".to_string(),
+        home_session_id: session.id().to_string(),
+        home_agent_id: metaagent.id().to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        worker_kernel_id: "worker-kernel".to_string(),
+        worker_machine_id: "worker-machine".to_string(),
+        worker_provider_run_id: "worker-run-1".to_string(),
+        worker_worktree_path: workspace.to_string_lossy().to_string(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local(
+            workspace.to_string_lossy().to_string(),
+        ),
+    };
+
+    let mut wrong_lease = context.clone();
+    wrong_lease.leased_agent_id = "leased-agent-forged".to_string();
+    let lease_denied = router
+        .dispatch_forwarded_meta_runtime_tool_call(
+            wrong_lease,
+            crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL.to_string(),
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("mismatched leased agent should be rejected home-side");
+    assert!(
+        lease_denied
+            .to_string()
+            .contains("forwarded metaagent context does not match"),
+        "{lease_denied:?}"
+    );
+
+    let mut wrong_worker = context.clone();
+    wrong_worker.worker_kernel_id = "worker-kernel-forged".to_string();
+    let worker_denied = router
+        .dispatch_forwarded_meta_runtime_tool_call(
+            wrong_worker,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL.to_string(),
+            serde_json::json!({ "command": "agent list" }),
+        )
+        .await
+        .expect_err("mismatched worker kernel should be rejected home-side");
+    assert!(
+        worker_denied
+            .to_string()
+            .contains("forwarded metaagent context does not match"),
+        "{worker_denied:?}"
+    );
+
+    let mut regular_context = context;
+    regular_context.home_agent_id = regular_remote.id().to_string();
+    regular_context.leased_agent_id = "leased-agent-2".to_string();
+    regular_context.worker_provider_run_id = "worker-run-2".to_string();
+    let regular_denied = router
+        .dispatch_forwarded_meta_runtime_tool_call(
+            regular_context,
+            crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL.to_string(),
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("regular remote agents should not get forwarded meta tools");
+    assert!(
+        regular_denied
+            .to_string()
+            .contains("only available to session metaagents"),
+        "{regular_denied:?}"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
     let env = TestMetaRuntimeEnv::new("overview");
     let workspace = env.root.join("workspace");
