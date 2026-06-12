@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_assistant_for_active_prompt_completes_prompt() {
+    fn terminal_assistant_for_active_prompt_waits_for_idle_before_completion() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
             "http://localhost:1".to_string(),
@@ -301,7 +301,20 @@ mod tests {
                 completed_at_ms: 1,
             }]
         );
-        assert!(first.prompt_completed);
+        assert!(!first.prompt_completed);
+        assert_eq!(state.active_user_message_id.as_deref(), Some("msg_user"));
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let second = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("second drain should succeed");
+        assert!(second.prompt_completed);
         assert!(state.active_user_message_id.is_none());
     }
 
@@ -607,7 +620,19 @@ mod tests {
 
         let fourth = drain_opencode_events(&test_run(), &mut state, None)
             .expect("fourth drain should succeed");
-        assert!(fourth.prompt_completed);
+        assert!(!fourth.prompt_completed);
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+
+        let fifth = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("fifth drain should succeed");
+        assert!(fifth.prompt_completed);
     }
 
     #[test]

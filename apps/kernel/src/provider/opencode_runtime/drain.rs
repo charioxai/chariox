@@ -94,9 +94,6 @@ pub(in crate::provider) fn drain_opencode_events(
                         note_active_assistant_completion(state, &snapshot_completions);
                         completions.extend(snapshot_completions);
                     }
-                    prompt_completed = true;
-                    state.active_completed_assistant_message_id = None;
-                    state.active_user_message_id = None;
                 }
             }
             Ok(OpenCodeEvent::MessagePartDelta {
@@ -173,7 +170,9 @@ pub(in crate::provider) fn drain_opencode_events(
                             if !status_completions.is_empty() {
                                 completions.extend(status_completions);
                             }
-                            if opencode_messages_complete_active_prompt(state, &messages) {
+                            if kind == "idle"
+                                && opencode_messages_complete_active_prompt(state, &messages)
+                            {
                                 prompt_completed = true;
                                 state.active_completed_assistant_message_id = None;
                                 state.active_user_message_id = None;
@@ -251,7 +250,9 @@ pub(in crate::provider) fn drain_opencode_events(
                     if !snapshot_completions.is_empty() {
                         completions.extend(snapshot_completions);
                     }
-                    if opencode_messages_complete_active_prompt(state, &snapshot.messages) {
+                    if snapshot.status == "idle"
+                        && opencode_messages_complete_active_prompt(state, &snapshot.messages)
+                    {
                         prompt_completed = true;
                         state.active_completed_assistant_message_id = None;
                         state.active_user_message_id = None;
@@ -311,7 +312,9 @@ pub(in crate::provider) fn drain_opencode_events(
                     bytes: format_session_status(&snapshot.status).into_bytes(),
                 });
             }
-            if opencode_messages_complete_active_prompt(state, &snapshot.messages) {
+            if snapshot.status == "idle"
+                && opencode_messages_complete_active_prompt(state, &snapshot.messages)
+            {
                 prompt_completed = true;
                 state.active_completed_assistant_message_id = None;
                 state.active_user_message_id = None;
