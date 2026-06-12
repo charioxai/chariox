@@ -238,7 +238,22 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
-function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, effort, machineRef) {
+async function waitForRemoteKernel(client, machineRef, provider) {
+  let last = []
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const response = unwrapVariant(
+      await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
+      'RemoteMachineKernelsListed',
+    )
+    last = response.kernels || []
+    const kernel = last.find((candidate) => candidate.accepting_remote_leases && (candidate.available_providers || []).includes(provider))
+    if (kernel) return kernel
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(last)}`)
+}
+
+function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, effort, kernelRef) {
   return {
     SpawnAgent: {
       session_id: sessionId,
@@ -247,7 +262,7 @@ function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, 
       model,
       effort,
       worktree_id: worktreeId,
-      machine_ref: machineRef,
+      kernel_ref: kernelRef,
     },
   }
 }
@@ -305,6 +320,26 @@ async function expectReject(label, fn, expectedText) {
     return { ok: true, error: message }
   }
   throw new Error(`${label} unexpectedly succeeded`)
+}
+
+async function expectGrant(label, fn) {
+  const granted = unwrapVariant(await fn(), 'AgentExtensionGranted')
+  if (!granted.agent) {
+    throw new Error(`${label} did not return an updated agent`)
+  }
+  return { ok: true, agent: { id: granted.agent.id, ref: granted.agent.agent_ref, extension_grants: granted.agent.extension_grants } }
+}
+
+function requireRemotePlacement(agent, workerKernel) {
+  if (!agent.remote_execution?.leased_agent_id) {
+    throw new Error(`agent ${agent.id} was expected to be remote-backed\n${JSON.stringify(agent, null, 2)}`)
+  }
+  if (agent.remote_execution.worker_kernel_id !== workerKernel.kernel_id) {
+    throw new Error(`agent ${agent.id} ran on ${agent.remote_execution.worker_kernel_id}, expected ${workerKernel.kernel_id}`)
+  }
+  if (agent.remote_execution.worker_machine_id !== workerKernel.machine_id) {
+    throw new Error(`agent ${agent.id} ran on machine ${agent.remote_execution.worker_machine_id}, expected ${workerKernel.machine_id}`)
+  }
 }
 
 async function waitForCompletionCount({ client, sessionId, attachmentId, events, expectedCompletionCount, timeoutMs }) {
@@ -477,6 +512,7 @@ async function main() {
       kernelMaxMissedPongs: 10,
     })
     await waitForRemoteMachine(client, listRemoteMachinesRequest, workerMachineId)
+    const workerKernel = await waitForRemoteKernel(client, workerMachineId, options.provider)
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
     const attachment = unwrap(await client.send(attachToSessionRequest(session.id, `remote-mcp-drill-${Date.now()}`)), 'SessionAttached').attachment
@@ -501,14 +537,14 @@ async function main() {
       options.model,
       workspace,
       options.effort,
-      workerMachineId,
+      workerKernel.kernel_id,
     )), 'AgentSpawned').agent
+    requireRemotePlacement(missingWorkerAgent, workerKernel)
     scenarioResults.push({
-      scenario: 'worker_missing_mcp_fails_fast',
-      ...(await expectReject(
-        'worker missing MCP',
+      scenario: 'home_proxy_mcp_grant_ignores_missing_worker_definition',
+      ...(await expectGrant(
+        'home proxy MCP with missing worker definition',
         () => client.send(grantAgentExtensionRequest(workspace, missingWorkerAgent.id, 'mcp', 'remote-mcp-drill')),
-        'missing on worker',
       )),
     })
 
@@ -520,14 +556,14 @@ async function main() {
       options.model,
       workspace,
       options.effort,
-      workerMachineId,
+      workerKernel.kernel_id,
     )), 'AgentSpawned').agent
+    requireRemotePlacement(mismatchAgent, workerKernel)
     scenarioResults.push({
-      scenario: 'worker_global_mismatch_fails_fast',
-      ...(await expectReject(
-        'worker global mismatch',
+      scenario: 'home_proxy_mcp_grant_ignores_worker_definition_mismatch',
+      ...(await expectGrant(
+        'home proxy MCP with worker definition mismatch',
         () => client.send(grantAgentExtensionRequest(workspace, mismatchAgent.id, 'mcp', 'remote-mcp-drill')),
-        'definition mismatch',
       )),
     })
 
@@ -539,8 +575,9 @@ async function main() {
       options.model,
       workspace,
       options.effort,
-      workerMachineId,
+      workerKernel.kernel_id,
     )), 'AgentSpawned').agent
+    requireRemotePlacement(overrideAgent, workerKernel)
     const overrideGranted = unwrapVariant(await client.send(grantAgentExtensionRequest(
       workspace,
       overrideAgent.id,
@@ -563,14 +600,14 @@ async function main() {
       options.model,
       workspace,
       options.effort,
-      workerMachineId,
+      workerKernel.kernel_id,
     )), 'AgentSpawned').agent
+    requireRemotePlacement(missingCommandAgent, workerKernel)
     scenarioResults.push({
-      scenario: 'worker_missing_command_fails_fast',
-      ...(await expectReject(
-        'worker missing command',
+      scenario: 'home_proxy_mcp_grant_defers_missing_command_to_invocation',
+      ...(await expectGrant(
+        'home proxy MCP grant with missing command',
         () => client.send(grantAgentExtensionRequest(workspace, missingCommandAgent.id, 'mcp', 'remote-mcp-missing-command')),
-        'missing command',
       )),
     })
 
@@ -583,14 +620,14 @@ async function main() {
       options.model,
       workspace,
       options.effort,
-      workerMachineId,
+      workerKernel.kernel_id,
     )), 'AgentSpawned').agent
+    requireRemotePlacement(missingEnvAgent, workerKernel)
     scenarioResults.push({
-      scenario: 'worker_missing_env_fails_fast',
-      ...(await expectReject(
-        'worker missing env',
+      scenario: 'home_proxy_mcp_grant_defers_missing_env_to_invocation',
+      ...(await expectGrant(
+        'home proxy MCP grant with missing env',
         () => client.send(grantAgentExtensionRequest(workspace, missingEnvAgent.id, 'mcp', 'remote-mcp-missing-env')),
-        'missing environment variable',
       )),
     })
 
@@ -604,8 +641,9 @@ async function main() {
         options.model,
         workspace,
         options.effort,
-        workerMachineId,
+        workerKernel.kernel_id,
       )), 'AgentSpawned').agent
+      requireRemotePlacement(liveAgent, workerKernel)
       await client.send(grantAgentExtensionRequest(workspace, liveAgent.id, 'mcp', 'playwright'))
       const markerFile = path.join(workspace, 'outputs', 'remote-playwright-mcp.txt')
       await rm(markerFile, { force: true }).catch(() => {})

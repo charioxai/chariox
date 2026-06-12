@@ -225,6 +225,22 @@ async function waitForRemoteMachine(client, machineRef) {
   throw new Error(`remote machine ${machineRef} did not become visible: ${lastError ?? 'unknown error'}`)
 }
 
+async function waitForRemoteKernel(client, machineRef, provider, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  let last = []
+  while (Date.now() < deadline) {
+    const response = unwrapVariant(
+      await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
+      'RemoteMachineKernelsListed',
+    )
+    last = response.kernels || []
+    const kernel = last.find((candidate) => candidate.accepting_remote_leases && (candidate.available_providers || []).includes(provider))
+    if (kernel) return kernel
+    await sleep(pollMs)
+  }
+  throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(last)}`)
+}
+
 async function waitForEvent(bucket, predicate, timeoutMs, description) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -246,7 +262,7 @@ async function waitForCompletion(client, sessionId, attachmentId, bucket, baseli
   throw new Error('timed out waiting for assistant completion')
 }
 
-function remoteSpawnAgentRequest(sessionId, provider, alias, model, machineRef) {
+function remoteSpawnAgentRequest(sessionId, provider, alias, model, kernelRef) {
   return {
     SpawnAgent: {
       session_id: sessionId,
@@ -255,7 +271,7 @@ function remoteSpawnAgentRequest(sessionId, provider, alias, model, machineRef) 
       model,
       effort: 'low',
       worktree_id: repoRoot,
-      machine_ref: machineRef,
+      kernel_ref: kernelRef,
     },
   }
 }
@@ -269,7 +285,6 @@ function localSpawnAgentRequest(sessionId, provider, alias, model) {
       model,
       effort: 'low',
       worktree_id: repoRoot,
-      machine_ref: null,
     },
   }
 }
@@ -419,9 +434,10 @@ async function main() {
       ).agent
       localSidecars.push(localSidecar)
 
+      const workerKernel = await waitForRemoteKernel(remoteClient, workerMachineId, provider, options.timeoutMs, options.pollMs)
       const spawnClient = index % 2 === 0 ? localClient : remoteClient
       const remoteAgent = unwrapVariant(
-        await spawnClient.send(remoteSpawnAgentRequest(session.id, provider, `remote-${provider}`, modelForProvider(provider, options), workerMachineId)),
+        await spawnClient.send(remoteSpawnAgentRequest(session.id, provider, `remote-${provider}`, modelForProvider(provider, options), workerKernel.kernel_id)),
         'AgentSpawned',
       ).agent
       remoteAgents.push(remoteAgent)

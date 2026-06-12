@@ -943,6 +943,20 @@ async function main() {
     if (details == null) console.log(prefix)
     else console.log(prefix, JSON.stringify(details))
   }
+  const waitForRemoteKernel = async (machineRef, provider) => {
+    let last = []
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const response = unwrap(
+        await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
+        'RemoteMachineKernelsListed',
+      )
+      last = response.kernels ?? []
+      const kernel = last.find((candidate) => candidate.accepting_remote_leases && (candidate.available_providers || []).includes(provider))
+      if (kernel) return kernel
+      await sleep(500)
+    }
+    throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(last)}`)
+  }
   const waitForProviderRunReady = async (providerRunId) => {
     for (let attempt = 0; attempt < 120; attempt += 1) {
       const response = await client.send(getProviderRunRequest(providerRunId))
@@ -1018,17 +1032,20 @@ async function main() {
       await mkdir(agentWorktree, { recursive: true })
       logStep('spawn_agent', { index, provider })
       const spawnRequest = options.machineRef
-        ? {
-            SpawnAgent: {
-              session_id: session.id,
-              provider,
-              alias: `a${index + 1}`,
-              model: providerModel,
-              effort: 'low',
-              worktree_id: agentWorktree,
-              machine_ref: options.machineRef,
-            },
-          }
+        ? await (async () => {
+            const workerKernel = await waitForRemoteKernel(options.machineRef, provider)
+            return {
+              SpawnAgent: {
+                session_id: session.id,
+                provider,
+                alias: `a${index + 1}`,
+                model: providerModel,
+                effort: 'low',
+                worktree_id: agentWorktree,
+                kernel_ref: workerKernel.kernel_id,
+              },
+            }
+          })()
         : spawnAgentRequest(session.id, provider, `a${index + 1}`, providerModel, agentWorktree, 'low')
       const agent = unwrap(
         await client.send(spawnRequest),

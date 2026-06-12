@@ -409,6 +409,19 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
+async function waitForRemoteKernel(client, machineRef, provider, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  let last = []
+  while (Date.now() < deadline) {
+    const payload = unwrap(await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }), 'RemoteMachineKernelsListed')
+    last = payload.kernels ?? []
+    const kernel = last.find((candidate) => candidate.accepting_remote_leases && (candidate.available_providers || []).includes(provider))
+    if (kernel) return kernel
+    await sleep(pollMs)
+  }
+  throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(last)}`)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
@@ -493,6 +506,7 @@ async function main() {
 
     let targetAgentId = session.default_agent_id ?? session.agents?.[0]?.id ?? null
     if (options.machineRef) {
+      const workerKernel = await waitForRemoteKernel(client, options.machineRef, provider, options.timeoutMs, options.pollMs)
       const spawned = unwrap(
         await client.send({
           SpawnAgent: {
@@ -504,7 +518,7 @@ async function main() {
             effort,
             execution_mode: 'build',
             permission_level: 'required',
-            machine_ref: options.machineRef,
+            kernel_ref: workerKernel.kernel_id,
           },
         }),
         'AgentSpawned',

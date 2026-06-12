@@ -304,7 +304,7 @@ async function main() {
     await waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, 'worker')
 
     client = new LocalIpcClient(homeKernelUrl)
-    await waitForRemoteKernel(client, requests, workerMachineId, options.timeoutMs, options.pollMs)
+    const workerKernel = await waitForRemoteKernel(client, requests, workerMachineId, options.timeoutMs, options.pollMs)
     const created = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, 'remote-git-observation')), 'SessionCreated')
     sessionId = created.session.id
     const attached = unwrap(await client.send(requests.attachToSessionRequest(sessionId, `remote-git-${process.pid}`)), 'SessionAttached')
@@ -316,7 +316,7 @@ async function main() {
         model: 'remote-git-observation-model',
         effort: 'low',
         worktree_id: workspace,
-        machine_ref: workerMachineId,
+        kernel_ref: workerKernel.kernel_id,
       },
     }), 'AgentSpawned')
     const remoteAgent = spawned.agent

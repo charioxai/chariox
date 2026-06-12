@@ -156,6 +156,9 @@ function makeDaemonEnv({ ports, rootDir, relayToken, daemonId, daemonAlias, mach
     ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
     ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
+    XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
+    XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
   }
 }
 
@@ -436,7 +439,7 @@ async function main() {
         model: providerModel,
         effort: 'low',
         worktree_id: null,
-        machine_ref: workerMachineId,
+        kernel_ref: selectedKernel.kernel_id,
       },
     }), 'AgentSpawned')
     const remoteAgent = spawned.agent
@@ -487,6 +490,17 @@ async function main() {
     )
 
     const finalState = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+    const finalAgent = finalState.session?.agents?.find((agent) => agent.id === remoteAgent.id) ?? remoteAgent
+    const remoteExecution = finalAgent.remote_execution ?? null
+    if (!remoteExecution?.leased_agent_id) {
+      throw new Error(`spawned agent ${remoteAgent.id} did not have remote execution placement\n${JSON.stringify(finalAgent, null, 2)}`)
+    }
+    if (remoteExecution.worker_kernel_id !== selectedKernel.kernel_id) {
+      throw new Error(`spawned agent ${remoteAgent.id} targeted ${selectedKernel.kernel_id} but ran on ${remoteExecution.worker_kernel_id}`)
+    }
+    if (remoteExecution.worker_machine_id !== workerMachineId) {
+      throw new Error(`spawned agent ${remoteAgent.id} targeted machine ${workerMachineId} but ran on ${remoteExecution.worker_machine_id}`)
+    }
 
     console.log(JSON.stringify({
       status: 'ok',
@@ -496,7 +510,7 @@ async function main() {
       workerMachineId,
       remoteAgentId: remoteAgent.id,
       providerModel,
-      remoteExecution: remoteAgent.remote_execution ?? null,
+      remoteExecution,
       selectedKernel: {
         kernelId: selectedKernel.kernel_id,
         machineId: selectedKernel.machine_id,
