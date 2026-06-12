@@ -3,6 +3,7 @@ use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::runtime_tools::{
     META_ACK_EVENT_TOOL, META_LIST_EVENTS_TOOL, META_READ_EVENT_TOOL, META_SEARCH_COMMANDS_TOOL,
+    META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
 };
 
 pub(crate) async fn execute_metaagent_event_request(
@@ -60,6 +61,53 @@ pub(crate) async fn execute_metaagent_event_request(
                 .await?;
             Ok(LocalDaemonResponse::MetaagentEventsListed {
                 events: array_payload(result, "events")?,
+            })
+        }
+        LocalDaemonRequest::GetMetaagentTurnOverview(request) => {
+            ensure_metaagent_owner(
+                runtime_state,
+                &request.session_id,
+                &request.metaagent_id,
+                caller_user_id,
+            )
+            .await?;
+            let result = runtime_state
+                .dispatch_meta_runtime_tool_call_for_agent(
+                    &request.session_id,
+                    &request.metaagent_id,
+                    META_TURN_OVERVIEW_TOOL,
+                    serde_json::json!({
+                        "agent_ref": request.agent_ref,
+                        "turn_ref": request.turn_ref,
+                        "turns_back": request.turns_back,
+                        "limit": request.limit,
+                    }),
+                )
+                .await?;
+            Ok(LocalDaemonResponse::MetaagentTurnOverview {
+                overview: ok_payload(result)?,
+            })
+        }
+        LocalDaemonRequest::GetMetaagentTurnBlob(request) => {
+            ensure_metaagent_owner(
+                runtime_state,
+                &request.session_id,
+                &request.metaagent_id,
+                caller_user_id,
+            )
+            .await?;
+            let result = runtime_state
+                .dispatch_meta_runtime_tool_call_for_agent(
+                    &request.session_id,
+                    &request.metaagent_id,
+                    META_TURN_BLOB_TOOL,
+                    serde_json::json!({
+                        "blob_id": request.blob_id,
+                    }),
+                )
+                .await?;
+            Ok(LocalDaemonResponse::MetaagentTurnBlob {
+                blob: ok_payload(result)?,
             })
         }
         LocalDaemonRequest::ReadMetaagentEvent(request) => {

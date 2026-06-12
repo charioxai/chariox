@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 136;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 137;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -95,6 +95,27 @@ pub struct SearchMetaagentCommandsRequest {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GetMetaagentTurnOverviewRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns_back: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetMetaagentTurnBlobRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    pub blob_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadMetaagentEventRequest {
     pub session_id: String,
@@ -134,6 +155,8 @@ pub enum LocalDaemonRequest {
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
     SearchMetaagentCommands(SearchMetaagentCommandsRequest),
+    GetMetaagentTurnOverview(GetMetaagentTurnOverviewRequest),
+    GetMetaagentTurnBlob(GetMetaagentTurnBlobRequest),
     ListMetaagentEvents(ListMetaagentEventsRequest),
     ReadMetaagentEvent(ReadMetaagentEventRequest),
     AckMetaagentEvents(AckMetaagentEventsRequest),
@@ -430,6 +453,12 @@ pub enum LocalDaemonResponse {
     },
     MetaagentCommandsSearched {
         commands: Vec<serde_json::Value>,
+    },
+    MetaagentTurnOverview {
+        overview: serde_json::Value,
+    },
+    MetaagentTurnBlob {
+        blob: serde_json::Value,
     },
     MetaagentEventRead {
         event: serde_json::Value,

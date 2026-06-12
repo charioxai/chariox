@@ -225,6 +225,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.metaagent_id)
         }
+        LocalDaemonRequest::GetMetaagentTurnOverview(request) => {
+            LocalRequestMetadata::new("metaagent.turn.overview", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
+        LocalDaemonRequest::GetMetaagentTurnBlob(request) => {
+            LocalRequestMetadata::new("metaagent.turn.blob", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
         LocalDaemonRequest::ListMetaagentEvents(request) => {
             LocalRequestMetadata::new("metaagent.event.list", Normal)
                 .session(&request.session_id)
@@ -290,6 +300,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::SearchMetaagentCommands(_) => "metaagent.command.search",
+        LocalDaemonRequest::GetMetaagentTurnOverview(_) => "metaagent.turn.overview",
+        LocalDaemonRequest::GetMetaagentTurnBlob(_) => "metaagent.turn.blob",
         LocalDaemonRequest::ListMetaagentEvents(_) => "metaagent.event.list",
         LocalDaemonRequest::ReadMetaagentEvent(_) => "metaagent.event.read",
         LocalDaemonRequest::AckMetaagentEvents(_) => "metaagent.event.ack",

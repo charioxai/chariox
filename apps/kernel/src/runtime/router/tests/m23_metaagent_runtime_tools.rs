@@ -1349,6 +1349,198 @@ async fn local_metaagent_command_search_request_enforces_owner_scope_impl() {
 }
 
 #[tokio::test]
+async fn local_metaagent_turn_inspection_requests_enforce_owner_scope() {
+    Box::pin(local_metaagent_turn_inspection_requests_enforce_owner_scope_impl()).await
+}
+
+async fn local_metaagent_turn_inspection_requests_enforce_owner_scope_impl() {
+    let env = TestMetaRuntimeEnv::new("local-turn-inspection");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let prompt_entry = crate::history::SessionHistoryEntry::user_prompt(
+        session.id(),
+        "attachment-local-turn",
+        worker.id(),
+        "inspect this turn",
+    );
+    router
+        .operational_history_store
+        .append_transcript(
+            &prompt_entry,
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(session.id().to_string()),
+                agent_id: Some(worker.id().to_string()),
+                provider: Some(worker_run.provider().to_string()),
+                model: Some(worker_run.model().to_string()),
+                provider_run_id: Some(worker_run.id().to_string()),
+                turn_id: Some("local-turn".to_string()),
+                ..crate::history::HistoryEventTurnContext::default()
+            },
+        )
+        .expect("user prompt should append to operational history");
+    let tool_entry = crate::history::SessionHistoryEntry::provider_output(
+        session.id(),
+        worker_run.id(),
+        Some(worker.id()),
+        crate::terminal::TerminalOutputKind::ProviderTool,
+        None,
+        serde_json::json!({
+            "tool": "shell",
+            "status": "completed",
+            "input": {"command": "cargo test"}
+        })
+        .to_string(),
+    );
+    router
+        .operational_history_store
+        .append_transcript(
+            &tool_entry,
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(session.id().to_string()),
+                agent_id: Some(worker.id().to_string()),
+                provider: Some(worker_run.provider().to_string()),
+                model: Some(worker_run.model().to_string()),
+                provider_run_id: Some(worker_run.id().to_string()),
+                turn_id: Some("local-turn".to_string()),
+                ..crate::history::HistoryEventTurnContext::default()
+            },
+        )
+        .expect("provider tool output should append to operational history");
+
+    let mut owner_caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+    owner_caller.user_id = Some(metaagent.owner_user_id().to_string());
+    let overview_request =
+        LocalDaemonRequest::GetMetaagentTurnOverview(GetMetaagentTurnOverviewRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            agent_ref: Some("worker".to_string()),
+            turn_ref: Some("local-turn".to_string()),
+            turns_back: None,
+            limit: Some(20),
+        });
+    let overview = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "local-metaagent-turn-overview",
+                KernelCommandSource::LocalCli,
+                owner_caller.clone(),
+                None,
+                None,
+                &overview_request,
+            ),
+            overview_request,
+        )
+        .await
+        .expect("owner should inspect metaagent turn overview");
+    let LocalDaemonResponse::MetaagentTurnOverview { overview } = overview else {
+        panic!("unexpected metaagent turn overview response: {overview:?}");
+    };
+    assert_eq!(
+        overview
+            .pointer("/agent/id")
+            .and_then(serde_json::Value::as_str),
+        Some(worker.id())
+    );
+    let blob_id = overview
+        .pointer("/turns/0/items")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| items.iter().find_map(|item| item.get("blob_id")))
+        .and_then(serde_json::Value::as_str)
+        .expect("overview should expose provider tool blob id")
+        .to_string();
+
+    let blob_request = LocalDaemonRequest::GetMetaagentTurnBlob(GetMetaagentTurnBlobRequest {
+        session_id: session.id().to_string(),
+        metaagent_id: metaagent.id().to_string(),
+        blob_id: blob_id.clone(),
+    });
+    let blob = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "local-metaagent-turn-blob",
+                KernelCommandSource::LocalCli,
+                owner_caller,
+                None,
+                None,
+                &blob_request,
+            ),
+            blob_request,
+        )
+        .await
+        .expect("owner should inspect metaagent turn blob");
+    let LocalDaemonResponse::MetaagentTurnBlob { blob } = blob else {
+        panic!("unexpected metaagent turn blob response: {blob:?}");
+    };
+    assert_eq!(
+        blob.get("blob_id").and_then(serde_json::Value::as_str),
+        Some(blob_id.as_str())
+    );
+    assert!(
+        blob.pointer("/entries/0/entry/text")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| text.contains("cargo test")),
+        "{blob:?}"
+    );
+
+    let mut forged_caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+    forged_caller.user_id = Some("user-2".to_string());
+    let forged_request =
+        LocalDaemonRequest::GetMetaagentTurnOverview(GetMetaagentTurnOverviewRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            agent_ref: Some("worker".to_string()),
+            turn_ref: Some("local-turn".to_string()),
+            turns_back: None,
+            limit: Some(20),
+        });
+    let denied = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "forged-local-metaagent-turn-overview",
+                KernelCommandSource::LocalCli,
+                forged_caller,
+                None,
+                None,
+                &forged_request,
+            ),
+            forged_request,
+        )
+        .await
+        .expect_err("foreign users must not inspect owned metaagent turns");
+    assert!(
+        denied.to_string().contains("owned session metaagent"),
+        "{denied}"
+    );
+}
+
+#[tokio::test]
 async fn local_metaagent_event_requests_enforce_owner_and_mutate_inbox() {
     Box::pin(local_metaagent_event_requests_enforce_owner_and_mutate_inbox_impl()).await
 }

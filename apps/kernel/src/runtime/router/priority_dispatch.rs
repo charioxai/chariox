@@ -78,6 +78,8 @@ impl CommandRouter {
                 execute_session_read_request(&self.runtime_state, request).await
             }
             request @ (LocalDaemonRequest::SearchMetaagentCommands(_)
+            | LocalDaemonRequest::GetMetaagentTurnOverview(_)
+            | LocalDaemonRequest::GetMetaagentTurnBlob(_)
             | LocalDaemonRequest::ListMetaagentEvents(_)
             | LocalDaemonRequest::ReadMetaagentEvent(_)
             | LocalDaemonRequest::AckMetaagentEvents(_)) => {
