@@ -464,8 +464,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
   }
 
   if (!liveSyncManagedMode.write_fence_supported && liveSyncManagedMode.unavailable_reason) {
-    lines.push(`workspace live sync managed mode unavailable: ${liveSyncManagedMode.unavailable_reason}`)
-    lines.push("  next: select tracked mode on this worker or run the managed provider on a supported host")
+    lines.push(`workspace live sync managed capability: unavailable (${liveSyncManagedMode.unavailable_reason}); tracked/off modes unaffected`)
   }
 
   if (externalChanges.live_watcher_scan_errors > 0) {
@@ -683,7 +682,6 @@ function providerCatalogHealthIssueCount(health: DaemonHealthProjection): number
 
 function workspaceHealthIssueCount(health: DaemonHealthProjection): number {
   const externalChanges = health.workspace_live_sync.external_changes
-  const managedMode = health.workspace_live_sync.managed_mode
   return health.workspace_coordination.worktree_collisions.length
     + health.workspace_live_sync.workspace_identity.identity_changed_provider_runs
     + health.workspace_live_sync.workspace_identity.invalid_provider_runs
@@ -691,19 +689,16 @@ function workspaceHealthIssueCount(health: DaemonHealthProjection): number {
       ? externalChanges.issues.length
       : externalChanges.externally_changed_artifacts)
     + externalChanges.live_watcher_scan_errors
-    + (!managedMode.write_fence_supported && managedMode.unavailable_reason ? 1 : 0)
 }
 
 function workspaceRemoteRuntimeHardIssueCount(health: DaemonHealthProjection): number {
   const externalChanges = health.workspace_live_sync.external_changes
-  const managedMode = health.workspace_live_sync.managed_mode
   return health.workspace_coordination.worktree_collisions.length
     + health.workspace_live_sync.workspace_identity.identity_changed_provider_runs
     + health.workspace_live_sync.workspace_identity.invalid_provider_runs
     + (externalChanges.issues.length > 0
       ? externalChanges.issues.length
       : externalChanges.externally_changed_artifacts)
-    + (!managedMode.write_fence_supported && managedMode.unavailable_reason ? 1 : 0)
 }
 
 function transportHealthIssueCount(health: DaemonHealthProjection): number {
