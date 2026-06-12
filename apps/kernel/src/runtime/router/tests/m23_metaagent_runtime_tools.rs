@@ -727,6 +727,189 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
 }
 
 #[tokio::test]
+async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
+    let env = TestMetaRuntimeEnv::new("collaborator-metaagent-scope");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let (_, invite) = app
+        .sessions_mut()
+        .create_session_invite(
+            &session_id,
+            "invite-metaagent-collaborator".to_string(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+            Some(1),
+            crate::session::CollaborationLevel::Private,
+        )
+        .expect("invite should be created");
+    app.sessions_mut()
+        .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
+        .expect("collaborator should join session");
+    assert!(app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should remain")
+        .has_member("user-2"));
+
+    let owner_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-worker"))
+        .expect("owner worker should spawn");
+    let peer_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("peer-worker")
+                .with_owner_user_id("user-2"),
+        )
+        .expect("peer worker should spawn");
+    let owner_metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("owner-meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("owner metaagent should spawn");
+    let peer_metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("peer-meta")
+                .with_owner_user_id("user-2")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("peer metaagent should spawn");
+
+    let owner_duplicate = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("owner-meta-2")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect_err("owner should not get a second metaagent");
+    assert!(
+        owner_duplicate
+            .to_string()
+            .contains("this user already has a metaagent"),
+        "{owner_duplicate:?}"
+    );
+    let peer_duplicate = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("peer-meta-2")
+                .with_owner_user_id("user-2")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect_err("collaborator should not get a second metaagent");
+    assert!(
+        peer_duplicate
+            .to_string()
+            .contains("this user already has a metaagent"),
+        "{peer_duplicate:?}"
+    );
+
+    let owner_meta_run = launch_test_provider(
+        &mut app,
+        &session_id,
+        owner_metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "owner-meta-model",
+    );
+    let peer_meta_run = launch_test_provider(
+        &mut app,
+        &session_id,
+        peer_metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "peer-meta-model",
+    );
+    let owner_meta_auth_token = owner_meta_run
+        .runtime_mcp_auth_token()
+        .expect("owner meta run should expose runtime MCP auth token")
+        .to_string();
+    let peer_meta_auth_token = peer_meta_run
+        .runtime_mcp_auth_token()
+        .expect("peer meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let owner_alias = router
+        .dispatch_authenticated_runtime_tool_call(
+            &owner_meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent alias owner-worker owner-renamed" }),
+        )
+        .await
+        .expect("owner metaagent should dispatch owned alias command");
+    assert!(owner_alias.ok, "{:?}", owner_alias.payload);
+    let owner_peer_denial = router
+        .dispatch_authenticated_runtime_tool_call(
+            &owner_meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent alias peer-worker owner-takeover" }),
+        )
+        .await
+        .expect("owner metaagent peer alias should return structured denial");
+    assert!(!owner_peer_denial.ok);
+    assert!(
+        owner_peer_denial
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        owner_peer_denial.payload
+    );
+
+    let peer_alias = router
+        .dispatch_authenticated_runtime_tool_call(
+            &peer_meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent alias peer-worker peer-renamed" }),
+        )
+        .await
+        .expect("peer metaagent should dispatch owned alias command");
+    assert!(peer_alias.ok, "{:?}", peer_alias.payload);
+    let peer_owner_denial = router
+        .dispatch_authenticated_runtime_tool_call(
+            &peer_meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent alias owner-renamed peer-takeover" }),
+        )
+        .await
+        .expect("peer metaagent owner alias should return structured denial");
+    assert!(!peer_owner_denial.ok);
+    assert!(
+        peer_owner_denial
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        peer_owner_denial.payload
+    );
+
+    let app = app.lock().await;
+    let owner_worker = app
+        .agents()
+        .get_agent(owner_worker.id())
+        .expect("owner worker should remain");
+    let peer_worker = app
+        .agents()
+        .get_agent(peer_worker.id())
+        .expect("peer worker should remain");
+    assert_eq!(owner_worker.alias(), Some("owner-renamed"));
+    assert_eq!(peer_worker.alias(), Some("peer-renamed"));
+}
+
+#[tokio::test]
 async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not() {
     let env = TestMetaRuntimeEnv::new("agent-lifecycle-events");
     let workspace = env.root.join("workspace");
