@@ -12,7 +12,8 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   endSessionRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryBlobContentRequest,
+  getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
 } from "../dist/ipc-requests.js"
@@ -155,9 +156,8 @@ async function waitForHistoryMarker(client, sessionId, attachmentId, agentId, ma
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 200, 100_000, null, agentId)), "SessionHistory")
-    const text = page.entries
-      .map((row) => row.entry)
+    const entries = await loadAgentHistoryEntries(client, sessionId, agentId)
+    const text = entries
       .filter((entry) =>
         entry?.agent_id === agentId
           && (entry.kind === "provider_output" || entry.kind === "assistant")
@@ -175,9 +175,8 @@ async function waitForProviderToolCompletion(client, sessionId, attachmentId, ag
   let lastMatch = null
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 300, 100_000, null, agentId)), "SessionHistory")
-    for (const row of page.entries) {
-      const entry = row.entry
+    const entries = await loadAgentHistoryEntries(client, sessionId, agentId)
+    for (const entry of entries) {
       if (!entry || entry.kind !== "provider_tool" || entry.agent_id !== agentId || typeof entry.text !== "string") continue
       let update = null
       try {
@@ -194,6 +193,30 @@ async function waitForProviderToolCompletion(client, sessionId, attachmentId, ag
     await sleep(1_000)
   }
   throw new Error(`timed out waiting for completed provider tool touching ${filePath}; last=${JSON.stringify(lastMatch)}`)
+}
+
+async function loadAgentHistoryEntries(client, sessionId, agentId) {
+  const outline = unwrap(
+    await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 20)),
+    "SessionHistoryOutline",
+  )
+  const entries = []
+  const agent = outline.agents?.find((entry) => entry.agent_id === agentId)
+  for (const turn of agent?.turns ?? []) {
+    for (const row of turn.entries ?? []) {
+      if (row?.entry) entries.push(row.entry)
+    }
+    for (const blob of turn.blobs ?? []) {
+      const content = unwrap(
+        await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id)),
+        "SessionHistoryBlobContent",
+      )
+      for (const row of content.entries ?? []) {
+        if (row?.entry) entries.push(row.entry)
+      }
+    }
+  }
+  return entries
 }
 
 async function waitForFileContent(filePath, expected, timeoutMs = 240_000) {
