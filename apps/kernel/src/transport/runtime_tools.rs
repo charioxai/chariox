@@ -879,7 +879,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_LIST_EVENTS_TOOL.to_string(),
-            description: "List metaagent event inbox records. Event prompts are delivered through prompt injection; this tool is for replay and detail lookup.".to_string(),
+            description: "List metaagent event inbox records. Event prompts are visible runtime prompts; this tool is for replay and detail lookup.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

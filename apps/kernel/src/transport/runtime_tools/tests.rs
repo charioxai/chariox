@@ -81,6 +81,17 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
+    fn meta_event_specs_describe_visible_event_prompts() {
+        let specs = meta_runtime_tool_specs();
+        let list_events = specs
+            .iter()
+            .find(|spec| spec.name == META_LIST_EVENTS_TOOL)
+            .expect("meta list events tool should be exposed");
+        assert!(list_events.description.contains("visible runtime prompts"));
+        assert!(!list_events.description.contains("prompt injection"));
+    }
+
+    #[test]
     fn slice_specs_expose_screen_input_and_ocr_tools() {
         let specs = slice_runtime_tool_specs();
         assert!(specs
