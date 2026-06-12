@@ -76,6 +76,9 @@ function parseArgs(argv) {
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
+  if (options.providers.includes('dev-stub')) {
+    throw new Error('remote Workspace Live Sync permission drills require a real file-editing provider; use live-remote-machine-runtime-drill.mjs for dev-stub relay/lease validation')
+  }
   return options
 }
 
@@ -144,6 +147,29 @@ function daemonEnv({
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
+
+async function runCommand(command, args, options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+}
+
+async function buildKernelClient() {
+  const result = await runCommand('pnpm', ['--workspace-root', 'run', 'build:kernel-client'])
+  if (result.code !== 0) {
+    throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
+  }
+}
 
 async function waitForTcpPort(port, host = '127.0.0.1', timeoutMs = 15_000) {
   const started = Date.now()
@@ -298,22 +324,25 @@ async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRe
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
-async function waitForRemoteMachineKernel(client, machineRef) {
+async function waitForRemoteMachineKernel(client, machineRef, providers) {
   let lastError = null
+  let last = []
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
       const payload = unwrapVariant(
         await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
         'RemoteMachineKernelsListed',
       )
-      const kernels = payload.kernels || []
-      if (kernels.some((kernel) => kernel.accepting_remote_leases)) return
+      last = payload.kernels || []
+      const kernel = last.find((candidate) => candidate.accepting_remote_leases
+        && providers.every((provider) => (candidate.available_providers || []).includes(provider)))
+      if (kernel) return kernel
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
     }
     await sleep(500)
   }
-  throw new Error(`remote machine ${machineRef} did not advertise an accepting kernel: ${lastError ?? 'unknown error'}`)
+  throw new Error(`remote machine ${machineRef} did not advertise providers ${providers.join(',')}; last=${JSON.stringify(last)} error=${lastError ?? 'unknown error'}`)
 }
 
 async function main() {
@@ -332,6 +361,7 @@ async function main() {
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
 
+  await buildKernelClient()
   const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
   const {
     createSessionRequest,
@@ -495,7 +525,7 @@ async function main() {
       kernelMaxMissedPongs: 10,
     })
     await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
-    await waitForRemoteMachineKernel(localClient, workerMachineId)
+    const workerKernel = await waitForRemoteMachineKernel(localClient, workerMachineId, Array.from(new Set(options.providers)))
 
     const results = []
     for (const provider of options.providers) {
@@ -541,6 +571,11 @@ async function main() {
       relayUrl,
       homeKernelUrl,
       workerMachineId,
+      workerKernel: {
+        kernelId: workerKernel.kernel_id,
+        machineId: workerKernel.machine_id,
+        providers: workerKernel.available_providers,
+      },
       providers: options.providers,
       model: options.model,
       providerModels: options.providerModels,
