@@ -265,6 +265,49 @@ Provider-specific transport:
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
 - Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Arroba session.
 
+## 3.3.3 Metaagent Event Prompts
+
+Metaagent event notifications are Arroba runtime-origin prompts. They are not
+hidden provider context, and adapters MUST NOT deliver them through hidden
+system/developer channels. The visible prompt text should identify the message
+as an Arroba runtime event, summarize what happened, and point the metaagent to
+`arroba.meta.read_event`, `arroba.meta.turn_overview`, or
+`arroba.meta.turn_blob` for detail payloads that are too large for the prompt.
+
+Each recorded event carries prompt-delivery state so a reconnecting metaagent
+can reconstruct what happened:
+
+- `recorded`: the event exists in the kernel inbox but has not reached a provider prompt path
+- `submitted`: the kernel submitted a visible event prompt to the provider path
+- `steered`: the event was attached to an already-active metaagent turn
+- `queued`: the event prompt is queued behind an active turn
+- `delivered`: the provider accepted or completed the corresponding event prompt
+- `failed`: delivery failed and the event should be visible as a liveness fault until retried or superseded
+
+Provider-specific delivery behavior:
+
+- Codex: event prompts use the ordinary visible user-prompt path for the bound
+  Codex thread. If the Codex run is active and supports same-turn steering,
+  Arroba may mark the event `steered`; otherwise the prompt remains queued and
+  visible in Arroba prompt history.
+- OpenCode: event prompts use the provider session prompt API as visible
+  prompt content. Hidden `system` context remains reserved for runtime
+  instructions and MUST NOT carry event notifications. OpenCode event-stream
+  completion should update delivery status without relying on PTY idleness.
+- Claude Code: event prompts are submitted through the same visible prompt path
+  used for user turns. `UserPromptSubmit.additionalContext` remains reserved for
+  hidden context such as skill bodies and MUST NOT carry event notifications.
+  When Claude is exposed through a kernel-owned PTY, Arroba may render or steer
+  the visible event prompt through that PTY only as provider-visible prompt
+  input, not as a hidden hook response.
+
+Required metaagent events, including owned-agent turn completion, owned-agent
+turn failure, and owned regular-agent runtime interactions, must preserve
+ordering per metaagent. Optional workflow subscriptions may share the same
+visible prompt mechanism, but filtering and durable inbox state remain
+kernel-owned. A missing provider run or delivery failure must be surfaced in
+the event status and retry path rather than being silently dropped.
+
 ## 3.4 Workflow Coordination Semantics
 
 Multi-agent workflow coordination is a daemon-owned structured protocol concern.
