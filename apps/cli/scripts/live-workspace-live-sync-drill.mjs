@@ -177,6 +177,32 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
 
+function requestName(request) {
+  if (!request || typeof request !== 'object') return String(request)
+  return Object.keys(request)[0] ?? 'unknown'
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
+function wrapClientSendWithTimeout(client, timeoutMs) {
+  const rawSend = client.send.bind(client)
+  client.send = (request) => withTimeout(
+    rawSend(request),
+    timeoutMs,
+    `daemon request ${requestName(request)}`,
+  )
+}
+
 async function runCommand(command, args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -2149,6 +2175,7 @@ async function main() {
   }
 
   const client = new LocalIpcClient(kernelUrl)
+  wrapClientSendWithTimeout(client, options.timeoutMs)
   const events = []
   const workerKernelRef = await resolveRemoteWorkerKernelRef(
     client,
