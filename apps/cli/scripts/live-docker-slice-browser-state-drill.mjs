@@ -65,6 +65,8 @@ async function run() {
 
   log("building kernel")
   const kernel = await buildKernel()
+  log("building kernel client")
+  await buildKernelClient()
   log("starting disposable kernel")
   start("kernel", kernel, [], {
     env: {
@@ -446,6 +448,11 @@ async function buildKernel() {
   const result = await runCommand("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"], { timeoutMs: 180_000 })
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
+}
+
+async function buildKernelClient() {
+  const result = await runCommand("pnpm", ["--workspace-root", "run", "build:kernel-client"], { timeoutMs: 180_000 })
+  if (result.code !== 0) throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
 }
 
 async function assertDockerReady() {
