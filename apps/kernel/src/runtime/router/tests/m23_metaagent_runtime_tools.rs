@@ -2799,6 +2799,14 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
         "dev-stub",
         "meta-model",
     );
+    let worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
     let meta_auth_token = meta_run
         .runtime_mcp_auth_token()
         .expect("meta run should expose runtime MCP auth token")
@@ -2921,20 +2929,116 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
         .durable_state_store()
         .load_events_after(0)
         .expect("durable audit events should load");
-    assert!(audit_events.iter().any(|event| {
-        event.kind == "metaagent.interaction.resolved"
-            && event.payload["session_id"] == session.id()
-            && event.payload["metaagent_id"] == metaagent.id()
-            && event.payload["target_agent_id"] == worker.id()
-            && event.payload["interaction_id"] == "interaction-worker"
-            && event.payload["choice_id"] == "allow_once"
-            && event.payload["causation_id"] == "interaction-worker"
-            && event.payload["correlation_id"]
-                == format!(
-                    "metaagent:{}:runtime-interaction:interaction-worker",
-                    metaagent.id()
-                )
-    }));
+    let resolution_audit = audit_events
+        .iter()
+        .find(|event| {
+            event.kind == "metaagent.interaction.resolved"
+                && event.payload["session_id"] == session.id()
+                && event.payload["metaagent_id"] == metaagent.id()
+                && event.payload["target_agent_id"] == worker.id()
+                && event.payload["interaction_id"] == "interaction-worker"
+                && event.payload["choice_id"] == "allow_once"
+                && event.payload["causation_id"] == "interaction-worker"
+                && event.payload["correlation_id"]
+                    == format!(
+                        "metaagent:{}:runtime-interaction:interaction-worker",
+                        metaagent.id()
+                    )
+        })
+        .expect("metaagent interaction resolution should include durable provenance");
+    assert_eq!(resolution_audit.payload["provider_run_id"], worker_run.id());
+    assert!(
+        resolution_audit
+            .payload
+            .get("timestamp_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        "{:?}",
+        resolution_audit.payload
+    );
+    assert_eq!(resolution_audit.payload["input"], serde_json::Value::Null);
+
+    let custom_interaction = RuntimeInteraction::new(
+        "interaction-custom-worker",
+        worker.id(),
+        RuntimeInteractionKind::Choice,
+        RuntimeInteractionLevel::Warning,
+        Some("Explain approval".to_string()),
+        "Explain approval",
+        vec![RuntimeInteractionChoice::new(
+            "cancel",
+            "Cancel",
+            "cancel",
+            Some(RuntimeInteractionChoiceStyle::Danger),
+        )],
+        Some(crate::session::RuntimeInteractionCustomChoice::new(
+            "custom_reason",
+            "Custom reason",
+            Some("Reason".to_string()),
+            Some(3),
+            Some(256),
+        )),
+        None,
+        None,
+    );
+    let custom_resolution = router
+        .runtime_state
+        .create_runtime_interaction(session.id(), custom_interaction)
+        .await
+        .expect("custom worker interaction should register");
+    let custom_reply = "ship after checking logs";
+    let custom_resolved = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
+            serde_json::json!({
+                "interaction_id": "interaction-custom-worker",
+                "choice_id": "custom_reason",
+                "input": custom_reply
+            }),
+        )
+        .await
+        .expect("custom meta interaction resolution should dispatch");
+    assert!(custom_resolved.ok, "{:?}", custom_resolved.payload);
+    let custom_runtime_resolution =
+        tokio::time::timeout(std::time::Duration::from_secs(1), custom_resolution)
+            .await
+            .expect("custom resolution should be delivered")
+            .expect("custom interaction responder should receive resolution");
+    assert_eq!(
+        custom_runtime_resolution.choice_id.as_deref(),
+        Some("custom_reason")
+    );
+    assert_eq!(
+        custom_runtime_resolution.reply.as_deref(),
+        Some(custom_reply)
+    );
+    let custom_audit_events = app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable audit events should load");
+    let custom_audit = custom_audit_events
+        .iter()
+        .find(|event| {
+            event.kind == "metaagent.interaction.resolved"
+                && event.payload["interaction_id"] == "interaction-custom-worker"
+        })
+        .expect("custom interaction resolution should include durable provenance");
+    assert_eq!(custom_audit.payload["provider_run_id"], worker_run.id());
+    assert_eq!(
+        custom_audit.payload.pointer("/input/kind"),
+        Some(&serde_json::json!("custom"))
+    );
+    assert_eq!(
+        custom_audit.payload.pointer("/input/char_count"),
+        Some(&serde_json::json!(custom_reply.chars().count()))
+    );
+    assert_eq!(
+        custom_audit.payload["input"]["reply"],
+        serde_json::Value::Null
+    );
 
     let self_interaction = RuntimeInteraction::new(
         "interaction-meta",
