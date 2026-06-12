@@ -849,6 +849,99 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
 }
 
 #[tokio::test]
+async fn metaagent_run_command_denies_slice_placement_but_routes_slice_management_policy() {
+    let env = TestMetaRuntimeEnv::new("run-command-slice-policy");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let slice_placement = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "agent spawn helper --slice linux-dev"
+            }),
+        )
+        .await
+        .expect("slice-backed helper spawn should return a structured denial");
+    assert!(!slice_placement.ok);
+    assert!(
+        slice_placement
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("does not enable slice placement")),
+        "{:?}",
+        slice_placement.payload
+    );
+
+    let slice_list = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "slice list" }),
+        )
+        .await
+        .expect("slice list should dispatch through meta run_command");
+    assert!(slice_list.ok, "{:?}", slice_list.payload);
+    assert!(
+        slice_list.payload.get("response").is_some(),
+        "{:?}",
+        slice_list.payload
+    );
+
+    let reset_state = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "slice reset-state linux-dev" }),
+        )
+        .await
+        .expect("unrouted slice command should return a structured denial");
+    assert!(!reset_state.ok);
+    assert!(
+        reset_state
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| {
+                message.contains("only `slice list`, `slice show`, `slice start`")
+                    && message.contains("slice backup")
+            }),
+        "{:?}",
+        reset_state.payload
+    );
+}
+
+#[tokio::test]
 async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
     let env = TestMetaRuntimeEnv::new("collaborator-metaagent-scope");
     let workspace = env.root.join("workspace");
