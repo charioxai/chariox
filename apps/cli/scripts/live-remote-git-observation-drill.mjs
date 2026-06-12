@@ -221,6 +221,20 @@ function requireCondition(condition, message, details) {
   if (!condition) throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
 }
 
+function requireRemotePlacement(agent, workerKernel) {
+  requireCondition(agent.remote_execution?.leased_agent_id, 'remote agent did not receive a worker lease', agent)
+  requireCondition(
+    agent.remote_execution.worker_kernel_id === workerKernel.kernel_id,
+    `remote agent ran on ${agent.remote_execution.worker_kernel_id}, expected ${workerKernel.kernel_id}`,
+    agent.remote_execution,
+  )
+  requireCondition(
+    agent.remote_execution.worker_machine_id === workerKernel.machine_id,
+    `remote agent ran on machine ${agent.remote_execution.worker_machine_id}, expected ${workerKernel.machine_id}`,
+    agent.remote_execution,
+  )
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const rootDir = path.join(repoRoot, 'target', 'live-remote-git-observation-drill', `${process.pid}-${Date.now()}`)
@@ -320,7 +334,7 @@ async function main() {
       },
     }), 'AgentSpawned')
     const remoteAgent = spawned.agent
-    requireCondition(remoteAgent.remote_execution?.leased_agent_id, 'remote agent did not receive a worker lease', remoteAgent)
+    requireRemotePlacement(remoteAgent, workerKernel)
     log('remote-agent-spawned', {
       sessionId,
       remoteAgentId: remoteAgent.id,

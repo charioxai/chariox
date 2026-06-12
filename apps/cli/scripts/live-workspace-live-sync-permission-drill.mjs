@@ -422,6 +422,20 @@ async function waitForRemoteKernel(client, machineRef, provider, timeoutMs, poll
   throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(last)}`)
 }
 
+function requireRemotePlacement(agent, workerKernel) {
+  requireCondition(agent?.remote_execution?.leased_agent_id, 'remote agent did not receive a worker lease', agent)
+  requireCondition(
+    agent.remote_execution.worker_kernel_id === workerKernel.kernel_id,
+    `remote agent ran on ${agent.remote_execution.worker_kernel_id}, expected ${workerKernel.kernel_id}`,
+    agent.remote_execution,
+  )
+  requireCondition(
+    agent.remote_execution.worker_machine_id === workerKernel.machine_id,
+    `remote agent ran on machine ${agent.remote_execution.worker_machine_id}, expected ${workerKernel.machine_id}`,
+    agent.remote_execution,
+  )
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const provider = options.provider
@@ -523,6 +537,7 @@ async function main() {
         }),
         'AgentSpawned',
       )
+      requireRemotePlacement(spawned.agent, workerKernel)
       targetAgentId = spawned.agent?.id ?? spawned.id ?? targetAgentId
     }
 

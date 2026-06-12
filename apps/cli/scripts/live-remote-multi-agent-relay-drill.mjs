@@ -117,6 +117,9 @@ function daemonEnv({
     ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
     ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
+    XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
+    XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
   }
 }
 
@@ -289,6 +292,18 @@ function localSpawnAgentRequest(sessionId, provider, alias, model) {
   }
 }
 
+function requireRemotePlacement(agent, workerKernel) {
+  if (!agent.remote_execution?.leased_agent_id) {
+    throw new Error(`agent ${agent.id} was expected to be remote-backed\n${JSON.stringify(agent, null, 2)}`)
+  }
+  if (agent.remote_execution.worker_kernel_id !== workerKernel.kernel_id) {
+    throw new Error(`agent ${agent.id} ran on ${agent.remote_execution.worker_kernel_id}, expected ${workerKernel.kernel_id}`)
+  }
+  if (agent.remote_execution.worker_machine_id !== workerKernel.machine_id) {
+    throw new Error(`agent ${agent.id} ran on machine ${agent.remote_execution.worker_machine_id}, expected ${workerKernel.machine_id}`)
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -429,7 +444,7 @@ async function main() {
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const localSidecar = unwrapVariant(
-        await remoteClient.send(localSpawnAgentRequest(session.id, provider, `local-${provider}`, modelForProvider(provider, options))),
+        await remoteClient.send(localSpawnAgentRequest(session.id, provider, `local-${index + 1}-${provider}`, modelForProvider(provider, options))),
         'AgentSpawned',
       ).agent
       localSidecars.push(localSidecar)
@@ -437,9 +452,10 @@ async function main() {
       const workerKernel = await waitForRemoteKernel(remoteClient, workerMachineId, provider, options.timeoutMs, options.pollMs)
       const spawnClient = index % 2 === 0 ? localClient : remoteClient
       const remoteAgent = unwrapVariant(
-        await spawnClient.send(remoteSpawnAgentRequest(session.id, provider, `remote-${provider}`, modelForProvider(provider, options), workerKernel.kernel_id)),
+        await spawnClient.send(remoteSpawnAgentRequest(session.id, provider, `remote-${index + 1}-${provider}`, modelForProvider(provider, options), workerKernel.kernel_id)),
         'AgentSpawned',
       ).agent
+      requireRemotePlacement(remoteAgent, workerKernel)
       remoteAgents.push(remoteAgent)
     }
 

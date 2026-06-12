@@ -957,6 +957,17 @@ async function main() {
     }
     throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(last)}`)
   }
+  const requireRemotePlacement = (agent, workerKernel) => {
+    if (!agent.remote_execution?.leased_agent_id) {
+      throw new Error(`agent ${agent.id} was expected to be remote-backed\n${JSON.stringify(agent, null, 2)}`)
+    }
+    if (agent.remote_execution.worker_kernel_id !== workerKernel.kernel_id) {
+      throw new Error(`agent ${agent.id} ran on ${agent.remote_execution.worker_kernel_id}, expected ${workerKernel.kernel_id}`)
+    }
+    if (agent.remote_execution.worker_machine_id !== workerKernel.machine_id) {
+      throw new Error(`agent ${agent.id} ran on machine ${agent.remote_execution.worker_machine_id}, expected ${workerKernel.machine_id}`)
+    }
+  }
   const waitForProviderRunReady = async (providerRunId) => {
     for (let attempt = 0; attempt < 120; attempt += 1) {
       const response = await client.send(getProviderRunRequest(providerRunId))
@@ -1031,9 +1042,11 @@ async function main() {
         : options.worktree
       await mkdir(agentWorktree, { recursive: true })
       logStep('spawn_agent', { index, provider })
+      let expectedWorkerKernel = null
       const spawnRequest = options.machineRef
         ? await (async () => {
             const workerKernel = await waitForRemoteKernel(options.machineRef, provider)
+            expectedWorkerKernel = workerKernel
             return {
               SpawnAgent: {
                 session_id: session.id,
@@ -1051,6 +1064,9 @@ async function main() {
         await client.send(spawnRequest),
         'AgentSpawned',
       ).agent
+      if (expectedWorkerKernel) {
+        requireRemotePlacement(agent, expectedWorkerKernel)
+      }
       agentIds.push(agent.id)
       if (typeof scenario.afterAgentSpawn === 'function') {
         logStep('scenario_after_agent_spawn', { index, agentId: agent.id, scenario: scenario.id })
