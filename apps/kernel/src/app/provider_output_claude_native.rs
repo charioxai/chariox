@@ -292,6 +292,48 @@ fn write_claude_native_marker(context_file: &str, value: &str) {
     let _ = fs::write(marker, value);
 }
 
+fn claude_headless_submit_retry_path(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("headless-submit-retry.json"))
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct ClaudeHeadlessSubmitRetry {
+    prompt_id: String,
+    count: u8,
+    last_attempt_ms: u64,
+}
+
+fn read_claude_headless_submit_retry(context_file: &str) -> ClaudeHeadlessSubmitRetry {
+    let Some(path) = claude_headless_submit_retry_path(context_file) else {
+        return ClaudeHeadlessSubmitRetry::default();
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn write_claude_headless_submit_retry(
+    context_file: &str,
+    prompt_id: &str,
+    count: u8,
+    last_attempt_ms: u64,
+) {
+    let Some(path) = claude_headless_submit_retry_path(context_file) else {
+        return;
+    };
+    let payload = ClaudeHeadlessSubmitRetry {
+        prompt_id: prompt_id.to_string(),
+        count,
+        last_attempt_ms,
+    };
+    if let Ok(raw) = serde_json::to_string(&payload) {
+        let _ = fs::write(path, raw);
+    }
+}
+
 fn write_claude_headless_startup_wait_marker(context_file: &str) {
     write_claude_native_marker(context_file, &format!("startup-wait:{}", unix_epoch_ms()));
 }
@@ -582,6 +624,16 @@ fn claude_headless_composer_visible(text: &str) -> bool {
         || compact.contains("forshortcuts"))
         && !(claude_headless_workspace_trust_visible(&normalized)
             || claude_headless_bypass_confirmation_visible(&normalized))
+}
+
+fn claude_headless_prompt_waiting_in_composer(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    normalized_lower.contains("[pasted text")
+        || compact.contains("[pastedtext")
+        || normalized_lower.contains("paste again to expand")
+        || compact.contains("pasteagaintoexpand")
 }
 
 fn normalize_claude_visible_prompt_for_headless(value: &str) -> String {
@@ -1217,6 +1269,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if !force_post_stop_ready
                 && !prompt_typed_for_headless
                 && !claude_headless_composer_visible(&recent)
+                && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < 4_000
             {
                 append_claude_headless_debug(context_file, "inject_wait_composer", prompt.id());
                 return Ok(());
@@ -1227,6 +1280,42 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id()));
+            if provider_run.provider() == "claude-headless" {
+                write_claude_headless_submit_retry(context_file, prompt.id(), 0, unix_epoch_ms());
+            }
+            return Ok(());
+        }
+        if provider_run.provider() == "claude-headless"
+            && marker.as_deref() == Some(&format!("injected:{}", prompt.id()))
+        {
+            let retry = read_claude_headless_submit_retry(context_file);
+            let now = unix_epoch_ms();
+            let recent = claude_permission_recent_file(context_file)
+                .and_then(|path| fs::read_to_string(path).ok())
+                .unwrap_or_default();
+            let count = if retry.prompt_id == prompt.id() {
+                retry.count
+            } else {
+                0
+            };
+            let last_attempt_ms = if retry.prompt_id == prompt.id() {
+                retry.last_attempt_ms
+            } else {
+                0
+            };
+            if count < 3
+                && now.saturating_sub(last_attempt_ms) >= 2_000
+                && claude_headless_prompt_waiting_in_composer(&recent)
+            {
+                append_claude_headless_debug(
+                    context_file,
+                    "inject_enter_retry",
+                    &format!("{}:{}", prompt.id(), count + 1),
+                );
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                write_claude_headless_submit_retry(context_file, prompt.id(), count + 1, now);
+            }
             return Ok(());
         }
         if marker
@@ -1674,5 +1763,18 @@ mod tests {
         assert_eq!(drain.assistant_message_ids, vec!["assistant-1"]);
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_headless_prompt_waiting_in_composer_detects_collapsed_paste() {
+        assert!(claude_headless_prompt_waiting_in_composer(
+            "paste again to expand - [Pasted text #2]"
+        ));
+        assert!(claude_headless_prompt_waiting_in_composer(
+            "\u{1b}[2m[Pasted text #1]\u{1b}[0m"
+        ));
+        assert!(!claude_headless_prompt_waiting_in_composer(
+            "CLAUDE-HEADLESS_WORKSPACE_LIVE_SYNC_TEXT_WRITE_DONE"
+        ));
     }
 }

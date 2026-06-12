@@ -12,7 +12,6 @@ mod native_tui;
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 use launch_args::claude_launch_args;
-pub(crate) use launch_args::claude_launch_args_for_run;
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";

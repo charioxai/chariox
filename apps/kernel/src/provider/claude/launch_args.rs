@@ -1,24 +1,6 @@
 use crate::error::DaemonError;
 use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
-use crate::provider::{
-    AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, RuntimeProviderRun,
-};
-
-pub(crate) fn claude_launch_args_for_run(
-    run: &RuntimeProviderRun,
-    resume_session_id: Option<&str>,
-) -> Result<Vec<String>, DaemonError> {
-    claude_launch_args_from_parts(
-        run.model(),
-        run.variant(),
-        run.execution_mode(),
-        run.permission_level(),
-        resume_session_id,
-        run.runtime_mcp_server_url(),
-        run.runtime_mcp_auth_token(),
-        run.mcp_servers(),
-    )
-}
+use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
 
 pub(super) fn claude_launch_args(
     request: &LaunchProviderRequest,

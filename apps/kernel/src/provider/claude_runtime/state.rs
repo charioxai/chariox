@@ -19,6 +19,7 @@ pub(crate) struct ClaudeRuntimeBinding {
 
 pub struct ClaudeRuntimeState {
     pub(super) program: String,
+    pub(super) args: Vec<String>,
     pub(super) env: BTreeMap<String, String>,
     pub(super) env_remove: Vec<String>,
     pub(super) working_directory: Option<PathBuf>,
@@ -45,6 +46,7 @@ impl std::fmt::Debug for ClaudeRuntimeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClaudeRuntimeState")
             .field("program", &self.program)
+            .field("args", &self.args)
             .field("working_directory", &self.working_directory)
             .field("context_file", &self.context_file)
             .field("settings_file", &self.settings_file)

@@ -98,6 +98,14 @@ impl AgentEndpointAdapter for ClaudeAdapter {
         Self::KEY
     }
 
+    fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
+        workspace_write_fence_supported()
+    }
+
+    fn workspace_live_sync_write_enforcement_unavailable_reason(&self) -> &'static str {
+        "managed workspace live sync needs selective write fencing, which is only implemented on macOS for this adapter; use tracked mode on this worker or run the managed provider on a supported host"
+    }
+
     fn connect(
         &self,
         request: &LaunchProviderRequest,
@@ -105,7 +113,7 @@ impl AgentEndpointAdapter for ClaudeAdapter {
         let mut launch = plan_claude_launch(Some(request))?;
         launch.process_label = format!("claude:{}:{}", request.provider, request.model);
         launch.working_directory = request.working_directory.clone();
-        Ok(launch)
+        apply_workspace_write_fence(launch, request)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}
@@ -223,9 +231,21 @@ mod tests {
                 .supports_workspace_live_sync_write_enforcement(),
             cfg!(target_os = "macos"),
         );
+        assert_eq!(
+            registry
+                .resolve("claude")
+                .expect("claude adapter should exist")
+                .supports_workspace_live_sync_write_enforcement(),
+            cfg!(target_os = "macos"),
+        );
         assert!(registry
             .resolve("opencode")
             .expect("opencode adapter should exist")
+            .workspace_live_sync_write_enforcement_unavailable_reason()
+            .contains("use tracked mode"));
+        assert!(registry
+            .resolve("claude")
+            .expect("claude adapter should exist")
             .workspace_live_sync_write_enforcement_unavailable_reason()
             .contains("use tracked mode"));
     }

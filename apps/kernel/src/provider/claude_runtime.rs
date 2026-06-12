@@ -9,8 +9,7 @@ use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
 use super::{
-    claude::claude_launch_args_for_run, AgentExecutionMode, AgentPermissionLevel,
-    ProviderPromptSignalBatch, RuntimeProviderRun,
+    AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
 
 const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
@@ -55,6 +54,7 @@ pub(crate) fn initialize_claude_runtime(
     Ok(ClaudeRuntimeBinding {
         state: ClaudeRuntimeState {
             program,
+            args,
             env,
             env_remove,
             working_directory,
@@ -88,7 +88,7 @@ pub(crate) fn submit_claude_prompt(
     state: &mut ClaudeRuntimeState,
     envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
-    if claude_runtime_selection_changed(run, state) {
+    if claude_runtime_selection_changed(run, state) || claude_runtime_child_exited(state) {
         restart_claude_runtime(run, state, "claude_restart_for_selection_change")?;
     }
     write_claude_hidden_context(run.id(), state, &envelope.hidden_system_context)?;
@@ -252,6 +252,17 @@ fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRunt
         || state.active_permission_level != run.permission_level()
 }
 
+fn claude_runtime_child_exited(state: &mut ClaudeRuntimeState) -> bool {
+    if state.active_turn_id.is_some() {
+        return false;
+    }
+    match state.child.try_wait() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
 fn restart_claude_runtime(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
@@ -262,12 +273,10 @@ fn restart_claude_runtime(
         .session_id
         .as_deref()
         .or_else(|| run.resume_state().claude_session_id());
-    let mut args = claude_launch_args_for_run(run, resume_session_id)?;
-    if let Some(settings_file) = &state.settings_file {
-        args.extend([
-            "--settings".to_string(),
-            settings_file.display().to_string(),
-        ]);
+    let base_args = claude_args_without_resume(&state.args);
+    let mut args = base_args.clone();
+    if let Some(session_id) = resume_session_id {
+        args.extend(["--resume".to_string(), session_id.to_string()]);
     }
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
@@ -281,6 +290,7 @@ fn restart_claude_runtime(
     state.child = child;
     state.stdin = stdin;
     state.receiver = receiver;
+    state.args = base_args;
     state.active_model = run.model().to_string();
     state.active_variant = run.variant().map(str::to_string);
     state.active_execution_mode = run.execution_mode();
@@ -290,6 +300,23 @@ fn restart_claude_runtime(
     state.saw_text_delta = false;
     state.exit_reported = false;
     Ok(())
+}
+
+fn claude_args_without_resume(args: &[String]) -> Vec<String> {
+    let mut sanitized = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--resume" {
+            skip_next = true;
+            continue;
+        }
+        sanitized.push(arg.clone());
+    }
+    sanitized
 }
 
 fn write_claude_hidden_context(
@@ -319,8 +346,8 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        events::apply_claude_message, handle_claude_tool_uses, input::claude_user_content,
-        ClaudeRuntimeState, ProviderPromptSignalBatch,
+        claude_args_without_resume, events::apply_claude_message, handle_claude_tool_uses,
+        input::claude_user_content, ClaudeRuntimeState, ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -337,6 +364,7 @@ mod tests {
         (
             ClaudeRuntimeState {
                 program: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "cat >/dev/null".to_string()],
                 env: Default::default(),
                 env_remove: Vec::new(),
                 working_directory: None,
@@ -360,6 +388,28 @@ mod tests {
             },
             ProviderPromptSignalBatch::default(),
         )
+    }
+
+    #[test]
+    fn claude_args_without_resume_removes_stale_session_argument() {
+        let args = vec![
+            "--model".to_string(),
+            "sonnet".to_string(),
+            "--resume".to_string(),
+            "stale-session".to_string(),
+            "--mcp-config".to_string(),
+            "/tmp/mcp.json".to_string(),
+        ];
+
+        assert_eq!(
+            claude_args_without_resume(&args),
+            vec![
+                "--model".to_string(),
+                "sonnet".to_string(),
+                "--mcp-config".to_string(),
+                "/tmp/mcp.json".to_string(),
+            ]
+        );
     }
 
     #[test]

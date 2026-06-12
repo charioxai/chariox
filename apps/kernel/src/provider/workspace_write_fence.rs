@@ -7,7 +7,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::path::PathBuf;
 
-use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
+use super::{LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
 pub(crate) const WORKSPACE_WRITE_FENCE_ENV: &str = "ARROBA_WORKSPACE_WRITE_FENCE";
 pub(crate) const MACOS_SEATBELT_BACKEND: &str = "macos-seatbelt";
@@ -29,8 +29,7 @@ pub(crate) fn apply_workspace_write_fence(
     mut launch: ProviderLaunchResult,
     request: &LaunchProviderRequest,
 ) -> Result<ProviderLaunchResult, DaemonError> {
-    if !request.requires_workspace_live_sync() || launch.endpoint_mode != AgentEndpointMode::Managed
-    {
+    if !request.requires_workspace_live_sync() {
         return Ok(launch);
     }
 

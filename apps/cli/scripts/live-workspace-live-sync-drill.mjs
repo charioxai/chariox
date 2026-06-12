@@ -728,6 +728,7 @@ async function waitForHistoryNotices({ historyDir, requirements, sinceMs, timeou
 
 async function providerToolUpdatesSince({ historyDir, sinceMs }) {
   const updates = []
+  const toolStarts = new Map()
   const files = (await readdir(historyDir).catch(() => []))
     .filter((file) => file.endsWith('.jsonl'))
     .map((file) => path.join(historyDir, file))
@@ -746,7 +747,19 @@ async function providerToolUpdatesSince({ historyDir, sinceMs }) {
       if ((entry.timestamp_ms ?? 0) < sinceMs) continue
       if (entry.kind !== 'provider_tool' || typeof entry.text !== 'string') continue
       try {
-        updates.push(JSON.parse(entry.text))
+        let update = JSON.parse(entry.text)
+        const toolKey = entry.merge_key ?? update.id
+        if (update.status === 'started' && update.input !== undefined) {
+          toolStarts.set(toolKey, { input: update.input, tool: update.tool })
+        } else if (toolStarts.has(toolKey)) {
+          const startedUpdate = toolStarts.get(toolKey)
+          update = {
+            ...update,
+            input: update.input ?? startedUpdate.input,
+            tool: update.tool === 'tool_result' ? startedUpdate.tool : update.tool,
+          }
+        }
+        updates.push(update)
       } catch {
         continue
       }
