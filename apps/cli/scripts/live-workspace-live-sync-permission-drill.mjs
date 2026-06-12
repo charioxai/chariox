@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import net from 'node:net'
-import { chmod, copyFile, mkdir, rm, stat, readFile, readdir } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, rm, stat, readFile, readdir, symlink } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +25,7 @@ function parseArgs(argv) {
     rootDir: null,
     historyDir: null,
     afterFixtureCommand: null,
+    effort: null,
     providerModels: {},
   }
   for (let i = 0; i < argv.length; i += 1) {
@@ -37,6 +38,7 @@ function parseArgs(argv) {
       if (!provider || !model) throw new Error('--provider-model must use provider=model')
       options.providerModels[provider] = model
     }
+    else if (arg === '--effort') options.effort = argv[++i]
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
@@ -55,6 +57,7 @@ function parseArgs(argv) {
         '  --provider <codex|opencode>',
         '  --model <provider model override>',
         '  --provider-model <provider=model>',
+        '  --effort <provider effort override>',
         '  --kernel <ws://...> (reuse an already-running kernel)',
         '  --no-spawn-daemon',
         '  --machine-ref <remote machine id or alias>',
@@ -109,6 +112,16 @@ function cliModelForProvider(provider, model) {
   return model
 }
 
+function defaultEffortForProvider(provider) {
+  if (provider.startsWith('claude')) return 'low'
+  return 'high'
+}
+
+function liveSyncWriteToolName(provider) {
+  if (provider === 'opencode') return 'arroba_write_artifact'
+  return 'mcp__arroba__write_artifact'
+}
+
 async function seedCodexAuth(home) {
   const sourceHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
   const sourceAuth = path.join(sourceHome, 'auth.json')
@@ -118,6 +131,16 @@ async function seedCodexAuth(home) {
   await mkdir(targetDir, { recursive: true })
   await copyFile(sourceAuth, targetAuth)
   await chmod(targetAuth, 0o600).catch(() => {})
+}
+
+async function seedClaudeAuth(home) {
+  const sourceHome = os.homedir()
+  await stat(path.join(sourceHome, '.claude'))
+    .then(() => symlink(path.join(sourceHome, '.claude'), path.join(home, '.claude'), 'dir'))
+    .catch(() => {})
+  await stat(path.join(sourceHome, '.claude.json'))
+    .then(() => symlink(path.join(sourceHome, '.claude.json'), path.join(home, '.claude.json')))
+    .catch(() => {})
 }
 
 async function run(command, args, options = {}) {
@@ -342,9 +365,11 @@ async function waitForFileContent(client, sessionId, attachmentId, filePath, exp
   throw new Error(`timed out waiting for file ${filePath}`)
 }
 
-async function waitForOutsideRepoFileContent(client, sessionId, attachmentId, agentId, outsideRepo, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null) {
+async function waitForOutsideRepoFileContent(client, sessionId, attachmentId, agentId, provider, outsideRepo, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null) {
+  const { sendTerminalInputRequest } = await import('../../../packages/kernel-client/dist/ipc-terminal-runtime-requests.js')
   const deadline = Date.now() + timeoutMs
   const respondedInteractionIds = new Set()
+  let lastClaudeNativeApprovalMs = 0
   while (Date.now() < deadline) {
     await allowOutsideRepoProviderPermissions(
       client,
@@ -356,6 +381,10 @@ async function waitForOutsideRepoFileContent(client, sessionId, attachmentId, ag
       respondedInteractionIds,
       pollMs,
     )
+    if (provider === 'claude-headless' && Date.now() - lastClaudeNativeApprovalMs > 10_000) {
+      lastClaudeNativeApprovalMs = Date.now()
+      await client.send(sendTerminalInputRequest(sessionId, attachmentId, '1\r')).catch(() => {})
+    }
     try {
       const content = await readFile(filePath, 'utf8')
       if (content.trim() === expectedContent) return content
@@ -385,6 +414,7 @@ async function main() {
   const provider = options.provider
   const model = options.providerModels[provider] ?? options.model ?? defaultModelForProvider(provider)
   const cliModel = cliModelForProvider(provider, model)
+  const effort = options.effort ?? defaultEffortForProvider(provider)
   const rootDir = options.rootDir ?? path.join(repoRoot, 'target', 'live-workspace-live-sync-permission-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const outsideRepo = path.join(rootDir, 'outside-repo')
@@ -393,9 +423,11 @@ async function main() {
   const automationSocket = path.join(os.tmpdir(), `amiop-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = options.kernelUrl ?? `ws://127.0.0.1:${ports.kernelPort}`
+  const needsClaudeHome = provider.startsWith('claude') && !options.useRealHome
   const env = {
     ...process.env,
-    HOME: options.useRealHome ? (process.env.HOME ?? home) : home,
+    HOME: options.useRealHome || needsClaudeHome ? (process.env.HOME ?? home) : home,
+    ARROBA_HOME: path.join(home, '.arroba'),
     ARROBA_KERNEL_PORT: String(ports.kernelPort),
     ARROBA_MCP_PORT: String(ports.mcpPort),
     ARROBA_OPENCODE_PORT: String(ports.opencodePort),
@@ -427,6 +459,7 @@ async function main() {
     if (provider === 'codex' && !options.useRealHome) {
       await seedCodexAuth(home)
     }
+    if (provider.startsWith('claude') && !options.useRealHome) await seedClaudeAuth(home)
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
     if (!options.noSpawnDaemon) {
@@ -468,7 +501,7 @@ async function main() {
             alias: `${provider}-remote-workspace-live-sync`,
             model,
             worktree_id: workspace,
-            effort: 'high',
+            effort,
             execution_mode: 'build',
             permission_level: 'required',
             machine_ref: options.machineRef,
@@ -493,6 +526,7 @@ async function main() {
       '--worktree', workspace,
       '--provider', provider,
       '--model', cliModel,
+      '--effort', effort,
       '--client-id', `workspace-live-sync-permission-drill-cli-${process.pid}`,
     ]
     cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -516,8 +550,10 @@ async function main() {
       attachmentId,
       agentId,
       [
-        `Use Arroba workspace live sync tool write_artifact to create a file named ${targetFileName} with the exact text ${expectedContent}.`,
-        'Do not use shell redirection or direct filesystem writes.',
+        'This is a live Arroba workspace live sync permission smoke test.',
+        'Use only Arroba workspace live sync. Do not use Bash, shell, native file tools, shell redirection, direct filesystem writes, or provider edit/write/patch tools for this step.',
+        `Call the Arroba runtime MCP write tool ${liveSyncWriteToolName(provider)} exactly once with path "${targetFileName}", content_text "${expectedContent}", and domain "text".`,
+        'If the tool name is displayed with another Arroba alias such as write_artifact or arroba.write_artifact, use that same Arroba workspace live sync write tool.',
         'After the write succeeds, reply with exactly WORKSPACE_LIVE_SYNC_PERMISSION_DONE.',
       ].join(' '),
     ))
@@ -558,6 +594,7 @@ async function main() {
       sessionId,
       attachmentId,
       agentId,
+      provider,
       outsideRepo,
       outsideFilePath,
       outsideExpectedContent,

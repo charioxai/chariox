@@ -120,11 +120,34 @@ impl KernelRuntimeState {
             &dispatch.source_attachment_id,
             provider_prompt.as_bytes(),
         );
-        let has_managed_process = owned
+        let mut has_managed_process = owned
             .provider_process_tracking
             .read()
             .run_processes
             .contains_key(&dispatch.provider_run_id);
+        if provider_run.provider() == "claude-headless" && !has_managed_process {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(10_000);
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                has_managed_process = owned
+                    .provider_process_tracking
+                    .read()
+                    .run_processes
+                    .contains_key(&dispatch.provider_run_id);
+                if has_managed_process {
+                    break;
+                }
+            }
+            if !has_managed_process {
+                return Err(DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: format!(
+                        "provider process for `{}` was not ready",
+                        dispatch.provider_run_id
+                    ),
+                });
+            }
+        }
         if !has_managed_process {
             owned.note_prompt_started(&dispatch.provider_run_id);
             return Ok(());
@@ -132,10 +155,11 @@ impl KernelRuntimeState {
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let provider_run = provider_run.clone();
             self.with_app_side_effect(|app| {
-                app.process_claude_native_bridge_for_runtime(
+                app.process_claude_native_prompt_dispatch_for_runtime(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
                     &provider_run,
+                    dispatch,
                 )
             })
             .await?;

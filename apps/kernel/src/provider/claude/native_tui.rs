@@ -68,10 +68,7 @@ pub(super) fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, 
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
-            "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
-            "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command }] }],
-            "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command }] }],
-            "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command }] }]
+            "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }]
         }
     });
     let settings =
@@ -96,11 +93,37 @@ fn claude_native_hook_handler() -> &'static str {
     r#"#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
+import { setTimeout as setCallbackTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
-const chunks = []
-for await (const chunk of process.stdin) chunks.push(chunk)
-const raw = Buffer.concat(chunks).toString("utf8")
+const hookWatchdog = setCallbackTimeout(() => {
+  try {
+    appendFileSync(`${process.env.ARROBA_CLAUDE_NATIVE_EVENTS}.watchdog`, JSON.stringify({
+      at: new Date().toISOString(),
+      reason: "hook_event_not_resolved"
+    }) + "\n")
+  } catch {}
+  process.exit(0)
+}, 7000)
+
+async function readHookInput() {
+  const chunks = []
+  let settled = false
+  return await new Promise((resolve) => {
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve(Buffer.concat(chunks).toString("utf8"))
+    }
+    process.stdin.on("data", (chunk) => chunks.push(chunk))
+    process.stdin.once("end", finish)
+    process.stdin.once("error", finish)
+    process.stdin.resume()
+    setCallbackTimeout(finish, 1000)
+  })
+}
+
+const raw = await readHookInput()
 let input = {}
 try {
   input = raw.trim() ? JSON.parse(raw) : {}
@@ -147,12 +170,17 @@ if (eventName === "UserPromptSubmit") {
       additionalContext
     }
   }))
+  process.exit(0)
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
   const toolName = String(input.tool_name ?? "")
   const isArrobaRuntimeTool = toolName.startsWith("mcp__arroba__") || toolName.startsWith("arroba.")
-  if (eventName === "PreToolUse" && (input.permission_mode === "bypassPermissions" || isArrobaRuntimeTool)) {
+  if (isArrobaRuntimeTool || (eventName === "PreToolUse" && input.permission_mode === "bypassPermissions")) {
     process.exit(0)
   }
+  if (!toolName) {
+    process.exit(0)
+  }
+  clearTimeout(hookWatchdog)
   const responseDir = process.env.ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES
   const responseFile = responseDir && hookContextRequestId
     ? join(responseDir, `${hookContextRequestId}.json`)
@@ -180,6 +208,7 @@ if (eventName === "UserPromptSubmit") {
     }
   }
 }
+process.exit(0)
 "#
 }
 
@@ -230,6 +259,12 @@ pub(super) fn claude_native_tui_args(
     )? {
         args.extend(["--mcp-config".to_string(), config]);
         args.push("--strict-mcp-config".to_string());
+        if request.runtime_mcp_binding.is_some() {
+            args.extend([
+                "--allowedTools".to_string(),
+                "mcp__arroba__*,arroba-*,arroba.*,*_artifact,validate_*,ack_workflow_turn,workflow_console_*".to_string(),
+            ]);
+        }
     }
     Ok(args)
 }
