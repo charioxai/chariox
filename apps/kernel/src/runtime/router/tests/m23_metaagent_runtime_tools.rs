@@ -432,9 +432,11 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(owned_agents
-        .iter()
-        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
+    assert!(
+        owned_agents.iter().any(|agent| {
+            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
+        })
+    );
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -473,6 +475,41 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .expect("commands should be returned");
     assert!(commands.iter().any(|command| {
         command.get("name").and_then(serde_json::Value::as_str) == Some("workflow")
+    }));
+
+    let listed = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_COMMANDS_TOOL,
+            serde_json::json!({
+                "tag": "agent",
+                "scope": "session",
+                "policy": "allow",
+                "limit": 20
+            }),
+        )
+        .await
+        .expect("meta command list should dispatch");
+    assert!(listed.ok);
+    let listed_commands = listed
+        .payload
+        .get("commands")
+        .and_then(serde_json::Value::as_array)
+        .expect("listed commands should be returned");
+    assert!(listed_commands.iter().any(|command| {
+        command.get("name").and_then(serde_json::Value::as_str) == Some("agent spawn")
+    }));
+    assert!(listed_commands.iter().all(|command| {
+        command
+            .get("tags")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some("agent")))
+            && command.get("scope").and_then(serde_json::Value::as_str) == Some("session")
+            && command
+                .get("metaagent_policy")
+                .and_then(serde_json::Value::as_str)
+                == Some("allow")
     }));
 
     let docs = router
@@ -842,10 +879,12 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(session
-        .agents()
-        .iter()
-        .all(|agent| agent.id() != worker.id()));
+    assert!(
+        session
+            .agents()
+            .iter()
+            .all(|agent| agent.id() != worker.id())
+    );
 }
 
 #[tokio::test]
@@ -968,11 +1007,12 @@ async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
     app.sessions_mut()
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("collaborator should join session");
-    assert!(app
-        .sessions()
-        .get_session(&session_id)
-        .expect("session should remain")
-        .has_member("user-2"));
+    assert!(
+        app.sessions()
+            .get_session(&session_id)
+            .expect("session should remain")
+            .has_member("user-2")
+    );
 
     let owner_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-worker"))

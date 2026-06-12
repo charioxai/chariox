@@ -1,4 +1,6 @@
-use crate::transport::runtime_tools::{MetaCommandDocsArgs, MetaCommandSearchArgs};
+use crate::transport::runtime_tools::{
+    MetaCommandDocsArgs, MetaCommandListArgs, MetaCommandSearchArgs,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetaCommandPolicy {
@@ -84,7 +86,12 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     },
     MetaCommandDoc {
         name: "workflow",
-        aliases: &["workflow new", "workflow run", "workflow cancel", "workflow resume"],
+        aliases: &[
+            "workflow new",
+            "workflow run",
+            "workflow cancel",
+            "workflow resume",
+        ],
         usage: "workflow <new|list|run|runs|cancel|resume> ...",
         examples: &["workflow run qa-flow default \"Run QA\""],
         tags: &["workflow", "orchestration"],
@@ -167,7 +174,12 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     },
     MetaCommandDoc {
         name: "session new",
-        aliases: &["session create", "session attach", "session use", "session delete"],
+        aliases: &[
+            "session create",
+            "session attach",
+            "session use",
+            "session delete",
+        ],
         usage: "session new|create|attach|use|delete ...",
         examples: &[],
         tags: &["session", "denied"],
@@ -281,6 +293,17 @@ pub(crate) fn search_commands(args: MetaCommandSearchArgs) -> Vec<serde_json::Va
         .take(limit)
         .map(command_json)
         .collect()
+}
+
+pub(crate) fn list_commands(args: MetaCommandListArgs) -> Vec<serde_json::Value> {
+    search_commands(MetaCommandSearchArgs {
+        query: None,
+        tag: args.tag,
+        scope: args.scope,
+        mutates: args.mutates,
+        policy: args.policy,
+        limit: args.limit,
+    })
 }
 
 pub(crate) fn command_docs(args: MetaCommandDocsArgs) -> Option<serde_json::Value> {
@@ -552,6 +575,33 @@ mod tests {
                 "`{command}` should be routed by the metaagent command registry",
             );
         }
+    }
+
+    #[test]
+    fn list_commands_filters_descriptor_table_without_query() {
+        let commands = list_commands(MetaCommandListArgs {
+            tag: Some("credential".to_string()),
+            scope: Some("global".to_string()),
+            mutates: Some(false),
+            policy: Some("allow".to_string()),
+            limit: Some(10),
+        });
+
+        assert!(commands.iter().any(|command| {
+            command.get("name").and_then(serde_json::Value::as_str) == Some("credential")
+        }));
+        assert!(commands.iter().all(|command| {
+            command
+                .get("tags")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some("credential")))
+                && command.get("scope").and_then(serde_json::Value::as_str) == Some("global")
+                && command.get("mutates").and_then(serde_json::Value::as_bool) == Some(false)
+                && command
+                    .get("metaagent_policy")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("allow")
+        }));
     }
 
     #[test]

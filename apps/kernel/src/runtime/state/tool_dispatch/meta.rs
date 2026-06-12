@@ -5,9 +5,10 @@ use crate::transport::runtime_tools::{
     META_LIST_SUBSCRIPTIONS_TOOL, META_READ_EVENT_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL,
     META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL,
     META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
-    META_UNSUBSCRIBE_EVENTS_TOOL, MetaAckEventArgs, MetaListEventsArgs, MetaReadEventArgs,
-    MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
-    MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, RuntimeToolResult,
+    META_UNSUBSCRIBE_EVENTS_TOOL, MetaAckEventArgs, MetaCommandListArgs, MetaCommandSearchArgs,
+    MetaListEventsArgs, MetaReadEventArgs, MetaResolveRuntimeInteractionArgs,
+    MetaSessionOverviewArgs, MetaSubscribeEventsArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs,
+    MetaUnsubscribeEventsArgs, RuntimeToolResult,
 };
 
 impl KernelRuntimeState {
@@ -95,15 +96,23 @@ impl KernelRuntimeState {
                     .map_err(invalid_meta_args)?;
                 self.meta_session_overview(session, agent, args)
             }
-            META_SEARCH_COMMANDS_TOOL | META_LIST_COMMANDS_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::MetaCommandSearchArgs,
-                >(arguments)
-                .map_err(invalid_meta_args)?;
+            META_SEARCH_COMMANDS_TOOL => {
+                let args = serde_json::from_value::<MetaCommandSearchArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
                         "commands": crate::runtime::metaagent_command_registry::search_commands(args),
+                    }),
+                })
+            }
+            META_LIST_COMMANDS_TOOL => {
+                let args = serde_json::from_value::<MetaCommandListArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "commands": crate::runtime::metaagent_command_registry::list_commands(args),
                     }),
                 })
             }
