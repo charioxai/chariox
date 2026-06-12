@@ -120,11 +120,37 @@ function daemonEnv({
     ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
     ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
+    XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
+    XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
   }
 }
 
 function spawnProcess(command, args, options) {
   return spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'inherit'] })
+}
+
+async function runCommand(command, args, options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+}
+
+async function buildKernelClient() {
+  const result = await runCommand('pnpm', ['--workspace-root', 'run', 'build:kernel-client'])
+  if (result.code !== 0) {
+    throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
+  }
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -308,6 +334,22 @@ async function waitForRemoteMachine(client, machineRef) {
   throw new Error(`remote machine ${machineRef} did not become visible`)
 }
 
+async function waitForRemoteKernel(client, machineRef, providers) {
+  let last = []
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const response = unwrapVariant(
+      await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
+      'RemoteMachineKernelsListed',
+    )
+    last = response.kernels || []
+    const kernel = last.find((candidate) => candidate.accepting_remote_leases
+      && providers.every((provider) => (candidate.available_providers || []).includes(provider)))
+    if (kernel) return kernel
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not advertise providers ${providers.join(',')}; last=${JSON.stringify(last)}`)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -325,6 +367,7 @@ async function main() {
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
 
+  await buildKernelClient()
   ;({ LocalIpcClient, requests: {
     createSessionRequest,
     endSessionRequest,
@@ -412,6 +455,7 @@ async function main() {
       kernelMaxMissedPongs: 10,
     })
     await waitForRemoteMachine(localClient, workerMachineId)
+    const workerKernel = await waitForRemoteKernel(localClient, workerMachineId, Array.from(new Set(options.providers)))
 
     const workflowArgs = [
       path.join('apps', 'cli', 'scripts', 'live-workflow-runtime-drill.mjs'),
@@ -443,6 +487,11 @@ async function main() {
       homeKernelUrl,
       workerMachineId,
       workerMachineAlias,
+      workerKernel: {
+        kernelId: workerKernel.kernel_id,
+        machineId: workerKernel.machine_id,
+        providers: workerKernel.available_providers,
+      },
       scenario: options.scenario,
       providers: options.providers,
       model: options.model,
