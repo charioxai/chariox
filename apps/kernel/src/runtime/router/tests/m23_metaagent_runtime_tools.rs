@@ -310,11 +310,9 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(
-        owned_agents.iter().any(|agent| {
-            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
-        })
-    );
+    assert!(owned_agents
+        .iter()
+        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -722,12 +720,10 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(
-        session
-            .agents()
-            .iter()
-            .all(|agent| agent.id() != worker.id())
-    );
+    assert!(session
+        .agents()
+        .iter()
+        .all(|agent| agent.id() != worker.id()));
 }
 
 #[tokio::test]
@@ -1259,6 +1255,96 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry()
             .and_then(serde_json::Value::as_array)
             .map(Vec::len),
         Some(1)
+    );
+}
+
+#[tokio::test]
+async fn local_metaagent_command_search_request_enforces_owner_scope() {
+    Box::pin(local_metaagent_command_search_request_enforces_owner_scope_impl()).await
+}
+
+async fn local_metaagent_command_search_request_enforces_owner_scope_impl() {
+    let env = TestMetaRuntimeEnv::new("local-command-search");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let mut owner_caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+    owner_caller.user_id = Some(metaagent.owner_user_id().to_string());
+
+    let search_request =
+        LocalDaemonRequest::SearchMetaagentCommands(SearchMetaagentCommandsRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            query: Some("agent".to_string()),
+            tag: Some("agent".to_string()),
+            scope: Some("session".to_string()),
+            mutates: None,
+            policy: Some("allow".to_string()),
+            limit: Some(10),
+        });
+    let searched = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "search-metaagent-commands",
+                KernelCommandSource::LocalCli,
+                owner_caller,
+                None,
+                None,
+                &search_request,
+            ),
+            search_request.clone(),
+        )
+        .await
+        .expect("owner should search metaagent commands");
+    let LocalDaemonResponse::MetaagentCommandsSearched { commands } = searched else {
+        panic!("unexpected metaagent command search response: {searched:?}");
+    };
+    assert!(
+        commands.iter().any(|command| {
+            command
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name.contains("agent"))
+        }),
+        "command search should return agent command descriptors: {commands:?}"
+    );
+
+    let mut forged_caller = KernelCaller::for_source(&KernelCommandSource::LocalCli);
+    forged_caller.user_id = Some("user-2".to_string());
+    let denied = router
+        .dispatch(
+            KernelCommand::from_local_request_with_caller(
+                "foreign-search-metaagent-commands",
+                KernelCommandSource::LocalCli,
+                forged_caller,
+                None,
+                None,
+                &search_request,
+            ),
+            search_request,
+        )
+        .await
+        .expect_err("another user must not search a metaagent command registry");
+    assert!(
+        denied
+            .to_string()
+            .contains("requires an owned session metaagent"),
+        "{denied:?}"
     );
 }
 

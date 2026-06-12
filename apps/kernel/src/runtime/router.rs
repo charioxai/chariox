@@ -75,7 +75,7 @@ mod tests {
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     use crate::agent::CreateAgentRequest;
     use crate::attachment::ClientCapabilityLevel;
@@ -94,8 +94,8 @@ mod tests {
         LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
         ReadMetaagentEventRequest, RelayStatusRequest, RemoveWorkflowEdgeRequest,
         ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-        RunShellCapabilityRequest, SpawnAgentRequest, SubmitPromptRequest,
-        TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
+        RunShellCapabilityRequest, SearchMetaagentCommandsRequest, SpawnAgentRequest,
+        SubmitPromptRequest, TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo,
@@ -106,9 +106,9 @@ mod tests {
     };
     use crate::runtime::router::CommandRouter;
     use crate::session::{
-        CreateSessionRequest, DEFAULT_LOCAL_USER_ID, PromptStatus, PromptSubmissionOutcome,
-        RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-        RuntimeInteractionKind, RuntimeInteractionLevel, SessionStatus,
+        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, RuntimeInteraction,
+        RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionKind,
+        RuntimeInteractionLevel, SessionStatus, DEFAULT_LOCAL_USER_ID,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 

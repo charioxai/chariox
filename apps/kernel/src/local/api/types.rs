@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 135;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 136;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -75,6 +75,24 @@ pub struct ListMetaagentEventsRequest {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SearchMetaagentCommandsRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutates: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +133,7 @@ pub enum LocalDaemonRequest {
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
+    SearchMetaagentCommands(SearchMetaagentCommandsRequest),
     ListMetaagentEvents(ListMetaagentEventsRequest),
     ReadMetaagentEvent(ReadMetaagentEventRequest),
     AckMetaagentEvents(AckMetaagentEventsRequest),
@@ -408,6 +427,9 @@ pub enum LocalDaemonResponse {
     },
     MetaagentEventsListed {
         events: Vec<serde_json::Value>,
+    },
+    MetaagentCommandsSearched {
+        commands: Vec<serde_json::Value>,
     },
     MetaagentEventRead {
         event: serde_json::Value,

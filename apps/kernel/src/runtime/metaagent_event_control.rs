@@ -2,7 +2,7 @@ use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::state::KernelRuntimeState;
 use crate::transport::runtime_tools::{
-    META_ACK_EVENT_TOOL, META_LIST_EVENTS_TOOL, META_READ_EVENT_TOOL,
+    META_ACK_EVENT_TOOL, META_LIST_EVENTS_TOOL, META_READ_EVENT_TOOL, META_SEARCH_COMMANDS_TOOL,
 };
 
 pub(crate) async fn execute_metaagent_event_request(
@@ -11,6 +11,33 @@ pub(crate) async fn execute_metaagent_event_request(
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
+        LocalDaemonRequest::SearchMetaagentCommands(request) => {
+            ensure_metaagent_owner(
+                runtime_state,
+                &request.session_id,
+                &request.metaagent_id,
+                caller_user_id,
+            )
+            .await?;
+            let result = runtime_state
+                .dispatch_meta_runtime_tool_call_for_agent(
+                    &request.session_id,
+                    &request.metaagent_id,
+                    META_SEARCH_COMMANDS_TOOL,
+                    serde_json::json!({
+                        "query": request.query,
+                        "tag": request.tag,
+                        "scope": request.scope,
+                        "mutates": request.mutates,
+                        "policy": request.policy,
+                        "limit": request.limit,
+                    }),
+                )
+                .await?;
+            Ok(LocalDaemonResponse::MetaagentCommandsSearched {
+                commands: array_payload(result, "commands")?,
+            })
+        }
         LocalDaemonRequest::ListMetaagentEvents(request) => {
             ensure_metaagent_owner(
                 runtime_state,

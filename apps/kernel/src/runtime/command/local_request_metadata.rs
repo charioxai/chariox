@@ -220,6 +220,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             }
             metadata
         }
+        LocalDaemonRequest::SearchMetaagentCommands(request) => {
+            LocalRequestMetadata::new("metaagent.command.search", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
         LocalDaemonRequest::ListMetaagentEvents(request) => {
             LocalRequestMetadata::new("metaagent.event.list", Normal)
                 .session(&request.session_id)
@@ -284,6 +289,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::SearchMetaagentCommands(_) => "metaagent.command.search",
         LocalDaemonRequest::ListMetaagentEvents(_) => "metaagent.event.list",
         LocalDaemonRequest::ReadMetaagentEvent(_) => "metaagent.event.read",
         LocalDaemonRequest::AckMetaagentEvents(_) => "metaagent.event.ack",
