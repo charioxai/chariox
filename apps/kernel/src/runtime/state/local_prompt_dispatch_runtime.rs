@@ -28,7 +28,7 @@ impl KernelRuntimeState {
             if result.is_ok() {
                 owned.update_metaagent_event_prompt_delivery_for_prompt(
                     &dispatch.prompt_id,
-                    "delivered",
+                    crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
                     None,
                 );
             }
@@ -162,7 +162,7 @@ impl KernelRuntimeState {
             let owned = &self.owned;
             owned.update_metaagent_event_prompt_delivery_for_prompt(
                 &dispatch.prompt_id,
-                "failed",
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
                 Some(error.to_string()),
             );
             let failed_prompt = owned.prompt_state_owner.active_prompt_for_agent(

@@ -6,6 +6,30 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_MAX_METAAGENT_EVENT_RECORDS_PER_METAAGENT: usize = 1_000;
 const DEFAULT_MAX_METAAGENT_EVENT_DETAIL_BYTES: usize = 64 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MetaagentEventPromptDeliveryStatus {
+    Recorded,
+    Submitted,
+    Steered,
+    Queued,
+    Delivered,
+    Failed,
+}
+
+impl MetaagentEventPromptDeliveryStatus {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Recorded => "recorded",
+            Self::Submitted => "submitted",
+            Self::Steered => "steered",
+            Self::Queued => "queued",
+            Self::Delivered => "delivered",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MetaagentEventRecord {
     pub sequence: u64,
@@ -24,7 +48,7 @@ pub(crate) struct MetaagentEventRecord {
     pub ack_at_ms: Option<u64>,
     pub injected_prompt_id: Option<String>,
     #[serde(default = "default_metaagent_event_delivery_status")]
-    pub prompt_delivery_status: String,
+    pub prompt_delivery_status: MetaagentEventPromptDeliveryStatus,
     #[serde(default)]
     pub prompt_delivery_updated_at_ms: Option<u64>,
     #[serde(default)]
@@ -90,8 +114,8 @@ pub(crate) struct MetaagentEventStore {
     limits: MetaagentEventStoreLimits,
 }
 
-fn default_metaagent_event_delivery_status() -> String {
-    "recorded".to_string()
+fn default_metaagent_event_delivery_status() -> MetaagentEventPromptDeliveryStatus {
+    MetaagentEventPromptDeliveryStatus::Recorded
 }
 
 impl MetaagentEventStore {
@@ -156,7 +180,7 @@ impl MetaagentEventStore {
                 Some("unacked") => record.ack_at_ms.is_none(),
                 Some("read") => record.read_at_ms.is_some(),
                 Some("unread") => record.read_at_ms.is_none(),
-                Some(status) => record.prompt_delivery_status == status,
+                Some(status) => record.prompt_delivery_status.as_str() == status,
                 _ => true,
             })
             .cloned()
@@ -225,7 +249,7 @@ impl MetaagentEventStore {
             }
             *by_kind.entry(record.kind.clone()).or_default() += 1;
             *by_prompt_delivery_status
-                .entry(record.prompt_delivery_status.clone())
+                .entry(record.prompt_delivery_status.as_str().to_string())
                 .or_default() += 1;
         }
         serde_json::json!({
@@ -240,12 +264,12 @@ impl MetaagentEventStore {
     pub(crate) fn update_prompt_delivery_status(
         &self,
         event_id: &str,
-        status: &str,
+        status: MetaagentEventPromptDeliveryStatus,
         error: Option<String>,
     ) -> Option<MetaagentEventRecord> {
         let mut state = self.state.lock().expect("metaagent event store poisoned");
         let record = state.records.get_mut(event_id)?;
-        record.prompt_delivery_status = status.to_string();
+        record.prompt_delivery_status = status;
         record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
         record.prompt_delivery_error = error;
         Some(record.clone())
@@ -254,7 +278,7 @@ impl MetaagentEventStore {
     pub(crate) fn update_prompt_delivery_status_for_prompt(
         &self,
         prompt_id: &str,
-        status: &str,
+        status: MetaagentEventPromptDeliveryStatus,
         error: Option<String>,
     ) -> Option<MetaagentEventRecord> {
         let mut state = self.state.lock().expect("metaagent event store poisoned");
@@ -262,7 +286,7 @@ impl MetaagentEventStore {
             .records
             .values_mut()
             .find(|record| record.injected_prompt_id.as_deref() == Some(prompt_id))?;
-        record.prompt_delivery_status = status.to_string();
+        record.prompt_delivery_status = status;
         record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
         record.prompt_delivery_error = error;
         Some(record.clone())
@@ -276,7 +300,7 @@ impl MetaagentEventStore {
         let mut state = self.state.lock().expect("metaagent event store poisoned");
         let record = state.records.get_mut(event_id)?;
         record.injected_prompt_id = Some(prompt_id);
-        record.prompt_delivery_status = "recorded".to_string();
+        record.prompt_delivery_status = MetaagentEventPromptDeliveryStatus::Recorded;
         record.prompt_delivery_updated_at_ms = Some(crate::session::unix_epoch_ms());
         record.prompt_delivery_error = None;
         Some(record.clone())

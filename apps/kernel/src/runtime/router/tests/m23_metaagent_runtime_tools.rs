@@ -2204,7 +2204,8 @@ async fn metaagent_event_prompts_retry_after_provider_launch() {
         .read(metaagent.id(), &failed_event.event_id)
         .expect("event should still be readable after retry");
     assert_ne!(
-        retried_event.prompt_delivery_status, "failed",
+        retried_event.prompt_delivery_status,
+        crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
         "provider launch should retry failed metaagent event prompts: {retried_event:?}"
     );
     assert_ne!(

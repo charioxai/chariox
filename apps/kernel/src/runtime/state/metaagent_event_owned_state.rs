@@ -443,7 +443,11 @@ impl KernelRuntimeOwnedState {
         prompt: crate::session::PromptQueueItem,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         if let Some(dispatches) = self.steer_active_metaagent_prompt(session_id, &prompt)? {
-            self.update_metaagent_event_prompt_delivery(event_id, "steered", None);
+            self.update_metaagent_event_prompt_delivery(
+                event_id,
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Steered,
+                None,
+            );
             return Ok(dispatches);
         }
         let prepared = crate::app::KernelPreparedPromptSubmission {
@@ -458,7 +462,7 @@ impl KernelRuntimeOwnedState {
                 None => {
                     self.update_metaagent_event_prompt_delivery(
                         event_id,
-                        "failed",
+                        crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
                         Some("no local or remote prompt route available".to_string()),
                     );
                     return Ok(WorkflowPromptDispatches::default());
@@ -480,8 +484,12 @@ impl KernelRuntimeOwnedState {
             );
         }
         let delivery_status = match &submission.outcome {
-            crate::session::PromptSubmissionOutcome::Started { .. } => "submitted",
-            crate::session::PromptSubmissionOutcome::Queued { .. } => "queued",
+            crate::session::PromptSubmissionOutcome::Started { .. } => {
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Submitted
+            }
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Queued
+            }
         };
         self.update_metaagent_event_prompt_delivery(event_id, delivery_status, None);
         if let Some(dispatch) = submission.dispatch.take() {
@@ -509,7 +517,7 @@ impl KernelRuntimeOwnedState {
     pub(super) fn update_metaagent_event_prompt_delivery(
         &self,
         event_id: &str,
-        status: &str,
+        status: crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus,
         error: Option<String>,
     ) {
         if let Some(record) = self
@@ -523,7 +531,7 @@ impl KernelRuntimeOwnedState {
     pub(super) fn update_metaagent_event_prompt_delivery_for_prompt(
         &self,
         prompt_id: &str,
-        status: &str,
+        status: crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus,
         error: Option<String>,
     ) {
         if let Some(record) = self
