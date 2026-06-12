@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @arroba/kernel-client run build && tsc -p tsconfig.json",
-    "lint": "pnpm --filter @arroba/kernel-client run build && tsc -p tsconfig.json --noEmit",
+    "build": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json",
+    "lint": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json --noEmit",
     "test": "pnpm run build && node --test dist/index.test.js"
   },
   "dependencies": {
