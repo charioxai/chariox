@@ -79,6 +79,13 @@ async function buildBinary(manifestPath, binName) {
   return path.join(path.dirname(manifestPath), 'target/debug', binName)
 }
 
+async function buildKernelClient() {
+  const result = await run('pnpm', ['--workspace-root', 'run', 'build:kernel-client'])
+  if (result.code !== 0) {
+    throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
+  }
+}
+
 function daemonEnv({ baseEnv, ports, rootDir, relayToken, daemonId, daemonAlias, machineId, machineAlias, acceptRemoteLeases, kernelPort, mcpPort, opencodePort, codexPort }) {
   const daemonRoot = path.join(rootDir, daemonId)
   return {
@@ -215,6 +222,20 @@ function requireCondition(condition, message, details) {
   if (!condition) throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
 }
 
+function requireRemotePlacement(agent, workerKernel, label) {
+  requireCondition(agent?.remote_execution?.leased_agent_id, `${label} did not have a worker lease`, agent)
+  requireCondition(
+    agent.remote_execution.worker_kernel_id === workerKernel.kernel_id,
+    `${label} ran on ${agent.remote_execution.worker_kernel_id}, expected ${workerKernel.kernel_id}`,
+    agent.remote_execution,
+  )
+  requireCondition(
+    agent.remote_execution.worker_machine_id === workerKernel.machine_id,
+    `${label} ran on machine ${agent.remote_execution.worker_machine_id}, expected ${workerKernel.machine_id}`,
+    agent.remote_execution,
+  )
+}
+
 async function sendWithTimeout(client, request, timeoutMs, description) {
   return await Promise.race([
     client.send(request),
@@ -346,6 +367,7 @@ async function main() {
   let succeeded = false
   try {
     await mkdir(workspace, { recursive: true })
+    await buildKernelClient()
     const modules = await Promise.all([
       import('../../../packages/kernel-client/dist/ipc.js'),
       import('../../../packages/kernel-client/dist/ipc-requests.js'),
@@ -385,7 +407,7 @@ async function main() {
     )), 'AgentSpawned')
     const remoteAgentId = spawned.agent.id
     const initialBinding = spawned.agent.remote_execution
-    requireCondition(initialBinding?.leased_agent_id, 'remote agent did not receive a worker lease', spawned.agent)
+    requireRemotePlacement(spawned.agent, workerKernel, 'initial remote agent')
     log('remote-agent-spawned', { sessionId, remoteAgentId, leasedAgentId: initialBinding.leased_agent_id })
 
     await promptRemoteAgent({
@@ -411,6 +433,7 @@ async function main() {
     const afterHomeState = unwrapVariant(await attached.client.send(requests.getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const afterHomeAgent = (afterHomeState.agents || afterHomeState.session?.agents || []).find((agent) => agent.id === remoteAgentId)
     requireCondition(afterHomeAgent?.remote_execution?.leased_agent_id === initialBinding.leased_agent_id, 'home restart did not restore remote agent binding', afterHomeState)
+    requireRemotePlacement(afterHomeAgent, workerKernel, 'home-restarted remote agent')
     await promptRemoteAgent({
       client: attached.client,
       requests,
@@ -427,7 +450,7 @@ async function main() {
     await terminateChild(workerChild)
     workerChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: workerEnv })
     await waitForRemoteMachine(attached.client, requests, workerMachineId, options.timeoutMs, options.pollMs)
-    await waitForRemoteKernel(attached.client, workerMachineId, options.timeoutMs, options.pollMs)
+    const afterWorkerKernel = await waitForRemoteKernel(attached.client, workerMachineId, options.timeoutMs, options.pollMs)
     await promptRemoteAgent({
       client: attached.client,
       requests,
@@ -443,6 +466,7 @@ async function main() {
     const afterWorkerAgent = (afterWorkerState.agents || afterWorkerState.session?.agents || []).find((agent) => agent.id === remoteAgentId)
     requireCondition(afterWorkerAgent?.remote_execution?.leased_agent_id, 'worker restart did not leave remote agent bound after prompt-time repair', afterWorkerState)
     requireCondition(afterWorkerAgent.remote_execution.leased_agent_id !== initialBinding.leased_agent_id, 'worker restart did not refresh the stale leased agent id', afterWorkerAgent)
+    requireRemotePlacement(afterWorkerAgent, afterWorkerKernel, 'worker-restarted remote agent')
     log('worker-restart-ok', { leasedAgentId: afterWorkerAgent.remote_execution.leased_agent_id })
 
     await attached.client.close().catch(() => {})
@@ -455,7 +479,7 @@ async function main() {
     await waitForRelayTarget(LocalIpcClient, requests, relayUrl, relayToken, 'worker')
     attached = await attachClient(LocalIpcClient, requests, homeKernelUrl, sessionId, `remote-restart-both-${process.pid}`)
     await waitForRemoteMachine(attached.client, requests, workerMachineId, options.timeoutMs, options.pollMs)
-    await waitForRemoteKernel(attached.client, workerMachineId, options.timeoutMs, options.pollMs)
+    const finalWorkerKernel = await waitForRemoteKernel(attached.client, workerMachineId, options.timeoutMs, options.pollMs)
     await promptRemoteAgent({
       client: attached.client,
       requests,
@@ -470,6 +494,7 @@ async function main() {
     const finalState = unwrapVariant(await attached.client.send(requests.getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const finalAgent = (finalState.agents || finalState.session?.agents || []).find((agent) => agent.id === remoteAgentId)
     requireCondition(finalAgent?.remote_execution?.leased_agent_id, 'both restart did not leave remote agent bound after repair', finalState)
+    requireRemotePlacement(finalAgent, finalWorkerKernel, 'both-restarted remote agent')
     log('both-restart-ok', { leasedAgentId: finalAgent.remote_execution.leased_agent_id })
 
     console.log(JSON.stringify({
@@ -477,10 +502,12 @@ async function main() {
       sessionId,
       remoteAgentId,
       workerMachineId,
+      workerKernelId: workerKernel.kernel_id,
       bindings: {
-        initial: initialBinding.leased_agent_id,
-        afterWorker: afterWorkerAgent.remote_execution.leased_agent_id,
-        final: finalAgent.remote_execution.leased_agent_id,
+        initial: initialBinding,
+        afterHome: afterHomeAgent.remote_execution,
+        afterWorker: afterWorkerAgent.remote_execution,
+        final: finalAgent.remote_execution,
       },
     }, null, 2))
     succeeded = true
