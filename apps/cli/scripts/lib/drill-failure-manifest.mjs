@@ -1,5 +1,6 @@
 import { opendir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
+import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 
 const FAILURE_MANIFEST_FILE = "arroba-drill-failure.json"
 const FAILURE_MANIFEST_SCHEMA = "arroba.drill.failure.v1"
@@ -48,6 +49,7 @@ export function validateDrillFailureManifest(manifest, source = "manifest") {
 
 export function summarizeDrillFailureManifest(manifest, { source = null } = {}) {
   validateDrillFailureManifest(manifest, source ?? "manifest")
+  const classification = classifyDrillFailureManifest(manifest)
   return {
     schema: manifest.schema,
     source,
@@ -61,6 +63,7 @@ export function summarizeDrillFailureManifest(manifest, { source = null } = {}) 
           hasStack: typeof manifest.error.stack === "string" && manifest.error.stack.length > 0,
         }
       : null,
+    classification,
   }
 }
 
@@ -84,8 +87,52 @@ export function formatDrillFailureManifestSummary(manifest, { source = null } = 
   } else {
     lines.push("error=none")
   }
-  lines.push(`next: inspect preserved artifacts under ${summary.rootDir}; rerun the drill after addressing the failure`)
+  lines.push(`owner=${summary.classification.owner} classification=${summary.classification.kind}`)
+  lines.push(`next: ${summary.classification.nextAction}`)
   return lines.join("\n")
+}
+
+export function classifyDrillFailureManifest(manifest) {
+  const text = [
+    manifest.error?.name,
+    manifest.error?.message,
+    manifest.error?.stack,
+    ...Object.entries(manifest.metadata ?? {}).map(([key, value]) => `${key}=${String(value)}`),
+  ].filter(Boolean).join("\n")
+  const childClassification = classifyDrillChildFailure(text)
+  if (childClassification === "provider-auth") {
+    return {
+      kind: "provider-auth",
+      owner: "provider-account",
+      nextAction: "refresh provider login for the profile used by this drill, then rerun the drill",
+    }
+  }
+  if (childClassification === "provider-account") {
+    return {
+      kind: "provider-account",
+      owner: "provider-account",
+      nextAction: "check provider quota or billing for the account used by this drill, then rerun the drill",
+    }
+  }
+  if (/docker|colima/i.test(text)) {
+    return {
+      kind: "docker-runtime",
+      owner: "local-machine",
+      nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
+    }
+  }
+  if (/relay|websocket|connection reset|target.*stale|target.*offline/i.test(text)) {
+    return {
+      kind: "relay-runtime",
+      owner: "runtime-network",
+      nextAction: "inspect relay and kernel logs in the preserved artifact root, then rerun the drill",
+    }
+  }
+  return {
+    kind: childClassification,
+    owner: "drill-or-runtime",
+    nextAction: `inspect preserved artifacts under ${manifest.rootDir}; rerun the drill after addressing the failure`,
+  }
 }
 
 function validateFailureError(error, source) {

@@ -9,6 +9,7 @@ import {
   prepareDrillArtifacts,
 } from "./drill-artifacts.mjs"
 import {
+  classifyDrillFailureManifest,
   findDrillFailureManifestPaths,
   formatDrillFailureManifestSummary,
   readDrillFailureManifest,
@@ -43,9 +44,12 @@ test("reads and summarizes a preserved drill failure directory", async () => {
   assert.equal(summary.metadata.nested, undefined)
   assert.equal(summary.error.name, "Error")
   assert.equal(summary.error.message, "relay target was stale")
+  assert.equal(summary.classification.kind, "relay-runtime")
+  assert.equal(summary.classification.owner, "runtime-network")
   assert.match(text, /drill failure: hosted-cloud-relay/)
   assert.match(text, /metadata: provider=opencode-zen token=<redacted>/)
   assert.match(text, /error=Error: relay target was stale/)
+  assert.match(text, /owner=runtime-network classification=relay-runtime/)
   assert.doesNotMatch(text, /should-not-print/)
 
   await rm(root, { recursive: true, force: true })
@@ -97,6 +101,24 @@ test("rejects malformed failure manifests", () => {
     ...validManifest(),
     error: { name: "Error", message: "failed", stack: 1 },
   }), /invalid stack/)
+})
+
+test("classifies common drill failure owners and next actions", () => {
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "Token refresh failed: 401", stack: null },
+  })), {
+    kind: "provider-auth",
+    owner: "provider-account",
+    nextAction: "refresh provider login for the profile used by this drill, then rerun the drill",
+  })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "Docker is required for the slice lifecycle drill. Start Docker/Colima and retry.", stack: null },
+  })), {
+    kind: "docker-runtime",
+    owner: "local-machine",
+    nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
+  })
 })
 
 function validManifest(overrides = {}) {
