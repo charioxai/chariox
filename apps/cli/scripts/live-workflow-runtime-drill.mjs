@@ -3,6 +3,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import os from 'node:os'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -68,6 +69,10 @@ const DEFAULT_WORKTREE = repoRoot
 const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_PROVIDERS = ['opencode', 'codex', 'opencode', 'codex', 'opencode', 'codex']
 const DEFAULT_NUMBERS = ['1842', '7315', '4068', '5921', '8473', '2604']
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 function parseArgs(argv) {
   const options = {
@@ -866,6 +871,10 @@ async function main() {
     return
   }
 
+  const artifactRoot = path.join(repoRoot, '.artifacts', 'live-workflow-runtime-drill', nowStamp())
+  await prepareDrillArtifacts(artifactRoot)
+  let passed = false
+  let failure = null
   let daemonChild = null
   let kernelUrl = options.kernel
   if (options.spawnDaemon) {
@@ -984,9 +993,14 @@ async function main() {
   }
 
   let sessionId = null
+  let workflowId = null
+  let workflowRunId = null
+  let attachmentId = null
   let trackedProviderProcesses = []
   let cleanupReport = null
   const terminalRecords = []
+  const agentIds = []
+  const nodeIds = []
   const captureTrackedProviderProcesses = async () => {
     if (!daemonChild) return
     const listed = unwrap(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed')?.processes || []
@@ -1026,14 +1040,13 @@ async function main() {
       await client.send(attachToSessionRequest(session.id, `live-drill-${Date.now()}`)),
       'SessionAttached',
     ).attachment
+    attachmentId = attachment.id
 
     if (typeof scenario.beforeAgents === 'function') {
       logStep('scenario_before_agents', { scenario: scenario.id })
       await scenario.beforeAgents(client, options)
     }
 
-    const agentIds = []
-    const nodeIds = []
     for (let index = 0; index < scenario.providers.length; index += 1) {
       const provider = scenario.providers[index]
       const providerModel = modelForProvider(provider, options)
@@ -1088,6 +1101,7 @@ async function main() {
 
     logStep('create_workflow', { alias: scenario.alias })
     const workflow = unwrap(await client.send(createWorkflowRequest(session.id, scenario.alias)), 'WorkflowCreated').workflow
+    workflowId = workflow.id
     logStep('set_workflow_flush_context', { workflowId: workflow.id, flushAgentContextBeforeRun: false })
     await client.send(setWorkflowFlushContextRequest(session.id, workflow.id, false))
     for (let index = 0; index < scenario.providers.length; index += 1) {
@@ -1132,6 +1146,7 @@ async function main() {
       await client.send(invokeWorkflowEndpointRequest(session.id, workflow.id, endpoint.id, scenario.entryPrompt ?? 'Run the workflow exactly as instructed.')),
       'WorkflowRunInvoked',
     ).workflow_run
+    workflowRunId = workflowRun.id
 
     for (let index = 0; index < options.pollLimit; index += 1) {
       await sleep(options.pollIntervalMs)
@@ -1148,6 +1163,7 @@ async function main() {
           await captureTrackedProviderProcesses()
           await client.send(endSessionRequest(session.id)).catch(() => {})
           await client.close()
+          passed = true
           return
         }
       }
@@ -1179,6 +1195,7 @@ async function main() {
         }
         await client.send(endSessionRequest(session.id)).catch(() => {})
         await client.close()
+        passed = true
         return
       }
     }
@@ -1222,6 +1239,7 @@ async function main() {
     await client.close()
     process.exitCode = 1
   } catch (error) {
+    failure = error
     console.error(error)
     if (sessionId) {
       try { await client.send(endSessionRequest(sessionId)) } catch {}
@@ -1243,6 +1261,45 @@ async function main() {
       }
       console.log(JSON.stringify({ cleanupReport }, null, 2))
     }
+    await finalizeDrillArtifacts({
+      rootDir: artifactRoot,
+      passed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-workflow-runtime',
+        scenario: scenario.id,
+        kernelUrl,
+        relayUrl: options.relayUrl,
+        targetDaemonId: options.targetDaemonId,
+        targetDaemonAlias: options.targetDaemonAlias,
+        machineRef: options.machineRef,
+        workspace: options.workspace,
+        worktree: options.worktree,
+        providers: scenario.providers,
+        model: options.model,
+        providerModels: options.providerModels,
+        pollLimit: options.pollLimit,
+        pollIntervalMs: options.pollIntervalMs,
+        spawnDaemon: options.spawnDaemon,
+        workspaceLiveSyncMode: options.workspaceLiveSyncMode,
+        sessionId,
+        attachmentId,
+        workflowId,
+        workflowRunId,
+        agentIds,
+        nodeIds,
+        trackedProviderProcesses,
+        cleanupReport,
+        terminalRecords: terminalRecords.map((record) => ({
+          kind: record.kind,
+          providerRunId: record.provider_run_id ?? null,
+          text: typeof record.bytes === 'string'
+            ? record.bytes.slice(0, 1000)
+            : Buffer.from(record.bytes || []).toString('utf8').slice(0, 1000),
+        })).slice(-80),
+      },
+    })
   }
 }
 
