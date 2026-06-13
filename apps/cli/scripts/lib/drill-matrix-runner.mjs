@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process"
+import { mkdir, writeFile } from "node:fs/promises"
+import path from "node:path"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 
 export function parseDrillScenarioIds(value) {
@@ -45,14 +47,27 @@ export async function runDrillMatrix({
   cwd,
   continueOnFailure = false,
   dryRun = false,
+  reportPath = null,
+  metadata = {},
 }) {
+  const startedAt = new Date()
   console.log(`[${matrixName}] selected ${scenarios.map((scenario) => scenario.id).join(", ")}`)
   if (dryRun) {
+    const results = []
     for (const scenario of scenarios) {
       const { command, args } = commandForScenario(scenario)
       console.log(`[${matrixName}] dry-run ${scenario.id}: ${quoteDrillCommand(command, args)}`)
+      results.push({
+        scenario,
+        ok: true,
+        dryRun: true,
+        command,
+        args,
+        durationMs: 0,
+      })
     }
-    return []
+    await maybeWriteMatrixReport({ reportPath, matrixName, startedAt, results, dryRun, metadata })
+    return results
   }
 
   const results = []
@@ -73,6 +88,7 @@ export async function runDrillMatrix({
     )
   }
 
+  await maybeWriteMatrixReport({ reportPath, matrixName, startedAt, results, dryRun, metadata })
   return results
 }
 
@@ -103,30 +119,60 @@ async function runMatrixScenario({ matrixName, scenario, commandForScenario, cwd
     if (scenario.expectedFailure) {
       const reason = "expected unsupported failure but scenario exited successfully"
       console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} ${reason}`)
-      return { scenario, ok: false, durationMs, reason }
+      return { scenario, ok: false, durationMs, reason, command, args }
     }
     console.log(`[${matrixName}] pass ${scenario.id} duration_ms=${durationMs}`)
-    return { scenario, ok: true, durationMs }
+    return { scenario, ok: true, durationMs, command, args }
   }
 
   if (scenario.expectedFailure) {
     const expected = scenario.expectedOutputIncludes
     if (!expected || output.includes(expected)) {
       console.log(`[${matrixName}] pass ${scenario.id} expected_failure duration_ms=${durationMs}`)
-      return { scenario, ok: true, durationMs, expectedFailure: true, classification: "expected-failure" }
+      return { scenario, ok: true, durationMs, expectedFailure: true, classification: "expected-failure", command, args }
     }
     const reason = `expected failure output to include ${JSON.stringify(expected)}`
     const classification = classifyDrillChildFailure(output)
     console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
-    return { scenario, ok: false, durationMs, reason, classification }
+    return { scenario, ok: false, durationMs, reason, classification, command, args }
   }
 
   const reason = status.error?.message ?? `code=${status.code} signal=${status.signal ?? "none"}`
   const classification = classifyDrillChildFailure(`${output}\n${status.error?.message ?? ""}`)
   console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
-  return { scenario, ok: false, durationMs, reason, classification }
+  return { scenario, ok: false, durationMs, reason, classification, command, args }
 }
 
 function requirementsFor(scenario) {
   return Array.isArray(scenario.requires) ? scenario.requires : []
+}
+
+async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, results, dryRun, metadata }) {
+  if (!reportPath) return
+  const completedAt = new Date()
+  const report = {
+    schema: "arroba.drill.matrix.v1",
+    matrix: matrixName,
+    status: dryRun ? "dry-run" : results.every((result) => result.ok) ? "passed" : "failed",
+    dryRun,
+    startedAt: startedAt.toISOString(),
+    completedAt: completedAt.toISOString(),
+    durationMs: completedAt.getTime() - startedAt.getTime(),
+    metadata,
+    scenarios: results.map((result) => ({
+      id: result.scenario.id,
+      description: result.scenario.description,
+      requires: requirementsFor(result.scenario),
+      status: result.dryRun ? "dry-run" : result.ok ? "passed" : "failed",
+      expectedFailure: Boolean(result.expectedFailure),
+      classification: result.classification ?? null,
+      durationMs: result.durationMs,
+      reason: result.reason ?? null,
+      command: result.command,
+      args: result.args,
+    })),
+  }
+  await mkdir(path.dirname(reportPath), { recursive: true })
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+  console.log(`[${matrixName}] report ${reportPath}`)
 }

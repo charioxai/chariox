@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -50,16 +50,44 @@ test("quotes commands consistently", () => {
 test("runs a passing matrix scenario", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
+  const reportPath = path.join(dir, "reports", "matrix.json")
 
   const results = await runDrillMatrix({
     matrixName: "test-matrix",
     scenarios: [{ id: "pass", description: "passing scenario", script }],
     commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
     cwd: dir,
+    reportPath,
   })
 
   assert.equal(results.length, 1)
   assert.equal(results[0].ok, true)
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.equal(report.schema, "arroba.drill.matrix.v1")
+  assert.equal(report.status, "passed")
+  assert.equal(report.scenarios[0].id, "pass")
+  assert.equal(report.scenarios[0].command, process.execPath)
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("writes dry-run report without executing scenarios", async () => {
+  const dir = await fixtureDir()
+  const script = await writeFixtureScript(dir, "fail-if-executed.mjs", "process.exit(9)")
+  const reportPath = path.join(dir, "dry-run.json")
+
+  const results = await runDrillMatrix({
+    matrixName: "test-matrix",
+    scenarios: [{ id: "dry", description: "dry-run scenario", script }],
+    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+    cwd: dir,
+    dryRun: true,
+    reportPath,
+  })
+
+  assert.equal(results[0].dryRun, true)
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.equal(report.status, "dry-run")
+  assert.equal(report.scenarios[0].status, "dry-run")
   await rm(dir, { recursive: true, force: true })
 })
 

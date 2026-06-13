@@ -74,6 +74,7 @@ function printHelp() {
     '  --only IDS              Comma-separated scenario ids',
     '  --dry-run               Print selected commands without running drills',
     '  --continue-on-failure   Run every selected scenario before exiting non-zero',
+    '  --report PATH           Write a machine-readable matrix report',
     '  --hetzner-host HOST     Forwarded to Hetzner drill scenarios',
     '  --hetzner-key PATH      Forwarded to Hetzner drill scenarios',
     '  --hetzner-repo PATH     Forwarded to Hetzner drill scenarios',
@@ -101,6 +102,7 @@ function parseArgs(argv) {
     only: null,
     dryRun: false,
     continueOnFailure: false,
+    reportPath: null,
     passthrough: [],
     help: false,
   }
@@ -112,6 +114,8 @@ function parseArgs(argv) {
     else if (arg === '--include-opencode') options.includeOpencode = true
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--continue-on-failure') options.continueOnFailure = true
+    else if (arg === '--report') options.reportPath = readValue(argv, i++, arg)
+    else if (arg.startsWith('--report=')) options.reportPath = arg.slice('--report='.length)
     else if (arg === '--help' || arg === '-h') options.help = true
     else if (arg === '--only') options.only = parseDrillScenarioIds(readValue(argv, i++, arg))
     else if (arg.startsWith('--only=')) options.only = parseDrillScenarioIds(arg.slice('--only='.length))
@@ -167,6 +171,13 @@ async function main() {
     cwd: repoRoot,
     continueOnFailure: options.continueOnFailure,
     dryRun: options.dryRun,
+    reportPath: options.reportPath,
+    metadata: {
+      includeRemote: options.includeRemote,
+      includeHetzner: options.includeHetzner,
+      includeOpencode: options.includeOpencode,
+      codexModelId,
+    },
   })
   const failed = results.filter((result) => !result.ok)
   if (failed.length > 0) process.exitCode = 1
