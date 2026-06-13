@@ -5,6 +5,8 @@ import { mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { historyOutlineText } from './lib/drill-history-outline.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -288,14 +290,14 @@ async function waitForTerminalText(events, needle, timeoutMs, pollMs) {
 }
 
 async function waitForHistoryText(client, sessionId, agentId, needle, timeoutMs, pollMs) {
-  const { getSessionHistoryRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+  const { getSessionHistoryOutlineRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const history = unwrap(
-      await client.send(getSessionHistoryRequest(sessionId, 40, 80_000, null, agentId)),
-      'SessionHistory',
+      await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 8)),
+      'SessionHistoryOutline',
     )
-    const text = (history?.entries ?? []).map((entry) => String(entry.entry?.text ?? entry.text ?? '')).join('')
+    const text = historyOutlineText(history)
     if (text.includes(needle)) {
       return text
     }
@@ -352,8 +354,10 @@ async function main() {
   let sessionId = null
   let attachmentId = null
   let succeeded = false
+  let failure = null
 
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     const { cliDist, kernelBinary } = await ensureCliBuilt()
@@ -559,6 +563,9 @@ async function main() {
 
     succeeded = true
     log('success', { providers: options.providers })
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (automation) {
       await bestEffortWithTimeout(automation.send('exit'), 2_000)
@@ -569,11 +576,22 @@ async function main() {
     }
     await terminateChild(cli)
     await terminateChild(daemon)
-    if (!succeeded && !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    }
-    if (!succeeded) {
-      log('artifacts-retained', { rootDir })
+    const finalized = await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'popup',
+        providers: options.providers.join(','),
+        kernelUrl,
+        noSpawnDaemon: options.noSpawnDaemon,
+        machineRef: options.machineRef,
+      },
+      log,
+    })
+    if (!finalized.preserved) {
+      await rm(automationSocket, { force: true }).catch(() => {})
     }
   }
 }
