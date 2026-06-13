@@ -1,10 +1,11 @@
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
 import path from "node:path"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import WebSocket from "ws"
 
@@ -13,7 +14,7 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   endSessionRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
   submitPromptRequest,
@@ -113,6 +114,22 @@ function startScreen(name, logDir, command, args, env) {
   ], { env, cwd: logDir })
 }
 
+async function finalizeProviderArtifacts({ root, provider, passed, failure, options, kernelUrl, logs }) {
+  await finalizeDrillArtifacts({
+    rootDir: root,
+    passed,
+    preserveOnFailure: options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_ATTACHMENT_ARTIFACTS === "1",
+    failure,
+    metadata: {
+      drill: "native-tui-attachment",
+      provider,
+      kernelUrl,
+      logs,
+    },
+    log: (name, details) => console.log(`[native-tui-attachment-drill] ${name}`, JSON.stringify(details)),
+  })
+}
+
 async function waitForNamedAgent(client, sessionId, alias) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const agents = unwrap(await client.send(listAgentsRequest(sessionId)), "AgentsListed").agents ?? []
@@ -127,11 +144,18 @@ async function waitForHistoryOutput(client, sessionId, attachmentId, agentId, ex
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 300, 100_000, null, agentId)), "SessionHistory")
-    const output = page.entries
-      .map((row) => row.entry)
-      .filter((entry) => entry && entry.kind !== "user_prompt")
-      .map((entry) => entry.text ?? "")
+    const outline = unwrap(
+      await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 8)),
+      "SessionHistoryOutline",
+    )
+    const output = (outline.agents ?? [])
+      .flatMap((agent) => agent.turns ?? [])
+      .flatMap((turn) => [
+        ...(turn.entries ?? []),
+        ...(turn.summary ? [turn.summary] : []),
+        ...(turn.blobs ?? []).map((blob) => ({ entry: { text: blob.summary } })),
+      ])
+      .map((row) => row.entry?.text ?? "")
       .join("")
     if (output.includes(expected)) return output
     await sleep(1_000)
@@ -242,7 +266,10 @@ async function runProvider(provider, options) {
   const textPath = path.join(root, `${provider}-note.txt`)
   let daemon = null
   let client = null
+  let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
     await writeFile(imagePath, validationPng)
     await writeFile(textPath, `${nativeMarker}\n`)
@@ -360,7 +387,11 @@ async function runProvider(provider, options) {
     await waitForLogOccurrences(logs.proxy, "attachments_forwarded", provider === "claude" ? 1 : 2)
     await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, arrobaMarker)
 
+    succeeded = true
     return { provider, status: "ok", sessionId, alias, nativeMarker, arrobaMarker, logs }
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)
@@ -369,11 +400,7 @@ async function runProvider(provider, options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_TUI_ATTACHMENT_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && process.exitCode)) {
-      console.log(JSON.stringify({ provider, artifactsKept: root }))
-    } else {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    }
+    await finalizeProviderArtifacts({ root, provider, passed: succeeded, failure, options, kernelUrl, logs })
   }
 }
 
