@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -300,55 +301,63 @@ function toolName(update) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const [{ LocalIpcClient }, requests] = await Promise.all([
-    import('../../../packages/kernel-client/dist/ipc.js'),
-    import('../../../packages/kernel-client/dist/ipc-requests.js'),
-  ])
-
   const rootDir = path.join(repoRoot, 'target', 'live-runtime-register-mcp-use-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const historyDir = path.join(rootDir, 'history')
   const capabilityRoot = path.join(rootDir, 'capabilities')
   const outputsDir = path.join(workspace, 'outputs')
-  await mkdir(outputsDir, { recursive: true })
-  await writeFile(path.join(workspace, 'README.md'), '# M16 external MCP live drill workspace\n', 'utf8')
-
-  const {
-    attachToSessionRequest,
-    createSessionRequest,
-    endSessionRequest,
-    getProviderRunRequest,
-    getSessionStateRequest,
-    launchProviderRunRequest,
-    listProviderProcessesRequest,
-    spawnAgentRequest,
-    submitPromptRequest,
-    teardownProviderProcessesRequest,
-  } = requests
-
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-  const kernel = await resolveKernelBinary()
-  const daemon = spawn(kernel, [], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `m16-runtime-mcp-use-${process.pid}-${Date.now()}`,
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: historyDir,
-      ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
-    },
-    stdio: ['ignore', 'ignore', 'inherit'],
-  })
 
   const results = []
   let client = null
+  let daemon = null
+  let LocalIpcClient = null
+  let endSessionRequest = null
+  let sessionId = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(outputsDir, { recursive: true })
+    await writeFile(path.join(workspace, 'README.md'), '# M16 external MCP live drill workspace\n', 'utf8')
+
+    const loaded = await Promise.all([
+      import('../../../packages/kernel-client/dist/ipc.js'),
+      import('../../../packages/kernel-client/dist/ipc-requests.js'),
+    ])
+    LocalIpcClient = loaded[0].LocalIpcClient
+    const requests = loaded[1]
+    const {
+      attachToSessionRequest,
+      createSessionRequest,
+      getProviderRunRequest,
+      getSessionStateRequest,
+      launchProviderRunRequest,
+      listProviderProcessesRequest,
+      spawnAgentRequest,
+      submitPromptRequest,
+      teardownProviderProcessesRequest,
+    } = requests
+    endSessionRequest = requests.endSessionRequest
+
+    const kernel = await resolveKernelBinary()
+    daemon = spawn(kernel, [], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        ARROBA_KERNEL_PORT: String(ports.kernelPort),
+        ARROBA_MCP_PORT: String(ports.mcpPort),
+        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+        ARROBA_CODEX_PORT: String(ports.codexPort),
+        ARROBA_DAEMON_ID: `m16-runtime-mcp-use-${process.pid}-${Date.now()}`,
+        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        ARROBA_SESSION_HISTORY_DIR: historyDir,
+        ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
+      },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+
     await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace)
     client = new LocalIpcClient(kernelUrl)
     const created = unwrapVariant(
@@ -363,6 +372,7 @@ async function main() {
       'SessionCreated',
     )
     const session = created.session
+    sessionId = session.id
     const attachment = unwrapVariant(
       await client.send(attachToSessionRequest(session.id, `m16-external-mcp-${Date.now()}`)),
       'SessionAttached',
@@ -486,14 +496,34 @@ async function main() {
     console.log(JSON.stringify({ ok: true, kernelUrl, workspace, results }, null, 2))
     succeeded = true
     await client.send(endSessionRequest(session.id)).catch(() => {})
+    sessionId = null
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
+    if (client && sessionId && endSessionRequest) await client.send(endSessionRequest(sessionId)).catch(() => {})
     if (client) await client.close().catch(() => {})
     await terminateChild(daemon)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      console.error(`Keeping drill artifacts for debugging: ${rootDir}`)
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'runtime-register-mcp-use',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        kernelUrl,
+        sessionId,
+        workspace,
+        capabilityRoot,
+        results,
+      },
+      log: (name, details) => console.log(`[runtime-register-mcp-use-drill] ${name}`, JSON.stringify(details)),
+    })
   }
 }
 
