@@ -666,7 +666,7 @@ export async function handleExtensionSlashCommand(
     if (!kind || !deps.listHomeExtensionAudit) return deps.flashFooter("usage: /extension audit <agent-ref> [--limit <count>]", "error")
     const events = await deps.listHomeExtensionAudit(kind, readNumberOption(command.args, "--limit"))
     deps.appendNotice(formatHomeExtensionAuditEvents(events))
-    deps.flashFooter(`showing home extension audit for ${kind}`, "info")
+    deps.flashFooter(`home extension audit for ${kind}: ${events.length} event${events.length === 1 ? "" : "s"}`, "info")
     return
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
