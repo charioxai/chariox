@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -240,55 +241,63 @@ async function main() {
     return
   }
 
+  const runId = `${process.pid}-${Date.now()}`
   const ports = makePorts()
-  const runtimeDir = path.join(cliRoot, '.tmp-live-runtime-mcp-reattach-drill')
-  const rootDir = path.join(cliRoot, 'target', 'live-runtime-mcp-reattach-drill', `${process.pid}-${Date.now()}`)
+  const runtimeDir = path.join(cliRoot, `.tmp-live-runtime-mcp-reattach-drill-${runId}`)
+  const rootDir = path.join(cliRoot, 'target', 'live-runtime-mcp-reattach-drill', runId)
   const workspace = path.join(rootDir, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
   const historyDir = path.join(rootDir, 'history')
-  await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-  await mkdir(outputsDir, { recursive: true })
-  await mkdir(runtimeDir, { recursive: true })
-  await writeFile(path.join(workspace, 'seed.txt'), 'runtime-mcp-seed\n', 'utf8')
-
-  const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
-  const {
-    attachToSessionRequest,
-    createSessionRequest,
-    detachFromSessionRequest,
-    endSessionRequest,
-    getProviderCatalogRequest,
-    getSessionStateRequest,
-    spawnAgentRequest,
-    submitPromptRequest,
-  } = requests
-
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-  const daemonChild = spawn(daemonBinary, [], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `runtime-mcp-reattach-${process.pid}-${Date.now()}`,
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: historyDir,
-    },
-    stdio: ['ignore', 'ignore', 'inherit'],
-  })
 
   let succeeded = false
   let sessionId = null
   let client = null
+  let daemonChild = null
+  let LocalIpcClient = null
+  let endSessionRequest = null
+  let failure = null
   const startedAt = Date.now()
   try {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(outputsDir, { recursive: true })
+    await mkdir(runtimeDir, { recursive: true })
+    await writeFile(path.join(workspace, 'seed.txt'), 'runtime-mcp-seed\n', 'utf8')
+
+    const loaded = await loadCliModules(runtimeDir)
+    LocalIpcClient = loaded.LocalIpcClient
+    const requests = loaded.requests
+    const {
+      attachToSessionRequest,
+      createSessionRequest,
+      detachFromSessionRequest,
+      getProviderCatalogRequest,
+      getSessionStateRequest,
+      spawnAgentRequest,
+      submitPromptRequest,
+    } = requests
+    endSessionRequest = requests.endSessionRequest
+
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
+    daemonChild = spawn(daemonBinary, [], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        ARROBA_KERNEL_PORT: String(ports.kernelPort),
+        ARROBA_MCP_PORT: String(ports.mcpPort),
+        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+        ARROBA_CODEX_PORT: String(ports.codexPort),
+        ARROBA_DAEMON_ID: `runtime-mcp-reattach-${runId}`,
+        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        ARROBA_SESSION_HISTORY_DIR: historyDir,
+      },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+
     await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace)
     client = new LocalIpcClient(kernelUrl)
 
@@ -417,19 +426,41 @@ async function main() {
       })),
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
-    if (sessionId) {
+    if (sessionId && LocalIpcClient && endSessionRequest) {
       const cleanup = new LocalIpcClient(kernelUrl)
       await cleanup.send(endSessionRequest(sessionId)).catch(() => {})
       await cleanup.close().catch(() => {})
     }
     await terminateChild(daemonChild)
-    await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'runtime-mcp-reattach',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        kernelUrl,
+        sessionId,
+        workspace,
+        runtimeDir,
+      },
+      log: (name, details) => console.log(`[runtime-mcp-reattach-drill] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+      await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
     } else {
-      console.error(`kept drill artifacts at ${rootDir}`)
+      console.error(`runtime MCP reattach drill artifacts kept at ${rootDir}`)
+      console.error(`runtime MCP reattach transient CLI modules kept at ${runtimeDir}`)
     }
   }
 }
