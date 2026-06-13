@@ -30,7 +30,7 @@ const MATRIX = [
     expectedOutputIncludes: 'managed mode needs selective write fencing',
   }),
   scenario('hetzner-tracked-codex', 'Hetzner remote tracked Codex fanout', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'hetzner-live-sync-tracked-parity-target', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true }),
-  scenario('hetzner-permission-codex', 'Hetzner remote Codex permission gating', remotePermissionDrill, ['--provider', 'codex', ...CODEX_MODEL, '--hetzner-worker', '--timeout-ms', '360000'], { remote: true, hetzner: true }),
+  scenario('hetzner-permission-codex', 'Hetzner remote tracked Codex permission gating', remotePermissionDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--hetzner-worker', '--timeout-ms', '360000'], { remote: true, hetzner: true }),
   scenario('local-managed-opencode', 'local managed OpenCode Zen two-target fanout', localDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--timeout-ms', '700000'], { opencode: true }),
   scenario('local-tracked-opencode', 'local tracked OpenCode Zen cross-branch bidirectional fanout', localDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'live-sync-opencode-tracked-parity-target', '--timeout-ms', '700000'], { opencode: true }),
   scenario('local-permission-opencode', 'local OpenCode Zen permission gating', localPermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--timeout-ms', '700000'], { opencode: true }),
@@ -45,7 +45,7 @@ const MATRIX = [
     expectedOutputIncludes: 'managed mode needs selective write fencing',
   }),
   scenario('hetzner-tracked-opencode', 'Hetzner remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'hetzner-live-sync-opencode-tracked-parity-target', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true, opencode: true }),
-  scenario('hetzner-permission-opencode', 'Hetzner remote OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--hetzner-worker', '--timeout-ms', '700000'], { remote: true, hetzner: true, opencode: true }),
+  scenario('hetzner-permission-opencode', 'Hetzner remote tracked OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--hetzner-worker', '--timeout-ms', '700000'], { remote: true, hetzner: true, opencode: true }),
 ]
 
 function scenario(id, description, script, args, flags = {}) {

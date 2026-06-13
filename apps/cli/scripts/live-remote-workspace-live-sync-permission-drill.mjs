@@ -52,6 +52,7 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
+    mode: 'managed',
     hetznerWorker: false,
     hetznerHost: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
     hetznerKey: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
@@ -70,6 +71,7 @@ function parseArgs(argv) {
     }
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
+    else if (arg === '--mode') options.mode = argv[++i]
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--hetzner-worker') options.hetznerWorker = true
     else if (arg === '--hetzner-host') options.hetznerHost = argv[++i]
@@ -81,6 +83,7 @@ function parseArgs(argv) {
   if (options.providers.includes('dev-stub')) {
     throw new Error('remote Workspace Live Sync permission drills require a real file-editing provider; use live-remote-machine-runtime-drill.mjs for dev-stub relay/lease validation')
   }
+  if (!['managed', 'tracked'].includes(options.mode)) throw new Error(`unsupported live sync permission mode: ${options.mode}`)
   return options
 }
 
@@ -90,7 +93,7 @@ function defaultModelForProvider(provider) {
 }
 
 function preflightWorkspaceLiveSyncPermissionSupport(options) {
-  if (options.hetznerWorker) {
+  if (options.hetznerWorker && options.mode === 'managed') {
     return {
       status: 'unsupported',
       mode: 'remote-workspace-live-sync-permission-live-drill',
@@ -270,6 +273,21 @@ function mirrorFixturesToHetznerCommand(options, rootDir) {
   ].join(' ')
 }
 
+function remoteFileContentCheckCommand(options, filePath, expectedContent) {
+  const remoteCommand = `test "$(cat ${shellQuote(filePath)} 2>/dev/null)" = ${shellQuote(expectedContent)}`
+  return [
+    'ssh',
+    '-i',
+    shellQuote(options.hetznerKey),
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    shellQuote(options.hetznerHost),
+    shellQuote(remoteCommand),
+  ].join(' ')
+}
+
 async function terminateChild(child, signal = 'SIGTERM') {
   if (!child || child.exitCode != null) return
   child.kill(signal)
@@ -363,7 +381,7 @@ async function waitForRemoteMachineKernel(client, machineRef, providers) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--hetzner-worker]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--mode managed|tracked] [--hetzner-worker]')
     return
   }
   if (options.providers.length < 1) throw new Error('remote workspace live sync permission drill requires at least one provider')
@@ -565,8 +583,8 @@ async function main() {
             kernelMaxMissedPongs: 10,
           })
       try {
-        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'managed'))
-        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'managed'))
+        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', options.mode))
+        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', options.mode))
       } finally {
         await workerClient.close().catch(() => {})
       }
@@ -577,11 +595,22 @@ async function main() {
         '--machine-ref', workerMachineId,
         '--provider', provider,
         '--model', model,
+        '--mode', options.mode,
         '--timeout-ms', String(options.timeoutMs),
         '--poll-ms', String(options.pollMs),
         '--history-dir', homeHistoryDir,
         ...(childRootDir ? ['--root-dir', childRootDir] : []),
         ...(options.hetznerWorker && childRootDir ? ['--after-fixture-command', mirrorFixturesToHetznerCommand(options, childRootDir)] : []),
+        ...(options.hetznerWorker && childRootDir ? ['--workspace-file-check-command', remoteFileContentCheckCommand(
+          options,
+          path.posix.join(childRootDir, 'workspace', `${provider}-workspace-live-sync-permission.txt`),
+          `workspace-live-sync-${provider}`,
+        )] : []),
+        ...(options.hetznerWorker && childRootDir ? ['--outside-file-check-command', remoteFileContentCheckCommand(
+          options,
+          path.posix.join(childRootDir, 'outside-repo', `${provider}-outside-repo-direct-write.txt`),
+          `outside-repo-direct-write-${provider}`,
+        )] : []),
         ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
       ], repoRoot, { label: 'remote workspace live sync permission drill' })
       results.push({ provider, model, status: 'passed' })
@@ -599,6 +628,7 @@ async function main() {
         providers: workerKernel.available_providers,
       },
       providers: options.providers,
+      liveSyncMode: options.mode,
       model: options.model,
       providerModels: options.providerModels,
       hetznerWorker: options.hetznerWorker,

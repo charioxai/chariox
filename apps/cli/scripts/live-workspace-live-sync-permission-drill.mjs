@@ -25,6 +25,9 @@ function parseArgs(argv) {
     rootDir: null,
     historyDir: null,
     afterFixtureCommand: null,
+    workspaceFileCheckCommand: null,
+    outsideFileCheckCommand: null,
+    mode: 'managed',
     effort: null,
     providerModels: {},
   }
@@ -49,6 +52,9 @@ function parseArgs(argv) {
     else if (arg === '--root-dir') options.rootDir = argv[++i]
     else if (arg === '--history-dir') options.historyDir = argv[++i]
     else if (arg === '--after-fixture-command') options.afterFixtureCommand = argv[++i]
+    else if (arg === '--workspace-file-check-command') options.workspaceFileCheckCommand = argv[++i]
+    else if (arg === '--outside-file-check-command') options.outsideFileCheckCommand = argv[++i]
+    else if (arg === '--mode') options.mode = argv[++i]
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-workspace-live-sync-permission-drill.mjs [options]',
@@ -64,6 +70,9 @@ function parseArgs(argv) {
         '  --root-dir <path>',
         '  --history-dir <path>',
         '  --after-fixture-command <cmd>',
+        '  --workspace-file-check-command <cmd>',
+        '  --outside-file-check-command <cmd>',
+        '  --mode <managed|tracked>',
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
         '  --keep-artifacts-on-failure',
@@ -74,6 +83,7 @@ function parseArgs(argv) {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
+  if (!['managed', 'tracked'].includes(options.mode)) throw new Error(`unsupported live sync permission mode: ${options.mode}`)
   return options
 }
 
@@ -350,14 +360,24 @@ async function allowOutsideRepoProviderPermissions(client, sessionId, attachment
   }
 }
 
-async function waitForFileContent(client, sessionId, attachmentId, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null) {
+async function fileContentMatches(filePath, expectedContent, checkCommand = null) {
+  if (checkCommand) {
+    const result = await run('/bin/sh', ['-lc', checkCommand])
+    return result.code === 0
+  }
+  try {
+    const content = await readFile(filePath, 'utf8')
+    return content.trim() === expectedContent
+  } catch {
+    return false
+  }
+}
+
+async function waitForFileContent(client, sessionId, attachmentId, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null, checkCommand = null) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await pumpTerminalOutput(client, sessionId, attachmentId)
-    try {
-      const content = await readFile(filePath, 'utf8')
-      if (content.trim() === expectedContent) return content
-    } catch {}
+    if (await fileContentMatches(filePath, expectedContent, checkCommand)) return expectedContent
     const failure = failureProbe ? await failureProbe() : null
     if (failure) throw new Error(failure)
     await sleep(pollMs)
@@ -365,7 +385,7 @@ async function waitForFileContent(client, sessionId, attachmentId, filePath, exp
   throw new Error(`timed out waiting for file ${filePath}`)
 }
 
-async function waitForOutsideRepoFileContent(client, sessionId, attachmentId, agentId, provider, outsideRepo, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null) {
+async function waitForOutsideRepoFileContent(client, sessionId, attachmentId, agentId, provider, outsideRepo, filePath, expectedContent, timeoutMs, pollMs, failureProbe = null, checkCommand = null) {
   const { sendTerminalInputRequest } = await import('../../../packages/kernel-client/dist/ipc-terminal-runtime-requests.js')
   const deadline = Date.now() + timeoutMs
   const respondedInteractionIds = new Set()
@@ -385,10 +405,7 @@ async function waitForOutsideRepoFileContent(client, sessionId, attachmentId, ag
       lastClaudeNativeApprovalMs = Date.now()
       await client.send(sendTerminalInputRequest(sessionId, attachmentId, '1\r')).catch(() => {})
     }
-    try {
-      const content = await readFile(filePath, 'utf8')
-      if (content.trim() === expectedContent) return content
-    } catch {}
+    if (await fileContentMatches(filePath, expectedContent, checkCommand)) return expectedContent
     const failure = failureProbe ? await failureProbe() : null
     if (failure) throw new Error(failure)
     await sleep(pollMs)
@@ -510,7 +527,7 @@ async function main() {
 
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace, `workspace-live-sync-permission-${provider}`)), 'SessionCreated').session
     const sessionId = session.id
-    await client.send(setWorkspaceLiveSyncModeRequest(sessionId, 'managed'))
+    await client.send(setWorkspaceLiveSyncModeRequest(sessionId, options.mode))
     const attachment = unwrap(await client.send(attachToSessionRequest(sessionId, `workspace-live-sync-permission-drill-${Date.now()}`)), 'SessionAttached').attachment
     const attachmentId = attachment.id
     await client.send(updateSessionConfigRequest(sessionId, attachmentId, { 'agents.mode': 'build', 'agents.permissions': 'required' }, false))
@@ -581,6 +598,7 @@ async function main() {
       [
         'This is a live Arroba workspace live sync permission smoke test.',
         'Use only Arroba workspace live sync. Do not use Bash, shell, native file tools, shell redirection, direct filesystem writes, or provider edit/write/patch tools for this step.',
+        `The session live sync mode is ${options.mode}.`,
         `Call the Arroba runtime MCP write tool ${liveSyncWriteToolName(provider)} exactly once with path "${targetFileName}", content_text "${expectedContent}", and domain "text".`,
         'If the tool name is displayed with another Arroba alias such as write_artifact or arroba.write_artifact, use that same Arroba workspace live sync write tool.',
         'After the write succeeds, reply with exactly WORKSPACE_LIVE_SYNC_PERMISSION_DONE.',
@@ -601,7 +619,7 @@ async function main() {
     log('answering-workspace-live-sync-interaction', { provider, interactionId: pending.interaction.id })
     await client.send(respondToInteractionRequest(sessionId, pending.interaction.id, 'allow'))
 
-    await waitForFileContent(client, sessionId, attachmentId, targetFilePath, expectedContent, options.timeoutMs, options.pollMs, launchFailureProbe)
+    await waitForFileContent(client, sessionId, attachmentId, targetFilePath, expectedContent, options.timeoutMs, options.pollMs, launchFailureProbe, options.workspaceFileCheckCommand)
     log('workspace-live-sync-permission-passed', { provider, targetFilePath })
 
     const outsideFilePath = path.join(outsideRepo, `${provider}-outside-repo-direct-write.txt`)
@@ -630,6 +648,7 @@ async function main() {
       options.timeoutMs,
       options.pollMs,
       launchFailureProbe,
+      options.outsideFileCheckCommand,
     )
     log('outside-repo-direct-write-passed', { provider, outsideFilePath })
 
