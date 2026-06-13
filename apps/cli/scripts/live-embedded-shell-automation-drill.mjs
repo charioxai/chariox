@@ -5,6 +5,7 @@ import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -189,10 +190,14 @@ async function main() {
 
   let daemon = null
   let cli = null
+  let cliStdout = ''
+  let cliStderr = ''
   let automation = null
   let sessionId = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     await writeFile(path.join(workspace, 'embedded-flow.arroba'), [
@@ -232,12 +237,20 @@ async function main() {
       '--client-id', `embedded-shell-drill-${process.pid}`,
     ]
     cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
-    let cliStdout = ''
-    let cliStderr = ''
     cli.stdout.on('data', (chunk) => { cliStdout += chunk.toString() })
     cli.stderr.on('data', (chunk) => { cliStderr += chunk.toString() })
+    const cliStartupFailure = new Promise((resolve) => {
+      cli.once('error', (error) => resolve(error))
+      cli.once('exit', (code, signal) => {
+        if (code !== 0) resolve(new Error(`CLI exited before automation socket was ready: code=${code} signal=${signal ?? 'none'}`))
+      })
+    })
     try {
-      await waitForSocket(automationSocket)
+      const startupFailure = await Promise.race([
+        waitForSocket(automationSocket).then(() => null),
+        cliStartupFailure,
+      ])
+      if (startupFailure) throw startupFailure
     } catch (error) {
       throw new Error(`${error.message}\n--- cli stdout ---\n${cliStdout.slice(-4000)}\n--- cli stderr ---\n${cliStderr.slice(-4000)}`)
     }
@@ -281,18 +294,35 @@ async function main() {
 
     await automation.send('exit').catch(() => {})
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     automation?.close()
     if (sessionId) await cleanupSession(kernelUrl, sessionId).catch(() => {})
     if (cli && !cli.killed) cli.kill('SIGTERM')
     if (daemon && !daemon.killed) daemon.kill('SIGTERM')
     await new Promise((resolve) => setTimeout(resolve, 250))
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-      await rm(automationSocket, { force: true }).catch(() => {})
-    } else {
-      log('kept-artifacts', { rootDir })
+    if (!succeeded && options.keepArtifactsOnFailure) {
+      await mkdir(rootDir, { recursive: true }).catch(() => {})
+      await writeFile(path.join(rootDir, 'cli-stdout.log'), cliStdout, 'utf8').catch(() => {})
+      await writeFile(path.join(rootDir, 'cli-stderr.log'), cliStderr, 'utf8').catch(() => {})
     }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'embedded-shell-automation',
+        kernelUrl,
+        sessionId,
+        workspace,
+        automationSocket,
+      },
+      log,
+    })
+    await rm(automationSocket, { force: true }).catch(() => {})
   }
   log('passed')
 }
