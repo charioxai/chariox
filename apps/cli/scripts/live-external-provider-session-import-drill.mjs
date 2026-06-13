@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -31,6 +32,10 @@ function unwrap(response, variant) {
 
 function makePort() {
   return 54000 + Math.floor(Math.random() * 2000)
+}
+
+function refreshExternalProviderSessionsRequest(provider = null) {
+  return { RefreshExternalProviderSessions: { provider } }
 }
 
 function nowStamp() {
@@ -74,6 +79,7 @@ async function seedProviderHomes(root, marker, workspace) {
   const codexHome = path.join(root, "provider-homes", "codex")
   const claudeHome = path.join(root, "provider-homes", "claude")
   const opencodeHome = path.join(root, "provider-homes", "opencode")
+  const fixtureUpdatedAt = new Date().toISOString()
   await mkdir(path.join(codexHome, "sessions"), { recursive: true })
   await mkdir(path.join(claudeHome, "projects", "-repo"), { recursive: true })
   await mkdir(path.join(opencodeHome, "sessions"), { recursive: true })
@@ -136,7 +142,7 @@ async function seedProviderHomes(root, marker, workspace) {
       id: `opencode-${marker}`,
       title: `OpenCode external drill ${marker}`,
       cwd: workspace,
-      updatedAt: "2026-06-09T12:00:03.000Z",
+      updatedAt: fixtureUpdatedAt,
       messages: [
         {
           id: "opencode-user-1",
@@ -236,8 +242,13 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
   await mkdir(path.join(surfaceRoot, "tui"), { recursive: true })
   await mkdir(path.join(surfaceRoot, "web"), { recursive: true })
   const externalSessionId = `${provider}:${provider}-${marker}`
+  const refresh = unwrap(
+    await client.send(refreshExternalProviderSessionsRequest(provider)),
+    "ExternalProviderSessionsRefreshed",
+  ).page
+  const refreshedRecord = refresh.sessions.find((session) => session.external_session_id === externalSessionId)
   const list = unwrap(
-    await client.send(listExternalProviderSessionsRequest({ provider, limit: 25 })),
+    await client.send(listExternalProviderSessionsRequest({ provider, limit: 100 })),
     "ExternalProviderSessionsListed",
   ).page
   const listedRecord = list.sessions.find((session) => session.external_session_id === externalSessionId)
@@ -274,7 +285,7 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
   const manifest = {
     provider,
     marker,
-    capability_tier: listedRecord?.mode ?? "unlisted",
+    capability_tier: listedRecord?.mode ?? refreshedRecord?.mode ?? "unlisted",
     external_provider_session_id: externalSessionId,
     provider_session_id: `${provider}-${marker}`,
     arroba_session_id: imported?.session?.id ?? null,
@@ -288,6 +299,7 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
     screenshots: [],
     evidence_files: [],
     assertions: [
+      assertion("refresh returned external session", Boolean(refreshedRecord)),
       assertion("external session listed", Boolean(listedRecord)),
       assertion("external row has observed mode", listedRecord?.mode === "observed"),
       assertion("import as new Arroba session created a session", Boolean(imported?.session?.id)),
@@ -301,7 +313,9 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
       assertion("tier3 unavailable degrades to tier2", listedRecord?.capabilities?.can_attach_live === false),
     ],
     records: {
+      refresh,
       listed: listedRecord,
+      listed_page: list,
       observed_history: observed,
       observed_agent_history: observedAgent,
       native_turn: nativeTurnResult,
@@ -352,6 +366,8 @@ async function main() {
   const workspace = repoRoot
   let daemon = null
   let client = null
+  let failure = null
+  const daemonLogs = { stdout: "", stderr: "" }
   await rm(runtimeRoot, { recursive: true, force: true })
   await mkdir(artifactRoot, { recursive: true })
   await mkdir(runtimeRoot, { recursive: true })
@@ -373,12 +389,17 @@ async function main() {
       ARROBA_DAEMON_SOCKET: path.join(runtimeRoot, "daemon.sock"),
       ARROBA_SESSION_HISTORY_DIR: historyRoot,
     },
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
   })
+  daemon.stdout.on("data", (chunk) => { daemonLogs.stdout += chunk.toString() })
+  daemon.stderr.on("data", (chunk) => { daemonLogs.stderr += chunk.toString() })
   try {
     await waitForDaemon(kernelUrl, workspace)
     client = new LocalIpcClient(kernelUrl)
-    await client.send({ RefreshExternalProviderSessions: { provider: null } })
+    unwrap(
+      await client.send(refreshExternalProviderSessionsRequest(null)),
+      "ExternalProviderSessionsRefreshed",
+    )
     const manifests = []
     for (const provider of providers) {
       manifests.push(await runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker))
@@ -392,6 +413,16 @@ async function main() {
     }
     await writeFile(path.join(artifactRoot, "manifest.json"), JSON.stringify(summary, null, 2))
     console.log(JSON.stringify(summary, null, 2))
+    if (!summary.ok) {
+      const failures = manifests
+        .flatMap((manifest) => manifest.assertions
+          .filter((assertion) => !assertion.passed)
+          .map((assertion) => `${manifest.provider}: ${assertion.name}`))
+      throw new Error(`external provider session import drill assertions failed: ${failures.join("; ")}`)
+    }
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await client?.close().catch(() => {})
     if (daemon && daemon.exitCode == null) {
@@ -402,7 +433,31 @@ async function main() {
       ])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {})
+    if (failure) {
+      await finalizeDrillArtifacts({
+        rootDir: artifactRoot,
+        passed: false,
+        preserveOnFailure: true,
+        failure,
+        metadata: {
+          drill: "external-provider-session-import",
+          marker,
+          kernelUrl,
+          artifactRoot: path.relative(repoRoot, artifactRoot),
+          runtimeRoot,
+          historyRoot,
+          providers,
+          daemonStdoutTail: daemonLogs.stdout.slice(-4000),
+          daemonStderrTail: daemonLogs.stderr.slice(-4000),
+        },
+        log: (message, details) => {
+          if (details === undefined) console.log(`[external-provider-session-drill] ${message}`)
+          else console.log(`[external-provider-session-drill] ${message}`, JSON.stringify(details))
+        },
+      })
+    } else {
+      await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {})
+    }
   }
 }
 
