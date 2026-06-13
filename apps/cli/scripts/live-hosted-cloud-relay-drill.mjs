@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { mkdir, rm } from "node:fs/promises"
+import { mkdir } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { runHostedSecondKernelAssertions, runHostedTokenRotationAssertions } from "./lib/hosted-cloud-kernel-scenarios.mjs"
 import { runHostedMultiUserAssertions } from "./lib/hosted-cloud-multi-user-scenarios.mjs"
 import { runHostedRemoteCliAssertions, runHostedRemoteCliPairingAssertions } from "./lib/hosted-cloud-remote-cli-scenarios.mjs"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
@@ -839,7 +840,7 @@ async function main() {
   const clientId = `hosted-cli-${process.pid}-${Date.now()}`
   const ownerAccountSlug = `hosted-owner-${process.pid}-${Date.now()}`
 
-  await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+  await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
   await mkdir(arrobaHome, { recursive: true })
   await mkdir(xdgConfigHome, { recursive: true })
@@ -850,6 +851,7 @@ async function main() {
   let localClient = null
   let remoteClient = null
   let passed = false
+  let failure = null
 
   try {
     log("build-cli")
@@ -1133,15 +1135,30 @@ async function main() {
       trackedWorkspaceLiveSync: runTrackedWorkspaceLiveSync,
     })
     passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await closeClient(remoteClient, "remote")
     await closeClient(localClient, "local")
     await terminateChild(daemon)
-    if (passed) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log("preserved-failed-run", { rootDir })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed,
+      failure,
+      log,
+      metadata: {
+        drill: "hosted-cloud-relay",
+        apiUrl,
+        multiUser: runMultiUser,
+        remoteCli: runRemoteCli,
+        remoteCliPairing: runRemoteCliPairing,
+        secondKernel: runSecondKernel,
+        tokenRotation: runTokenRotation,
+        workspaceLiveSync: runWorkspaceLiveSync,
+        trackedWorkspaceLiveSync: runTrackedWorkspaceLiveSync,
+      },
+    })
   }
 }
 
