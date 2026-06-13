@@ -93,13 +93,16 @@ export function formatDrillFailureManifestSummary(manifest, { source = null } = 
 }
 
 export function classifyDrillFailureManifest(manifest) {
-  const text = [
+  const errorText = [
     manifest.error?.name,
     manifest.error?.message,
     manifest.error?.stack,
-    ...Object.entries(manifest.metadata ?? {}).map(([key, value]) => `${key}=${String(value)}`),
   ].filter(Boolean).join("\n")
-  const childClassification = classifyDrillChildFailure(text)
+  const metadataText = Object.entries(manifest.metadata ?? {})
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join("\n")
+  const text = [errorText, metadataText].filter(Boolean).join("\n")
+  const childClassification = classifyDrillChildFailure(errorText)
   if (childClassification === "provider-auth") {
     return {
       kind: "provider-auth",
@@ -114,14 +117,14 @@ export function classifyDrillFailureManifest(manifest) {
       nextAction: "check provider quota or billing for the account used by this drill, then rerun the drill",
     }
   }
-  if (/docker|colima/i.test(text)) {
+  if (/docker|colima/i.test(errorText)) {
     return {
       kind: "docker-runtime",
       owner: "local-machine",
       nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
     }
   }
-  if (/relay|websocket|connection reset|target.*stale|target.*offline/i.test(text)) {
+  if (/relay|websocket|connection reset|target.*stale|target.*offline/i.test(errorText)) {
     return {
       kind: "relay-runtime",
       owner: "runtime-network",

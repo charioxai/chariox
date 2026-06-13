@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -365,7 +366,9 @@ async function main() {
   let sessionId = null
   let requests = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await buildKernelClient()
     const modules = await Promise.all([
@@ -511,6 +514,9 @@ async function main() {
       },
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (attached) {
       if (sessionId && requests) await attached.client.send(requests.endSessionRequest(sessionId)).catch(() => {})
@@ -519,11 +525,21 @@ async function main() {
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log('kept-artifacts', { rootDir })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'remote-restart',
+        relayUrl,
+        homeKernelUrl: `ws://127.0.0.1:${ports.homeKernelPort}`,
+        workerKernelUrl: `ws://127.0.0.1:${ports.workerKernelPort}`,
+        workerMachineId,
+        workerMachineAlias,
+      },
+      log,
+    })
   }
 }
 

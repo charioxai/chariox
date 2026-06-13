@@ -119,6 +119,15 @@ test("classifies common drill failure owners and next actions", () => {
     owner: "local-machine",
     nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
   })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    metadata: { drill: "remote-restart", relayUrl: "ws://127.0.0.1:43385" },
+    error: { name: "Error", message: "spawn pnpm ENOENT", stack: null },
+  })), {
+    kind: "child-process",
+    owner: "drill-or-runtime",
+    nextAction: "inspect preserved artifacts under /tmp/arroba-drill; rerun the drill after addressing the failure",
+  })
 })
 
 function validManifest(overrides = {}) {
