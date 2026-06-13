@@ -1,10 +1,11 @@
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
 import path from "node:path"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -227,8 +228,9 @@ async function main() {
   let client = null
   let sessionId = null
   let completed = false
+  let failure = null
   try {
-    await mkdir(root, { recursive: true })
+    await prepareDrillArtifacts(root)
     for (const log of logs) await mkdir(log.dir, { recursive: true })
     const schemaPath = await ensureSchemaFile(root)
     daemon = spawn(kernelBinary, [], {
@@ -362,6 +364,9 @@ async function main() {
       logs: Object.fromEntries(logs.map((log) => [log.alias, { native: log.native, proxy: log.proxy }])),
     }, null, 2))
     completed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     for (const log of logs) await screenQuit(log.screen)
@@ -370,11 +375,21 @@ async function main() {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_TUI_WORKFLOW_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && !completed)) {
-      console.log(JSON.stringify({ artifactsKept: root }))
-    } else {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    }
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: completed,
+      preserveOnFailure: options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_WORKFLOW_ARTIFACTS === "1",
+      failure,
+      metadata: {
+        drill: "native-tui-workflow",
+        providers: options.providers.join(","),
+        pollLimit: options.pollLimit,
+        pollIntervalMs: options.pollIntervalMs,
+        kernelUrl,
+        sessionId,
+      },
+      log: (name, details) => console.log(`[native-tui-workflow-drill] ${name}`, JSON.stringify(details)),
+    })
   }
 }
 
