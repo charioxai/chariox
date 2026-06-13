@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -253,6 +254,22 @@ async function cleanupSession(kernelUrl, sessionId) {
   }
 }
 
+async function terminateChild(child, signal = 'SIGTERM') {
+  if (!child || child.exitCode != null || child.signalCode != null) return
+  child.kill(signal)
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    sleep(5_000),
+  ])
+  if (child.exitCode == null && child.signalCode == null) {
+    child.kill('SIGKILL')
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      sleep(2_000),
+    ])
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const rootDir = path.join(repoRoot, 'target', 'live-metaagent-drill', `${process.pid}-${Date.now()}`)
@@ -280,7 +297,9 @@ async function main() {
   let client = null
   let sessionId = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     await mkdir(scriptsDir, { recursive: true })
@@ -465,19 +484,29 @@ async function main() {
       eventId: event.event_id,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await cleanupSession(kernelUrl, sessionId)
-    if (daemon) {
-      daemon.kill('SIGTERM')
-      await sleep(250)
-      if (!daemon.killed) daemon.kill('SIGKILL')
-    }
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true })
-    } else {
-      console.error(`metaagent drill artifacts kept at ${rootDir}`)
-    }
+    await terminateChild(daemon)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'metaagent',
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        kernelUrl,
+        sessionId,
+        workspace,
+        scriptsDir,
+      },
+      log,
+    })
   }
   log('passed')
 }
