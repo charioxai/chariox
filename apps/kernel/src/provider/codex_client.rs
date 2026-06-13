@@ -198,6 +198,31 @@ mod tests {
     }
 
     #[test]
+    fn tracked_live_sync_thread_start_uses_full_access_payload() {
+        let client =
+            CodexClient::new("run-1", "ws://127.0.0.1:43123").expect("client should construct");
+
+        let params = client
+            .thread_start_params(
+                Some("/repo/selected"),
+                Some("gpt-5.2"),
+                ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Required,
+            )
+            .expect("thread start params should render");
+
+        assert_eq!(params.get("approvalPolicy"), Some(&json!("untrusted")));
+        assert_eq!(params.get("sandbox"), Some(&json!("danger-full-access")));
+        assert_eq!(
+            params.get("sandboxPolicy"),
+            Some(&json!({ "type": "dangerFullAccess" }))
+        );
+        assert_eq!(params.get("cwd"), Some(&json!("/repo/selected")));
+        assert_eq!(params.get("model"), Some(&json!("gpt-5.2")));
+    }
+
+    #[test]
     fn tracked_live_sync_plan_policy_remains_read_only() {
         let policy = codex_permission_policy(
             ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
