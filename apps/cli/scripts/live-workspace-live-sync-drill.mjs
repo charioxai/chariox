@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -2230,6 +2231,7 @@ async function main() {
   const outputsDir = path.join(workspace, 'outputs')
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(runtimeDir, { recursive: true })
+  await prepareDrillArtifacts(rootDir)
   await mkdir(outputsDir, { recursive: true })
   await writeFile(path.join(workspace, 'seed.txt'), 'seed-value-42\n', 'utf8')
   for (const provider of options.providers) {
@@ -2318,16 +2320,18 @@ async function main() {
   const client = new LocalIpcClient(kernelUrl)
   wrapClientSendWithTimeout(client, options.timeoutMs)
   const events = []
-  const workerKernelRef = await resolveRemoteWorkerKernelRef(
-    client,
-    requests,
-    options.machineRef,
-    options.providers,
-    options.timeoutMs,
-    options.pollMs,
-  )
+  let workerKernelRef = null
   let sessionId = null
+  let failure = null
   try {
+    workerKernelRef = await resolveRemoteWorkerKernelRef(
+      client,
+      requests,
+      options.machineRef,
+      options.providers,
+      options.timeoutMs,
+      options.pollMs,
+    )
     const session = unwrap(await client.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
     sessionId = session.id
     if (setWorkspaceLiveSyncModeRequest && options.mode !== 'off') {
@@ -3120,17 +3124,35 @@ async function main() {
       focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (sessionId) {
       await client.send(endSessionRequest(sessionId)).catch(() => {})
     }
     await client.close().catch(() => {})
     await terminateChild(daemonChild)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'workspace-live-sync',
+        mode: options.mode,
+        providers: options.providers.join(','),
+        managedTargetCount: options.managedTargetCount,
+        trackedTargetCount: options.trackedTargetCount,
+        trackedBidirectional: options.trackedBidirectional,
+        machineRef: options.machineRef ?? 'local',
+        runtimeDir,
+      },
+      log: (name, details) => console.log(`[workspace-live-sync-drill] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
       await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
     } else {
-      console.error(`workspace live sync drill artifacts kept at ${rootDir}`)
       console.error(`workspace live sync drill transient CLI modules kept at ${runtimeDir}`)
     }
   }

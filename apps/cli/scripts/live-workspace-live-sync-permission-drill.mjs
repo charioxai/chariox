@@ -5,6 +5,7 @@ import { chmod, copyFile, mkdir, rm, stat, readFile, readdir, symlink } from 'no
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -493,8 +494,10 @@ async function main() {
   let automation = null
   let client = null
   let succeeded = false
+  let failure = null
 
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(outsideRepo, { recursive: true })
     await mkdir(home, { recursive: true })
@@ -672,16 +675,28 @@ async function main() {
     log('outside-repo-direct-write-passed', { provider, outsideFilePath })
 
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (automation) automation.close()
     if (client) await client.close().catch(() => {})
     await terminateChild(cli).catch(() => {})
     await terminateChild(daemon).catch(() => {})
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log('artifacts-retained', { rootDir })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'workspace-live-sync-permission',
+        mode: options.mode,
+        provider,
+        model,
+        machineRef: options.machineRef ?? 'local',
+      },
+      log,
+    })
   }
 }
 
