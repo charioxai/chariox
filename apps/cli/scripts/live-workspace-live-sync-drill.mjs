@@ -1573,6 +1573,7 @@ async function runTrackedTargetOriginPhase({
   workspace,
   targetWorkspaces,
   historyDir,
+  providerHistoryDirs,
   timeoutMs,
   pollMs,
   getSessionStateRequest,
@@ -1609,6 +1610,7 @@ async function runTrackedTargetOriginPhase({
   })
   await waitForHistoryOutputMarkers({
     historyDir,
+    providerHistoryDirs,
     markerGroups: [[marker]],
     sinceMs: completionSinceMs,
     timeoutMs,
@@ -1660,6 +1662,7 @@ async function runTrackedConflictResolutionPhase({
   workspace,
   targetWorkspaces,
   historyDir,
+  providerHistoryDirs,
   timeoutMs,
   pollMs,
   getSessionStateRequest,
@@ -1702,6 +1705,7 @@ async function runTrackedConflictResolutionPhase({
   })
   await waitForHistoryOutputMarkers({
     historyDir,
+    providerHistoryDirs,
     markerGroups: [[alignMarker]],
     sinceMs: alignSinceMs,
     timeoutMs,
@@ -1755,6 +1759,7 @@ async function runTrackedConflictResolutionPhase({
   })
   await waitForHistoryOutputMarkers({
     historyDir,
+    providerHistoryDirs,
     markerGroups: [[resolveMarker]],
     sinceMs: resolveSinceMs,
     timeoutMs,
@@ -1799,6 +1804,7 @@ async function runTrackedOutsideWorkspacePhase({
   agent,
   siblingWritePath,
   historyDir,
+  providerHistoryDirs,
   timeoutMs,
   pollMs,
   submitPromptRequest,
@@ -1849,6 +1855,7 @@ async function runTrackedOutsideWorkspacePhase({
   })
   await waitForHistoryOutputMarkers({
     historyDir,
+    providerHistoryDirs,
     markerGroups: [[marker]],
     sinceMs: completionSinceMs,
     timeoutMs,
@@ -1910,6 +1917,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
       workspace,
       targetWorkspaces: trackedTargetWorkspaces,
       historyDir,
+      providerHistoryDirs: options.providerHistoryDirs,
       timeoutMs,
       pollMs,
       getSessionStateRequest,
@@ -1981,6 +1989,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
   })
   await waitForHistoryOutputMarkers({
     historyDir,
+    providerHistoryDirs: options.providerHistoryDirs,
     markerGroups: [[marker]],
     sinceMs: completionSinceMs,
     timeoutMs,
@@ -2042,6 +2051,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
     agent,
     siblingWritePath,
     historyDir,
+    providerHistoryDirs: options.providerHistoryDirs,
     timeoutMs,
     pollMs,
     submitPromptRequest,
@@ -2062,6 +2072,7 @@ async function runTrackedWorkspaceLiveSyncDrill({
       workspace,
       targetWorkspaces: trackedTargetWorkspaces,
       historyDir,
+      providerHistoryDirs: options.providerHistoryDirs,
       timeoutMs,
       pollMs,
       getSessionStateRequest,
@@ -2517,6 +2528,7 @@ async function main() {
         })
         await waitForHistoryOutputMarkers({
           historyDir,
+          providerHistoryDirs: options.providerHistoryDirs,
           markerGroups: [[marker]],
           sinceMs: completionSinceMs,
           timeoutMs: options.timeoutMs,
@@ -2982,6 +2994,7 @@ async function main() {
       })
       await waitForHistoryOutputMarkers({
         historyDir,
+        providerHistoryDirs: options.providerHistoryDirs,
         markerGroups: negativeAgents.map(({ provider }) => [`${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED`]),
         sinceMs: completionSinceMs,
         timeoutMs: options.timeoutMs,
