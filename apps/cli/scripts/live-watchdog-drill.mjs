@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import os from 'node:os'
+import { mkdir, rm } from 'node:fs/promises'
+import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -106,6 +107,10 @@ function printHelp() {
   ].join('\n'))
 }
 
+function nowStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+}
+
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
@@ -120,10 +125,10 @@ function opencodeCodexModel(model) {
   return model
 }
 
-function deriveSpawnedKernelUrl() {
+function deriveSpawnedKernelUrl(rootDir) {
   const kernelPort = 45000 + Math.floor(Math.random() * 1000)
   const mcpPort = kernelPort + 1000
-  const socketPath = path.join(os.tmpdir(), `arroba-watchdog-drill-${process.pid}-${Date.now()}.sock`)
+  const socketPath = path.join(rootDir, 'daemon.sock')
   return {
     kernelUrl: `ws://127.0.0.1:${kernelPort}`,
     env: {
@@ -133,6 +138,34 @@ function deriveSpawnedKernelUrl() {
       ARROBA_DAEMON_SOCKET: socketPath,
       ARROBA_DAEMON_ID: `watchdog-drill-${process.pid}-${Date.now()}`,
     },
+  }
+}
+
+function spawnDaemon(env) {
+  const child = spawn(
+    'cargo',
+    ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'],
+    { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  child.logs = { stdout: '', stderr: '' }
+  child.stdout.on('data', (chunk) => { child.logs.stdout += chunk.toString() })
+  child.stderr.on('data', (chunk) => { child.logs.stderr += chunk.toString() })
+  return child
+}
+
+async function stopDaemon(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  child.kill('SIGTERM')
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ])
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL')
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ])
   }
 }
 
@@ -179,16 +212,17 @@ async function main() {
     return
   }
 
+  const artifactRoot = path.join(repoRoot, '.artifacts', 'watchdog', nowStamp())
+  await rm(artifactRoot, { recursive: true, force: true }).catch(() => {})
+  await mkdir(artifactRoot, { recursive: true })
   let daemonChild = null
   let kernelUrl = options.kernel
+  let failure = null
+  let succeeded = false
   if (options.spawnDaemon) {
-    const spawned = deriveSpawnedKernelUrl()
+    const spawned = deriveSpawnedKernelUrl(artifactRoot)
     kernelUrl = spawned.kernelUrl
-    daemonChild = spawn(
-      'cargo',
-      ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'],
-      { cwd: repoRoot, env: spawned.env, stdio: ['ignore', 'ignore', 'inherit'] },
-    )
+    daemonChild = spawnDaemon(spawned.env)
   }
   const client = new LocalIpcClient(kernelUrl)
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -197,6 +231,7 @@ async function main() {
 
   try {
     if (daemonChild) {
+      let daemonReady = false
       for (let attempt = 0; attempt < 40; attempt += 1) {
         try {
           const probeClient = new LocalIpcClient(kernelUrl)
@@ -206,11 +241,13 @@ async function main() {
           ).session
           await probeClient.send(endSessionRequest(probeSession.id)).catch(() => {})
           await probeClient.close()
+          daemonReady = true
           break
         } catch {
           await sleep(250)
         }
       }
+      if (!daemonReady) throw new Error(`spawned watchdog drill daemon did not become ready at ${kernelUrl}`)
     }
     session = unwrap(
       await client.send(createSessionRequest(options.workspace, options.worktree)),
@@ -333,6 +370,10 @@ async function main() {
       watchdog: finalWatchdog,
       workflowRuns,
     }, null, 2))
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     try {
       if (session?.id) {
@@ -340,9 +381,29 @@ async function main() {
       }
     } catch {}
     await client.close().catch(() => {})
-    if (daemonChild) {
-      daemonChild.kill('SIGTERM')
-    }
+    await stopDaemon(daemonChild)
+    await finalizeDrillArtifacts({
+      rootDir: artifactRoot,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'watchdog',
+        kernelUrl,
+        workspace: options.workspace,
+        worktree: options.worktree,
+        policy: options.policy,
+        providers: options.providers,
+        intervalSeconds: options.intervalSeconds,
+        sessionId: session?.id ?? null,
+        daemonStdoutTail: daemonChild?.logs?.stdout?.slice(-4000) ?? '',
+        daemonStderrTail: daemonChild?.logs?.stderr?.slice(-4000) ?? '',
+      },
+      log: (name, details) => {
+        if (details === undefined) console.log(`[watchdog-drill] ${name}`)
+        else console.log(`[watchdog-drill] ${name}`, JSON.stringify(details))
+      },
+    })
   }
 }
 
