@@ -108,6 +108,26 @@ test("buildCommandCenterItems finds runtime recovery commands by user-facing ter
 
   const ignoreRules = new Set(buildCommandCenterItems("/workspace sync arrobaignore", context).map((item) => item.value))
   assert.equal(ignoreRules.has("/workspace sync ignore"), true)
+
+  const agentPlacement = new Set(buildCommandCenterItems("/agent where does this run", context).map((item) => item.value))
+  assert.equal(agentPlacement.has("/agent inspect "), true)
+
+  const agentWorktree = new Set(buildCommandCenterItems("/agent worktree", context).map((item) => item.value))
+  assert.equal(agentWorktree.has("/agent inspect "), true)
+  assert.equal(agentWorktree.has("/agent list"), true)
+
+  const workerReadiness = new Set(buildCommandCenterItems("/machine worker readiness", context).map((item) => item.value))
+  assert.equal(workerReadiness.has("/machine kernels "), true)
+
+  const machineProviderAccount = new Set(buildCommandCenterItems("/machine provider account missing", context).map((item) => item.value))
+  assert.equal(machineProviderAccount.has("/machine kernels "), true)
+
+  const sliceProviderAccount = new Set(buildCommandCenterItems("/slice provider account missing", context).map((item) => item.value))
+  assert.equal(sliceProviderAccount.has("/slice doctor "), true)
+  assert.equal(sliceProviderAccount.has("/slice auth login "), true)
+
+  const sliceDisplay = new Set(buildCommandCenterItems("/slice display", context).map((item) => item.value))
+  assert.equal(sliceDisplay.has("/slice screen "), true)
 })
 
 test("buildCommandCenterItems explains slice spawn primitives", () => {
