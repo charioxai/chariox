@@ -7,24 +7,41 @@ import { runNodeDrillChild } from "./drill-child-process.mjs"
 
 async function callRuntimeMcp(serverUrl, authToken, method, params = {}, options = {}) {
   const timeoutMs = options.timeoutMs ?? 60_000
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(new Error(`runtime MCP ${method} timed out after ${timeoutMs}ms`)), timeoutMs)
-  try {
-    const response = await fetch(serverUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: `${Date.now()}`, method, params }),
-      signal: controller.signal,
-    })
-    const json = await response.json()
-    if (json.error) throw new Error(`runtime MCP ${method} failed: ${JSON.stringify(json.error)}`)
-    return json.result
-  } finally {
-    clearTimeout(timeout)
+  const maxAttempts = options.retryTransient ? (options.maxAttempts ?? 3) : 1
+  let lastError = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(new Error(`runtime MCP ${method} timed out after ${timeoutMs}ms`)), timeoutMs)
+    try {
+      const response = await fetch(serverUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: `${Date.now()}-${attempt}`, method, params }),
+        signal: controller.signal,
+      })
+      const json = await response.json()
+      if (json.error) throw new Error(`runtime MCP ${method} failed: ${JSON.stringify(json.error)}`)
+      return json.result
+    } catch (error) {
+      lastError = error
+      if (attempt >= maxAttempts || !isTransientRuntimeMcpRelayError(error)) throw error
+      await sleep(500 * attempt)
+    } finally {
+      clearTimeout(timeout)
+    }
   }
+  throw lastError
+}
+
+function isTransientRuntimeMcpRelayError(error) {
+  const message = String(error?.message ?? error)
+  return message.includes("target daemon disconnected from relay")
+    || message.includes("read temporary relay peer response")
+    || message.includes("timed out waiting for relay peer response")
+    || message.includes("relay read failed or ended")
 }
 
 async function expectRuntimeMcpReject(serverUrl, authToken, method, params = {}) {
@@ -621,7 +638,7 @@ async function assertHostedCollaboratorHomeExtensions({
     const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
       name: "arroba.request_extension",
       arguments: { kind: "script", name: "hosted_home_only_lookup", environment: env.name },
-    })
+    }, { retryTransient: true })
     if (!deniedRequest.isError || !JSON.stringify(deniedRequest).includes("home-owned extensions for collaborator remote agents")) {
       throw new Error(`hosted extension collaborator request_extension returned unexpected result: ${JSON.stringify(deniedRequest)}`)
     }
