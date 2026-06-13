@@ -343,6 +343,9 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let action = args.action.as_deref().unwrap_or("popup");
+                if matches!(action, "lock" | "popup") {
+                    self.ensure_agent_can_manage_user_vault(provider_run)?;
+                }
                 let user_config = self.owned.config_projection.snapshot().user_config;
                 let vault_path = user_config.credential_vault.path.clone();
                 match action {
@@ -719,6 +722,12 @@ impl KernelRuntimeState {
                     message: format!("invalid tool arguments: {error}"),
                 })?;
                 let action = args.action.as_deref().unwrap_or("popup");
+                if matches!(action, "lock" | "popup") {
+                    self.ensure_agent_can_manage_user_vault_for_agent(
+                        &context.home_session_id,
+                        &agent,
+                    )?;
+                }
                 let user_config = self.owned.config_projection.snapshot().user_config;
                 let vault_path = user_config.credential_vault.path.clone();
                 match action {
