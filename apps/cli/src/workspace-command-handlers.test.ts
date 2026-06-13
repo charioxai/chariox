@@ -93,7 +93,19 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     },
     setWorkspaceLiveSyncMode: async (sessionId, mode) => {
       modeUpdates.push(`${sessionId}:${mode}`)
-      return { session: session({ workspace_live_sync_mode: mode }) }
+      return {
+        session: session({ workspace_live_sync_mode: mode }),
+        effects: [{
+          kind: "provider_reload",
+          path: "session.workspace_live_sync_mode",
+          message: "session workspace live sync mode updated; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+          provider_reload: {
+            reloaded: 1,
+            deferred: 0,
+            unaffected: 0,
+          },
+        }],
+      }
     },
     setUserConfigValue: async (path, value) => {
       defaultUpdates.push(`${path}:${value}`)
@@ -163,9 +175,9 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   ])
   assert.deepEqual(defaultUpdates, ["providers.workspace_live_sync:tracked"])
   assert.deepEqual(footers.slice(-4), [
-    "info:current session workspace live sync enabled: managed (selected workspace/worktree only; other repositories unrestricted)",
-    "info:current session workspace live sync enabled: tracked (selected workspace/worktree only; other repositories unrestricted)",
-    "info:current session workspace live sync disabled; other repositories remain unrestricted",
+    "info:current session workspace live sync enabled: managed (selected workspace/worktree only; other repositories unrestricted); provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+    "info:current session workspace live sync enabled: tracked (selected workspace/worktree only; other repositories unrestricted); provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
+    "info:current session workspace live sync disabled; other repositories remain unrestricted; provider reloads: 1 reloaded, 0 deferred, 0 unaffected",
     "info:default workspace live sync for new sessions set to tracked (selected workspace/worktree only; other repositories unrestricted)",
   ])
 

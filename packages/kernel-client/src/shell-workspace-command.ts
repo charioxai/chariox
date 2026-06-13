@@ -26,6 +26,7 @@ import {
   formatWorkspaceLiveSyncDefaultModeChangeMessage,
   formatWorkspaceLiveSyncModeChangeMessage,
   parseWorkspaceLiveSyncModeCommand,
+  type WorkspaceLiveSyncProviderReloadSummary,
 } from "./workspace-live-sync-mode.js"
 
 type ShellWorkspaceCommandDeps = {
@@ -189,7 +190,14 @@ async function executeWorkspaceSyncCommand(
       return { ok: false, message: "usage: workspace sync enable [managed|tracked]" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
-    return { ok: true, message: formatWorkspaceLiveSyncModeChangeMessage(mode, { action: "enabled" }), data: response }
+    return {
+      ok: true,
+      message: formatWorkspaceLiveSyncModeChangeMessage(mode, {
+        action: "enabled",
+        providerReload: workspaceLiveSyncProviderReloadSummary(response),
+      }),
+      data: response,
+    }
   }
   if (action === "off" || action === "managed" || action === "tracked") {
     if (args.length > 0) {
@@ -198,7 +206,9 @@ async function executeWorkspaceSyncCommand(
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, action))
     return {
       ok: true,
-      message: formatWorkspaceLiveSyncModeChangeMessage(action),
+      message: formatWorkspaceLiveSyncModeChangeMessage(action, {
+        providerReload: workspaceLiveSyncProviderReloadSummary(response),
+      }),
       data: response,
     }
   }
@@ -207,7 +217,13 @@ async function executeWorkspaceSyncCommand(
       return { ok: false, message: "usage: workspace sync disable" }
     }
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, "unrestricted"))
-    return { ok: true, message: formatWorkspaceLiveSyncModeChangeMessage("unrestricted"), data: response }
+    return {
+      ok: true,
+      message: formatWorkspaceLiveSyncModeChangeMessage("unrestricted", {
+        providerReload: workspaceLiveSyncProviderReloadSummary(response),
+      }),
+      data: response,
+    }
   }
   if (action === "mode") {
     const mode = parseWorkspaceLiveSyncModeCommand(args[0] ?? "")
@@ -217,7 +233,9 @@ async function executeWorkspaceSyncCommand(
     const response = await deps.client.send(setWorkspaceLiveSyncModeRequest(sessionId, mode))
     return {
       ok: true,
-      message: formatWorkspaceLiveSyncModeChangeMessage(mode),
+      message: formatWorkspaceLiveSyncModeChangeMessage(mode, {
+        providerReload: workspaceLiveSyncProviderReloadSummary(response),
+      }),
       data: response,
     }
   }
@@ -247,4 +265,30 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
+}
+
+function workspaceLiveSyncProviderReloadSummary(response: Record<string, unknown>): WorkspaceLiveSyncProviderReloadSummary | null {
+  const payload = response.WorkspaceLiveSyncModeUpdated
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null
+  const effects = (payload as { effects?: unknown }).effects
+  if (!Array.isArray(effects)) return null
+  for (const effect of effects) {
+    if (!effect || typeof effect !== "object") continue
+    const record = effect as { kind?: unknown, provider_reload?: unknown }
+    if (record.kind !== "provider_reload") continue
+    const summary = record.provider_reload
+    if (!summary || typeof summary !== "object") continue
+    const providerReload = summary as Record<string, unknown>
+    const reloaded = numberField(providerReload, "reloaded")
+    const deferred = numberField(providerReload, "deferred")
+    const unaffected = numberField(providerReload, "unaffected")
+    if (reloaded === null || deferred === null || unaffected === null) continue
+    return { reloaded, deferred, unaffected }
+  }
+  return null
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key]
+  return Number.isFinite(value) ? value as number : null
 }

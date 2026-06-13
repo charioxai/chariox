@@ -11,6 +11,7 @@ import {
   parseWorkspaceLiveSyncModeCommand,
   workspaceLiveSyncModeProtocolValue,
   type WorkspaceLiveSyncModeProtocolValue,
+  type WorkspaceLiveSyncProviderReloadSummary,
 } from "@arroba/kernel-client/workspace-live-sync-mode"
 import {
   prepareLocalGitWorktree,
@@ -167,8 +168,11 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync enable [managed|tracked]", "error")
       return
     }
-    await applyWorkspaceLiveSyncModeChange(deps, mode)
-    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode, { action: "enabled" }), "info")
+    const result = await applyWorkspaceLiveSyncModeChange(deps, mode)
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode, {
+      action: "enabled",
+      providerReload: workspaceLiveSyncProviderReloadSummary(result),
+    }), "info")
     return
   }
   if (action === "off" || action === "managed" || action === "tracked") {
@@ -176,8 +180,10 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync off|managed|tracked", "error")
       return
     }
-    await applyWorkspaceLiveSyncModeChange(deps, workspaceLiveSyncModeProtocolValue(action))
-    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(action), "info")
+    const result = await applyWorkspaceLiveSyncModeChange(deps, workspaceLiveSyncModeProtocolValue(action))
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(action, {
+      providerReload: workspaceLiveSyncProviderReloadSummary(result),
+    }), "info")
     return
   }
   if (action === "disable") {
@@ -185,8 +191,10 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync disable", "error")
       return
     }
-    await applyWorkspaceLiveSyncModeChange(deps, "unrestricted")
-    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage("unrestricted"), "info")
+    const result = await applyWorkspaceLiveSyncModeChange(deps, "unrestricted")
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage("unrestricted", {
+      providerReload: workspaceLiveSyncProviderReloadSummary(result),
+    }), "info")
     return
   }
   if (action === "mode") {
@@ -195,8 +203,10 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync mode off|managed|tracked", "error")
       return
     }
-    await applyWorkspaceLiveSyncModeChange(deps, workspaceLiveSyncModeProtocolValue(mode))
-    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode), "info")
+    const result = await applyWorkspaceLiveSyncModeChange(deps, workspaceLiveSyncModeProtocolValue(mode))
+    deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode, {
+      providerReload: workspaceLiveSyncProviderReloadSummary(result),
+    }), "info")
     return
   }
   if (action === "link") {
@@ -212,8 +222,8 @@ async function handleWorkspaceSyncCommand(
 async function applyWorkspaceLiveSyncModeChange(
   deps: WorkspaceCommandHandlerDeps,
   mode: WorkspaceLiveSyncModeProtocolValue,
-): Promise<void> {
-  if (!deps.setWorkspaceLiveSyncMode) return
+): Promise<unknown> {
+  if (!deps.setWorkspaceLiveSyncMode) return null
   const result = await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
   const session = workspaceLiveSyncModeUpdateSession(result)
   if (session) {
@@ -223,6 +233,7 @@ async function applyWorkspaceLiveSyncModeChange(
     const status = await deps.getWorkspaceLiveSyncStatus()
     deps.setWorkspaceLiveSyncStatus?.(status)
   }
+  return result
 }
 
 function workspaceLiveSyncModeUpdateSession(result: unknown): RuntimeSession | null {
@@ -231,6 +242,31 @@ function workspaceLiveSyncModeUpdateSession(result: unknown): RuntimeSession | n
   return session && typeof session === "object" && "id" in session
     ? session as RuntimeSession
     : null
+}
+
+function workspaceLiveSyncProviderReloadSummary(result: unknown): WorkspaceLiveSyncProviderReloadSummary | null {
+  if (!result || typeof result !== "object" || !("effects" in result)) return null
+  const effects = (result as { effects?: unknown }).effects
+  if (!Array.isArray(effects)) return null
+  for (const effect of effects) {
+    if (!effect || typeof effect !== "object") continue
+    const record = effect as { kind?: unknown, provider_reload?: unknown }
+    if (record.kind !== "provider_reload") continue
+    const summary = record.provider_reload
+    if (!summary || typeof summary !== "object") continue
+    const providerReload = summary as Record<string, unknown>
+    const reloaded = numberField(providerReload, "reloaded")
+    const deferred = numberField(providerReload, "deferred")
+    const unaffected = numberField(providerReload, "unaffected")
+    if (reloaded === null || deferred === null || unaffected === null) continue
+    return { reloaded, deferred, unaffected }
+  }
+  return null
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key]
+  return Number.isFinite(value) ? value as number : null
 }
 
 export async function handleWorktreeSlashCommand(

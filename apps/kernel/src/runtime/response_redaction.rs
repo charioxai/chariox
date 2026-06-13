@@ -78,9 +78,10 @@ pub(crate) fn redact_response_for_user(
             detached,
             session: session.redacted_for_user(caller_user_id),
         },
-        LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session } => {
+        LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session, effects } => {
             LocalDaemonResponse::WorkspaceLiveSyncModeUpdated {
                 session: session.redacted_for_user(caller_user_id),
+                effects,
             }
         }
         LocalDaemonResponse::PromptSubmitted {

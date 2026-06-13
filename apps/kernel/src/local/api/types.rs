@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 139;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 140;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -431,6 +431,8 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceLiveSyncModeUpdated {
         session: RuntimeSession,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        effects: Vec<UserConfigMutationEffect>,
     },
     ProviderRunLaunched {
         provider_run: RuntimeProviderRun,

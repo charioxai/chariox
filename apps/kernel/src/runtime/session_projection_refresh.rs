@@ -231,7 +231,7 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkspaceLinkCreated { session, .. }
         | LocalDaemonResponse::WorkspaceLinkAttached { session, .. }
         | LocalDaemonResponse::WorkspaceLinkDetached { session, .. }
-        | LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session }
+        | LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session, .. }
         | LocalDaemonResponse::WorkflowCreated { session, .. }
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }

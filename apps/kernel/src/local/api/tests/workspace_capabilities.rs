@@ -13,7 +13,7 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
         _ => panic!("unexpected local response"),
     };
 
-    let updated = match harness
+    let (updated, effects) = match harness
         .dispatch(LocalDaemonRequest::SetWorkspaceLiveSyncMode(
             SetWorkspaceLiveSyncModeRequest {
                 session_id: session.id().to_string(),
@@ -22,13 +22,28 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
         ))
         .expect("workspace live sync mode update should succeed")
     {
-        LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session } => session,
+        LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session, effects } => {
+            (session, effects)
+        }
         _ => panic!("unexpected local response"),
     };
 
     assert_eq!(
         updated.workspace_live_sync_mode(),
         Some(crate::config::WorkspaceLiveSyncMode::Tracked)
+    );
+    let reload_effect = effects
+        .iter()
+        .find(|effect| effect.kind == "provider_reload")
+        .expect("session live sync mode update should report provider reload effect");
+    assert_eq!(reload_effect.path, "session.workspace_live_sync_mode");
+    assert_eq!(
+        reload_effect
+            .provider_reload
+            .as_ref()
+            .expect("provider reload summary should be present")
+            .reloaded,
+        0
     );
 
     let events = match harness

@@ -3,6 +3,7 @@ import type {
   ArrobaUserConfigPayload,
   ArrobaUserConfigSchemaPayload,
   RuntimeSession,
+  UserConfigMutationEffect,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
@@ -42,9 +43,9 @@ export async function setWorkspaceLiveSyncMode(
   client: LocalIpcClient,
   sessionId: string,
   mode: "managed" | "tracked" | "unrestricted",
-): Promise<{ session: RuntimeSession }> {
+): Promise<{ session: RuntimeSession, effects?: UserConfigMutationEffect[] }> {
   const response = await client.send<Record<string, unknown>>(setWorkspaceLiveSyncModeRequest(sessionId, mode))
-  return expectVariant<{ session: RuntimeSession }>(response, "WorkspaceLiveSyncModeUpdated")
+  return expectVariant<{ session: RuntimeSession, effects?: UserConfigMutationEffect[] }>(response, "WorkspaceLiveSyncModeUpdated")
 }
 
 export async function unsetUserConfigValue(

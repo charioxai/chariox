@@ -9,7 +9,9 @@ use crate::local::{
 use crate::runtime::command::{KernelCommand, command_caller_user_id};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::{KernelRuntimeState, ProviderReloadTrigger};
-use crate::runtime::user_config_policy::{UserConfigMutation, user_config_mutation_effects};
+use crate::runtime::user_config_policy::{
+    UserConfigMutation, summarize_provider_reload_outcomes, user_config_mutation_effects,
+};
 
 pub(crate) async fn execute_user_config_request(
     config_projection: &DaemonConfigProjectionStore,
@@ -117,12 +119,29 @@ pub(crate) async fn execute_set_workspace_live_sync_mode_request(
         &command_caller_user_id(command),
         Some(command),
     )?;
-    runtime_state
+    let outcomes = runtime_state
         .apply_provider_reload_policy(ProviderReloadTrigger::SessionWorkspaceLiveSyncModeChanged {
             session_id,
         })
         .await?;
-    Ok(LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session })
+    let summary = summarize_provider_reload_outcomes(&outcomes);
+    let message = if summary.reloaded == 0 && summary.deferred == 0 {
+        "session workspace live sync mode updated; no running provider needed reload".to_string()
+    } else {
+        format!(
+            "session workspace live sync mode updated; provider reloads: {} reloaded, {} deferred, {} unaffected",
+            summary.reloaded, summary.deferred, summary.unaffected
+        )
+    };
+    Ok(LocalDaemonResponse::WorkspaceLiveSyncModeUpdated {
+        session,
+        effects: vec![UserConfigMutationEffect {
+            kind: "provider_reload".to_string(),
+            path: "session.workspace_live_sync_mode".to_string(),
+            message,
+            provider_reload: Some(summary),
+        }],
+    })
 }
 
 pub(crate) async fn execute_unset_user_config_value_request(

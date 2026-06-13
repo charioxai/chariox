@@ -55,6 +55,18 @@ test("workspace live sync mode helper formats scoped mode-change messages", () =
     formatWorkspaceLiveSyncModeChangeMessage("unrestricted"),
     "current session workspace live sync disabled; other repositories remain unrestricted",
   )
+  assert.equal(
+    formatWorkspaceLiveSyncModeChangeMessage("tracked", {
+      providerReload: { reloaded: 1, deferred: 2, unaffected: 3 },
+    }),
+    "current session workspace live sync set to tracked (selected workspace/worktree only; other repositories unrestricted); provider reloads: 1 reloaded, 2 deferred, 3 unaffected",
+  )
+  assert.equal(
+    formatWorkspaceLiveSyncModeChangeMessage("off", {
+      providerReload: { reloaded: 0, deferred: 0, unaffected: 1 },
+    }),
+    "current session workspace live sync disabled; other repositories remain unrestricted; provider reloads: none",
+  )
 })
 
 test("workspace live sync mode helper formats scoped default-change messages", () => {
