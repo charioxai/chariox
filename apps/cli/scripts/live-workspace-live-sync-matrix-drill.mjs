@@ -1,7 +1,11 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  parseDrillScenarioIds,
+  runDrillMatrix,
+  selectDrillMatrixScenarios,
+} from './lib/drill-matrix-runner.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..', '..', '..')
@@ -49,7 +53,11 @@ const MATRIX = [
 ]
 
 function scenario(id, description, script, args, flags = {}) {
-  return { id, description, script, args, ...flags }
+  const requires = []
+  if (flags.remote) requires.push('remote')
+  if (flags.hetzner) requires.push('hetzner')
+  if (flags.opencode) requires.push('opencode')
+  return { id, description, script, args, ...flags, requires }
 }
 
 function printHelp() {
@@ -105,8 +113,8 @@ function parseArgs(argv) {
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--continue-on-failure') options.continueOnFailure = true
     else if (arg === '--help' || arg === '-h') options.help = true
-    else if (arg === '--only') options.only = readValue(argv, i++, arg).split(',').map((id) => id.trim()).filter(Boolean)
-    else if (arg.startsWith('--only=')) options.only = arg.slice('--only='.length).split(',').map((id) => id.trim()).filter(Boolean)
+    else if (arg === '--only') options.only = parseDrillScenarioIds(readValue(argv, i++, arg))
+    else if (arg.startsWith('--only=')) options.only = parseDrillScenarioIds(arg.slice('--only='.length))
     else if (arg === '--hetzner-host' || arg === '--hetzner-key' || arg === '--hetzner-repo') {
       const value = readValue(argv, i, arg)
       options.passthrough.push(arg, value)
@@ -119,88 +127,30 @@ function parseArgs(argv) {
 }
 
 function selectScenarios(options) {
-  const known = new Map(MATRIX.map((item) => [item.id, item]))
-  let selected
-  if (options.only) {
-    selected = options.only.map((id) => {
-      const item = known.get(id)
-      if (!item) throw new Error(`unknown scenario id: ${id}`)
-      return item
-    })
-  } else {
-    selected = MATRIX.filter((item) => {
-      if (item.hetzner && !options.includeHetzner) return false
-      if (item.remote && !item.hetzner && !options.includeRemote) return false
-      if (item.opencode && !options.includeOpencode) return false
-      return true
-    })
+  const enabledRequirements = new Set()
+  if (options.includeRemote) enabledRequirements.add('remote')
+  if (options.includeHetzner) {
+    enabledRequirements.add('remote')
+    enabledRequirements.add('hetzner')
   }
-  if (selected.some((item) => item.hetzner) && !options.includeHetzner) {
-    throw new Error('Hetzner scenarios require --include-hetzner')
-  }
-  if (selected.some((item) => item.remote && !item.hetzner) && !options.includeRemote) {
-    throw new Error('same-host remote scenarios require --include-remote')
-  }
-  if (selected.some((item) => item.opencode) && !options.includeOpencode) {
-    throw new Error('OpenCode scenarios require --include-opencode')
-  }
-  if (selected.length === 0) throw new Error('no scenarios selected')
-  return selected
+  if (options.includeOpencode) enabledRequirements.add('opencode')
+  return selectDrillMatrixScenarios({
+    scenarios: MATRIX,
+    requestedIds: options.only,
+    enabledRequirements,
+    requirementLabels: {
+      remote: '--include-remote',
+      hetzner: '--include-hetzner',
+      opencode: '--include-opencode',
+    },
+  })
 }
 
 function commandForScenario(item, passthrough) {
   return {
     command: process.execPath,
-    args: [item.script, ...item.args, '--keep-artifacts-on-failure', ...(item.hetzner ? passthrough : [])],
+    args: [item.script, ...item.args, '--keep-artifacts-on-failure', ...(item.requires.includes('hetzner') ? passthrough : [])],
   }
-}
-
-function quoteCommand(command, args) {
-  return [command, ...args].map((part) => (/[ "'\\]/.test(part) ? JSON.stringify(part) : part)).join(' ')
-}
-
-async function runScenario(item, passthrough) {
-  const start = Date.now()
-  const { command, args } = commandForScenario(item, passthrough)
-  console.log(`[workspace-live-sync-matrix] start ${item.id}: ${item.description}`)
-  console.log(`[workspace-live-sync-matrix] command ${quoteCommand(command, args)}`)
-  let output = ''
-  const appendOutput = (chunk, stream) => {
-    const text = chunk.toString()
-    stream.write(text)
-    output += text
-    if (output.length > 2_000_000) output = output.slice(-1_000_000)
-  }
-  const status = await new Promise((resolve) => {
-    const child = spawn(command, args, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] })
-    child.stdout.on('data', (chunk) => appendOutput(chunk, process.stdout))
-    child.stderr.on('data', (chunk) => appendOutput(chunk, process.stderr))
-    child.on('exit', (code, signal) => resolve({ code, signal }))
-    child.on('error', (error) => resolve({ code: 1, signal: null, error }))
-  })
-  const durationMs = Date.now() - start
-  if (status.code === 0) {
-    if (item.expectedFailure) {
-      const reason = 'expected unsupported failure but scenario exited successfully'
-      console.error(`[workspace-live-sync-matrix] fail ${item.id} duration_ms=${durationMs} ${reason}`)
-      return { item, ok: false, durationMs, reason }
-    }
-    console.log(`[workspace-live-sync-matrix] pass ${item.id} duration_ms=${durationMs}`)
-    return { item, ok: true, durationMs }
-  }
-  if (item.expectedFailure) {
-    const expected = item.expectedOutputIncludes
-    if (!expected || output.includes(expected)) {
-      console.log(`[workspace-live-sync-matrix] pass ${item.id} expected_failure duration_ms=${durationMs}`)
-      return { item, ok: true, durationMs, expectedFailure: true }
-    }
-    const reason = `expected failure output to include ${JSON.stringify(expected)}`
-    console.error(`[workspace-live-sync-matrix] fail ${item.id} duration_ms=${durationMs} ${reason}`)
-    return { item, ok: false, durationMs, reason }
-  }
-  const reason = status.error?.message ?? `code=${status.code} signal=${status.signal ?? 'none'}`
-  console.error(`[workspace-live-sync-matrix] fail ${item.id} duration_ms=${durationMs} ${reason}`)
-  return { item, ok: false, durationMs, reason }
 }
 
 async function main() {
@@ -210,26 +160,15 @@ async function main() {
     return
   }
   const selected = selectScenarios(options)
-  console.log(`[workspace-live-sync-matrix] selected ${selected.map((item) => item.id).join(', ')}`)
-  if (options.dryRun) {
-    for (const item of selected) {
-      const { command, args } = commandForScenario(item, options.passthrough)
-      console.log(`[workspace-live-sync-matrix] dry-run ${item.id}: ${quoteCommand(command, args)}`)
-    }
-    return
-  }
-  const results = []
-  for (const item of selected) {
-    const result = await runScenario(item, options.passthrough)
-    results.push(result)
-    if (!result.ok && !options.continueOnFailure) break
-  }
+  const results = await runDrillMatrix({
+    matrixName: 'workspace-live-sync-matrix',
+    scenarios: selected,
+    commandForScenario: (item) => commandForScenario(item, options.passthrough),
+    cwd: repoRoot,
+    continueOnFailure: options.continueOnFailure,
+    dryRun: options.dryRun,
+  })
   const failed = results.filter((result) => !result.ok)
-  console.log('[workspace-live-sync-matrix] summary')
-  for (const result of results) {
-    const expected = result.expectedFailure ? ' expected_failure' : ''
-    console.log(`  ${result.ok ? 'pass' : 'fail'} ${result.item.id}${expected} duration_ms=${result.durationMs}${result.reason ? ` ${result.reason}` : ''}`)
-  }
   if (failed.length > 0) process.exitCode = 1
 }
 
