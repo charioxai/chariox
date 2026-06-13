@@ -7,6 +7,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
@@ -46,6 +47,24 @@ try {
   console.log(`M20_DOCKER_SLICE_BROWSER_STATE_PASS ${JSON.stringify({ artifactDir, screenshots, markers })}`)
 } catch (error) {
   await writeManifest(false, error)
+  await finalizeDrillArtifacts({
+    rootDir: artifactDir,
+    passed: false,
+    preserveOnFailure: true,
+    failure: error,
+    metadata: {
+      drill: "docker-slice-browser-state",
+      artifactDir,
+      tempRoot,
+      sliceName,
+      containerName,
+      homeVolume,
+      fixturePort,
+      markers,
+      screenshots,
+    },
+    log,
+  })
   console.error(error?.stack ?? String(error))
   process.exitCode = 1
 } finally {
