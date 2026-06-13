@@ -1,6 +1,48 @@
 #![allow(unused_imports)]
 use super::support::*;
 
+#[test]
+fn execution_lease_created_response_advertises_relay_peer_protocol_version() {
+    let lease = crate::execution_lease::ExecutionLease {
+        id: "lease-1".to_string(),
+        home_kernel_id: "home".to_string(),
+        home_session_id: "session-1".to_string(),
+        home_agent_id: "agent-1".to_string(),
+        home_agent_metaagent: false,
+        owner_user_id: "user-1".to_string(),
+        worker_kernel_id: "worker".to_string(),
+        machine_id: "machine-worker".to_string(),
+        created_at_ms: 1,
+        last_heartbeat_at_ms: 1,
+    };
+    let response = RelayPeerResponse::ExecutionLeaseCreated {
+        lease: lease.clone(),
+        relay_peer_protocol_version: crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+    };
+
+    let value = serde_json::to_value(&response).expect("response should serialize");
+    assert_eq!(
+        value.pointer("/relay_peer_protocol_version"),
+        Some(&serde_json::json!(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        ))
+    );
+
+    let legacy = serde_json::json!({
+        "kind": "execution_lease_created",
+        "lease": lease,
+    });
+    let decoded: RelayPeerResponse =
+        serde_json::from_value(legacy).expect("legacy response should decode with version 0");
+    assert!(matches!(
+        decoded,
+        RelayPeerResponse::ExecutionLeaseCreated {
+            relay_peer_protocol_version: 0,
+            ..
+        }
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn proxied_peer_requests_are_handled_through_relay() {
     let _relay_test_guard = relay_client_test_guard().await;
@@ -380,7 +422,16 @@ async fn execution_leases_are_managed_through_peer_transport() {
     .await
     .expect("execution lease should be created remotely");
     let lease = match created {
-        RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
+        RelayPeerResponse::ExecutionLeaseCreated {
+            lease,
+            relay_peer_protocol_version,
+        } => {
+            assert_eq!(
+                relay_peer_protocol_version,
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            );
+            lease
+        }
         other => panic!("unexpected peer response: {other:?}"),
     };
     assert_eq!(lease.home_kernel_id, config_a.daemon_id);
@@ -519,7 +570,16 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
     .await
     .expect("execution lease should be created remotely")
     {
-        RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
+        RelayPeerResponse::ExecutionLeaseCreated {
+            lease,
+            relay_peer_protocol_version,
+        } => {
+            assert_eq!(
+                relay_peer_protocol_version,
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            );
+            lease
+        }
         other => panic!("unexpected peer response: {other:?}"),
     };
 

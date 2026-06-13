@@ -6,7 +6,9 @@ use arroba_relay::protocol::EncryptedRelayPayload;
 
 use crate::runtime::router::CommandRouter;
 use crate::transport::relay_crypto;
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use crate::transport::relay_peer::{
+    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+};
 
 use super::daemon_requests::RelayRequestOutcome;
 use super::peer_events::emit_leased_projection_event;
@@ -77,7 +79,10 @@ pub(super) async fn handle_daemon_peer_request(
                 )
                 .await;
             match lease {
-                Ok(lease) => RelayPeerResponse::ExecutionLeaseCreated { lease },
+                Ok(lease) => RelayPeerResponse::ExecutionLeaseCreated {
+                    lease,
+                    relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

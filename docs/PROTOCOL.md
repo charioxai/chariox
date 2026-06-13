@@ -226,6 +226,7 @@ Remote native TUI composition:
 - provider-native TUIs and Arroba TUIs attach to the home kernel session through the same client/session attachment semantics used locally
 - provider-native TUI prompts MUST enter the home kernel through the same `SubmitPrompt` path as Arroba prompts
 - the home kernel MUST dispatch remote execution through the existing leased-agent relay path (`SubmitLeasedPrompt`, remote prompt attachments, remote MCP/skill checks, and related completion/cancel paths)
+- `ExecutionLeaseCreated` MUST include `relay_peer_protocol_version`; the home kernel must reject a worker that omits it or advertises a lower version before `SpawnLeasedAgent`, so stale remote kernels fail with an upgrade/restart action instead of breaking during provider tool calls
 - the worker kernel MUST talk to the provider through the same kernel-provider adapter/server path used by ordinary worker-owned provider runs
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue

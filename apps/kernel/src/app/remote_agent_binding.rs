@@ -8,7 +8,9 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_discovery;
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use crate::transport::relay_peer::{
+    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+};
 
 use super::remote_kernel_selection::{
     ensure_kernel_can_host_provider, kernel_presence_matches_ref,
@@ -186,25 +188,47 @@ impl DaemonApp {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
         };
-        let lease = match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-            relay_config,
-            target.clone(),
-            RelayPeerRequest::CreateExecutionLease {
-                home_kernel_id: self.config.daemon_id.clone(),
-                home_session_id: agent.session_id().to_string(),
-                home_agent_id: agent.id().to_string(),
-                home_agent_metaagent: agent.is_metaagent(),
-                owner_user_id: agent.owner_user_id().to_string(),
-            },
-        ))? {
-            RelayPeerResponse::ExecutionLeaseCreated { lease } => lease,
-            other => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "create remote execution lease",
-                    message: format!("unexpected peer response: {other:?}"),
-                });
-            }
-        };
+        let (lease, relay_peer_protocol_version) =
+            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                relay_config,
+                target.clone(),
+                RelayPeerRequest::CreateExecutionLease {
+                    home_kernel_id: self.config.daemon_id.clone(),
+                    home_session_id: agent.session_id().to_string(),
+                    home_agent_id: agent.id().to_string(),
+                    home_agent_metaagent: agent.is_metaagent(),
+                    owner_user_id: agent.owner_user_id().to_string(),
+                },
+            ))? {
+                RelayPeerResponse::ExecutionLeaseCreated {
+                    lease,
+                    relay_peer_protocol_version,
+                } => (lease, relay_peer_protocol_version),
+                other => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "create remote execution lease",
+                        message: format!("unexpected peer response: {other:?}"),
+                    });
+                }
+            };
+        if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
+            let _ = self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                relay_config,
+                target.clone(),
+                RelayPeerRequest::DestroyExecutionLease {
+                    lease_id: lease.id.clone(),
+                },
+            ));
+            return Err(DaemonError::LocalTransport {
+                operation: "create remote execution lease",
+                message: format!(
+                    "remote worker `{}` uses relay peer protocol {}, but this home kernel requires {}. Upgrade and restart the worker kernel, then retry the remote agent.",
+                    worker_kernel.kernel_id,
+                    relay_peer_protocol_version,
+                    RELAY_PEER_PROTOCOL_VERSION
+                ),
+            });
+        }
         let leased_agent =
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
                 relay_config,

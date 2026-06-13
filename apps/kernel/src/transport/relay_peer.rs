@@ -9,6 +9,8 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutco
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
     pub url: String,
@@ -389,6 +391,8 @@ pub enum RelayPeerResponse {
     },
     ExecutionLeaseCreated {
         lease: ExecutionLease,
+        #[serde(default)]
+        relay_peer_protocol_version: u32,
     },
     ExecutionLeaseDestroyed {
         lease_id: String,
