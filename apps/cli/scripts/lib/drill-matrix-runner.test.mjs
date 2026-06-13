@@ -118,6 +118,7 @@ test("stops after the first unexpected failure unless configured otherwise", asy
   const dir = await fixtureDir()
   const fail = await writeFixtureScript(dir, "fail.mjs", "console.error('Token refresh failed: 401'); process.exit(3)")
   const pass = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
+  const reportPath = path.join(dir, "stopped.json")
 
   const results = await runDrillMatrix({
     matrixName: "test-matrix",
@@ -127,11 +128,39 @@ test("stops after the first unexpected failure unless configured otherwise", asy
     ],
     commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
     cwd: dir,
+    reportPath,
   })
 
-  assert.equal(results.length, 1)
+  assert.equal(results.length, 2)
   assert.equal(results[0].ok, false)
   assert.equal(results[0].classification, "provider-auth")
+  assert.equal(results[1].skipped, true)
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.equal(report.status, "failed")
+  assert.equal(report.scenarios[1].status, "skipped")
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("continues after failure when configured", async () => {
+  const dir = await fixtureDir()
+  const fail = await writeFixtureScript(dir, "fail.mjs", "process.exit(3)")
+  const pass = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
+
+  const results = await runDrillMatrix({
+    matrixName: "test-matrix",
+    scenarios: [
+      { id: "fail", description: "failing scenario", script: fail },
+      { id: "pass", description: "passing scenario", script: pass },
+    ],
+    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+    cwd: dir,
+    continueOnFailure: true,
+  })
+
+  assert.equal(results.length, 2)
+  assert.equal(results[0].ok, false)
+  assert.equal(results[1].ok, true)
+  assert.equal(results[1].skipped, undefined)
   await rm(dir, { recursive: true, force: true })
 })
 

@@ -71,18 +71,34 @@ export async function runDrillMatrix({
   }
 
   const results = []
-  for (const scenario of scenarios) {
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index]
     const result = await runMatrixScenario({ matrixName, scenario, commandForScenario, cwd })
     results.push(result)
-    if (!result.ok && !continueOnFailure) break
+    if (!result.ok && !continueOnFailure) {
+      for (const skippedScenario of scenarios.slice(index + 1)) {
+        const { command, args } = commandForScenario(skippedScenario)
+        results.push({
+          scenario: skippedScenario,
+          ok: true,
+          skipped: true,
+          command,
+          args,
+          durationMs: 0,
+          reason: "skipped after previous failure",
+        })
+      }
+      break
+    }
   }
 
   console.log(`[${matrixName}] summary`)
   for (const result of results) {
     const expected = result.expectedFailure ? " expected_failure" : ""
     const classification = result.classification ? ` classification=${result.classification}` : ""
+    const status = result.skipped ? "skip" : result.ok ? "pass" : "fail"
     console.log(
-      `  ${result.ok ? "pass" : "fail"} ${result.scenario.id}${expected} duration_ms=${result.durationMs}${classification}${
+      `  ${status} ${result.scenario.id}${expected} duration_ms=${result.durationMs}${classification}${
         result.reason ? ` ${result.reason}` : ""
       }`,
     )
@@ -163,7 +179,7 @@ async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, resul
       id: result.scenario.id,
       description: result.scenario.description,
       requires: requirementsFor(result.scenario),
-      status: result.dryRun ? "dry-run" : result.ok ? "passed" : "failed",
+      status: result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed",
       expectedFailure: Boolean(result.expectedFailure),
       classification: result.classification ?? null,
       durationMs: result.durationMs,
