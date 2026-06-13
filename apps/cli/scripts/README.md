@@ -113,6 +113,8 @@ This drill targets the same staging cloud API and Hetzner host, but it launches 
 
 Set `ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1` to launch a second local kernel as a cloud-paired remote machine through the hosted relay. That path uses a `dev-stub` remote agent so it validates remote-machine leasing, prompt dispatch, completion, and home-owned script/MCP/connector projection, invocation, and revoke without requiring provider-account login or local extension credentials on the worker machine.
 
+Set `ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC=1` with `ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1` to run the hosted tracked Workspace Live Sync drill through the second-kernel path. The `scripts/run-hosted-oss-drill.mjs` wrapper exposes this as `pnpm run smoke:hosted-oss-drill -- --second-kernel --tracked-workspace-live-sync --tracked-provider opencode --tracked-model gpt-5.2`. Use the bare OpenCode model id for `--tracked-model`; the wrapper expands it to `--provider-model opencode=<model>` for the child drill.
+
 Set `ARROBA_CLOUD_HOSTED_TOKEN_ROTATION=1` to force a hosted machine relay-token refresh while a relay client continuously probes the kernel. This catches token-refresh presence gaps on the WSS hosted path.
 
 ## MCP/Skill Drills
