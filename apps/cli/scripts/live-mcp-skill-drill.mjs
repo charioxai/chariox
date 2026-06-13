@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -537,6 +538,7 @@ async function main() {
   const workspace = path.join(rootDir, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
   const historyDir = options.historyDir ?? path.join(rootDir, 'history')
+  await prepareDrillArtifacts(rootDir)
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(runtimeDir, { recursive: true })
   await mkdir(outputsDir, { recursive: true })
@@ -566,6 +568,7 @@ async function main() {
   const startedAt = Date.now()
   let sessionId = null
   let succeeded = false
+  let failure = null
   let webSkill = { installed: false, name: null, source: null, skippedReason: null }
   try {
     if (options.spawnDaemon) {
@@ -967,15 +970,47 @@ async function main() {
       await client.close().catch(() => {})
       throw error
     }
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (sessionId && !succeeded) {
       // Best-effort: client may already be closed or daemon may be gone.
     }
     await terminateChild(daemonChild)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'mcp-skill-live',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        spawnDaemon: options.spawnDaemon,
+        skipLiveProvider: options.skipLiveProvider,
+        liveMcpUse: options.liveMcpUse,
+        requireWebSkill: options.requireWebSkill,
+        includeGithubMcp: options.includeGithubMcp,
+        webSkillRepo: options.webSkillRepo,
+        kernelUrl,
+        runtimeDir,
+        workspace,
+        outputsDir,
+        historyDir,
+        sessionId,
+        webSkill,
+      },
+      log: (name, details) => console.log(`[mcp-skill-drill] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+      await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
     } else {
-      console.error(`Keeping drill artifacts for debugging: ${rootDir}`)
+      console.error(`[mcp-skill-drill] kept artifacts at ${rootDir}`)
+      console.error(`[mcp-skill-drill] kept transient CLI modules at ${runtimeDir}`)
     }
   }
 }
