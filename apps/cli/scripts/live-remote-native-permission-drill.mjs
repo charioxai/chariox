@@ -4,6 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -272,33 +273,14 @@ async function main() {
   }
   if (options.providers.length < 1) throw new Error('remote native permission drill requires at least one provider')
 
+  const runId = `${process.pid}-${Date.now()}`
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-native-permission-${process.pid}-${Date.now()}`)
-  const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-native-permission-drill')
-  await mkdir(rootDir, { recursive: true })
-  await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+  const rootDir = path.join(os.tmpdir(), `arroba-remote-native-permission-${runId}`)
+  const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-native-permission-drill-${runId}`)
+  await prepareDrillArtifacts(rootDir)
   await mkdir(cliRuntimeDir, { recursive: true })
 
-  await buildKernelClient()
-  const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
-  const {
-    createSessionRequest,
-    endSessionRequest,
-    listRemoteMachinesRequest,
-    setUserConfigValueRequest,
-  } = requests
-
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
-  const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
-    path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
-  )
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
   const relayEnv = {
     ...process.env,
     ARROBA_RELAY_HOST: '127.0.0.1',
@@ -318,9 +300,35 @@ async function main() {
   let homeChild = null
   let workerChild = null
   let localClient = null
+  let LocalIpcClient = null
+  let createSessionRequest = null
+  let endSessionRequest = null
+  let listRemoteMachinesRequest = null
+  let setUserConfigValueRequest = null
+  let relayBinary = null
+  let daemonBinary = null
   let succeeded = false
+  let failure = null
 
   try {
+    await buildKernelClient()
+    const loaded = await loadCliModules(cliRuntimeDir)
+    LocalIpcClient = loaded.LocalIpcClient
+    createSessionRequest = loaded.requests.createSessionRequest
+    endSessionRequest = loaded.requests.endSessionRequest
+    listRemoteMachinesRequest = loaded.requests.listRemoteMachinesRequest
+    setUserConfigValueRequest = loaded.requests.setUserConfigValueRequest
+    relayBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/Cargo.toml'),
+      'arroba-relay',
+    )
+    daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
+
     relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
     await waitForTcpPort(ports.relayPort)
 
@@ -422,13 +430,31 @@ async function main() {
       results,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (localClient) await localClient.close().catch(() => {})
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'remote-native-permission',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        cliRuntimeDir,
+      },
+      log: (name, details) => console.log(`[remote-native-permission-drill] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
       await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
     } else {
       console.error(`remote native permission drill artifacts kept at ${rootDir}`)
