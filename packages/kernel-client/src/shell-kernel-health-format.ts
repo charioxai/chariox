@@ -93,9 +93,32 @@ function appendRemoteRuntimeReadiness(
     return
   }
   lines.push(`remote runtime readiness: blocked (${readiness.issueCount} issue${readiness.issueCount === 1 ? "" : "s"}, ${readiness.attentionCount} attention)`)
+  lines.push(`remote runtime readiness next: ${remoteRuntimeBlockedNextAction(health)}`)
   if (includeSupportBundle) {
     lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
   }
+}
+
+function remoteRuntimeBlockedNextAction(health: DaemonHealthProjection): string {
+  if (providerRunRuntimeIssueCount(health) > 0) {
+    return "run /provider processes and /agent inspect for the affected agent; close or relaunch duplicate, orphaned, or mismatched provider runs"
+  }
+  if (health.projection_invariants.mismatches.length > 0) {
+    return "refresh the affected session or agent projection; capture a debug bundle if the mismatch persists"
+  }
+  if (workspaceRemoteRuntimeHardIssueCount(health) > 0) {
+    return "run /workspace sync status, /workspace sync targets, and /workspace sync conflicts to reconcile selected-workspace state"
+  }
+  if (sliceLifecycleIssueCount(health) > 0) {
+    return "run /slice doctor for the affected slice, then inspect /slice logs and /slice audit before restarting or deleting it"
+  }
+  if (remoteExecutionIssueCount(health) > 0) {
+    return "run /machine kernels for the affected worker, then relaunch or reconnect the remote provider run"
+  }
+  if (remoteExtensionSyncHardIssueCount(health) > 0) {
+    return "run /extension sync-status for affected agents; use /extension sync-retry after worker connectivity is healthy"
+  }
+  return "run /kernel health and capture a debug bundle for the affected remote runtime surface"
 }
 
 export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection): string {

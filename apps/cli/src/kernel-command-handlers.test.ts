@@ -1046,6 +1046,7 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.match(rendered, /duplicate_arroba session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
   assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
   assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
+  assert.match(rendered, /remote runtime readiness next: run \/provider processes and \/agent inspect for the affected agent; close or relaunch duplicate, orphaned, or mismatched provider runs/)
 })
 
 test("kernel remote-runtime formatter treats session projection invariant drift as a blocker", () => {
@@ -1075,6 +1076,7 @@ test("kernel remote-runtime formatter treats session projection invariant drift 
   assert.match(rendered, /agent_record_not_in_session_projection session=session-1 agent=agent-2: canonical agent record is not present in its projected session agent list/)
   assert.match(rendered, /next: refresh agent agent-2 in session session-1; run \/kernel health and \/agent list; capture a debug bundle before restarting the kernel if the mismatch persists/)
   assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
+  assert.match(rendered, /remote runtime readiness next: refresh the affected session or agent projection; capture a debug bundle if the mismatch persists/)
 })
 
 test("kernel remote-runtime formatter avoids placeholder recovery targets", () => {
