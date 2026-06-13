@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -474,44 +475,52 @@ async function main() {
   }
 
   const ports = makePorts()
-  const runtimeDir = path.join(cliRoot, '.tmp-live-tool-display-fixture-drill')
-  const rootDir = path.join(cliRoot, 'target', 'live-tool-display-fixture-drill', `${process.pid}-${Date.now()}`)
+  const runId = `${process.pid}-${Date.now()}`
+  const runtimeDir = path.join(cliRoot, `.tmp-live-tool-display-fixture-drill-${runId}`)
+  const rootDir = path.join(cliRoot, 'target', 'live-tool-display-fixture-drill', runId)
   const workspace = path.join(rootDir, 'workspace')
   const historyDir = path.join(rootDir, 'history')
   const outDir = options.outDir ? path.resolve(options.outDir) : path.join(repoRoot, 'target', 'tool-display-fixtures')
-  await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-  await mkdir(runtimeDir, { recursive: true })
-  await mkdir(workspace, { recursive: true })
-  await mkdir(outDir, { recursive: true })
-  await writeFile(path.join(workspace, 'seed.txt'), 'TOOL_DISPLAY_FIXTURE_SEED\n', 'utf8')
-  await writeFile(path.join(workspace, 'patch-target.txt'), 'before\n', 'utf8')
-
-  const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-  const daemonChild = spawn(daemonBinary, [], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `tool-display-fixtures-${process.pid}-${Date.now()}`,
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: historyDir,
-    },
-    stdio: ['ignore', 'ignore', 'inherit'],
-  })
 
   let succeeded = false
   let client = null
   let sessionId = null
+  let requests = null
+  let daemonChild = null
+  let failure = null
+  const failures = []
   try {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(runtimeDir, { recursive: true })
+    await mkdir(workspace, { recursive: true })
+    await mkdir(outDir, { recursive: true })
+    await writeFile(path.join(workspace, 'seed.txt'), 'TOOL_DISPLAY_FIXTURE_SEED\n', 'utf8')
+    await writeFile(path.join(workspace, 'patch-target.txt'), 'before\n', 'utf8')
+
+    const loaded = await loadCliModules(runtimeDir)
+    const LocalIpcClient = loaded.LocalIpcClient
+    requests = loaded.requests
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
+    daemonChild = spawn(daemonBinary, [], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        ARROBA_KERNEL_PORT: String(ports.kernelPort),
+        ARROBA_MCP_PORT: String(ports.mcpPort),
+        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+        ARROBA_CODEX_PORT: String(ports.codexPort),
+        ARROBA_DAEMON_ID: `tool-display-fixtures-${runId}`,
+        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        ARROBA_SESSION_HISTORY_DIR: historyDir,
+      },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+
     await waitForLocalDaemon(LocalIpcClient, kernelUrl, requests.createSessionRequest, requests.endSessionRequest, workspace)
     client = new LocalIpcClient(kernelUrl)
     const catalog = unwrapVariant(await client.send(requests.getProviderCatalogRequest()), 'ProviderCatalog').catalog
@@ -529,7 +538,6 @@ async function main() {
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace)), 'SessionCreated').session
     sessionId = session.id
     const attachment = unwrap(await client.send(requests.attachToSessionRequest(session.id, `tool-display-fixtures-${Date.now()}`)), 'SessionAttached').attachment
-    const failures = []
 
     for (const target of targets) {
       if (target.skipReason) {
@@ -564,15 +572,45 @@ async function main() {
     }
 
     await client.send(requests.endSessionRequest(session.id)).catch(() => {})
+    sessionId = null
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
+    if (client && sessionId && requests) await client.send(requests.endSessionRequest(sessionId)).catch(() => {})
     await client?.close?.().catch(() => {})
     await terminateChild(daemonChild)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'tool-display-fixture',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        allModels: options.allModels,
+        maxModelsPerProvider: options.maxModelsPerProvider,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        continueOnFailure: options.continueOnFailure,
+        listTargets: options.listTargets,
+        kernelUrl,
+        runtimeDir,
+        workspace,
+        historyDir,
+        outDir,
+        failures,
+      },
+      log: (name, details) => console.log(`[tool-display-fixture] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
       await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
     } else {
       console.error(`[tool-display-fixture] kept artifacts at ${rootDir}`)
+      console.error(`[tool-display-fixture] kept transient CLI modules at ${runtimeDir}`)
     }
   }
 }
