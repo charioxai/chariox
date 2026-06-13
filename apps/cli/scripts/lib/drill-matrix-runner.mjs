@@ -163,6 +163,16 @@ function requirementsFor(scenario) {
   return Array.isArray(scenario.requires) ? scenario.requires : []
 }
 
+function exitCriteriaFor(scenario) {
+  if (Array.isArray(scenario.exitCriteria)) {
+    return scenario.exitCriteria.filter((criterion) => typeof criterion === "string" && criterion.trim().length > 0)
+  }
+  if (typeof scenario.exitCriteria === "string" && scenario.exitCriteria.trim()) {
+    return [scenario.exitCriteria.trim()]
+  }
+  return []
+}
+
 async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, results, dryRun, metadata }) {
   if (!reportPath) return
   const completedAt = new Date()
@@ -179,6 +189,7 @@ async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, resul
       id: result.scenario.id,
       description: result.scenario.description,
       requires: requirementsFor(result.scenario),
+      exitCriteria: exitCriteriaFor(result.scenario),
       status: result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed",
       expectedFailure: Boolean(result.expectedFailure),
       classification: result.classification ?? null,

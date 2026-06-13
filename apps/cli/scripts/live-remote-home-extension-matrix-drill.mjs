@@ -16,23 +16,39 @@ const MATRIX = [
     id: 'local-single',
     description: 'local self-hosted relay, single user',
     args: [],
+    exitCriteria: [
+      'home-owned script, MCP, and connector tools execute on home for a remote worker agent',
+      'worker lacks local definitions/credentials and stale calls are blocked after revoke',
+    ],
   },
   {
     id: 'local-collab',
     description: 'local self-hosted relay, collab',
     args: ['--collab'],
+    exitCriteria: [
+      'collaborator remote agent can invoke only home-granted tools',
+      'collaborator cannot grant, revoke, widen scope, or inspect home credentials',
+    ],
   },
   {
     id: 'hetzner-single',
     description: 'Hetzner worker, single user',
     args: ['--hetzner-worker'],
     requires: ['hetzner'],
+    exitCriteria: [
+      'single-user home-owned extensions execute on home while worker runs on Hetzner',
+      'self-hosted relay carries projection and invocation without owning runtime authority',
+    ],
   },
   {
     id: 'hetzner-collab',
     description: 'Hetzner worker, collab',
     args: ['--hetzner-worker', '--collab'],
     requires: ['hetzner'],
+    exitCriteria: [
+      'collab remote agent on Hetzner can invoke only home-authorized tools',
+      'home revoke and authorization checks remain authoritative across machines',
+    ],
   },
 ]
 

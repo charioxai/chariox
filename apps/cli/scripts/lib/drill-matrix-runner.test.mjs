@@ -54,7 +54,7 @@ test("runs a passing matrix scenario", async () => {
 
   const results = await runDrillMatrix({
     matrixName: "test-matrix",
-    scenarios: [{ id: "pass", description: "passing scenario", script }],
+    scenarios: [{ id: "pass", description: "passing scenario", script, exitCriteria: ["child command exits zero"] }],
     commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
     cwd: dir,
     reportPath,
@@ -66,6 +66,7 @@ test("runs a passing matrix scenario", async () => {
   assert.equal(report.schema, "arroba.drill.matrix.v1")
   assert.equal(report.status, "passed")
   assert.equal(report.scenarios[0].id, "pass")
+  assert.deepEqual(report.scenarios[0].exitCriteria, ["child command exits zero"])
   assert.equal(report.scenarios[0].command, process.execPath)
   await rm(dir, { recursive: true, force: true })
 })

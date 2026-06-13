@@ -34,6 +34,7 @@ Required top-level fields:
 Required scenario fields:
 
 - `id`, `description`, `requires`.
+- `exitCriteria`: proof points the scenario is expected to establish, or an empty array.
 - `status`: `passed`, `failed`, `skipped`, or `dry-run`.
 - `expectedFailure`, `classification`, `durationMs`, `reason`.
 - `command`, `args`.

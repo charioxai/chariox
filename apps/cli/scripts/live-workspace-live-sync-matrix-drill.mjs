@@ -57,7 +57,48 @@ function scenario(id, description, script, args, flags = {}) {
   if (flags.remote) requires.push('remote')
   if (flags.hetzner) requires.push('hetzner')
   if (flags.opencode) requires.push('opencode')
-  return { id, description, script, args, ...flags, requires }
+  return { id, description, script, args, ...flags, requires, exitCriteria: workspaceLiveSyncExitCriteria({ id, args, flags }) }
+}
+
+function workspaceLiveSyncExitCriteria({ id, args, flags }) {
+  if (flags.expectedFailure) {
+    return [
+      'scenario fails for the documented unsupported capability',
+      `failure output includes ${JSON.stringify(flags.expectedOutputIncludes)}`,
+    ]
+  }
+  const provider = valueAfter(args, '--provider') ?? (flags.opencode ? 'opencode' : 'codex')
+  const mode = valueAfter(args, '--mode') ?? (id.includes('permission') ? 'permission' : 'managed')
+  const placement = flags.hetzner ? 'Hetzner remote worker' : flags.remote ? 'same-host remote worker' : 'local worker'
+  if (id.includes('permission')) {
+    return [
+      `${provider} permission checks use kernel-owned workspace live sync policy`,
+      `${placement} leaves non-selected repositories unrestricted`,
+    ]
+  }
+  if (mode === 'off') {
+    return [
+      `${provider} session runs with workspace live sync disabled`,
+      'selected workspace sync is inactive and other repositories remain unrestricted',
+    ]
+  }
+  if (mode === 'tracked') {
+    return [
+      `${provider} tracked mode fans out turn-end file changes across selected targets`,
+      `${placement} preserves selected-workspace scope while leaving other repositories unrestricted`,
+    ]
+  }
+  return [
+    `${provider} managed mode fans out selected workspace writes across configured targets`,
+    `${placement} uses kernel-owned live sync status, targets, and conflict reporting`,
+  ]
+}
+
+function valueAfter(args, flag) {
+  const index = args.indexOf(flag)
+  if (index === -1) return null
+  const value = args[index + 1]
+  return value && !value.startsWith('--') ? value : null
 }
 
 function printHelp() {

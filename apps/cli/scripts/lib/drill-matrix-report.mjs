@@ -82,6 +82,10 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
       const classification = scenario.classification ? ` classification=${scenario.classification}` : ""
       const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
       lines.push(`- ${scenario.id}${classification}${reason}`)
+      const criteria = exitCriteriaForScenario(scenario)
+      if (criteria.length > 0) {
+        lines.push(`  criteria: ${criteria.join("; ")}`)
+      }
       lines.push(`  next: ${nextActionForScenario(scenario)}`)
     }
   }
@@ -127,6 +131,12 @@ function validateDrillMatrixScenario(scenario, source) {
   if (!Array.isArray(scenario.requires) || !scenario.requires.every((value) => typeof value === "string")) {
     throw new Error(`${source} has invalid requires`)
   }
+  if (scenario.exitCriteria !== undefined && (
+    !Array.isArray(scenario.exitCriteria)
+    || !scenario.exitCriteria.every((value) => typeof value === "string")
+  )) {
+    throw new Error(`${source} has invalid exitCriteria`)
+  }
   if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
   }
@@ -152,4 +162,10 @@ function validateDrillMatrixScenario(scenario, source) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function exitCriteriaForScenario(scenario) {
+  return Array.isArray(scenario.exitCriteria)
+    ? scenario.exitCriteria.filter((criterion) => typeof criterion === "string" && criterion.trim().length > 0)
+    : []
 }

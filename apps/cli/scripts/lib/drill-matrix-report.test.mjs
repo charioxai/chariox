@@ -32,7 +32,11 @@ test("summarizes matrix report status and scenario counts", () => {
 test("formats failed and skipped scenarios with next actions", () => {
   const report = matrixReport({
     scenarios: [
-      scenario("remote", "failed", { classification: "provider-account", reason: "insufficient balance" }),
+      scenario("remote", "failed", {
+        classification: "provider-account",
+        reason: "insufficient balance",
+        exitCriteria: ["remote worker executes the selected provider turn", "home observes completion"],
+      }),
       scenario("cloud", "skipped", { reason: "skipped after previous failure" }),
     ],
   })
@@ -43,6 +47,7 @@ test("formats failed and skipped scenarios with next actions", () => {
   assert.match(text, /status=failed scenarios=2 passed=0 failed=1 skipped=1 dry_run=0/)
   assert.match(text, /classifications: provider-account=1/)
   assert.match(text, /- remote classification=provider-account reason=insufficient balance/)
+  assert.match(text, /criteria: remote worker executes the selected provider turn; home observes completion/)
   assert.match(text, /next: check provider quota or billing/)
   assert.match(text, /skipped scenarios: cloud/)
 })
@@ -93,6 +98,11 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), args: [1] }],
   }), /scenarios\[0\] has invalid args/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [{ ...scenario("broken", "passed"), exitCriteria: [1] }],
+  }), /scenarios\[0\] has invalid exitCriteria/)
 })
 
 function matrixReport(overrides = {}) {
@@ -115,6 +125,7 @@ function scenario(id, status, overrides = {}) {
     id,
     description: `${id} scenario`,
     requires: [],
+    exitCriteria: [],
     status,
     expectedFailure: false,
     classification: null,
