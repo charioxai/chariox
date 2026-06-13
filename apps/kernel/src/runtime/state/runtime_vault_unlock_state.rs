@@ -154,15 +154,16 @@ impl KernelRuntimeState {
                 message: "Arroba vault unlock was cancelled".to_string(),
             });
         }
-        let passphrase = resolution
-            .reply
-            .ok_or_else(|| DaemonError::LocalTransport {
+        let passphrase = zeroize::Zeroizing::new(resolution.reply.ok_or_else(|| {
+            DaemonError::LocalTransport {
                 operation,
                 message: "Arroba vault unlock resolved without a passphrase".to_string(),
-            })?;
+            }
+        })?);
         let (lease, lock_after_operation) =
             unlock_lease_for_choice(choice_id, &vault_config, force_prompt);
-        let status = crate::secret::unlock_arroba_encrypted_vault(&vault_path, &passphrase, lease)?;
+        let status =
+            crate::secret::unlock_arroba_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
         crate::logging::info_with_fields(
             "credential_vault",
             "Arroba vault unlocked",

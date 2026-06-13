@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::DaemonError;
 
@@ -92,19 +92,31 @@ pub enum CredentialVaultBackend {
     ProcessMemory,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialVaultUnlockPolicy {
     KernelInit,
     Ttl,
     Always,
-    Session,
-    Agent,
 }
 
 impl Default for CredentialVaultUnlockPolicy {
     fn default() -> Self {
         Self::Ttl
+    }
+}
+
+impl<'de> Deserialize<'de> for CredentialVaultUnlockPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse("credential_vault.unlock_policy", &value).map_err(|_| {
+            serde::de::Error::custom(
+                "unsupported credential vault unlock policy; use kernel_init, ttl, or always",
+            )
+        })
     }
 }
 
@@ -153,11 +165,10 @@ impl CredentialVaultUnlockPolicy {
             "kernel_init" => Ok(Self::KernelInit),
             "ttl" => Ok(Self::Ttl),
             "always" => Ok(Self::Always),
-            "session" => Ok(Self::Session),
-            "agent" => Ok(Self::Agent),
             _ => Err(DaemonError::InvalidConfig {
                 field,
-                message: "unsupported credential vault unlock policy",
+                message:
+                    "unsupported credential vault unlock policy; use kernel_init, ttl, or always",
             }),
         }
     }

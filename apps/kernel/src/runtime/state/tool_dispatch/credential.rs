@@ -52,7 +52,7 @@ impl KernelRuntimeState {
                         avoid_ambiguous: false,
                     },
                 );
-                let secret = generate_credential_secret(&generator)?;
+                let secret = zeroize::Zeroizing::new(generate_credential_secret(&generator)?);
                 let credential = stamp_runtime_credential_metadata(
                     credential_from_runtime_input(args.credential)?,
                     provider_run,
@@ -61,14 +61,13 @@ impl KernelRuntimeState {
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
                     credential,
-                    &secret,
+                    secret.as_str(),
                     args.overwrite,
                 )?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
                         "credential_id": result.credential_id,
-                        "vault_key": result.vault_key,
                         "stored": result.stored,
                         "generated": true,
                     }),
@@ -93,8 +92,8 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     provider_run,
                 );
-                let vault_key = match &credential.source {
-                    crate::config::UserCredentialSourceConfig::Vault { key } => key.clone(),
+                match &credential.source {
+                    crate::config::UserCredentialSourceConfig::Vault { .. } => {}
                     crate::config::UserCredentialSourceConfig::Env { .. }
                     | crate::config::UserCredentialSourceConfig::File { .. } => {
                         return Err(DaemonError::LocalTransport {
@@ -103,7 +102,7 @@ impl KernelRuntimeState {
                                 .to_string(),
                         });
                     }
-                };
+                }
                 if let Some(max_length) = args.prompt.max_length {
                     if max_length < args.prompt.min_length.unwrap_or(1) {
                         return Err(DaemonError::LocalTransport {
@@ -206,14 +205,15 @@ impl KernelRuntimeState {
                                 .await;
                         });
                     }
-                    let resolution = resolution_rx.await.map_err(|error| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_credential_secret",
-                            message: format!(
+                    let resolution =
+                        resolution_rx
+                            .await
+                            .map_err(|error| DaemonError::LocalTransport {
+                                operation: "runtime_tool_request_credential_secret",
+                                message: format!(
                                 "credential secret interaction dropped before resolution: {error}"
                             ),
-                        }
-                    })?;
+                            })?;
                     crate::provider::ProviderNativeInteractionResolution {
                         status: resolution.status.to_string(),
                         choice_id: resolution.choice_id,
@@ -225,7 +225,6 @@ impl KernelRuntimeState {
                         ok: true,
                         payload: serde_json::json!({
                             "credential_id": credential.id,
-                            "vault_key": vault_key,
                             "status": "timed_out",
                         }),
                     });
@@ -235,30 +234,28 @@ impl KernelRuntimeState {
                         ok: true,
                         payload: serde_json::json!({
                             "credential_id": credential.id,
-                            "vault_key": vault_key,
                             "status": "cancelled",
                         }),
                     });
                 }
-                let secret = resolution
-                    .reply
-                    .ok_or_else(|| DaemonError::LocalTransport {
+                let secret = zeroize::Zeroizing::new(resolution.reply.ok_or_else(|| {
+                    DaemonError::LocalTransport {
                         operation: "runtime_tool_request_credential_secret",
                         message: "credential secret interaction resolved without a secret"
                             .to_string(),
-                    })?;
+                    }
+                })?);
                 let registry = crate::credential::ArrobaCredentialRegistry::user()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
                     credential,
-                    &secret,
+                    secret.as_str(),
                     args.overwrite,
                 )?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
                         "credential_id": result.credential_id,
-                        "vault_key": result.vault_key,
                         "status": "stored",
                     }),
                 })
@@ -629,7 +626,7 @@ impl KernelRuntimeState {
                         avoid_ambiguous: false,
                     },
                 );
-                let secret = generate_credential_secret(&generator)?;
+                let secret = zeroize::Zeroizing::new(generate_credential_secret(&generator)?);
                 let service = self.home_runtime_secret_service()?;
                 let credential = stamp_runtime_credential_metadata_for_agent(
                     credential_from_runtime_input(args.credential)?,
@@ -642,14 +639,13 @@ impl KernelRuntimeState {
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
                     credential,
-                    &secret,
+                    secret.as_str(),
                     args.overwrite,
                 )?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
                         "credential_id": result.credential_id,
-                        "vault_key": result.vault_key,
                         "stored": result.stored,
                         "generated": true,
                     }),
@@ -834,8 +830,8 @@ impl KernelRuntimeState {
             agent.primary_provider(),
             Some(&context.worker_provider_run_id),
         );
-        let vault_key = match &credential.source {
-            crate::config::UserCredentialSourceConfig::Vault { key } => key.clone(),
+        match &credential.source {
+            crate::config::UserCredentialSourceConfig::Vault { .. } => {}
             crate::config::UserCredentialSourceConfig::Env { .. }
             | crate::config::UserCredentialSourceConfig::File { .. } => {
                 return Err(DaemonError::LocalTransport {
@@ -843,7 +839,7 @@ impl KernelRuntimeState {
                     message: "runtime-created credentials must use a vault source".to_string(),
                 });
             }
-        };
+        }
         if let Some(max_length) = args.prompt.max_length {
             if max_length < args.prompt.min_length.unwrap_or(1) {
                 return Err(DaemonError::LocalTransport {
@@ -909,7 +905,6 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "credential_id": credential.id,
-                    "vault_key": vault_key,
                     "status": "timed_out",
                 }),
             });
@@ -919,29 +914,27 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "credential_id": credential.id,
-                    "vault_key": vault_key,
                     "status": "cancelled",
                 }),
             });
         }
-        let secret = resolution
-            .reply
-            .ok_or_else(|| DaemonError::LocalTransport {
+        let secret = zeroize::Zeroizing::new(resolution.reply.ok_or_else(|| {
+            DaemonError::LocalTransport {
                 operation: "runtime_tool_request_credential_secret",
                 message: "credential secret interaction resolved without a secret".to_string(),
-            })?;
+            }
+        })?);
         let registry = crate::credential::ArrobaCredentialRegistry::user()?;
         let result = service.upsert_vault_backed_credential_with_secret(
             &registry,
             credential,
-            &secret,
+            secret.as_str(),
             args.overwrite,
         )?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "credential_id": result.credential_id,
-                "vault_key": result.vault_key,
                 "status": "stored",
             }),
         })

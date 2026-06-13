@@ -103,7 +103,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("credential_vault.backend", "enum", &["arroba_encrypted", "process_memory"], true, false, "restart_required", "boot", "Vault storage backend for vault-backed credentials. arroba_encrypted is the durable encrypted Arroba vault; process_memory is volatile and only intended for Arroba-managed slices."),
         entry("credential_vault.service", "string", &[], true, false, "none", "live", "Arroba vault namespace for vault-backed credentials."),
         entry("credential_vault.path", "string", &[], true, false, "restart_required", "boot", "Encrypted Arroba vault file path."),
-        entry("credential_vault.unlock_policy", "enum", &["kernel_init", "ttl", "always", "session", "agent"], true, true, "none", "live", "When the kernel should request Arroba vault unlock."),
+        entry("credential_vault.unlock_policy", "enum", &["kernel_init", "ttl", "always"], true, true, "none", "live", "When the kernel should request Arroba vault unlock."),
         entry("credential_vault.default_ttl_minutes", "u64", &[], true, true, "none", "live", "Default Arroba vault unlock duration for ttl policy."),
         entry("credential_vault.max_ttl_minutes", "u64", &[], true, true, "none", "live", "Maximum Arroba vault unlock duration offered by the kernel."),
         entry("credential_vault.agent_management", "enum", &["allow", "deny"], true, true, "none", "live", "Whether runtime agents may create or update user vault-backed credential handles."),

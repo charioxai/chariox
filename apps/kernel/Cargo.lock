@@ -169,6 +169,7 @@ dependencies = [
  "ureq",
  "url",
  "wait-timeout",
+ "zeroize",
 ]
 
 [[package]]

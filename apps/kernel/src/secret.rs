@@ -8,6 +8,7 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::config::{
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
@@ -19,9 +20,9 @@ use crate::error::DaemonError;
 mod vault;
 use vault::vault_store_for_config;
 pub use vault::{
-    ArrobaVaultUnlockStatus, CredentialVaultStore, VaultUnlockLease, arroba_encrypted_vault_status,
-    clear_all_arroba_encrypted_vault_unlocks, extend_arroba_encrypted_vault,
-    is_arroba_vault_locked_error, lock_arroba_encrypted_vault, unlock_arroba_encrypted_vault,
+    arroba_encrypted_vault_status, clear_all_arroba_encrypted_vault_unlocks,
+    extend_arroba_encrypted_vault, is_arroba_vault_locked_error, lock_arroba_encrypted_vault,
+    unlock_arroba_encrypted_vault, ArrobaVaultUnlockStatus, CredentialVaultStore, VaultUnlockLease,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -473,7 +474,7 @@ impl RuntimeSecretService {
         clear_vault_secret_process_cache()?;
         Err(DaemonError::LocalTransport {
             operation: "credential_vault_locked",
-            message: format!("Arroba vault `{}` is locked", status.path.display()),
+            message: "Arroba vault is locked".to_string(),
         })
     }
 
@@ -671,7 +672,7 @@ fn cached_vault_secret(service: &str, key: &str) -> Result<Option<String>, Daemo
             secret_error("credential_vault", format!("vault cache poisoned: {error}"))
         })?
         .get(&(service.to_string(), key.to_string()))
-        .cloned())
+        .map(|value| value.to_string()))
 }
 
 fn cache_vault_secret(service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
@@ -680,7 +681,10 @@ fn cache_vault_secret(service: &str, key: &str, value: &str) -> Result<(), Daemo
         .map_err(|error| {
             secret_error("credential_vault", format!("vault cache poisoned: {error}"))
         })?
-        .insert((service.to_string(), key.to_string()), value.to_string());
+        .insert(
+            (service.to_string(), key.to_string()),
+            Zeroizing::new(value.to_string()),
+        );
     Ok(())
 }
 
@@ -704,8 +708,8 @@ pub fn clear_vault_secret_process_cache() -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn vault_secret_process_cache() -> &'static Mutex<BTreeMap<(String, String), String>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<(String, String), String>>> = OnceLock::new();
+fn vault_secret_process_cache() -> &'static Mutex<BTreeMap<(String, String), Zeroizing<String>>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<(String, String), Zeroizing<String>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -876,11 +880,9 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body_json, Some(serde_json::json!({ "ok": true })));
-        assert!(
-            !serde_json::to_string(&response)
-                .unwrap()
-                .contains("test-secret")
-        );
+        assert!(!serde_json::to_string(&response)
+            .unwrap()
+            .contains("test-secret"));
     }
 
     #[test]
@@ -916,11 +918,9 @@ mod tests {
             .expect_err("wrong host should be rejected");
 
         assert!(error.to_string().contains("not allowed for host"));
-        assert!(
-            !error
-                .to_string()
-                .contains("ARROBA_TEST_SECRET_MISSING_TOKEN")
-        );
+        assert!(!error
+            .to_string()
+            .contains("ARROBA_TEST_SECRET_MISSING_TOKEN"));
     }
 
     #[test]
@@ -944,11 +944,9 @@ mod tests {
             .expect_err("wrong browser host should be rejected before env secret read");
 
         assert!(error.to_string().contains("not allowed for host"));
-        assert!(
-            !error
-                .to_string()
-                .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN")
-        );
+        assert!(!error
+            .to_string()
+            .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN"));
     }
 
     #[test]
@@ -1023,11 +1021,9 @@ mod tests {
         let error = service
             .browser_secret_input("browser_password")
             .expect_err("browser input should require browser injection");
-        assert!(
-            error
-                .to_string()
-                .contains("not configured for browser input")
-        );
+        assert!(error
+            .to_string()
+            .contains("not configured for browser input"));
         std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
     }
 
@@ -1071,12 +1067,10 @@ mod tests {
             Some(credential)
         );
         let resolving_service = RuntimeSecretService::with_vault_store(
-            vec![
-                registry
-                    .get("generated-browser-password")
-                    .expect("credential should read")
-                    .expect("credential should exist"),
-            ],
+            vec![registry
+                .get("generated-browser-password")
+                .expect("credential should read")
+                .expect("credential should exist")],
             "arroba-test",
             service.vault_store.clone(),
         );
@@ -1307,10 +1301,8 @@ mod tests {
         let error = RuntimeSecretService::with_vault_config(Vec::new(), &config)
             .expect_err("home kernels should not use volatile process memory by accident");
 
-        assert!(
-            error
-                .to_string()
-                .contains("only allowed inside Arroba slices")
-        );
+        assert!(error
+            .to_string()
+            .contains("only allowed inside Arroba slices"));
     }
 }

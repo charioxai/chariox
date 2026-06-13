@@ -996,6 +996,24 @@ backend = "process_memory"
     }
 
     #[test]
+    fn user_config_rejects_unimplemented_credential_vault_unlock_scopes() {
+        for unlock_policy in ["session", "agent"] {
+            let payload = format!(
+                r#"
+version = 1
+
+[credential_vault]
+unlock_policy = "{unlock_policy}"
+"#
+            );
+
+            let error = toml::from_str::<ArrobaUserConfig>(&payload)
+                .expect_err("unimplemented unlock scope should not parse");
+            assert!(error.to_string().contains("kernel_init, ttl, or always"));
+        }
+    }
+
+    #[test]
     fn persisted_daemon_config_loads_legacy_machine_registry_without_pairing_fields() {
         let payload = r#"{
           "relay_url": "ws://relay",

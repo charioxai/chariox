@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -9,6 +10,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::config::{CredentialVaultBackend, UserCredentialVaultConfig};
 use crate::error::DaemonError;
@@ -74,7 +76,7 @@ impl ArrobaEncryptedCredentialVaultStore {
 impl CredentialVaultStore for ArrobaEncryptedCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
         let vault_key = unlocked_vault_key(&self.path)?;
-        let plaintext = read_vault_plaintext(&self.path, &vault_key)?;
+        let plaintext = read_vault_plaintext(&self.path, vault_key.as_ref())?;
         plaintext
             .secrets
             .get(service)
@@ -86,7 +88,7 @@ impl CredentialVaultStore for ArrobaEncryptedCredentialVaultStore {
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
         let vault_key = unlocked_vault_key(&self.path)?;
         let mut plaintext = if self.path.exists() {
-            read_vault_plaintext(&self.path, &vault_key)?
+            read_vault_plaintext(&self.path, vault_key.as_ref())?
         } else {
             VaultPlaintext::default()
         };
@@ -95,13 +97,18 @@ impl CredentialVaultStore for ArrobaEncryptedCredentialVaultStore {
             .entry(service.to_string())
             .or_default()
             .insert(key.to_string(), value.to_string());
-        write_vault_plaintext(&self.path, &vault_key, &plaintext, &self.kdf_profile)
+        write_vault_plaintext(
+            &self.path,
+            vault_key.as_ref(),
+            &plaintext,
+            &self.kdf_profile,
+        )
     }
 
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
         let vault_key = unlocked_vault_key(&self.path)?;
         let mut plaintext = if self.path.exists() {
-            read_vault_plaintext(&self.path, &vault_key)?
+            read_vault_plaintext(&self.path, vault_key.as_ref())?
         } else {
             VaultPlaintext::default()
         };
@@ -111,7 +118,12 @@ impl CredentialVaultStore for ArrobaEncryptedCredentialVaultStore {
                 plaintext.secrets.remove(service);
             }
         }
-        write_vault_plaintext(&self.path, &vault_key, &plaintext, &self.kdf_profile)
+        write_vault_plaintext(
+            &self.path,
+            vault_key.as_ref(),
+            &plaintext,
+            &self.kdf_profile,
+        )
     }
 }
 
@@ -124,7 +136,7 @@ impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
             .lock()
             .map_err(|error| secret_error(format!("process memory vault lock poisoned: {error}")))?
             .get(&(service.to_string(), key.to_string()))
-            .cloned()
+            .map(|value| value.to_string())
             .ok_or_else(|| {
                 secret_error(format!(
                     "credential `{key}` not found in process memory vault"
@@ -136,7 +148,10 @@ impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
         process_memory_vault()
             .lock()
             .map_err(|error| secret_error(format!("process memory vault lock poisoned: {error}")))?
-            .insert((service.to_string(), key.to_string()), value.to_string());
+            .insert(
+                (service.to_string(), key.to_string()),
+                Zeroizing::new(value.to_string()),
+            );
         Ok(())
     }
 
@@ -184,12 +199,12 @@ pub fn unlock_arroba_encrypted_vault(
     let key = if path.exists() {
         let file = read_vault_file(&path)?;
         let key = derive_key(passphrase, &file.kdf)?;
-        decrypt_vault_payload(&file, &key)?;
+        decrypt_vault_payload(&file, key.as_ref())?;
         key
     } else {
         let kdf = VaultKdfProfile::default().new_kdf_config();
         let key = derive_key(passphrase, &kdf)?;
-        write_vault_file(&path, &key, &VaultPlaintext::default(), kdf)?;
+        write_vault_file(&path, key.as_ref(), &VaultPlaintext::default(), kdf)?;
         key
     };
     unlocked_vaults()
@@ -274,14 +289,14 @@ pub fn is_arroba_vault_locked_error(error: &DaemonError) -> bool {
     )
 }
 
-fn unlocked_vault_key(path: &Path) -> Result<[u8; KEY_LEN], DaemonError> {
+fn unlocked_vault_key(path: &Path) -> Result<Zeroizing<[u8; KEY_LEN]>, DaemonError> {
     let path = normalize_vault_path(path.to_path_buf());
     let now_ms = crate::session::unix_epoch_ms();
     let mut unlocked = unlocked_vaults()
         .lock()
         .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?;
     match unlocked.get(&path) {
-        Some(vault) if !vault.is_expired(now_ms) => Ok(vault.key),
+        Some(vault) if !vault.is_expired(now_ms) => Ok(vault.key.clone()),
         Some(_) => {
             unlocked.remove(&path);
             Err(vault_locked_error(&path))
@@ -290,14 +305,14 @@ fn unlocked_vault_key(path: &Path) -> Result<[u8; KEY_LEN], DaemonError> {
     }
 }
 
-fn read_vault_plaintext(path: &Path, key: &[u8; KEY_LEN]) -> Result<VaultPlaintext, DaemonError> {
+fn read_vault_plaintext(path: &Path, key: &[u8]) -> Result<VaultPlaintext, DaemonError> {
     let file = read_vault_file(path)?;
     decrypt_vault_payload(&file, key)
 }
 
 fn write_vault_plaintext(
     path: &Path,
-    key: &[u8; KEY_LEN],
+    key: &[u8],
     plaintext: &VaultPlaintext,
     kdf_profile: &VaultKdfProfile,
 ) -> Result<(), DaemonError> {
@@ -328,7 +343,7 @@ fn read_vault_file(path: &Path) -> Result<EncryptedVaultFile, DaemonError> {
 
 fn write_vault_file(
     path: &Path,
-    key: &[u8; KEY_LEN],
+    key: &[u8],
     plaintext: &VaultPlaintext,
     kdf: VaultKdfConfig,
 ) -> Result<(), DaemonError> {
@@ -361,25 +376,44 @@ fn write_vault_file(
     };
     let serialized = serde_json::to_vec_pretty(&file)
         .map_err(|error| secret_error(format!("failed to serialize Arroba vault: {error}")))?;
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, serialized).map_err(|error| {
+    let tmp_path = vault_temp_path(path);
+    let mut tmp_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)
+        .map_err(|error| {
+            secret_error(format!(
+                "failed to create Arroba vault temp file `{}`: {error}",
+                tmp_path.display()
+            ))
+        })?;
+    set_vault_file_permissions(&tmp_file)?;
+    tmp_file.write_all(&serialized).map_err(|error| {
         secret_error(format!(
             "failed to write Arroba vault temp file `{}`: {error}",
             tmp_path.display()
         ))
     })?;
+    tmp_file.sync_all().map_err(|error| {
+        secret_error(format!(
+            "failed to sync Arroba vault temp file `{}`: {error}",
+            tmp_path.display()
+        ))
+    })?;
+    drop(tmp_file);
     fs::rename(&tmp_path, path).map_err(|error| {
         secret_error(format!(
             "failed to replace Arroba vault `{}`: {error}",
             path.display()
         ))
     })?;
+    sync_vault_parent_dir(path)?;
     Ok(())
 }
 
 fn decrypt_vault_payload(
     file: &EncryptedVaultFile,
-    key: &[u8; KEY_LEN],
+    key: &[u8],
 ) -> Result<VaultPlaintext, DaemonError> {
     validate_vault_file(file)?;
     let nonce = base64_decode_fixed::<NONCE_LEN>(&file.nonce, "nonce")?;
@@ -416,7 +450,10 @@ fn validate_vault_file(file: &EncryptedVaultFile) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn derive_key(passphrase: &str, kdf: &VaultKdfConfig) -> Result<[u8; KEY_LEN], DaemonError> {
+fn derive_key(
+    passphrase: &str,
+    kdf: &VaultKdfConfig,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, DaemonError> {
     let salt = base64_decode(&kdf.salt, "salt")?;
     let params = Params::new(
         kdf.memory_kib,
@@ -426,11 +463,50 @@ fn derive_key(passphrase: &str, kdf: &VaultKdfConfig) -> Result<[u8; KEY_LEN], D
     )
     .map_err(|error| secret_error(format!("invalid Arroba vault KDF params: {error}")))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = [0_u8; KEY_LEN];
+    let mut key = Zeroizing::new([0_u8; KEY_LEN]);
     argon2
-        .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+        .hash_password_into(passphrase.as_bytes(), &salt, key.as_mut())
         .map_err(|error| secret_error(format!("failed to derive Arroba vault key: {error}")))?;
     Ok(key)
+}
+
+fn vault_temp_path(path: &Path) -> PathBuf {
+    let mut suffix = [0_u8; 8];
+    rand::thread_rng().fill_bytes(&mut suffix);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("vault.json");
+    path.with_file_name(format!(
+        ".{file_name}.{}.tmp",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(suffix)
+    ))
+}
+
+fn sync_vault_parent_dir(path: &Path) -> Result<(), DaemonError> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| {
+            secret_error(format!(
+                "failed to sync Arroba vault directory `{}`: {error}",
+                parent.display()
+            ))
+        })
+}
+
+#[cfg(unix)]
+fn set_vault_file_permissions(file: &File) -> Result<(), DaemonError> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| secret_error(format!("failed to set Arroba vault permissions: {error}")))
+}
+
+#[cfg(not(unix))]
+fn set_vault_file_permissions(_file: &File) -> Result<(), DaemonError> {
+    Ok(())
 }
 
 fn base64_decode(value: &str, label: &'static str) -> Result<Vec<u8>, DaemonError> {
@@ -478,8 +554,8 @@ fn process_memory_vault_backend_allowed() -> bool {
         || std::env::var_os("ARROBA_SLICE_MACHINE_ID").is_some()
 }
 
-fn process_memory_vault() -> &'static Mutex<BTreeMap<(String, String), String>> {
-    static VAULT: OnceLock<Mutex<BTreeMap<(String, String), String>>> = OnceLock::new();
+fn process_memory_vault() -> &'static Mutex<BTreeMap<(String, String), Zeroizing<String>>> {
+    static VAULT: OnceLock<Mutex<BTreeMap<(String, String), Zeroizing<String>>>> = OnceLock::new();
     VAULT.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -503,10 +579,10 @@ fn normalize_vault_path(path: PathBuf) -> PathBuf {
     path
 }
 
-fn vault_locked_error(path: &Path) -> DaemonError {
+fn vault_locked_error(_path: &Path) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "credential_vault_locked",
-        message: format!("Arroba vault `{}` is locked", path.display()),
+        message: "Arroba vault is locked".to_string(),
     }
 }
 
@@ -572,7 +648,7 @@ struct VaultPlaintext {
 
 #[derive(Debug, Clone)]
 struct UnlockedVault {
-    key: [u8; KEY_LEN],
+    key: Zeroizing<[u8; KEY_LEN]>,
     expires_at_ms: Option<u64>,
 }
 
@@ -626,13 +702,25 @@ mod tests {
         );
         let raw = fs::read_to_string(&path).expect("vault file should exist");
         assert!(!raw.contains("secret-value"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path)
+                .expect("vault metadata should read")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
 
         lock_arroba_encrypted_vault(&path).expect("vault should lock");
-        assert!(is_arroba_vault_locked_error(
-            &store
-                .get_secret("arroba-test", "github-token")
-                .expect_err("locked vault should not read")
-        ));
+        let locked_error = store
+            .get_secret("arroba-test", "github-token")
+            .expect_err("locked vault should not read");
+        assert!(is_arroba_vault_locked_error(&locked_error));
+        assert!(!locked_error
+            .to_string()
+            .contains(&path.display().to_string()));
 
         unlock_arroba_encrypted_vault(
             &path,

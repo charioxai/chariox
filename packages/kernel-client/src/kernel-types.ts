@@ -794,7 +794,7 @@ export type ArrobaUserConfig = {
     backend?: "arroba_encrypted" | "process_memory"
     service?: string
     path?: string
-    unlock_policy?: "kernel_init" | "session" | "agent" | "ttl" | "always"
+    unlock_policy?: "kernel_init" | "ttl" | "always"
     default_ttl_minutes?: number
     max_ttl_minutes?: number
   }
