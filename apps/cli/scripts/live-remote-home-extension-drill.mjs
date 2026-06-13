@@ -4,6 +4,7 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { assertBinary, terminateChild, waitForTcpPort } from './lib/drill-runtime-helpers.mjs'
 import { joinRemoteHomeExtensionCollaborator } from './lib/remote-home-extension-collab-helpers.mjs'
 import { createHomeExtensionFixtures } from './lib/home-extension-fixtures.mjs'
@@ -87,6 +88,11 @@ const {
 
 const unwrap = (response, key) => response?.[key] ?? response
 const unwrapVariant = (response, ...keys) => keys.map((key) => response?.[key]).find((value) => value != null) ?? response
+
+function log(name, details = null) {
+  if (details == null) console.log(`[remote-home-extension-drill] ${name}`)
+  else console.log(`[remote-home-extension-drill] ${name}`, JSON.stringify(details))
+}
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
   await assertBinary(binaryPath, manifestPath, binName)
@@ -179,7 +185,9 @@ async function main() {
   let client = null
   let user2Client = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     const fixtures = await createHomeExtensionFixtures({
       rootDir,
       workspace,
@@ -448,6 +456,9 @@ async function main() {
 
     succeeded = true
     console.log('[remote-home-extension-drill] pass', JSON.stringify({ mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker', collab: options.collab, script: 'home_only_lookup', mcp: 'home_echo_mcp', connector: 'home_local_api', workerAlias, revoke: true }))
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await user2Client?.close?.().catch(() => {})
     await client?.close?.().catch(() => {})
@@ -461,8 +472,17 @@ async function main() {
       await removeRemoteHomeExtensionHetznerRoot(options, remoteRoot)
     }
     await new Promise((resolve) => homeOnlyMcp?.close?.(resolve) ?? resolve())
-    if (succeeded) await rm(rootDir, { recursive: true, force: true })
-    else console.error(`[remote-home-extension-drill] artifacts kept at ${rootDir}`)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      failure,
+      metadata: {
+        drill: 'remote-home-extension',
+        mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker',
+        collab: options.collab,
+      },
+      log,
+    })
   }
 }
 
