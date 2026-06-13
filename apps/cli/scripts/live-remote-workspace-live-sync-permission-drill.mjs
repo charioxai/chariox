@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import {
   assertHetznerArrobaBinaries,
   assertHetznerTcpPortAvailable,
@@ -410,7 +411,7 @@ async function main() {
   const runId = `${process.pid}-${Date.now()}`
   const rootDir = path.join(os.tmpdir(), `arroba-remote-workspace-live-sync-permission-${runId}`)
   const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-workspace-live-sync-permission-drill-${runId}`)
-  await mkdir(rootDir, { recursive: true })
+  await prepareDrillArtifacts(rootDir)
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
 
@@ -459,6 +460,7 @@ async function main() {
   let workerChild = null
   let localClient = null
   let succeeded = false
+  let failure = null
   const childRootDir = options.hetznerWorker
     ? path.join(cliRoot, 'target', 'live-workspace-live-sync-permission-drill', `hetzner-${runId}`)
     : null
@@ -649,6 +651,9 @@ async function main() {
       results,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (localClient) await localClient.close().catch(() => {})
     await terminateChild(homeChild)
@@ -659,15 +664,29 @@ async function main() {
       await stopOwnedHetznerRelay(options, ports.relayPort, runId)
       await runHetznerCommand(options, `rm -rf ${shellQuote(`/tmp/arroba-remote-workspace-live-sync-permission-${runId}`)}`).catch(() => {})
     }
-    if (options.hetznerWorker && childRootDir) {
+    if (options.hetznerWorker && childRootDir && (succeeded || !options.keepArtifactsOnFailure)) {
       await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})
     }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'remote-workspace-live-sync-permission',
+        mode: options.mode,
+        providers: options.providers.join(','),
+        hetznerWorker: options.hetznerWorker,
+        childRootDir: childRootDir ?? '',
+        cliRuntimeDir,
+      },
+      log: (name, details) => console.log(`[remote-workspace-live-sync-permission-drill] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
       await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
     } else {
-      console.error(`remote workspace live sync permission drill artifacts kept at ${rootDir}`)
       console.error(`remote workspace live sync permission drill transient CLI modules kept at ${cliRuntimeDir}`)
+      if (childRootDir) console.error(`remote workspace live sync permission child drill artifacts kept at ${childRootDir}`)
     }
   }
 }
