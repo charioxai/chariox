@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -56,6 +57,14 @@ async function buildKernel() {
   const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+}
+
+async function buildServerGateway() {
+  const result = await run('pnpm', ['--filter', '@arroba/server', 'run', 'build'])
+  if (result.code !== 0) throw new Error(`server gateway build failed\n${result.stdout}\n${result.stderr}`)
+  const serverEntry = path.join(repoRoot, 'apps/server/dist/index.js')
+  await access(serverEntry)
+  return serverEntry
 }
 
 async function freePort() {
@@ -222,9 +231,10 @@ async function createPublishedWorkflow(envState, alias, route, parser, gatewayPo
     'WorkflowPublicationCreated',
   ).publication
   const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
+  const serverEntry = path.join(repoRoot, 'apps/server/dist/index.js')
   const gateway = startProcess(
     process.execPath,
-    [path.join(repoRoot, 'apps/server/dist/index.js')],
+    [serverEntry],
     {
       ...envState.env,
       HOST: '127.0.0.1',
@@ -235,7 +245,17 @@ async function createPublishedWorkflow(envState, alias, route, parser, gatewayPo
     },
     `gateway-${alias}`,
   )
-  await waitForGateway(gatewayUrl)
+  try {
+    await waitForGateway(gatewayUrl)
+  } catch (error) {
+    await stopProcess(gateway)
+    throw new Error([
+      `${alias} gateway did not become ready: ${error?.message ?? error}`,
+      `entry=${serverEntry}`,
+      `stdout=${gateway.logs.stdout.slice(-2000)}`,
+      `stderr=${gateway.logs.stderr.slice(-4000)}`,
+    ].join('\n'))
+  }
   return { session, workflow, endpoint, publication, gateway, gatewayUrl }
 }
 
@@ -246,8 +266,15 @@ async function main() {
   let gatewayA = null
   let gatewayB = null
   let succeeded = false
+  let failure = null
+  let workflowAInfo = null
+  let workflowBInfo = null
+  let observation = null
   try {
-    const kernelBinary = await buildKernel()
+    const [kernelBinary] = await Promise.all([
+      buildKernel(),
+      buildServerGateway(),
+    ])
     home = await startKernelEnvironment(root, kernelBinary, 'home')
     worker = await startKernelEnvironment(root, kernelBinary, 'worker')
 
@@ -261,6 +288,13 @@ async function main() {
       gatewayBPort,
     )
     gatewayB = workflowB.gateway
+    workflowBInfo = {
+      sessionId: workflowB.session.id,
+      workflowId: workflowB.workflow.id,
+      endpointId: workflowB.endpoint.id,
+      publicationId: workflowB.publication.id,
+      gatewayUrl: workflowB.gatewayUrl,
+    }
 
     const observationPath = path.join(root, 'workflow-a-parser-observation.json')
     const parserPath = path.join(root, 'workflow-a-parser.mjs')
@@ -300,6 +334,13 @@ async function main() {
       gatewayAPort,
     )
     gatewayA = workflowA.gateway
+    workflowAInfo = {
+      sessionId: workflowA.session.id,
+      workflowId: workflowA.workflow.id,
+      endpointId: workflowA.endpoint.id,
+      publicationId: workflowA.publication.id,
+      gatewayUrl: workflowA.gatewayUrl,
+    }
 
     logStep('invoke_workflow_a_calls_b')
     const response = await fetch(`${workflowA.gatewayUrl}/a/build-feature`)
@@ -307,7 +348,7 @@ async function main() {
     if (response.status !== 202 || !body.workflow_run?.id) {
       throw new Error(`expected workflow A HTTP 202 with run metadata, got ${response.status}: ${JSON.stringify(body)}`)
     }
-    const observation = JSON.parse(await readFile(observationPath, 'utf8'))
+    observation = JSON.parse(await readFile(observationPath, 'utf8'))
     if (observation.workflow_b_status !== 202 || !observation.workflow_b_run_id || observation.workflow_b_accepted !== true) {
       throw new Error(`workflow A parser did not invoke workflow B correctly: ${JSON.stringify(observation)}`)
     }
@@ -319,6 +360,9 @@ async function main() {
       workflowBEndpoint: workflowB.gatewayUrl,
     })
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (home?.client && home.sessionId) await home.client.send(endSessionRequest(home.sessionId)).catch(() => {})
     if (worker?.client && worker.sessionId) await worker.client.send(endSessionRequest(worker.sessionId)).catch(() => {})
@@ -334,7 +378,31 @@ async function main() {
       console.error('[w2w-publication-drill] gateway A logs', gatewayA?.logs ?? null)
       console.error('[w2w-publication-drill] gateway B logs', gatewayB?.logs ?? null)
     }
-    await rm(root, { recursive: true, force: true })
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'workflow-to-workflow-publication',
+        homeKernelUrl: home?.kernelUrl ?? null,
+        workerKernelUrl: worker?.kernelUrl ?? null,
+        homeSessionId: home?.sessionId ?? null,
+        workerSessionId: worker?.sessionId ?? null,
+        workflowA: workflowAInfo,
+        workflowB: workflowBInfo,
+        observation,
+        homeKernelStdoutTail: home?.kernel?.logs?.stdout?.slice(-4000) ?? '',
+        homeKernelStderrTail: home?.kernel?.logs?.stderr?.slice(-4000) ?? '',
+        workerKernelStdoutTail: worker?.kernel?.logs?.stdout?.slice(-4000) ?? '',
+        workerKernelStderrTail: worker?.kernel?.logs?.stderr?.slice(-4000) ?? '',
+        gatewayAStdoutTail: gatewayA?.logs?.stdout?.slice(-4000) ?? '',
+        gatewayAStderrTail: gatewayA?.logs?.stderr?.slice(-4000) ?? '',
+        gatewayBStdoutTail: gatewayB?.logs?.stdout?.slice(-4000) ?? '',
+        gatewayBStderrTail: gatewayB?.logs?.stderr?.slice(-4000) ?? '',
+      },
+      log: logStep,
+    })
   }
 }
 
