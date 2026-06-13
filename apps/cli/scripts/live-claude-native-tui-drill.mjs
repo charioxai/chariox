@@ -6,6 +6,7 @@ import { mkdir, readFile, rm } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -26,6 +27,7 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
 const marker = `CLN_${process.pid.toString(36)}_${Date.now().toString(36)}`
+const MAX_LOG_CHARS = 128_000
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) throw new Error(`expected ${variant}, got ${JSON.stringify(response)}`)
@@ -34,6 +36,20 @@ function unwrap(response, variant) {
 
 function makePort() {
   return 61000 + Math.floor(Math.random() * 1000)
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-")
+}
+
+function appendOutput(buffer, chunk) {
+  const next = buffer + chunk.toString("utf8")
+  if (next.length <= MAX_LOG_CHARS) return next
+  return next.slice(next.length - MAX_LOG_CHARS)
+}
+
+function tailLines(value, count = 80) {
+  return value.split("\n").slice(-count).join("\n")
 }
 
 async function waitForDaemon(kernelUrl, workspace, worktree) {
@@ -229,7 +245,7 @@ async function waitForAgentBadgeTone(socketPath, alias, tone, timeoutMs = 90_000
 }
 
 async function main() {
-  const root = path.join("/tmp", `arb-claude-native-${process.pid}-${Date.now()}`)
+  const root = path.join(repoRoot, ".artifacts", "live-claude-native-tui-drill", nowStamp())
   const kernelPort = makePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
@@ -257,7 +273,14 @@ async function main() {
   let sessionId = null
   let innerA = null
   let innerB = null
+  let passed = false
+  let failure = null
+  let daemonStdout = ""
+  let daemonStderr = ""
+  let agents = []
+  let snapshot = null
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(logs.aDir, { recursive: true })
     await mkdir(logs.bDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
@@ -273,8 +296,10 @@ async function main() {
         ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
         ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
-      stdio: ["ignore", "ignore", "inherit"],
+      stdio: ["ignore", "pipe", "pipe"],
     })
+    daemon.stdout.on("data", (chunk) => { daemonStdout = appendOutput(daemonStdout, chunk) })
+    daemon.stderr.on("data", (chunk) => { daemonStderr = appendOutput(daemonStderr, chunk) })
     await waitForDaemon(kernelUrl, workspace, worktree)
 
     await startScreen(screenA, logs.aDir, "bun", [
@@ -330,7 +355,7 @@ async function main() {
       await client.send(attachToSessionRequest(sessionId, `claude-native-drill-${process.pid}`)),
       "SessionAttached",
     ).attachment
-    const agents = await waitForNamedAgents(client, sessionId, ["claude-a", "claude-b"])
+    agents = await waitForNamedAgents(client, sessionId, ["claude-a", "claude-b"])
 
     await startScreen(screenCli, logs.cliDir, "bun", [
       cliPath,
@@ -350,7 +375,7 @@ async function main() {
       "low",
     ], process.env)
     await waitForAutomation(automationSocket)
-    const snapshot = await automationRequest(automationSocket, {
+    snapshot = await automationRequest(automationSocket, {
       action: "wait_for",
       sessionId,
       shellEntryCount: 0,
@@ -408,6 +433,10 @@ async function main() {
       focusedAgentId: state.focused_agent_id ?? null,
       logs,
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     if (innerA) await screenQuit(innerA)
@@ -420,12 +449,45 @@ async function main() {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS !== "1") {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-      if (innerA) await rm(nativeTempRootForScreen(innerA), { recursive: true, force: true }).catch(() => {})
-      if (innerB) await rm(nativeTempRootForScreen(innerB), { recursive: true, force: true }).catch(() => {})
-      await rm(automationSocket, { force: true }).catch(() => {})
+    const innerRoots = {
+      "claude-a": innerA ? nativeTempRootForScreen(innerA) : null,
+      "claude-b": innerB ? nativeTempRootForScreen(innerB) : null,
     }
+    if (passed && process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
+      console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket, innerRoots }))
+    } else {
+      await finalizeDrillArtifacts({
+        rootDir: root,
+        passed,
+        preserveOnFailure: true,
+        failure,
+        metadata: {
+          drill: "live-claude-native-tui",
+          kernelUrl,
+          sessionId,
+          workspace,
+          worktree,
+          marker,
+          markers,
+          logs,
+          automationSocket,
+          innerScreens: {
+            "claude-a": innerA,
+            "claude-b": innerB,
+          },
+          innerRoots,
+          agentAliases: agents.map((agent) => agent.alias),
+          observerSawAgents: snapshot?.session?.agentCount ?? null,
+          daemonStdoutTail: tailLines(daemonStdout),
+          daemonStderrTail: tailLines(daemonStderr),
+        },
+      })
+      if (passed) {
+        if (innerA) await rm(nativeTempRootForScreen(innerA), { recursive: true, force: true }).catch(() => {})
+        if (innerB) await rm(nativeTempRootForScreen(innerB), { recursive: true, force: true }).catch(() => {})
+      }
+    }
+    await rm(automationSocket, { force: true }).catch(() => {})
   }
 }
 
