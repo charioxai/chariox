@@ -4,11 +4,11 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
-const runtimeDir = path.join(cliRoot, '.tmp-live-local-restart-persistence-drill')
 
 function parseArgs(argv) {
   const options = { keepArtifactsOnFailure: false }
@@ -25,7 +25,7 @@ function parseArgs(argv) {
   return options
 }
 
-async function loadCliModules() {
+async function loadCliModules(runtimeDir) {
   const [{ transformAsync }, tsPreset] = await Promise.all([
     import('@babel/core'),
     import('@babel/preset-typescript'),
@@ -144,32 +144,24 @@ function agentByAlias(agents, alias) {
   return agents.find((agent) => agent.alias === alias)
 }
 
+function historyOutlineText(outline) {
+  return (outline.agents ?? [])
+    .flatMap((agent) => agent.turns ?? [])
+    .flatMap((turn) => [
+      turn.user_prompt,
+      ...(turn.entries ?? []),
+      ...(turn.summary ? [turn.summary] : []),
+      ...(turn.blobs ?? []).map((blob) => ({ entry: { text: blob.summary } })),
+    ])
+    .map((row) => row?.entry?.text ?? '')
+    .join('\n')
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const { LocalIpcClient, requests } = await loadCliModules()
-  const {
-    createSessionRequest,
-    attachToSessionRequest,
-    spawnAgentRequest,
-    launchProviderRunRequest,
-    submitPromptRequest,
-    completePromptRequest,
-    getSessionStateRequest,
-    getSessionHistoryRequest,
-    searchRecallRequest,
-    installMcpServerRequest,
-    installSkillRequest,
-    grantAgentExtensionRequest,
-    listAgentsRequest,
-    createWorkflowRequest,
-    addWorkflowNodeRequest,
-    updateWorkflowNodeInstructionsRequest,
-    createWorkflowEndpointRequest,
-    invokeWorkflowEndpointRequest,
-    endSessionRequest,
-  } = requests
-
-  const rootDir = path.join(repoRoot, 'target', 'live-local-restart-persistence-drill', `${process.pid}-${Date.now()}`)
+  const runId = `${process.pid}-${Date.now()}`
+  const rootDir = path.join(repoRoot, 'target', 'live-local-restart-persistence-drill', runId)
+  const runtimeDir = path.join(cliRoot, `.tmp-live-local-restart-persistence-drill-${runId}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
   const configRoot = path.join(rootDir, 'config')
@@ -197,8 +189,52 @@ async function main() {
   let client = null
   let sessionId = null
   let succeeded = false
+  let failure = null
+  let LocalIpcClient = null
+  let createSessionRequest = null
+  let attachToSessionRequest = null
+  let spawnAgentRequest = null
+  let launchProviderRunRequest = null
+  let submitPromptRequest = null
+  let completePromptRequest = null
+  let getSessionStateRequest = null
+  let getSessionHistoryOutlineRequest = null
+  let searchRecallRequest = null
+  let installMcpServerRequest = null
+  let installSkillRequest = null
+  let grantAgentExtensionRequest = null
+  let listAgentsRequest = null
+  let createWorkflowRequest = null
+  let addWorkflowNodeRequest = null
+  let updateWorkflowNodeInstructionsRequest = null
+  let createWorkflowEndpointRequest = null
+  let invokeWorkflowEndpointRequest = null
+  let endSessionRequest = null
 
   try {
+    await prepareDrillArtifacts(rootDir)
+    const loaded = await loadCliModules(runtimeDir)
+    LocalIpcClient = loaded.LocalIpcClient
+    createSessionRequest = loaded.requests.createSessionRequest
+    attachToSessionRequest = loaded.requests.attachToSessionRequest
+    spawnAgentRequest = loaded.requests.spawnAgentRequest
+    launchProviderRunRequest = loaded.requests.launchProviderRunRequest
+    submitPromptRequest = loaded.requests.submitPromptRequest
+    completePromptRequest = loaded.requests.completePromptRequest
+    getSessionStateRequest = loaded.requests.getSessionStateRequest
+    getSessionHistoryOutlineRequest = loaded.requests.getSessionHistoryOutlineRequest
+    searchRecallRequest = loaded.requests.searchRecallRequest
+    installMcpServerRequest = loaded.requests.installMcpServerRequest
+    installSkillRequest = loaded.requests.installSkillRequest
+    grantAgentExtensionRequest = loaded.requests.grantAgentExtensionRequest
+    listAgentsRequest = loaded.requests.listAgentsRequest
+    createWorkflowRequest = loaded.requests.createWorkflowRequest
+    addWorkflowNodeRequest = loaded.requests.addWorkflowNodeRequest
+    updateWorkflowNodeInstructionsRequest = loaded.requests.updateWorkflowNodeInstructionsRequest
+    createWorkflowEndpointRequest = loaded.requests.createWorkflowEndpointRequest
+    invokeWorkflowEndpointRequest = loaded.requests.invokeWorkflowEndpointRequest
+    endSessionRequest = loaded.requests.endSessionRequest
+
     await mkdir(workspace, { recursive: true })
     await mkdir(path.join(configRoot, 'arroba'), { recursive: true })
     await mkdir(stateRoot, { recursive: true })
@@ -271,7 +307,9 @@ async function main() {
       await client.send(submitPromptRequest(sessionId, attachment.id, workerAgent.id, promptMarker, [])),
       'PromptSubmitted',
     )
-    assert.equal(promptResponse.outcome.Started.prompt.status, 'Running')
+    const startedPrompt = promptResponse.outcome?.Started?.prompt ?? promptResponse.outcome?.started?.prompt ?? null
+    assert.ok(startedPrompt, `prompt should start immediately: ${JSON.stringify(promptResponse.outcome)}`)
+    assert.equal(startedPrompt.status, 'Running')
     await client.send(completePromptRequest(sessionId))
 
     const workflow = unwrap(await client.send(createWorkflowRequest(sessionId, 'm8-restart-flow')), 'WorkflowCreated').workflow
@@ -334,9 +372,9 @@ async function main() {
     assert.equal(hasExtensionGrant(restoredWorker, 'mcp', 'm8_restart_echo'), true)
     assert.equal(hasExtensionGrant(restoredWorker, 'skill', 'm8-restart-skill'), true)
 
-    const history = unwrap(await client.send(getSessionHistoryRequest(sessionId, 10, 20_000, null, workerAgent.id)), 'SessionHistory')
+    const history = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [restoredWorker.id], 10)), 'SessionHistoryOutline')
     assert.equal(
-      history.entries.some((entry) => String(entry.text ?? '').includes(promptMarker)),
+      historyOutlineText(history).includes(promptMarker),
       true,
     )
     const search = unwrap(await client.send(searchRecallRequest(promptMarker, { session_id: sessionId, limit: 10 })), 'RecallEvents')
@@ -352,14 +390,25 @@ async function main() {
     })
     await client.send(endSessionRequest(sessionId)).catch(() => {})
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     if (daemon) await stopDaemon(daemon).catch(() => {})
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log('artifacts-kept', { rootDir })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'local-restart-persistence',
+        kernelUrl,
+        daemonId,
+        runtimeDir,
+      },
+      log,
+    })
     await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   }
 }
