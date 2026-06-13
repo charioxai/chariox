@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { access, mkdir, readFile, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -16,6 +16,7 @@ const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
 const SCENARIOS = new Set(['echo', 'attachment', 'resume', 'selection', 'abort'])
 const PROVIDERS = new Set(['claude', 'claude-p', 'claude-headless'])
+const MAX_LOG_CHARS = 128_000
 
 function parseArgs(argv) {
   const options = {
@@ -73,13 +74,32 @@ function printHelp() {
     `  --workspace ${repoRoot}`,
     `  --worktree ${repoRoot}`,
     '  --no-spawn-daemon',
-    '  --keep-artifacts-on-failure',
+    '  --keep-artifacts-on-failure  Deprecated; failures are always preserved.',
   ].join('\n'))
 }
 
 function log(name, details) {
   if (details === undefined) console.log(`[claude-provider-drill] ${name}`)
   else console.log(`[claude-provider-drill] ${name}`, JSON.stringify(details))
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function appendOutput(buffer, chunk) {
+  const next = buffer + chunk.toString()
+  if (next.length <= MAX_LOG_CHARS) return next
+  return next.slice(next.length - MAX_LOG_CHARS)
+}
+
+function tailLines(value, count = 80) {
+  return value.split('\n').slice(-count).join('\n')
+}
+
+async function writeIfPresent(filePath, value) {
+  if (!value) return
+  await writeFile(filePath, value, 'utf8').catch(() => {})
 }
 
 function sleep(ms) {
@@ -97,6 +117,7 @@ async function loadCliModules(runtimeDir) {
     import('@babel/core'),
     import('@babel/preset-typescript'),
   ])
+  await mkdir(runtimeDir, { recursive: true })
   for (const rel of ['src/ipc.ts', 'src/ipc-requests.ts']) {
     const sourcePath = path.join(cliRoot, rel)
     const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, '.js'))
@@ -313,24 +334,37 @@ async function main() {
     throw new Error('claude-headless resume is not supported by this drill yet; use --scenario echo or --provider claude-p')
   }
 
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-claude-provider-drill', nowStamp())
   const runtimeDir = path.join(cliRoot, '.tmp-live-claude-provider-drill')
-  const rootDir = path.join(os.tmpdir(), `arroba-claude-provider-${process.pid}-${Date.now()}`)
   const workspace = options.workspace ?? path.join(rootDir, 'workspace')
   const worktree = options.worktree ?? workspace
+  await prepareDrillArtifacts(rootDir)
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-  await mkdir(runtimeDir, { recursive: true })
   await mkdir(worktree, { recursive: true })
 
   const marker = `ARROBA_CLAUDE_DRILL_${process.pid}_${Date.now()}`
   const fixture = promptFixture(options.scenario, marker)
-  const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
 
+  let LocalIpcClient = null
+  let requests = null
   let daemon = null
   let client = null
   let succeeded = false
+  let failure = null
+  let daemonStdout = ''
+  let daemonStderr = ''
+  let sessionId = null
+  let attachmentId = null
+  let providerRunId = null
+  let providerSessionId = null
+  let historyEntries = 0
+  let sessionEnded = false
   const kernelPort = 53500 + Math.floor(Math.random() * 1000)
   const kernelUrl = options.kernel ?? `ws://127.0.0.1:${kernelPort}`
   try {
+    const cliModules = await loadCliModules(runtimeDir)
+    LocalIpcClient = cliModules.LocalIpcClient
+    requests = cliModules.requests
     if (options.spawnDaemon) {
       const kernelBinary = await resolveKernelBinary()
       daemon = spawn(kernelBinary, [], {
@@ -346,8 +380,10 @@ async function main() {
           ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
           ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
         },
-        stdio: ['ignore', 'ignore', 'inherit'],
+        stdio: ['ignore', 'pipe', 'pipe'],
       })
+      daemon.stdout.on('data', (chunk) => { daemonStdout = appendOutput(daemonStdout, chunk) })
+      daemon.stderr.on('data', (chunk) => { daemonStderr = appendOutput(daemonStderr, chunk) })
     }
     await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl)
     client = new LocalIpcClient(kernelUrl)
@@ -355,10 +391,12 @@ async function main() {
       await client.send(requests.createSessionRequest(workspace, worktree, undefined, undefined, null, 'off')),
       'SessionCreated',
     ).session
+    sessionId = session.id
     const attachment = unwrap(
       await client.send(requests.attachToSessionRequest(session.id, `claude-provider-drill-${process.pid}`)),
       'SessionAttached',
     ).attachment
+    attachmentId = attachment.id
     const launchResponse = await client.send(requests.launchProviderRunRequest(
         session.id,
         options.provider,
@@ -370,6 +408,7 @@ async function main() {
       ))
     const launchPayload = launchResponse.ProviderRunLaunched ?? launchResponse.ProviderRunLaunchAccepted
     if (!launchPayload?.provider_run) throw new Error(`unexpected launch response: ${JSON.stringify(launchResponse)}`)
+    providerRunId = launchPayload.provider_run.id
     const launched = await waitForProviderRunReady(
       client,
       requests,
@@ -397,12 +436,13 @@ async function main() {
         `READY_${marker}`,
         options,
       )
-      const providerSessionId = await waitForProviderSessionId(
+      const resumedProviderSessionId = await waitForProviderSessionId(
         client,
         requests,
         launched.id,
         options.timeoutMs,
       )
+      providerSessionId = resumedProviderSessionId
       const resumeResponse = await client.send(requests.launchProviderRunRequest(
         session.id,
         options.provider,
@@ -410,7 +450,7 @@ async function main() {
         options.model,
         options.effort,
         null,
-        { providerSessionId },
+        { providerSessionId: resumedProviderSessionId },
       ))
       const resumePayload = resumeResponse.ProviderRunLaunched ?? resumeResponse.ProviderRunLaunchAccepted
       if (!resumePayload?.provider_run) throw new Error(`unexpected resume launch response: ${JSON.stringify(resumeResponse)}`)
@@ -493,18 +533,52 @@ async function main() {
         fixture.attachments,
       )
     }
+    historyEntries = history.entries.length
     log('verified', { scenario: options.scenario, marker: fixture.expected, historyEntries: history.entries.length })
     await client.send(requests.endSessionRequest(session.id)).catch(() => {})
+    sessionEnded = true
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
+    if (client && sessionId && !sessionEnded && requests?.endSessionRequest) {
+      await client.send(requests.endSessionRequest(sessionId)).catch(() => {})
+    }
     await client?.close?.().catch(() => {})
     await terminateChild(daemon)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log('kept-artifacts', { runtimeDir, rootDir })
-    }
+    await writeIfPresent(path.join(rootDir, 'daemon.stdout.log'), daemonStdout)
+    await writeIfPresent(path.join(rootDir, 'daemon.stderr.log'), daemonStderr)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      log,
+      metadata: {
+        drill: 'live-claude-provider',
+        runtimeDir,
+        kernelUrl,
+        workspace,
+        worktree,
+        provider: options.provider,
+        model: options.model,
+        effort: options.effort,
+        scenario: options.scenario,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        spawnDaemon: options.spawnDaemon,
+        sessionId,
+        attachmentId,
+        providerRunId,
+        providerSessionId,
+        expectedMarker: fixture.expected,
+        historyEntries,
+        daemonStdoutTail: tailLines(daemonStdout),
+        daemonStderrTail: tailLines(daemonStderr),
+      },
+    })
+    await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
