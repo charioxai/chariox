@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -24,6 +25,21 @@ const {
 function log(message, details) {
   if (details === undefined) console.log(`[script-extension-drill] ${message}`)
   else console.log(`[script-extension-drill] ${message}`, JSON.stringify(details))
+}
+
+function parseArgs(argv) {
+  const options = { keepArtifactsOnFailure: false }
+  for (const arg of argv) {
+    if (arg === '--') continue
+    if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--help' || arg === '-h') {
+      console.log('Usage: node apps/cli/scripts/live-script-extension-drill.mjs [--keep-artifacts-on-failure]')
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument: ${arg}`)
+    }
+  }
+  return options
 }
 
 async function run(command, args, options = {}) {
@@ -108,10 +124,16 @@ function hasExtensionGrant(agent, kind, name, environment = null) {
 }
 
 async function main() {
-  const python = process.env.PYTHON || await commandPath('python3') || await commandPath('python')
-  if (!python) throw new Error('python3 or python is required for the script extension drill')
-
+  const keepArtifacts = process.argv.slice(2).includes('--keep-artifacts-on-failure')
   const root = path.join(repoRoot, 'target', 'live-script-extension-drill', `${process.pid}-${Date.now()}`)
+  let options = { keepArtifactsOnFailure: keepArtifacts }
+  let failure = null
+  let environmentName = null
+  let scriptName = null
+  let sessionId = null
+  let agentId = null
+  let python = null
+
   const workspace = path.join(root, 'workspace')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
@@ -136,6 +158,10 @@ async function main() {
   let client = null
   let succeeded = false
   try {
+    await prepareDrillArtifacts(root)
+    options = parseArgs(process.argv.slice(2))
+    python = process.env.PYTHON || await commandPath('python3') || await commandPath('python')
+    if (!python) throw new Error('python3 or python is required for the script extension drill')
     await mkdir(workspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
@@ -160,8 +186,10 @@ def test_run() -> None:
       name: 'py-drill',
       runtime: { type: 'python', python },
     })), 'EnvironmentRegistered').environment
+    environmentName = environment.name
     const validated = variant(await client.send(validateScriptRequest(workspace, scriptPath, environment.name, 'vector_lookup')), 'ScriptValidated').script
     const registered = variant(await client.send(registerScriptRequest(workspace, scriptPath, environment.name, 'vector_lookup')), 'ScriptRegistered').script
+    scriptName = registered.name
     const environments = variant(await client.send(listEnvironmentsRequest(workspace)), 'EnvironmentsListed').environments
     const scripts = variant(await client.send(listScriptsRequest(workspace)), 'ScriptsListed').scripts
 
@@ -170,11 +198,13 @@ def test_run() -> None:
     if (!scripts.some((entry) => entry.name === 'vector_lookup')) throw new Error('registered script missing from list')
 
     const session = variant(await client.send(createSessionRequest(workspace, workspace, 'script-extension-drill')), 'SessionCreated').session
+    sessionId = session.id
     await client.send(attachToSessionRequest(session.id, `script-extension-drill-${process.pid}`))
     const agent = variant(
       await client.send(spawnAgentRequest(session.id, 'dev-stub', 'script-agent', 'script-profile', workspace, 'low')),
       'AgentSpawned',
     ).agent
+    agentId = agent.id
     const granted = variant(
       await client.send(grantAgentExtensionRequest(workspace, agent.id, 'script', 'vector_lookup', environment.name)),
       'AgentExtensionGranted',
@@ -185,11 +215,35 @@ def test_run() -> None:
 
     succeeded = true
     log('pass', { workspace, script: registered.name, environment: environment.name })
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await client?.close?.().catch(() => {})
     await stopDaemon(daemon)
-    if (succeeded) await rm(root, { recursive: true, force: true })
-    else log('artifacts-kept', { root, daemonStdout: daemon?.stdoutText?.slice(-2000), daemonStderr: daemon?.stderrText?.slice(-2000) })
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'script-extension',
+        workspace,
+        scriptPath,
+        kernelUrl,
+        python,
+        environmentName,
+        scriptName,
+        sessionId,
+        agentId,
+        daemonStdoutTail: daemon?.stdoutText?.slice(-2000) ?? '',
+        daemonStderrTail: daemon?.stderrText?.slice(-2000) ?? '',
+      },
+      log,
+    })
+    if (!succeeded && options.keepArtifactsOnFailure) {
+      log('artifacts-kept', { root })
+    }
   }
 }
 
