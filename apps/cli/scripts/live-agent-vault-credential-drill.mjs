@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -396,37 +397,13 @@ function assertNoSecretLeak(entries, secret, label) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const [{ LocalIpcClient }, requests] = await Promise.all([
-    import('../../../packages/kernel-client/dist/ipc.js'),
-    import('../../../packages/kernel-client/dist/ipc-requests.js'),
-  ])
-  const {
-    attachToSessionRequest,
-    createSessionRequest,
-    deleteCredentialSecretRequest,
-    endSessionRequest,
-    getProviderRunRequest,
-    getSessionStateRequest,
-    launchProviderRunRequest,
-    listProviderProcessesRequest,
-    respondToInteractionRequest,
-    spawnAgentRequest,
-    submitPromptRequest,
-    teardownProviderProcessesRequest,
-  } = requests
-
   const rootDir = path.join(repoRoot, 'target', 'live-agent-vault-credential-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const historyDir = path.join(rootDir, 'history')
   const capabilityRoot = path.join(rootDir, 'capabilities')
   const arrobaHome = path.join(rootDir, 'arroba-home')
-  await mkdir(workspace, { recursive: true })
-  await mkdir(arrobaHome, { recursive: true })
-  await writeFile(path.join(workspace, 'README.md'), '# M17 agent vault credential live drill\n', 'utf8')
-
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-  const kernel = await resolveKernelBinary()
   const vaultService = `arroba-m17-drill-${process.pid}-${Date.now()}`
   const vaultPath = path.join(rootDir, 'vault', 'vault.db')
   const vaultPassphrase = `m26-vault-passphrase-${process.pid}-${Date.now()}`
@@ -444,34 +421,66 @@ async function main() {
     ARROBA_SESSION_HISTORY_DIR: historyDir,
     ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
   }
-  await mkdir(path.join(daemonEnv.XDG_CONFIG_HOME, 'arroba'), { recursive: true })
-  await writeFile(path.join(daemonEnv.XDG_CONFIG_HOME, 'arroba', 'config.toml'), [
-    'version = 1',
-    '',
-    '[credential_vault]',
-    `service = "${vaultService}"`,
-    `path = "${vaultPath}"`,
-    'backend = "arroba_encrypted"',
-    'unlock_policy = "ttl"',
-    'default_ttl_minutes = 30',
-    'max_ttl_minutes = 240',
-    'agent_management = "allow"',
-    '',
-  ].join('\n'), 'utf8')
 
   const userSecret = `m17-user-secret-${process.pid}-${Date.now()}`
-  const echo = await startCredentialEchoServer(userSecret)
-  const daemon = spawn(kernel, [], {
-    cwd: repoRoot,
-    env: daemonEnv,
-    stdio: ['ignore', 'ignore', 'inherit'],
-  })
 
   const results = []
   const credentialKeys = []
+  let deleteCredentialSecretRequest = null
+  let endSessionRequest = null
   let client = null
+  let echo = null
+  let daemon = null
+  let sessionId = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(workspace, { recursive: true })
+    await mkdir(arrobaHome, { recursive: true })
+    await writeFile(path.join(workspace, 'README.md'), '# M17 agent vault credential live drill\n', 'utf8')
+    await mkdir(path.join(daemonEnv.XDG_CONFIG_HOME, 'arroba'), { recursive: true })
+    await writeFile(path.join(daemonEnv.XDG_CONFIG_HOME, 'arroba', 'config.toml'), [
+      'version = 1',
+      '',
+      '[credential_vault]',
+      `service = "${vaultService}"`,
+      `path = "${vaultPath}"`,
+      'backend = "arroba_encrypted"',
+      'unlock_policy = "ttl"',
+      'default_ttl_minutes = 30',
+      'max_ttl_minutes = 240',
+      'agent_management = "allow"',
+      '',
+    ].join('\n'), 'utf8')
+
+    const [{ LocalIpcClient }, requests] = await Promise.all([
+      import('../../../packages/kernel-client/dist/ipc.js'),
+      import('../../../packages/kernel-client/dist/ipc-requests.js'),
+    ])
+    const {
+      attachToSessionRequest,
+      createSessionRequest,
+      getProviderRunRequest,
+      getSessionStateRequest,
+      launchProviderRunRequest,
+      listProviderProcessesRequest,
+      respondToInteractionRequest,
+      spawnAgentRequest,
+      submitPromptRequest,
+      teardownProviderProcessesRequest,
+    } = requests
+    deleteCredentialSecretRequest = requests.deleteCredentialSecretRequest
+    endSessionRequest = requests.endSessionRequest
+
+    const kernel = await resolveKernelBinary()
+    echo = await startCredentialEchoServer(userSecret)
+    daemon = spawn(kernel, [], {
+      cwd: repoRoot,
+      env: daemonEnv,
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+
     await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace)
     client = new LocalIpcClient(kernelUrl)
     const created = unwrapVariant(
@@ -486,6 +495,7 @@ async function main() {
       'SessionCreated',
     )
     const session = created.session
+    sessionId = session.id
     const attachment = unwrapVariant(
       await client.send(attachToSessionRequest(session.id, `m17-vault-${Date.now()}`)),
       'SessionAttached',
@@ -725,20 +735,44 @@ async function main() {
     console.log(JSON.stringify({ ok: true, kernelUrl, workspace, providers: results }, null, 2))
     succeeded = true
     await client.send(endSessionRequest(session.id)).catch(() => {})
+    sessionId = null
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) {
-      for (const key of credentialKeys) {
-        await client.send(deleteCredentialSecretRequest(key)).catch(() => {})
+      if (deleteCredentialSecretRequest) {
+        for (const key of credentialKeys) {
+          await client.send(deleteCredentialSecretRequest(key)).catch(() => {})
+        }
       }
+      if (sessionId && endSessionRequest) await client.send(endSessionRequest(sessionId)).catch(() => {})
       await client.close().catch(() => {})
     }
-    await echo.close().catch(() => {})
+    await echo?.close?.().catch(() => {})
     await terminateChild(daemon)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      console.error(`Keeping drill artifacts for debugging: ${rootDir}`)
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'agent-vault-credential',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        kernelUrl,
+        sessionId,
+        workspace,
+        historyDir,
+        capabilityRoot,
+        credentialKeyCount: credentialKeys.length,
+        results,
+      },
+      log: (name, details) => console.log(`[agent-vault-credential-drill] ${name}`, JSON.stringify(details)),
+    })
   }
 }
 
