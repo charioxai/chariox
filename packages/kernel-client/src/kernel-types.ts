@@ -194,6 +194,9 @@ export type WaitingRoomSessionActivitySummary = {
   error_agent_count: number
   remote_agent_count?: number
   missing_worker_provider_run_count?: number
+  home_proxy_agent_count?: number
+  remote_extension_sync_issue_count?: number
+  remote_extension_pending_revoke_count?: number
   unread_idle_agent_count?: number
 }
 
@@ -1353,7 +1356,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 137
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 138
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

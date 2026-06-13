@@ -58,6 +58,38 @@ test("formatSessionList handles empty session sets", () => {
   assert.equal(formatSessionList([]), "No sessions found.")
 })
 
+test("formatSessionList surfaces home-proxy sync blockers", () => {
+  assert.equal(
+    formatSessionList([
+      {
+        id: "session-home-proxy",
+        alias: "remote-tools",
+        workspace_id: "/Users/miguel/arroba",
+        worktree_id: "/Users/miguel/arroba",
+        workspace_live_sync_mode: "managed",
+        status: "Active",
+        created_at_ms: 3,
+        attachment_ids: ["attachment-1"],
+        activity: {
+          agent_count: 3,
+          working_agent_count: 0,
+          active_prompt_count: 0,
+          queued_prompt_count: 0,
+          error_agent_count: 0,
+          remote_agent_count: 2,
+          home_proxy_agent_count: 2,
+          remote_extension_sync_issue_count: 1,
+          remote_extension_pending_revoke_count: 1,
+        },
+      },
+    ]),
+    [
+      "Sessions",
+      "- `remote-tools` (`session-home-proxy`) - active - 1 CLI - arroba - sync managed - 2 remote agents, 2 home-proxy agents, 1 extension sync issue, 1 pending revoke - next run /extension sync-status <agent>; use /extension sync-retry <agent> after worker connectivity is healthy",
+    ].join("\n"),
+  )
+})
+
 test("formatSessionHomeLabel keeps home kernel and machine visible", () => {
   assert.equal(formatSessionHomeLabel({ host_daemon_id: "home-kernel", host_machine_id: "home-machine" }), "home-kernel@home-machine")
   assert.equal(formatSessionHomeLabel({ kernel_id: "kernel", host_machine_id: "machine" }), "kernel@machine")

@@ -94,17 +94,27 @@ export function formatSessionLiveSyncLabel(session: Pick<SessionListEntry, "work
 function formatSessionRemoteActivity(session: Pick<SessionListEntry, "activity">): string {
   const remoteAgents = session.activity?.remote_agent_count ?? 0
   const workerRunGaps = session.activity?.missing_worker_provider_run_count ?? 0
+  const homeProxyAgents = session.activity?.home_proxy_agent_count ?? 0
+  const remoteExtensionSyncIssues = session.activity?.remote_extension_sync_issue_count ?? 0
+  const pendingRevokes = session.activity?.remote_extension_pending_revoke_count ?? 0
   const parts = [
     remoteAgents > 0 ? `${remoteAgents} remote ${remoteAgents === 1 ? "agent" : "agents"}` : "",
     workerRunGaps > 0 ? `${workerRunGaps} worker run ${workerRunGaps === 1 ? "gap" : "gaps"}` : "",
+    homeProxyAgents > 0 ? `${homeProxyAgents} home-proxy ${homeProxyAgents === 1 ? "agent" : "agents"}` : "",
+    remoteExtensionSyncIssues > 0 ? `${remoteExtensionSyncIssues} extension sync ${remoteExtensionSyncIssues === 1 ? "issue" : "issues"}` : "",
+    pendingRevokes > 0 ? `${pendingRevokes} pending ${pendingRevokes === 1 ? "revoke" : "revokes"}` : "",
   ].filter(Boolean)
   return parts.length ? ` - ${parts.join(", ")}` : ""
 }
 
 function formatSessionActivityNext(session: Pick<SessionListEntry, "activity">): string {
-  return (session.activity?.missing_worker_provider_run_count ?? 0) > 0
-    ? ` - next ${remoteWorkerProviderRunRecoveryAction(null, null)}`
-    : ""
+  if ((session.activity?.missing_worker_provider_run_count ?? 0) > 0) {
+    return ` - next ${remoteWorkerProviderRunRecoveryAction(null, null)}`
+  }
+  if ((session.activity?.remote_extension_sync_issue_count ?? 0) > 0) {
+    return " - next run /extension sync-status <agent>; use /extension sync-retry <agent> after worker connectivity is healthy"
+  }
+  return ""
 }
 
 export function formatSessionDisplayLabel(session: { id: string; alias?: string | null }) {
