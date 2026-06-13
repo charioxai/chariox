@@ -16,14 +16,16 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
+    remote: false,
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === "--timeout-ms") options.timeoutMs = Number(argv[++i])
     else if (arg === "--poll-ms") options.pollMs = Number(argv[++i])
     else if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
+    else if (arg === "--remote") options.remote = true
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: node apps/cli/scripts/live-vault-unlock-tui-drill.mjs [--timeout-ms 120000]")
+      console.log("Usage: node apps/cli/scripts/live-vault-unlock-tui-drill.mjs [--remote] [--timeout-ms 120000]")
       process.exit(0)
     } else {
       throw new Error(`unknown argument: ${arg}`)
@@ -48,6 +50,7 @@ function makePorts() {
     mcpPort: kernelPort + 1000,
     opencodePort: kernelPort + 2000,
     codexPort: kernelPort + 2001,
+    relayPort: kernelPort + 3000,
   }
 }
 
@@ -70,8 +73,10 @@ async function run(command, args, options = {}) {
 async function ensureBuilt() {
   const cliDist = path.join(repoRoot, "apps/cli/dist/index.js")
   const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+  const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
   const cliReady = await stat(cliDist).then((info) => info.isFile()).catch(() => false)
   const kernelReady = await stat(kernelBinary).then((info) => info.isFile()).catch(() => false)
+  const relayReady = await stat(relayBinary).then((info) => info.isFile()).catch(() => false)
   if (!cliReady) {
     const result = await run("pnpm", ["--filter", "@arroba/cli", "run", "build"])
     if (result.code !== 0) throw new Error(`cli build failed\n${result.stdout}\n${result.stderr}`)
@@ -80,7 +85,11 @@ async function ensureBuilt() {
     const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"])
     if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
-  return { cliDist, kernelBinary }
+  if (!relayReady) {
+    const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/relay/Cargo.toml"), "--bin", "arroba-relay"])
+    if (result.code !== 0) throw new Error(`relay build failed\n${result.stdout}\n${result.stderr}`)
+  }
+  return { cliDist, kernelBinary, relayBinary }
 }
 
 async function waitForKernel(kernelUrl) {
@@ -121,6 +130,48 @@ async function waitForSocket(socketPath) {
     }
   }
   throw new Error(`automation socket did not become ready: ${lastError?.message ?? lastError}`)
+}
+
+async function waitForTcpPort(port, host = "127.0.0.1", timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const connected = await new Promise((resolve) => {
+      const socket = net.connect({ host, port })
+      socket.once("connect", () => {
+        socket.destroy()
+        resolve(true)
+      })
+      socket.once("error", () => {
+        socket.destroy()
+        resolve(false)
+      })
+    })
+    if (connected) return
+    await sleep(100)
+  }
+  throw new Error(`TCP listener ${host}:${port} did not become reachable`)
+}
+
+async function waitForRelayTarget(LocalIpcClient, listSessionsRequest, relayUrl, relayToken, targetDaemonAlias) {
+  let lastError = null
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const client = new LocalIpcClient(relayUrl, {
+      relayAuthToken: relayToken,
+      targetDaemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      await client.send(listSessionsRequest())
+      await client.close().catch(() => {})
+      return
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+      await client.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError ?? "unknown error"}`)
 }
 
 function createAutomationClient(socketPath) {
@@ -226,6 +277,9 @@ async function main() {
   const automationSocket = path.join(os.tmpdir(), `arroba-vault-tui-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}/kernel`
+  const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
+  const relayToken = `vault-tui-relay-token-${process.pid}-${Date.now()}`
+  const targetDaemonAlias = `vault-tui-home-${process.pid}`
   const passphrase = `vault-tui-passphrase-${process.pid}-${Date.now()}`
   const env = {
     ...process.env,
@@ -236,11 +290,17 @@ async function main() {
     ARROBA_OPENCODE_PORT: String(ports.opencodePort),
     ARROBA_CODEX_PORT: String(ports.codexPort),
     ARROBA_DAEMON_ID: `vault-tui-drill-${process.pid}-${Date.now()}`,
+    ARROBA_DAEMON_ALIAS: targetDaemonAlias,
     ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "history"),
     ARROBA_TEST_TUI: "1",
+    ...(options.remote ? {
+      ARROBA_RELAY_URL: relayUrl,
+      ARROBA_RELAY_TOKEN: relayToken,
+    } : {}),
   }
 
+  let relay = null
   let daemon = null
   let cli = null
   let automation = null
@@ -261,8 +321,22 @@ async function main() {
       'agent_management = "allow"',
       "",
     ].join("\n"), "utf8")
-    const { cliDist, kernelBinary } = await ensureBuilt()
+    const { cliDist, kernelBinary, relayBinary } = await ensureBuilt()
 
+    if (options.remote) {
+      relay = spawn(relayBinary, [], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          ARROBA_RELAY_HOST: "127.0.0.1",
+          ARROBA_RELAY_PORT: String(ports.relayPort),
+          ARROBA_RELAY_TOKEN: relayToken,
+        },
+        stdio: ["ignore", "ignore", "inherit"],
+      })
+      await waitForTcpPort(ports.relayPort)
+      log("relay-ready", { relayUrl })
+    }
     daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ["ignore", "ignore", "inherit"] })
     await waitForKernel(kernelUrl)
     log("kernel-ready", { kernelUrl })
@@ -270,11 +344,18 @@ async function main() {
     const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
     const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
     client = new LocalIpcClient(kernelUrl)
+    if (options.remote) {
+      await waitForRelayTarget(LocalIpcClient, requests.listSessionsRequest, relayUrl, relayToken, targetDaemonAlias)
+      log("relay-target-ready", { targetDaemonAlias })
+    }
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, "vault-tui")), "SessionCreated").session
     const sessionId = session.id
     const agentId = session.default_agent_id ?? session.agents?.[0]?.id
     if (!agentId) throw new Error("created session did not expose an agent")
 
+    const connectionArgs = options.remote
+      ? ["--relay-url", relayUrl, "--relay-token", relayToken, "--target-daemon-alias", targetDaemonAlias]
+      : ["--kernel-url", kernelUrl]
     const cliArgs = [
       "-q",
       "/dev/null",
@@ -282,7 +363,7 @@ async function main() {
       ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
       "bun",
       cliDist,
-      "--kernel-url", kernelUrl,
+      ...connectionArgs,
       "--automation-socket", automationSocket,
       "--session", sessionId,
       "--workspace", workspace,
@@ -344,7 +425,7 @@ async function main() {
       extended,
     }, null, 2), "utf8")
     succeeded = true
-    console.log(JSON.stringify({ ok: true, mode: "vault-unlock-tui", rootDir, sessionId, agentId }, null, 2))
+    console.log(JSON.stringify({ ok: true, mode: options.remote ? "vault-unlock-remote-tui" : "vault-unlock-tui", rootDir, sessionId, agentId }, null, 2))
   } finally {
     if (automation) {
       await bestEffortWithTimeout(automation.send("exit"), 2_000)
@@ -353,6 +434,7 @@ async function main() {
     if (client) await bestEffortWithTimeout(client.close(), 5_000)
     await terminateChild(cli)
     await terminateChild(daemon)
+    await terminateChild(relay)
     if (succeeded || !options.keepArtifactsOnFailure) {
       await rm(rootDir, { recursive: true, force: true }).catch(() => {})
     } else {
