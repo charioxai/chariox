@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -293,7 +294,9 @@ async function main() {
   let sessionId = null
   let requests = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mustRun('git', ['init'], { cwd: workspace })
     await mustRun('git', ['config', 'user.email', 'remote-drill@example.com'], { cwd: workspace })
@@ -407,6 +410,9 @@ async function main() {
       commitSha,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) {
       if (sessionId && requests) await client.send(requests.endSessionRequest(sessionId)).catch(() => {})
@@ -415,11 +421,27 @@ async function main() {
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log('kept-artifacts', { rootDir })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'remote-git-observation',
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        relayUrl,
+        homeKernelUrl,
+        workerKernelUrl: `ws://127.0.0.1:${ports.workerKernelPort}`,
+        homeDaemonId,
+        workerDaemonId,
+        workerMachineId,
+        workerMachineAlias,
+        sessionId,
+        workspace,
+      },
+      log,
+    })
   }
 }
 
