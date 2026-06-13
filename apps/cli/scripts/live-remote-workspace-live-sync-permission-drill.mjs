@@ -6,7 +6,15 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
-import { assertHetznerArrobaBinaries, remoteEnvCommand, runHetznerCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
+import {
+  assertHetznerArrobaBinaries,
+  assertHetznerTcpPortAvailable,
+  remoteEnvCommand,
+  runHetznerCommand,
+  shellQuote,
+  sshArgs,
+  stopHetznerProcessByEnv,
+} from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -244,10 +252,15 @@ async function syncHetznerCodexAuth(options) {
   await execFileAsync('ssh', sshArgs(options, 'mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json'))
 }
 
-async function stopHetznerRelayOnPort(options, port) {
-  await runHetznerCommand(options, [
-    `if command -v lsof >/dev/null 2>&1; then lsof -tiTCP:${Number(port)} -sTCP:LISTEN | xargs -r kill -9 2>/dev/null || true; fi`,
-  ].join('; ')).catch(() => {})
+async function assertHetznerRelayPortAvailable(options, port) {
+  await assertHetznerTcpPortAvailable(options, port, 'Hetzner relay port')
+}
+
+async function stopOwnedHetznerRelay(options, port, runId) {
+  await stopHetznerProcessByEnv(options, {
+    ARROBA_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
+    ARROBA_RELAY_PORT: String(port),
+  })
 }
 
 function mirrorFixturesToHetznerCommand(options, rootDir) {
@@ -456,12 +469,13 @@ async function main() {
       if (options.providers.includes('codex')) {
         await syncHetznerCodexAuth(options)
       }
-      await stopHetznerRelayOnPort(options, ports.relayPort)
+      await assertHetznerRelayPortAvailable(options, ports.relayPort)
       relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
         ARROBA_REMOTE_REPO: options.hetznerRepo,
         ARROBA_RELAY_HOST: '127.0.0.1',
         ARROBA_RELAY_PORT: String(ports.relayPort),
         ARROBA_RELAY_TOKEN: relayToken,
+        ARROBA_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
       }, './apps/relay/target/debug/arroba-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
       relayTunnel = spawn('ssh', [
         '-i',
@@ -642,7 +656,7 @@ async function main() {
     await terminateChild(relayChild)
     await terminateChild(relayTunnel)
     if (options.hetznerWorker) {
-      await stopHetznerRelayOnPort(options, ports.relayPort)
+      await stopOwnedHetznerRelay(options, ports.relayPort, runId)
       await runHetznerCommand(options, `rm -rf ${shellQuote(`/tmp/arroba-remote-workspace-live-sync-permission-${runId}`)}`).catch(() => {})
     }
     if (options.hetznerWorker && childRootDir) {

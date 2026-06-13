@@ -67,6 +67,33 @@ export async function runHetznerCommand(options, command) {
   return stdout
 }
 
+export async function assertHetznerTcpPortAvailable(options, port, label = "Hetzner TCP port") {
+  const pids = (await runHetznerCommand(
+    options,
+    `if command -v lsof >/dev/null 2>&1; then lsof -tiTCP:${Number(port)} -sTCP:LISTEN 2>/dev/null || true; fi`,
+  )).trim()
+  if (pids) {
+    throw new Error(`${label} ${port} is already in use by pid(s) ${pids}; choose another run or wait for the owner to finish`)
+  }
+}
+
+export async function stopHetznerProcessByEnv(options, expectedEnv) {
+  const checks = Object.entries(expectedEnv).map(([key, value]) => (
+    `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`${key}=${value}`)} || continue;`
+  ))
+  await runHetznerCommand(options, [
+    'for env_file in /proc/[0-9]*/environ; do',
+    '  test -r "$env_file" || continue;',
+    '  pid=${env_file#/proc/}; pid=${pid%/environ};',
+    '  env_text=$(tr "\\0" "\\n" < "$env_file" 2>/dev/null || true);',
+    ...checks,
+    '  kill "$pid" 2>/dev/null || true;',
+    '  for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done;',
+    '  kill -9 "$pid" 2>/dev/null || true;',
+    'done',
+  ].join(' ')).catch(() => {})
+}
+
 export async function ensureExecutionDirectory(options, remoteExecution, dirPath) {
   if (remoteExecution) {
     await runHetznerCommand(options, `mkdir -p ${shellQuote(dirPath)}`)
