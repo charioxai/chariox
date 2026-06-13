@@ -5,13 +5,14 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
+import { historyOutlineRows } from "./lib/drill-history-outline.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
   attachToSessionRequest,
   createSessionRequest,
   endSessionRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryOutlineRequest,
   getSessionStateRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
@@ -159,8 +160,13 @@ async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, ex
     let ok = true
     const histories = {}
     for (const agent of agents) {
-      const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 200, 100_000, null, agent.id)), "SessionHistory")
-      const entries = page.entries.map((entry) => entry.entry).filter(Boolean)
+      const outline = unwrap(
+        await client.send(getSessionHistoryOutlineRequest(sessionId, [agent.id], 8)),
+        "SessionHistoryOutline",
+      )
+      const entries = historyOutlineRows(outline, { includeUserPrompt: true })
+        .map((row) => row.entry)
+        .filter(Boolean)
       histories[agent.alias] = {
         all: entries.map((entry) => entry.text ?? "").join("\n"),
         prompts: entries.filter((entry) => entry.kind === "user_prompt").map((entry) => entry.text ?? "").join("\n"),
