@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -306,10 +307,22 @@ async function main() {
   let client = null
   let api = null
   let succeeded = false
+  let failure = null
+  let sessionId = null
+  let attachmentId = null
+  const completedProviders = []
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(outputsDir, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await writeFile(path.join(configHome, 'arroba', 'config.toml'), [
+      'version = 1',
+      '',
+      '[credential_vault]',
+      'backend = "process_memory"',
+      `service = "connector-agent-drill-${process.pid}"`,
+      '',
+    ].join('\n'), 'utf8')
     await writeFile(path.join(workspace, 'README.md'), '# connector extension agent drill\n', 'utf8')
     api = await startApiServer(secretValue)
     const [kernelBinary, adapterBinary] = await Promise.all([
@@ -332,24 +345,51 @@ async function main() {
       ARROBA_CODEX_PORT: String(ports.codexPort),
       ARROBA_DAEMON_ID: `connector-agent-drill-${process.pid}-${Date.now()}`,
       ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+      ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: '1',
     })
     await waitForDaemon(kernelUrl)
     client = new LocalIpcClient(kernelUrl)
     await client.send(requests.setCredentialSecretRequest(vaultKey, secretValue))
     await registerConnector(client, root, api.port, vaultKey, adapterBinary)
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, 'connector-extension-agent-drill')), 'SessionCreated').session
+    sessionId = session.id
     const attachment = unwrap(await client.send(requests.attachToSessionRequest(session.id, `connector-agent-drill-${process.pid}`)), 'SessionAttached').attachment
-    for (const provider of options.providers) await runProviderScenario({ client, session, attachment, workspace, outputsDir, provider, options })
+    attachmentId = attachment.id
+    for (const provider of options.providers) {
+      await runProviderScenario({ client, session, attachment, workspace, outputsDir, provider, options })
+      completedProviders.push(provider)
+    }
     if (!api.seen.some((entry) => entry.pathname === '/secret' && entry.secret === secretValue)) throw new Error('API server did not receive vault-injected secret')
     await client.send(requests.deleteCredentialSecretRequest(vaultKey)).catch(() => {})
     succeeded = true
     log('pass', { providers: options.providers, workspace })
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await client?.close?.().catch(() => {})
     await stopDaemon(daemon)
     if (api) await new Promise((resolve) => api.server.close(resolve))
-    if (succeeded && !options.keepArtifactsOnFailure) await rm(root, { recursive: true, force: true })
-    else log('artifacts-kept', { root, daemonStdout: daemon?.stdoutText?.slice(-2000), daemonStderr: daemon?.stderrText?.slice(-4000) })
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'connector-extension-agent',
+        providers: options.providers,
+        completedProviders,
+        workspace,
+        kernelUrl,
+        sessionId,
+        attachmentId,
+        apiRequestCount: api?.seen?.length ?? null,
+        daemonStdoutTail: daemon?.stdoutText?.slice(-2000) ?? '',
+        daemonStderrTail: daemon?.stderrText?.slice(-4000) ?? '',
+      },
+      log,
+    })
+    if (!succeeded && options.keepArtifactsOnFailure) log('artifacts-kept', { root })
   }
 }
 
