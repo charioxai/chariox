@@ -4,6 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -334,36 +335,12 @@ async function main() {
     return
   }
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-skill-${process.pid}-${Date.now()}`)
+  const runId = `${process.pid}-${Date.now()}`
+  const rootDir = path.join(os.tmpdir(), `arroba-remote-skill-${runId}`)
   const workspace = path.join(rootDir, 'workspace')
-  const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-skill-drill')
-  await mkdir(workspace, { recursive: true })
-  await rm(cliRuntimeDir, { recursive: true, force: true })
-  await mkdir(cliRuntimeDir, { recursive: true })
-  const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
-  const {
-    attachToSessionRequest,
-    createSessionRequest,
-    endSessionRequest,
-    grantAgentExtensionRequest,
-    installSkillRequest,
-    listRemoteMachinesRequest,
-    moveAgentToRemoteRequest,
-    spawnAgentRequest,
-    submitPromptRequest,
-  } = requests
+  const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-skill-drill-${runId}`)
 
   const relayToken = `remote-skill-token-${process.pid}`
-  const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
-    path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
-  )
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
   const relayEnv = {
     ...process.env,
     ARROBA_RELAY_HOST: '127.0.0.1',
@@ -384,7 +361,34 @@ async function main() {
   let workerChild = null
   let client = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(workspace, { recursive: true })
+    await rm(cliRuntimeDir, { recursive: true, force: true })
+    await mkdir(cliRuntimeDir, { recursive: true })
+    const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
+    const {
+      attachToSessionRequest,
+      createSessionRequest,
+      endSessionRequest,
+      grantAgentExtensionRequest,
+      installSkillRequest,
+      listRemoteMachinesRequest,
+      moveAgentToRemoteRequest,
+      spawnAgentRequest,
+      submitPromptRequest,
+    } = requests
+    const relayBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/Cargo.toml'),
+      'arroba-relay',
+    )
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
     relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
     await waitForTcpPort(ports.relayPort)
     homeChild = spawn(daemonBinary, [], {
@@ -616,16 +620,32 @@ async function main() {
       completionCount,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'remote-skill',
+        provider: options.provider,
+        model: options.model,
+        effort: options.effort,
+        liveProviderSkipped: options.skipLiveProvider,
+        cliRuntimeDir,
+      },
+      log: (name, details) => console.log(`[remote-skill-drill] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
       await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
     } else {
-      console.error(`remote skill drill artifacts kept at ${rootDir}`)
       console.error(`remote skill drill transient CLI modules kept at ${cliRuntimeDir}`)
     }
   }
