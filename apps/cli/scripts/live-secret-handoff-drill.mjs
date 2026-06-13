@@ -4,9 +4,11 @@ import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
+const MCP_TOOL_CALL_TIMEOUT_MS = 15_000
 
 function log(name, details) {
   if (details === undefined) console.log(`[secret-drill] ${name}`)
@@ -156,19 +158,32 @@ async function launchDevStub(client, requests, workspace, label, model = 'secret
 }
 
 async function mcpToolCall(providerRun, name, args) {
-  const response = await fetch(providerRun.runtime_mcp_server_url, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${providerRun.runtime_mcp_auth_token}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: `${name}-${Date.now()}`,
-      method: 'tools/call',
-      params: { name, arguments: args ?? {} },
-    }),
-  })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), MCP_TOOL_CALL_TIMEOUT_MS)
+  let response
+  try {
+    response = await fetch(providerRun.runtime_mcp_server_url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${providerRun.runtime_mcp_auth_token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: `${name}-${Date.now()}`,
+        method: 'tools/call',
+        params: { name, arguments: args ?? {} },
+      }),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`runtime MCP ${name} timed out after ${MCP_TOOL_CALL_TIMEOUT_MS}ms`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
   const text = await response.text()
   let payload
   try {
@@ -286,8 +301,15 @@ async function main() {
   let localVerifier = null
   let workerVerifier = null
   let succeeded = false
+  let failure = null
+  const completedChecks = []
+  let localSessionId = null
+  let workerSessionId = null
+  let localAgentId = null
+  let workerAgentId = null
 
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     const [kernelBinary] = await Promise.all([buildKernel(), buildKernelClient()])
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -348,6 +370,10 @@ async function main() {
 
     const local = await launchDevStub(localClient, requests, workspace, 'local')
     const worker = await launchDevStub(workerClient, requests, workspace, 'worker')
+    localSessionId = local.session.id
+    workerSessionId = worker.session.id
+    localAgentId = local.agent.id
+    workerAgentId = worker.agent.id
 
     if (!local.providerRun.pty_env_remove?.includes(localTokenEnv)) {
       throw new Error(`local provider env removal did not include ${localTokenEnv}`)
@@ -355,6 +381,7 @@ async function main() {
     if (!worker.providerRun.pty_env_remove?.includes(workerTokenEnv)) {
       throw new Error(`worker provider env removal did not include ${workerTokenEnv}`)
     }
+    completedChecks.push('provider env scrubbed')
     log('provider_env_scrub_ok')
 
     const localHandles = await mcpToolCall(local.providerRun, 'list_credential_handles', {})
@@ -367,6 +394,7 @@ async function main() {
     if (!workerIds.has('worker-api') || workerIds.has('local-api')) {
       throw new Error(`worker credential discovery was not worker-only: ${JSON.stringify([...workerIds])}`)
     }
+    completedChecks.push('credential discovery local to each kernel')
     log('credential_discovery_locality_ok')
 
     const localHttp = await mcpToolCall(local.providerRun, 'http_request_with_credential', {
@@ -389,6 +417,7 @@ async function main() {
     if (serializedHttp.includes(localToken) || serializedHttp.includes(workerToken)) {
       throw new Error('HTTP credential result leaked a token')
     }
+    completedChecks.push('http credential calls succeeded without token serialization')
     log('http_credential_calls_ok')
 
     const wrongHost = await mcpToolCall(local.providerRun, 'http_request_with_credential', {
@@ -411,6 +440,7 @@ async function main() {
     if (missingWorkerLocal.ok || !JSON.stringify(missingWorkerLocal).includes('unknown credential `local-api`')) {
       throw new Error(`worker missing-handle denial failed: ${JSON.stringify(missingWorkerLocal)}`)
     }
+    completedChecks.push('credential misuse denials redacted secrets')
     log('denials_ok')
 
     const terminal = await mcpToolCall(local.providerRun, 'send_secret_to_terminal', {
@@ -424,6 +454,7 @@ async function main() {
     if (!terminalEchoed) {
       throw new Error('terminal handoff did not reach provider PTY')
     }
+    completedChecks.push('terminal secret handoff reached provider PTY')
     log('terminal_handoff_ok')
 
     await localClient.send(requests.endSessionRequest(local.session.id)).catch(() => {})
@@ -433,6 +464,9 @@ async function main() {
       localVerifierRequests: localVerifier.requests.length,
       workerVerifierRequests: workerVerifier.requests.length,
     })
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await localClient?.close?.().catch(() => {})
     await workerClient?.close?.().catch(() => {})
@@ -440,9 +474,32 @@ async function main() {
     await terminate(workerDaemon)
     await localVerifier?.close?.().catch(() => {})
     await workerVerifier?.close?.().catch(() => {})
-    if (succeeded || !keepArtifacts) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: keepArtifacts,
+      failure,
+      metadata: {
+        drill: 'secret-handoff',
+        workspace,
+        ports,
+        localKernelUrl: `ws://127.0.0.1:${ports.localKernel}`,
+        workerKernelUrl: `ws://127.0.0.1:${ports.workerKernel}`,
+        localSessionId,
+        workerSessionId,
+        localAgentId,
+        workerAgentId,
+        localTokenEnv,
+        workerTokenEnv,
+        localTerminalEnv,
+        workerTerminalEnv,
+        completedChecks,
+        localVerifierRequestCount: localVerifier?.requests?.length ?? null,
+        workerVerifierRequestCount: workerVerifier?.requests?.length ?? null,
+      },
+      log,
+    })
+    if (!succeeded && keepArtifacts) {
       console.error(`[secret-drill] kept artifacts at ${rootDir}`)
     }
   }
