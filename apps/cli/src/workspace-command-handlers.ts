@@ -564,7 +564,7 @@ function workspaceLiveSyncProblems(status: WorkspaceLiveSyncStatus): string[] {
     }
   }
   for (const conflict of status.conflicts) {
-    problems.push(`${conflict.path} blocked on ${conflict.target_user_id}:${conflict.target_repo_root}`)
+    problems.push(`${conflict.path} from ${conflict.source_agent_id} blocked on ${conflict.target_user_id}:${conflict.target_repo_root}`)
   }
   return problems
 }

@@ -139,7 +139,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[1] ?? "", /Scope: selected workspace\/worktree only; other repositories are unrestricted/)
   assert.match(notices[1] ?? "", /Problems:/)
   assert.match(notices[1] ?? "", /shared has 1 conflicted target/)
-  assert.match(notices[1] ?? "", /src\/app\.ts blocked on user-2:\/repo\/peer/)
+  assert.match(notices[1] ?? "", /src\/app\.ts from agent-1 blocked on user-2:\/repo\/peer/)
   assert.match(notices[1] ?? "", /Inspect: \/workspace sync targets; \/workspace sync conflicts; \/workspace sync ignore; \/workspace sync audit/)
   assert.match(notices[2] ?? "", /conflict shared: user-2 \/repo\/peer branch=main machine=machine-2 kernel=kernel-2/)
   assert.match(notices[2] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
