@@ -6,6 +6,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -287,10 +288,14 @@ async function main() {
 
   let daemon = null
   let cli = null
+  let cliStdout = ''
+  let cliStderr = ''
   let automation = null
   let client = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     await mkdir(path.join(configRoot, 'arroba'), { recursive: true })
@@ -320,8 +325,6 @@ async function main() {
     assert.equal(outlineBeforeTui.agents[0].turns[0].blobs.length >= 1, true)
     assert.equal(outlineBeforeTui.agents[0].turns[0].entries.length >= 1, true)
 
-    let cliStdout = ''
-    let cliStderr = ''
     const cliArgs = [
       '-q',
       '/dev/null',
@@ -341,8 +344,18 @@ async function main() {
     cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
     cli.stdout.on('data', (chunk) => { cliStdout += chunk.toString() })
     cli.stderr.on('data', (chunk) => { cliStderr += chunk.toString() })
+    const cliStartupFailure = new Promise((resolve) => {
+      cli.once('error', (error) => resolve(error))
+      cli.once('exit', (code, signal) => {
+        if (code !== 0) resolve(new Error(`CLI exited before automation socket was ready: code=${code} signal=${signal ?? 'none'}`))
+      })
+    })
     try {
-      await waitForSocket(automationSocket)
+      const startupFailure = await Promise.race([
+        waitForSocket(automationSocket).then(() => null),
+        cliStartupFailure,
+      ])
+      if (startupFailure) throw startupFailure
     } catch (error) {
       throw new Error(`${error.message}\n--- cli stdout ---\n${cliStdout.slice(-4000)}\n--- cli stderr ---\n${cliStderr.slice(-4000)}`)
     }
@@ -400,16 +413,33 @@ async function main() {
     }
     console.log(JSON.stringify(result, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     automation?.close()
     await client?.close?.().catch(() => {})
     await stopChild(cli)
     await stopChild(daemon)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      console.error(`[history-outline-tui-e2e] artifacts kept at ${rootDir}`)
+    if (!succeeded && options.keepArtifactsOnFailure) {
+      await mkdir(rootDir, { recursive: true }).catch(() => {})
+      await writeFile(path.join(rootDir, 'cli-stdout.log'), cliStdout, 'utf8').catch(() => {})
+      await writeFile(path.join(rootDir, 'cli-stderr.log'), cliStderr, 'utf8').catch(() => {})
     }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'history-outline-tui-e2e',
+        kernelUrl,
+        workspace,
+        automationSocket,
+      },
+      log: (name, details) => console.log(`[history-outline-tui-e2e] ${name}`, JSON.stringify(details)),
+    })
+    await rm(automationSocket, { force: true }).catch(() => {})
   }
 }
 
