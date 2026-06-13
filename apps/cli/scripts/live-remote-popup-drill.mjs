@@ -4,6 +4,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -117,6 +118,9 @@ function daemonEnv({
     ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
     ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
     ARROBA_SESSION_HISTORY_DIR: historyDir,
+    XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
+    XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
   }
 }
 
@@ -230,11 +234,11 @@ async function main() {
   }
   if (options.providers.length < 1) throw new Error('remote popup drill requires at least one provider')
 
+  const runId = `${process.pid}-${Date.now()}`
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-popup-${process.pid}-${Date.now()}`)
-  const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-popup-drill')
-  await mkdir(rootDir, { recursive: true })
-  await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+  const rootDir = path.join(os.tmpdir(), `arroba-remote-popup-${runId}`)
+  const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-popup-drill-${runId}`)
+  await prepareDrillArtifacts(rootDir)
   await mkdir(cliRuntimeDir, { recursive: true })
 
   const { LocalIpcClient, requests } = await loadCliModules(cliRuntimeDir)
@@ -276,6 +280,7 @@ async function main() {
   let workerChild = null
   let localClient = null
   let succeeded = false
+  let failure = null
 
   try {
     relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
@@ -373,13 +378,35 @@ async function main() {
       results,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (localClient) await localClient.close().catch(() => {})
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'remote-popup',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        relayUrl,
+        homeKernelUrl,
+        workerKernelUrl,
+        workerMachineId,
+        cliRuntimeDir,
+      },
+      log: (name, details) => console.log(`[remote-popup-drill] ${name}`, JSON.stringify(details)),
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
       await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
     } else {
       console.error(`remote popup drill artifacts kept at ${rootDir}`)
