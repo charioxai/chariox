@@ -1135,6 +1135,7 @@ test("kernel remote-runtime formatter reports slice operations as degraded atten
   assert.match(rendered, /slice operations settling: starting=1 stopping=1 in_progress=2/)
   assert.match(rendered, /next: wait for the slice operation to finish; run \/slice list to identify any stuck slice, then run \/slice doctor and inspect logs if it does not settle/)
   assert.match(rendered, /remote runtime readiness: degraded \(2 attention\)/)
+  assert.match(rendered, /remote runtime readiness next: wait for slice operations to settle; if they remain in progress, run \/slice list, then \/slice doctor for the affected slice/)
   assert.doesNotMatch(rendered, /support bundle:/)
   assert.doesNotMatch(rendered, /<slice>/)
 })
@@ -1168,6 +1169,7 @@ test("kernel remote-runtime formatter reports settling manifests as degraded att
   assert.match(rendered, /remote extension sync settling: syncing=1 pending=1/)
   assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=attention syncing=1 pending=1 failed=0 stale=0 missing=0 pending_revoke=0; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /remote runtime readiness: degraded \(2 attention\)/)
+  assert.match(rendered, /remote runtime readiness next: run \/extension sync-status for affected agents; use \/extension sync-retry after worker connectivity is healthy/)
   assert.doesNotMatch(rendered, /support bundle:/)
 
   await handleKernelSlashCommand({
@@ -1180,6 +1182,7 @@ test("kernel remote-runtime formatter reports settling manifests as degraded att
   }, { kind: "kernel", raw: "/kernel remote-runtime", args: ["remote-runtime"] })
 
   assert.match(notices.at(-1) ?? "", /remote runtime readiness: degraded \(2 attention\)/)
+  assert.match(notices.at(-1) ?? "", /remote runtime readiness next: run \/extension sync-status for affected agents/)
   assert.deepEqual(flashes.at(-1), { message: "remote runtime: degraded (2 attention)", tone: "error" })
 })
 

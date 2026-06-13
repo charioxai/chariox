@@ -62,6 +62,21 @@ function remoteRuntimeSettlingAttentionCount(health: DaemonHealthProjection): nu
     + health.workspace_live_sync.external_changes.live_watcher_scan_errors
 }
 
+function remoteRuntimeDegradedNextAction(health: DaemonHealthProjection): string {
+  const sliceLifecycle = health.slice_lifecycle
+  if (sliceLifecycle.starting_slices > 0 || sliceLifecycle.stopping_slices > 0 || sliceLifecycle.in_progress_operations > 0) {
+    return "wait for slice operations to settle; if they remain in progress, run /slice list, then /slice doctor for the affected slice"
+  }
+  const remoteExtensionSync = health.remote_extension_sync
+  if (remoteExtensionSync.pending_agents > 0 || remoteExtensionSync.syncing_agents > 0 || remoteExtensionSync.stale_agents > 0) {
+    return "run /extension sync-status for affected agents; use /extension sync-retry after worker connectivity is healthy"
+  }
+  if (health.workspace_live_sync.external_changes.live_watcher_scan_errors > 0) {
+    return "run /workspace sync status, then /workspace sync ignore; check selected workspace paths and permissions"
+  }
+  return "run /kernel remote-runtime again after current runtime operations settle"
+}
+
 export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
   const sliceLifecycle = health.slice_lifecycle
@@ -104,6 +119,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
     lines.push("remote runtime readiness: ok")
   } else if (readiness.state === "degraded") {
     lines.push(`remote runtime readiness: degraded (${readiness.attentionCount} attention)`)
+    lines.push(`remote runtime readiness next: ${remoteRuntimeDegradedNextAction(health)}`)
   } else {
     lines.push(`remote runtime readiness: blocked (${readiness.issueCount} issue${readiness.issueCount === 1 ? "" : "s"}, ${readiness.attentionCount} attention)`)
     lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")

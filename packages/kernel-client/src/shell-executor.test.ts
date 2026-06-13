@@ -278,6 +278,7 @@ test("executeShellCommand reports degraded remote runtime attention", async () =
   assert.match(result.message ?? "", /remote extension sync settling: syncing=1 pending=1/)
   assert.match(result.message ?? "", /next: home keeps stale home-proxy calls blocked until worker manifests settle; run \/kernel remote-runtime and then \/extension sync-status for the affected agent before retrying sync/)
   assert.match(result.message ?? "", /remote runtime readiness: degraded \(2 attention\)/)
+  assert.match(result.message ?? "", /remote runtime readiness next: run \/extension sync-status for affected agents; use \/extension sync-retry after worker connectivity is healthy/)
   assert.doesNotMatch(result.message ?? "", /open Extensions|<agent>/)
   assert.doesNotMatch(result.message ?? "", /support bundle:/)
 })
