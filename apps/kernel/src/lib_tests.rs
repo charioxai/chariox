@@ -14,6 +14,7 @@ use super::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
     RelayProjectedOutputChunk, RemoteWorkspaceLiveSyncApplyContext,
     RemoteWorkspaceLiveSyncArtifactState, RemoteWorkspaceLiveSyncContext,
+    RemoteWorkspaceLiveSyncInvocationMetadata,
 };
 use super::{DaemonApp, DaemonConfig, DaemonError};
 use sha2::{Digest, Sha256};
@@ -234,8 +235,15 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
         content_text: Some("after\n".to_string()),
         content_base64: None,
     }];
+    let metadata = RemoteWorkspaceLiveSyncInvocationMetadata {
+        invocation_id: "workspace-live-sync-invoke-1".to_string(),
+        provider_tool_call_id: Some("provider-tool-call-1".to_string()),
+        attempt: 1,
+        idempotency_key: Some("workspace-live-sync-idempotency-1".to_string()),
+    };
     let request = RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
         context: context.clone(),
+        metadata: metadata.clone(),
         tool_name: "arroba.write_artifact".to_string(),
         arguments: arguments.clone(),
         artifact_states: initial_artifact_states.clone(),
@@ -252,6 +260,7 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     };
     let finalize_request = RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
         context,
+        metadata,
         tool_name: "arroba.write_artifact".to_string(),
         arguments,
         initial_artifact_states,
@@ -269,6 +278,10 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/0/context/home_kernel_id"),
         Some(&serde_json::json!("kernel-home"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/metadata/invocation_id"),
+        Some(&serde_json::json!("workspace-live-sync-invoke-1"))
     );
     assert_eq!(
         snapshot.pointer("/0/artifact_states/0/domain"),
@@ -301,6 +314,6 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "477cffef64399a8d0b9979accc8d6a0d1517883ec48c53d280508b8240aa18b4"
+        "6c1503d9cdc37a49cb5a678ebc130c83c7b93f1af6c5b9c7e06e299688d2263c"
     );
 }

@@ -128,6 +128,153 @@ async fn remote_workspace_live_sync_requests_require_membership_and_record_membe
     let _ = std::fs::remove_dir_all(user_2_worktree);
 }
 
+#[tokio::test]
+async fn forwarded_workspace_live_sync_invocation_replays_completed_mutation_once() {
+    let worktree = create_test_git_worktree("workspace-live-sync-replay");
+    let src_dir = worktree.join("src");
+    std::fs::create_dir_all(&src_dir).expect("src fixture should be created");
+    let file_path = src_dir.join("lib.rs");
+    std::fs::write(&file_path, "before\n").expect("fixture should be written");
+
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new(
+            "workspace-live-sync-replay",
+            worktree.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent = spawn_test_agent(&mut app, &session_id, "sync-agent", "codex");
+    let agent_id = agent.id().to_string();
+    focus_test_agent(&mut app, &session_id, &agent_id);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
+
+    let metadata = crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata {
+        invocation_id: "workspace-live-sync-replay-1".to_string(),
+        provider_tool_call_id: Some("provider-call-1".to_string()),
+        attempt: 1,
+        idempotency_key: None,
+    };
+    let context = remote_workspace_live_sync_context(&session_id, &agent_id, &worktree);
+    let arguments = serde_json::json!({
+        "patch_text": "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-before\n+after\n*** End Patch",
+        "domain": "text"
+    });
+    let initial_states = vec![
+        crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState {
+            path: "src/lib.rs".to_string(),
+            exists: true,
+            domain: Some("text".to_string()),
+            content_text: Some("before\n".to_string()),
+            content_base64: None,
+        },
+    ];
+
+    let (first_result, final_states) = router
+        .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
+            context.clone(),
+            metadata.clone(),
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL.to_string(),
+            arguments.clone(),
+            initial_states.clone(),
+        )
+        .await
+        .expect("first forwarded live sync mutation should run");
+    assert!(first_result.ok, "first result: {first_result:?}");
+    assert_eq!(
+        final_states
+            .iter()
+            .find(|state| state.path == "src/lib.rs")
+            .and_then(|state| state.content_text.as_deref()),
+        Some("after\n")
+    );
+
+    let (replayed_result, replayed_final_states) = router
+        .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
+            context.clone(),
+            metadata.clone(),
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL.to_string(),
+            arguments.clone(),
+            initial_states.clone(),
+        )
+        .await
+        .expect("duplicate forwarded live sync mutation should replay");
+    assert_eq!(replayed_result, first_result);
+    assert_eq!(replayed_final_states, final_states);
+
+    let (rejected_result, rejected_states) = router
+        .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
+            context.clone(),
+            metadata.clone(),
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL.to_string(),
+            serde_json::json!({
+                "patch_text": "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-after\n+changed\n*** End Patch",
+                "domain": "text"
+            }),
+            initial_states.clone(),
+        )
+        .await
+        .expect("changed duplicate should be rejected as a tool result");
+    assert!(!rejected_result.ok);
+    assert_eq!(
+        rejected_result
+            .payload
+            .pointer("/reason/kind")
+            .and_then(|value| value.as_str()),
+        Some("duplicate_remote_workspace_live_sync_invocation")
+    );
+    assert!(rejected_states.is_empty());
+
+    router
+        .finalize_forwarded_workspace_live_sync_runtime_tool_call(
+            context.clone(),
+            metadata.clone(),
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL.to_string(),
+            arguments.clone(),
+            initial_states.clone(),
+            final_states.clone(),
+        )
+        .await
+        .expect("first finalize should succeed");
+    router
+        .finalize_forwarded_workspace_live_sync_runtime_tool_call(
+            context,
+            metadata,
+            crate::transport::runtime_tools::APPLY_PATCH_TOOL.to_string(),
+            arguments,
+            initial_states,
+            final_states,
+        )
+        .await
+        .expect("duplicate finalize should be a no-op");
+
+    let _ = std::fs::remove_dir_all(worktree);
+}
+
+fn remote_workspace_live_sync_context(
+    session_id: &str,
+    agent_id: &str,
+    worktree: &std::path::Path,
+) -> crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+    let fingerprint = worktree
+        .canonicalize()
+        .expect("worktree should canonicalize")
+        .to_string_lossy()
+        .to_string();
+    crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: "home-kernel".to_string(),
+        home_session_id: session_id.to_string(),
+        home_agent_id: agent_id.to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        worker_kernel_id: "worker-kernel".to_string(),
+        worker_machine_id: "worker-machine".to_string(),
+        worker_provider_run_id: "worker-provider-run".to_string(),
+        worker_worktree_path: worktree.to_string_lossy().to_string(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local(fingerprint),
+    }
+}
+
 fn create_test_git_worktree(label: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!(
         "arroba-{label}-{}-{}",

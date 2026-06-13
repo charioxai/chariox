@@ -440,6 +440,7 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
             context,
+            metadata,
             tool_name,
             arguments,
             artifact_states,
@@ -447,6 +448,7 @@ pub(super) async fn handle_daemon_peer_request(
             let handled = router
                 .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
                     context,
+                    metadata,
                     tool_name,
                     arguments,
                     artifact_states,
@@ -469,6 +471,7 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
             context,
+            metadata,
             tool_name,
             arguments,
             initial_artifact_states,
@@ -477,6 +480,7 @@ pub(super) async fn handle_daemon_peer_request(
             let finalized = router
                 .finalize_forwarded_workspace_live_sync_runtime_tool_call(
                     context,
+                    metadata,
                     tool_name,
                     arguments,
                     initial_artifact_states,

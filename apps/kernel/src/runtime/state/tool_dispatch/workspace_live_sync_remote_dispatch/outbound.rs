@@ -34,6 +34,11 @@ impl KernelRuntimeState {
             tool_name,
             &arguments,
         )?;
+        let metadata = crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata::new(
+            provider_run.id(),
+            tool_name,
+            None,
+        );
         let response = self
             .with_app_side_effect(|app| {
                 app.block_on_relay_future(
@@ -45,6 +50,7 @@ impl KernelRuntimeState {
                         },
                         RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
                             context: remote_context.clone(),
+                            metadata: metadata.clone(),
                             tool_name: tool_name.to_string(),
                             arguments: arguments.clone(),
                             artifact_states: artifact_states.clone(),
@@ -86,6 +92,7 @@ impl KernelRuntimeState {
                                 },
                                 RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
                                     context: remote_context.clone(),
+                                    metadata: metadata.clone(),
                                     tool_name: tool_name.to_string(),
                                     arguments: arguments.clone(),
                                     initial_artifact_states: artifact_states.clone(),

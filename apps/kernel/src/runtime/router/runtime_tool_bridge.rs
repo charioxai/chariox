@@ -71,6 +71,7 @@ impl CommandRouter {
     pub(crate) async fn dispatch_forwarded_workspace_live_sync_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
         tool_name: String,
         arguments: serde_json::Value,
         artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
@@ -84,6 +85,7 @@ impl CommandRouter {
         self.runtime_state
             .dispatch_forwarded_workspace_live_sync_runtime_tool_call(
                 context,
+                metadata,
                 tool_name,
                 arguments,
                 artifact_states,
@@ -94,6 +96,7 @@ impl CommandRouter {
     pub(crate) async fn finalize_forwarded_workspace_live_sync_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
         tool_name: String,
         arguments: serde_json::Value,
         initial_artifact_states: Vec<
@@ -106,6 +109,7 @@ impl CommandRouter {
         self.runtime_state
             .finalize_forwarded_workspace_live_sync_runtime_tool_call(
                 context,
+                metadata,
                 tool_name,
                 arguments,
                 initial_artifact_states,

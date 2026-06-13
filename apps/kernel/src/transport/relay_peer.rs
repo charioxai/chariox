@@ -162,6 +162,39 @@ pub struct RemoteWorkspaceLiveSyncArtifactState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteWorkspaceLiveSyncInvocationMetadata {
+    pub invocation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_tool_call_id: Option<String>,
+    #[serde(default = "default_workspace_live_sync_invocation_attempt")]
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+impl RemoteWorkspaceLiveSyncInvocationMetadata {
+    pub fn new(
+        provider_run_id: &str,
+        tool_name: &str,
+        provider_tool_call_id: Option<String>,
+    ) -> Self {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let started_at_ms = crate::session::unix_epoch_ms();
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            invocation_id: format!("{provider_run_id}:{tool_name}:{started_at_ms}:{sequence}"),
+            provider_tool_call_id,
+            attempt: 1,
+            idempotency_key: None,
+        }
+    }
+}
+
+fn default_workspace_live_sync_invocation_attempt() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerRequest {
     Ping {
@@ -276,12 +309,14 @@ pub enum RelayPeerRequest {
     },
     ForwardWorkspaceLiveSyncRuntimeTool {
         context: RemoteWorkspaceLiveSyncContext,
+        metadata: RemoteWorkspaceLiveSyncInvocationMetadata,
         tool_name: String,
         arguments: serde_json::Value,
         artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,
     },
     FinalizeWorkspaceLiveSyncRuntimeTool {
         context: RemoteWorkspaceLiveSyncContext,
+        metadata: RemoteWorkspaceLiveSyncInvocationMetadata,
         tool_name: String,
         arguments: serde_json::Value,
         initial_artifact_states: Vec<RemoteWorkspaceLiveSyncArtifactState>,

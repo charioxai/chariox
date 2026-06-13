@@ -1,6 +1,7 @@
 //! Home-kernel execution for forwarded workspace live sync runtime tool calls.
 
 use super::super::*;
+use sha2::{Digest, Sha256};
 
 mod mutation;
 mod read;
@@ -18,6 +19,7 @@ impl KernelRuntimeState {
     pub(crate) async fn dispatch_forwarded_workspace_live_sync_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
         tool_name: String,
         arguments: serde_json::Value,
         artifact_states: Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
@@ -41,6 +43,18 @@ impl KernelRuntimeState {
         if !workspace_live_sync_workspace_identities_match(&home_identity, &worker_identity) {
             return Ok(remote_workspace_not_coordinated_result());
         }
+        if let Some(cached) = self
+            .begin_remote_workspace_live_sync_invocation(
+                &context,
+                &metadata,
+                &tool_name,
+                &arguments,
+                &artifact_states,
+            )
+            .await?
+        {
+            return Ok(cached);
+        }
         let workspace_context = WorkspaceLiveSyncWorkspaceContext {
             root: home_root,
             identity: worker_identity,
@@ -61,7 +75,15 @@ impl KernelRuntimeState {
             )
             .await?
         {
-            return Ok((result, artifact_states));
+            let forwarded_result = (result, artifact_states);
+            self.complete_remote_workspace_live_sync_invocation(
+                &context,
+                &metadata,
+                &tool_name,
+                forwarded_result.clone(),
+            )
+            .await;
+            return Ok(forwarded_result);
         }
 
         let forwarded_result = {
@@ -128,14 +150,30 @@ impl KernelRuntimeState {
                 }
                 _ => Ok(unsupported_remote_workspace_live_sync_tool(&tool_name)),
             }
-        }?;
+        };
 
+        let forwarded_result = match forwarded_result {
+            Ok(forwarded_result) => forwarded_result,
+            Err(error) => {
+                self.forget_remote_workspace_live_sync_invocation(&context, &metadata, &tool_name)
+                    .await;
+                return Err(error);
+            }
+        };
+        self.complete_remote_workspace_live_sync_invocation(
+            &context,
+            &metadata,
+            &tool_name,
+            forwarded_result.clone(),
+        )
+        .await;
         Ok(forwarded_result)
     }
 
     pub(crate) async fn finalize_forwarded_workspace_live_sync_runtime_tool_call(
         &self,
         context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
         tool_name: String,
         arguments: serde_json::Value,
         initial_artifact_states: Vec<
@@ -171,6 +209,19 @@ impl KernelRuntimeState {
             identity_changed: false,
             valid: true,
         };
+        if self
+            .remote_workspace_live_sync_invocation_already_finalized(
+                &context,
+                &metadata,
+                &tool_name,
+                &arguments,
+                &initial_artifact_states,
+                &final_artifact_states,
+            )
+            .await?
+        {
+            return Ok(());
+        }
         let file_changes = workspace_live_sync_managed_mode_remote_tool_file_changes(
             tool_name.as_str(),
             &arguments,
@@ -183,6 +234,8 @@ impl KernelRuntimeState {
             file_changes,
         )
         .await;
+        self.mark_remote_workspace_live_sync_invocation_finalized(&context, &metadata, &tool_name)
+            .await;
         Ok(())
     }
 
@@ -217,6 +270,151 @@ impl KernelRuntimeState {
             Some(context.worker_machine_id.as_str()),
         )
         .await;
+    }
+
+    async fn begin_remote_workspace_live_sync_invocation(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+        artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
+    ) -> Result<
+        Option<(
+            crate::transport::runtime_tools::RuntimeToolResult,
+            Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
+        )>,
+        DaemonError,
+    > {
+        let key = remote_workspace_live_sync_invocation_key(context, metadata, tool_name);
+        let request_fingerprint =
+            remote_workspace_live_sync_request_fingerprint(tool_name, arguments, artifact_states)?;
+        let mut invocations = self
+            .owned
+            .remote_workspace_live_sync_invocations
+            .lock()
+            .await;
+        let Some(existing) = invocations.get(&key) else {
+            invocations.insert(
+                key,
+                RemoteWorkspaceLiveSyncInvocationState {
+                    request_fingerprint,
+                    result: None,
+                    finalized: false,
+                },
+            );
+            return Ok(None);
+        };
+        if existing.request_fingerprint != request_fingerprint {
+            return Ok(Some(remote_workspace_live_sync_duplicate_rejected_result(
+                metadata,
+                "workspace live sync invocation metadata was reused with different tool arguments or initial artifact state",
+            )));
+        }
+        if let Some(result) = &existing.result {
+            return Ok(Some(result.clone()));
+        }
+        Ok(Some(remote_workspace_live_sync_duplicate_rejected_result(
+            metadata,
+            "workspace live sync invocation is already in flight on the home kernel",
+        )))
+    }
+
+    async fn complete_remote_workspace_live_sync_invocation(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
+        tool_name: &str,
+        result: (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
+        ),
+    ) {
+        let key = remote_workspace_live_sync_invocation_key(context, metadata, tool_name);
+        let mut invocations = self
+            .owned
+            .remote_workspace_live_sync_invocations
+            .lock()
+            .await;
+        if let Some(existing) = invocations.get_mut(&key) {
+            existing.result = Some(result);
+        }
+    }
+
+    async fn forget_remote_workspace_live_sync_invocation(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
+        tool_name: &str,
+    ) {
+        let key = remote_workspace_live_sync_invocation_key(context, metadata, tool_name);
+        let mut invocations = self
+            .owned
+            .remote_workspace_live_sync_invocations
+            .lock()
+            .await;
+        invocations.remove(&key);
+    }
+
+    async fn remote_workspace_live_sync_invocation_already_finalized(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+        initial_artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
+        final_artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
+    ) -> Result<bool, DaemonError> {
+        let key = remote_workspace_live_sync_invocation_key(context, metadata, tool_name);
+        let request_fingerprint = remote_workspace_live_sync_request_fingerprint(
+            tool_name,
+            arguments,
+            initial_artifact_states,
+        )?;
+        let invocations = self
+            .owned
+            .remote_workspace_live_sync_invocations
+            .lock()
+            .await;
+        let Some(existing) = invocations.get(&key) else {
+            return Ok(false);
+        };
+        if existing.request_fingerprint != request_fingerprint {
+            return Err(DaemonError::LocalTransport {
+                operation: "finalize_forwarded_workspace_live_sync_runtime_tool_call",
+                message:
+                    "workspace live sync invocation metadata was reused with different finalize arguments or initial artifact state"
+                        .to_string(),
+            });
+        }
+        if let Some((_, expected_final_artifact_states)) = &existing.result {
+            if expected_final_artifact_states != final_artifact_states {
+                return Err(DaemonError::LocalTransport {
+                    operation: "finalize_forwarded_workspace_live_sync_runtime_tool_call",
+                    message:
+                        "workspace live sync invocation metadata was reused with different final artifact state"
+                            .to_string(),
+                });
+            }
+        }
+        Ok(existing.finalized)
+    }
+
+    async fn mark_remote_workspace_live_sync_invocation_finalized(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        metadata: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
+        tool_name: &str,
+    ) {
+        let key = remote_workspace_live_sync_invocation_key(context, metadata, tool_name);
+        let mut invocations = self
+            .owned
+            .remote_workspace_live_sync_invocations
+            .lock()
+            .await;
+        if let Some(existing) = invocations.get_mut(&key) {
+            existing.finalized = true;
+        }
     }
 }
 
@@ -254,6 +452,75 @@ fn unsupported_remote_workspace_live_sync_tool(
                     "message": format!("remote coordinated workspace live sync does not yet support `{tool_name}`")
                 },
                 "next_action": "Use arroba.read_artifact, arroba.edit_artifact, arroba.write_artifact, arroba.apply_patch, arroba.move_artifact, or arroba.delete_artifact for remote coordinated workspace live sync.",
+            }),
+        },
+        Vec::new(),
+    )
+}
+
+fn remote_workspace_live_sync_invocation_key(
+    context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+    metadata: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
+    tool_name: &str,
+) -> String {
+    let stable_call_id = metadata
+        .idempotency_key
+        .as_deref()
+        .or(metadata.provider_tool_call_id.as_deref())
+        .unwrap_or(metadata.invocation_id.as_str());
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        context.home_session_id,
+        context.home_agent_id,
+        context.leased_agent_id,
+        context.worker_provider_run_id,
+        tool_name,
+        stable_call_id
+    )
+}
+
+fn remote_workspace_live_sync_request_fingerprint(
+    tool_name: &str,
+    arguments: &serde_json::Value,
+    artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
+) -> Result<String, DaemonError> {
+    let value = serde_json::json!({
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "artifact_states": artifact_states,
+    });
+    let bytes = serde_json::to_vec(&value).map_err(|error| DaemonError::LocalTransport {
+        operation: "remote_workspace_live_sync_request_fingerprint",
+        message: format!("failed to serialize workspace live sync invocation fingerprint: {error}"),
+    })?;
+    let mut hash = Sha256::new();
+    hash.update(bytes);
+    Ok(format!("sha256:{:x}", hash.finalize()))
+}
+
+fn remote_workspace_live_sync_duplicate_rejected_result(
+    metadata: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncInvocationMetadata,
+    message: &str,
+) -> (
+    crate::transport::runtime_tools::RuntimeToolResult,
+    Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
+) {
+    (
+        crate::transport::runtime_tools::RuntimeToolResult {
+            ok: false,
+            payload: serde_json::json!({
+                "applied": false,
+                "reason": {
+                    "kind": "duplicate_remote_workspace_live_sync_invocation",
+                    "message": message,
+                },
+                "invocation": {
+                    "id": metadata.invocation_id,
+                    "provider_tool_call_id": metadata.provider_tool_call_id,
+                    "attempt": metadata.attempt,
+                    "idempotency_key": metadata.idempotency_key,
+                },
+                "next_action": "Refresh the workspace state and retry the edit as a new workspace live sync tool call.",
             }),
         },
         Vec::new(),
