@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -17,8 +17,12 @@ use crate::credential::ArrobaCredentialRegistry;
 use crate::error::DaemonError;
 
 mod vault;
-pub use vault::CredentialVaultStore;
-use vault::{vault_store_for_backend, PlatformKeychainCredentialVaultStore};
+use vault::vault_store_for_config;
+pub use vault::{
+    arroba_encrypted_vault_status, extend_arroba_encrypted_vault, is_arroba_vault_locked_error,
+    lock_arroba_encrypted_vault, unlock_arroba_encrypted_vault, ArrobaVaultUnlockStatus,
+    CredentialVaultStore, VaultUnlockLease,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -80,33 +84,21 @@ pub struct VaultCredentialUpsertResult {
 
 impl RuntimeSecretService {
     pub fn new(credentials: Vec<UserCredentialConfig>) -> Self {
-        Self::with_vault_store(
-            credentials,
-            "arroba",
-            Arc::new(PlatformKeychainCredentialVaultStore),
-        )
+        Self::with_vault_config(credentials, &UserCredentialVaultConfig::default())
+            .expect("default credential vault config should be valid")
     }
 
     pub fn with_vault_service(
         credentials: Vec<UserCredentialConfig>,
         vault_service: impl Into<String>,
     ) -> Self {
-        Self::with_vault_store(
-            credentials,
-            vault_service,
-            Arc::new(PlatformKeychainCredentialVaultStore),
-        )
-    }
-
-    pub fn with_vault_config(
-        credentials: Vec<UserCredentialConfig>,
-        vault_config: &UserCredentialVaultConfig,
-    ) -> Result<Self, DaemonError> {
-        Ok(Self::with_vault_store(
-            credentials,
-            vault_config.service.clone(),
-            vault_store_for_backend(vault_config.backend)?,
-        ))
+        let vault_service = vault_service.into();
+        let vault_config = UserCredentialVaultConfig {
+            service: vault_service,
+            ..UserCredentialVaultConfig::default()
+        };
+        Self::with_vault_config(credentials, &vault_config)
+            .expect("default credential vault config should be valid")
     }
 
     pub fn with_vault_store(
@@ -119,6 +111,17 @@ impl RuntimeSecretService {
             vault_service: vault_service.into(),
             vault_store,
         }
+    }
+
+    pub fn with_vault_config(
+        credentials: Vec<UserCredentialConfig>,
+        vault_config: &UserCredentialVaultConfig,
+    ) -> Result<Self, DaemonError> {
+        Ok(Self::with_vault_store(
+            credentials,
+            vault_config.service.clone(),
+            vault_store_for_config(vault_config)?,
+        ))
     }
 
     pub fn credential_env_names(&self) -> BTreeSet<String> {
@@ -333,14 +336,20 @@ impl RuntimeSecretService {
                 "credential value must not be empty".to_string(),
             ));
         }
-        self.vault_store
-            .set_secret(self.vault_service_name()?, key.trim(), value)
+        let service = self.vault_service_name()?;
+        let key = key.trim();
+        self.vault_store.set_secret(service, key, value)?;
+        cache_vault_secret(service, key, value)?;
+        Ok(())
     }
 
     pub fn delete_vault_secret(&self, key: &str) -> Result<(), DaemonError> {
         validate_vault_key(key)?;
-        self.vault_store
-            .delete_secret(self.vault_service_name()?, key.trim())
+        let service = self.vault_service_name()?;
+        let key = key.trim();
+        self.vault_store.delete_secret(service, key)?;
+        forget_cached_vault_secret(service, key)?;
+        Ok(())
     }
 
     pub fn upsert_vault_backed_credential_with_secret(
@@ -414,10 +423,13 @@ impl RuntimeSecretService {
                         )
                     })
             }
-            UserCredentialSourceConfig::Vault { key } => self
-                .vault_store
-                .get_secret(self.vault_service_name()?, key.trim())
-                .map_err(|error| {
+            UserCredentialSourceConfig::Vault { key } => {
+                let service = self.vault_service_name()?;
+                let key = key.trim();
+                if let Some(secret) = cached_vault_secret(service, key)? {
+                    return Ok(secret);
+                }
+                let secret = self.vault_store.get_secret(service, key).map_err(|error| {
                     secret_error(
                         "credential_resolve",
                         format!(
@@ -425,7 +437,10 @@ impl RuntimeSecretService {
                             credential.id, key
                         ),
                     )
-                }),
+                })?;
+                cache_vault_secret(service, key, &secret)?;
+                Ok(secret)
+            }
         }
     }
 
@@ -627,6 +642,41 @@ fn validate_vault_key(key: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
+fn cached_vault_secret(service: &str, key: &str) -> Result<Option<String>, DaemonError> {
+    Ok(vault_secret_process_cache()
+        .lock()
+        .map_err(|error| {
+            secret_error("credential_vault", format!("vault cache poisoned: {error}"))
+        })?
+        .get(&(service.to_string(), key.to_string()))
+        .cloned())
+}
+
+fn cache_vault_secret(service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+    vault_secret_process_cache()
+        .lock()
+        .map_err(|error| {
+            secret_error("credential_vault", format!("vault cache poisoned: {error}"))
+        })?
+        .insert((service.to_string(), key.to_string()), value.to_string());
+    Ok(())
+}
+
+fn forget_cached_vault_secret(service: &str, key: &str) -> Result<(), DaemonError> {
+    vault_secret_process_cache()
+        .lock()
+        .map_err(|error| {
+            secret_error("credential_vault", format!("vault cache poisoned: {error}"))
+        })?
+        .remove(&(service.to_string(), key.to_string()));
+    Ok(())
+}
+
+fn vault_secret_process_cache() -> &'static Mutex<BTreeMap<(String, String), String>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<(String, String), String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn secret_error(operation: &'static str, message: String) -> DaemonError {
     DaemonError::LocalTransport { operation, message }
 }
@@ -658,6 +708,36 @@ mod tests {
                 .ok_or_else(|| {
                     secret_error("credential_vault", format!("credential `{key}` not found"))
                 })
+        }
+
+        fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .insert((service.to_string(), key.to_string()), value.to_string());
+            Ok(())
+        }
+
+        fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
+            self.secrets
+                .lock()
+                .unwrap()
+                .remove(&(service.to_string(), key.to_string()));
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct WriteOnlyVaultStore {
+        secrets: Mutex<BTreeMap<(String, String), String>>,
+    }
+
+    impl CredentialVaultStore for WriteOnlyVaultStore {
+        fn get_secret(&self, _service: &str, key: &str) -> Result<String, DaemonError> {
+            Err(secret_error(
+                "credential_vault",
+                format!("credential `{key}` backing store read unavailable"),
+            ))
         }
 
         fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
@@ -999,6 +1079,77 @@ mod tests {
         let serialized = serde_json::to_string(&service.list_handles()).unwrap();
         assert!(!serialized.contains("vault-secret"));
         assert!(!serialized.contains("github-token"));
+    }
+
+    #[test]
+    fn vault_write_warms_process_cache_across_secret_service_instances() {
+        let vault = Arc::new(WriteOnlyVaultStore::default());
+        let service_name = format!("arroba-warm-cache-test-{}", crate::session::unix_epoch_ms());
+        let writer =
+            RuntimeSecretService::with_vault_store(Vec::new(), &service_name, vault.clone());
+
+        writer
+            .set_vault_secret("generated-password", "generated-secret")
+            .expect("vault write should succeed");
+
+        let reader = RuntimeSecretService::with_vault_store(
+            vec![UserCredentialConfig {
+                id: "generated-password".to_string(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "generated-password".to_string(),
+                },
+                allowed_hosts: vec!["workspace".to_string()],
+                allowed_uses: vec![UserCredentialUse::Browser],
+                injection: UserCredentialInjectionConfig::Browser,
+                metadata: None,
+            }],
+            &service_name,
+            vault,
+        );
+
+        assert_eq!(
+            reader
+                .browser_secret_input("generated-password")
+                .expect("warm cache should resolve without backing store read"),
+            "generated-secret"
+        );
+    }
+
+    #[test]
+    fn vault_delete_clears_process_cache() {
+        let vault = Arc::new(WriteOnlyVaultStore::default());
+        let service_name = format!(
+            "arroba-warm-cache-delete-test-{}",
+            crate::session::unix_epoch_ms()
+        );
+        let service = RuntimeSecretService::with_vault_store(
+            vec![UserCredentialConfig {
+                id: "generated-password".to_string(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "generated-password".to_string(),
+                },
+                allowed_hosts: vec!["workspace".to_string()],
+                allowed_uses: vec![UserCredentialUse::Browser],
+                injection: UserCredentialInjectionConfig::Browser,
+                metadata: None,
+            }],
+            &service_name,
+            vault,
+        );
+
+        service
+            .set_vault_secret("generated-password", "generated-secret")
+            .expect("vault write should succeed");
+        service
+            .delete_vault_secret("generated-password")
+            .expect("vault delete should succeed");
+
+        let error = service
+            .browser_secret_input("generated-password")
+            .expect_err("cache should be cleared after delete");
+        assert!(format!("{error}").contains("backing store read unavailable"));
     }
 
     #[test]

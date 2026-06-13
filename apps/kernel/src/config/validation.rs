@@ -89,6 +89,25 @@ impl ArrobaUserConfig {
         self.state.validate()?;
         self.slices.validate()?;
         validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
+        validate_non_empty("credential_vault.path", &self.credential_vault.path)?;
+        if self.credential_vault.default_ttl_minutes == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "credential_vault.default_ttl_minutes",
+                message: "value must not be zero",
+            });
+        }
+        if self.credential_vault.max_ttl_minutes == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "credential_vault.max_ttl_minutes",
+                message: "value must not be zero",
+            });
+        }
+        if self.credential_vault.default_ttl_minutes > self.credential_vault.max_ttl_minutes {
+            return Err(DaemonError::InvalidConfig {
+                field: "credential_vault.default_ttl_minutes",
+                message: "value must be less than or equal to credential_vault.max_ttl_minutes",
+            });
+        }
         Ok(())
     }
 }

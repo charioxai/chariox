@@ -265,11 +265,30 @@ impl ArrobaUserConfig {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
             }
+            "credential_vault.path" => {
+                self.credential_vault.path =
+                    non_empty_config_string("credential_vault.path", value)?
+            }
             "credential_vault.backend" => {
                 self.credential_vault.backend = crate::config::CredentialVaultBackend::parse(
                     "credential_vault.backend",
                     &value,
                 )?
+            }
+            "credential_vault.unlock_policy" => {
+                self.credential_vault.unlock_policy =
+                    crate::config::CredentialVaultUnlockPolicy::parse(
+                        "credential_vault.unlock_policy",
+                        &value,
+                    )?
+            }
+            "credential_vault.default_ttl_minutes" => {
+                self.credential_vault.default_ttl_minutes =
+                    parse_config_u64("credential_vault.default_ttl_minutes", &value, true)?
+            }
+            "credential_vault.max_ttl_minutes" => {
+                self.credential_vault.max_ttl_minutes =
+                    parse_config_u64("credential_vault.max_ttl_minutes", &value, true)?
             }
             "credential_vault.agent_management" => {
                 self.credential_vault.agent_management =
@@ -452,6 +471,26 @@ fn parse_config_u32(
 ) -> Result<u32, DaemonError> {
     let parsed = value
         .parse::<u32>()
+        .map_err(|_| DaemonError::InvalidConfig {
+            field,
+            message: "value must be an unsigned integer",
+        })?;
+    if require_nonzero && parsed == 0 {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(parsed)
+}
+
+fn parse_config_u64(
+    field: &'static str,
+    value: &str,
+    require_nonzero: bool,
+) -> Result<u64, DaemonError> {
+    let parsed = value
+        .parse::<u64>()
         .map_err(|_| DaemonError::InvalidConfig {
             field,
             message: "value must be an unsigned integer",

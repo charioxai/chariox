@@ -22,8 +22,9 @@ mod validation;
 
 pub use credentials::{
     validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,
-    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
-    UserCredentialSourceConfig, UserCredentialUse, UserCredentialVaultConfig,
+    CredentialVaultUnlockPolicy, UserCredentialConfig, UserCredentialInjectionConfig,
+    UserCredentialMetadataConfig, UserCredentialSourceConfig, UserCredentialUse,
+    UserCredentialVaultConfig,
 };
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};

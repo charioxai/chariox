@@ -53,6 +53,14 @@ pub struct UserCredentialVaultConfig {
     pub backend: CredentialVaultBackend,
     #[serde(default = "default_credential_vault_service")]
     pub service: String,
+    #[serde(default = "default_credential_vault_path")]
+    pub path: String,
+    #[serde(default)]
+    pub unlock_policy: CredentialVaultUnlockPolicy,
+    #[serde(default = "default_credential_vault_default_ttl_minutes")]
+    pub default_ttl_minutes: u64,
+    #[serde(default = "default_credential_vault_max_ttl_minutes")]
+    pub max_ttl_minutes: u64,
     #[serde(default)]
     pub agent_management: CredentialVaultAgentManagementPolicy,
 }
@@ -62,6 +70,10 @@ impl Default for UserCredentialVaultConfig {
         Self {
             backend: default_credential_vault_backend(),
             service: default_credential_vault_service(),
+            path: default_credential_vault_path(),
+            unlock_policy: CredentialVaultUnlockPolicy::default(),
+            default_ttl_minutes: default_credential_vault_default_ttl_minutes(),
+            max_ttl_minutes: default_credential_vault_max_ttl_minutes(),
             agent_management: CredentialVaultAgentManagementPolicy::default(),
         }
     }
@@ -76,9 +88,24 @@ impl UserCredentialVaultConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialVaultBackend {
-    OsKeychain,
-    LinuxKeyutils,
+    ArrobaEncrypted,
     ProcessMemory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialVaultUnlockPolicy {
+    KernelInit,
+    Ttl,
+    Always,
+    Session,
+    Agent,
+}
+
+impl Default for CredentialVaultUnlockPolicy {
+    fn default() -> Self {
+        Self::Ttl
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,8 +137,7 @@ impl CredentialVaultAgentManagementPolicy {
 impl CredentialVaultBackend {
     pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
         match value.trim() {
-            "os_keychain" => Ok(Self::OsKeychain),
-            "linux_keyutils" => Ok(Self::LinuxKeyutils),
+            "arroba_encrypted" => Ok(Self::ArrobaEncrypted),
             "process_memory" => Ok(Self::ProcessMemory),
             _ => Err(DaemonError::InvalidConfig {
                 field,
@@ -121,12 +147,40 @@ impl CredentialVaultBackend {
     }
 }
 
+impl CredentialVaultUnlockPolicy {
+    pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
+        match value.trim() {
+            "kernel_init" => Ok(Self::KernelInit),
+            "ttl" => Ok(Self::Ttl),
+            "always" => Ok(Self::Always),
+            "session" => Ok(Self::Session),
+            "agent" => Ok(Self::Agent),
+            _ => Err(DaemonError::InvalidConfig {
+                field,
+                message: "unsupported credential vault unlock policy",
+            }),
+        }
+    }
+}
+
 fn default_credential_vault_backend() -> CredentialVaultBackend {
-    CredentialVaultBackend::OsKeychain
+    CredentialVaultBackend::ArrobaEncrypted
 }
 
 fn default_credential_vault_service() -> String {
     "arroba".to_string()
+}
+
+fn default_credential_vault_path() -> String {
+    "~/.arroba/vault/vault.json".to_string()
+}
+
+fn default_credential_vault_default_ttl_minutes() -> u64 {
+    30
+}
+
+fn default_credential_vault_max_ttl_minutes() -> u64 {
+    240
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
