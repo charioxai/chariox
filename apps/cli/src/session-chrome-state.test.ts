@@ -289,7 +289,7 @@ test("deriveAttachedFooterSummary shows aggregate collaborator agents without id
   assert.doesNotMatch(summary, /user-|agent-a|owner/)
 })
 
-test("deriveAttachedFooterSummary includes workspace live sync footer state", () => {
+test("deriveAttachedFooterSummary includes workspace live sync mode and footer state", () => {
   const summary = deriveAttachedFooterSummary({
     session: session({ alias: "sync-review", agents: [agent("agent-a")] }),
     connectedClientCount: 1,
@@ -302,7 +302,24 @@ test("deriveAttachedFooterSummary includes workspace live sync footer state", ()
 
   assert.equal(
     summary,
-    "Session sync-review • 1 CLI connected • 1 visible agent • sync conflict • Ctrl+T hotkeys",
+    "Session sync-review • 1 CLI connected • 1 visible agent • sync managed conflict • Ctrl+T hotkeys",
+  )
+})
+
+test("deriveAttachedFooterSummary labels unrestricted workspace live sync as off", () => {
+  const summary = deriveAttachedFooterSummary({
+    session: session({ alias: "sync-off", agents: [agent("agent-a")] }),
+    connectedClientCount: 1,
+    multiAgentMode: false,
+    responseLayout: "individual",
+    sessionStatusMode: "idle",
+    hotkeyToggleLabel: "Ctrl+T",
+    workspaceLiveSyncStatus: workspaceLiveSyncStatus("off"),
+  })
+
+  assert.equal(
+    summary,
+    "Session sync-off • 1 CLI connected • 1 visible agent • sync off • Ctrl+T hotkeys",
   )
 })
 
