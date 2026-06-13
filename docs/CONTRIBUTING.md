@@ -69,6 +69,7 @@ Use `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, and `docs/PROTOCOL.md` for produc
 - Workflow validation tests for coordinator behavior, structured handoffs, graph/topology rules, and worktree isolation once those surfaces land.
 - Conformance tests for terminal lane behavior across client types.
 - End-to-end tests for critical workflows (attach, provider switch, memory update, compact flow).
+- Live runtime drills and matrices should follow `docs/VALIDATION_PLATFORM.md` so artifact handling, reports, failure classification, and exit criteria stay consistent.
 
 ## 3.3 Cross-Platform Terminal Conformance
 
@@ -110,6 +111,7 @@ cargo clippy --manifest-path apps/kernel/Cargo.toml --all-targets --all-features
 - Product/runtime behavior: `docs/spec-v1.md`
 - Architecture and implementation baseline: `docs/ARCHITECTURE.md`
 - Message and control contracts: `docs/PROTOCOL.md`
+- Live drill/report contracts: `docs/VALIDATION_PLATFORM.md`
 - Delivery planning: `docs/ROADMAP.md`
 - Contributor style/testing workflow: `docs/CONTRIBUTING.md`
 
