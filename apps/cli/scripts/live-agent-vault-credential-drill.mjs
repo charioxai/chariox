@@ -90,20 +90,16 @@ async function run(command, args, options = {}) {
 
 async function resolveKernelBinary() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  try {
-    await access(binary)
-    return binary
-  } catch {
-    const result = await run('cargo', [
-      'build',
-      '--manifest-path',
-      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      '--bin',
-      'arroba-kernel',
-    ])
-    if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-    return binary
-  }
+  const result = await run('cargo', [
+    'build',
+    '--manifest-path',
+    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+    '--bin',
+    'arroba-kernel',
+  ])
+  if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
+  await access(binary)
+  return binary
 }
 
 async function terminateChild(child) {
@@ -291,7 +287,9 @@ async function respondToSecretInteraction({ client, sessionId, agentId, secret, 
     const state = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const session = state.session ?? state
     const interaction = (session.active_interactions ?? [])
-      .find((entry) => entry.agent_id === agentId && entry.custom_choice?.input_kind === 'secret')
+      .find((entry) => entry.agent_id === agentId &&
+        entry.custom_choice?.input_kind === 'secret' &&
+        !String(entry.title ?? '').includes('Unlock Arroba Vault'))
     if (interaction) {
       observed = interaction
       await client.send(respondToInteractionRequest(sessionId, interaction.id, interaction.custom_choice.id, secret))
@@ -300,6 +298,28 @@ async function respondToSecretInteraction({ client, sessionId, agentId, secret, 
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for secret interaction for ${agentId}`)
+}
+
+async function respondToVaultUnlockInteraction({ client, sessionId, agentId, passphrase, choiceId = 'unlock_default_ttl', getSessionStateRequest, respondToInteractionRequest, timeoutMs, pollMs }) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const state = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+    const session = state.session ?? state
+    const interaction = (session.active_interactions ?? [])
+      .find((entry) => entry.agent_id === agentId &&
+        entry.custom_choice?.input_kind === 'secret' &&
+        String(entry.title ?? '').includes('Unlock Arroba Vault'))
+    if (interaction) {
+      const choice = (interaction.choices ?? []).find((entry) => entry.id === choiceId)
+      if (!choice) {
+        throw new Error(`vault unlock interaction did not offer choice ${choiceId}; choices=${JSON.stringify(interaction.choices ?? [])}`)
+      }
+      await client.send(respondToInteractionRequest(sessionId, interaction.id, choice.id, passphrase))
+      return interaction
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for Arroba vault unlock interaction for ${agentId}`)
 }
 
 function startCredentialEchoServer(expectedUserSecret) {
@@ -408,6 +428,8 @@ async function main() {
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const kernel = await resolveKernelBinary()
   const vaultService = `arroba-m17-drill-${process.pid}-${Date.now()}`
+  const vaultPath = path.join(rootDir, 'vault', 'vault.db')
+  const vaultPassphrase = `m26-vault-passphrase-${process.pid}-${Date.now()}`
   const daemonEnv = {
     ...process.env,
     ARROBA_HOME: arrobaHome,
@@ -428,6 +450,11 @@ async function main() {
     '',
     '[credential_vault]',
     `service = "${vaultService}"`,
+    `path = "${vaultPath}"`,
+    'backend = "arroba_encrypted"',
+    'unlock_policy = "ttl"',
+    'default_ttl_minutes = 30',
+    'max_ttl_minutes = 240',
     'agent_management = "allow"',
     '',
   ].join('\n'), 'utf8')
@@ -497,7 +524,7 @@ async function main() {
       const generatedStartedAt = Date.now()
       const generatedEchoStart = echo.calls.length
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-        'This is an M17 Arroba vault credential creation live drill.',
+        'This is an M17/M26 Arroba vault credential creation live drill.',
         'Use Arroba runtime MCP tools only. Do not write files for this task.',
         'Step 1: call `arroba.create_generated_credential` with this exact JSON argument:',
         JSON.stringify({
@@ -520,6 +547,17 @@ async function main() {
         }),
         'When the HTTP response body shows verified true, reply exactly M17_GENERATED_CREDENTIAL_DONE.',
       ].join('\n'), []))
+
+      const vaultUnlock = await respondToVaultUnlockInteraction({
+        client,
+        sessionId: session.id,
+        agentId: agent.id,
+        passphrase: vaultPassphrase,
+        getSessionStateRequest,
+        respondToInteractionRequest,
+        timeoutMs: Math.min(options.timeoutMs, 240_000),
+        pollMs: options.pollMs,
+      })
 
       const generatedCreateCall = await waitForHistoryToolCall({
         historyDir,
@@ -632,6 +670,7 @@ async function main() {
 
       const transcript = await providerTranscript({ historyDir, agentId: agent.id, sinceMs: generatedStartedAt })
       assertNoSecretLeak(transcript, userSecret, provider)
+      assertNoSecretLeak(transcript, vaultPassphrase, `${provider} vault passphrase`)
       await mkdir(artifactsDir, { recursive: true })
       await writeFile(
         path.join(artifactsDir, `m17-agent-vault-credential-${provider}-history.json`),
@@ -639,6 +678,8 @@ async function main() {
         'utf8',
       )
       const screenshot = await renderTerminalScreenshot(`m17-agent-vault-credential-${provider}.png`, `M17 Agent Vault Credential Drill (${provider})`, [
+        `PASS encrypted Arroba vault popup title="${vaultUnlock.title}" input_kind=${vaultUnlock.custom_choice?.input_kind ?? 'missing'}`,
+        'PASS vault popup was answered with a fixed TTL choice plus kernel-only custom passphrase',
         'PASS provider agent called arroba.create_generated_credential',
         `PASS generated credential used through ${generatedUseCall.tool}`,
         `PASS verifier received generated credential request auth_length=${generatedEchoCall.authLength}`,
@@ -646,7 +687,7 @@ async function main() {
         `PASS redacted interaction input_kind=${interaction.custom_choice?.input_kind ?? 'missing'}`,
         `PASS user-entered credential used through ${userUseCall.tool}`,
         `PASS verifier received user credential request auth_length=${userEchoCall.authLength}`,
-        'PASS provider history artifact does not contain the user-entered secret',
+        'PASS provider history artifact contains neither the user-entered secret nor the vault passphrase',
       ])
 
       results.push({
@@ -660,6 +701,8 @@ async function main() {
         userCreateTool: userCreateCall.tool,
         userUseTool: userUseCall.tool,
         userVerifiedAuthLength: userEchoCall.authLength,
+        vaultUnlockTitle: vaultUnlock.title,
+        vaultUnlockChoiceIds: (vaultUnlock.choices ?? []).map((choice) => choice.id),
         screenshot,
       })
       await client.send(teardownProviderProcessesRequest(provider, true)).catch(() => {})
