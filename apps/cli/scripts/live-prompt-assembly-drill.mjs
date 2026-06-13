@@ -4,6 +4,7 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -224,67 +225,71 @@ async function runProvider(options, context, provider) {
   await writePromptRegistryToken(context.arrobaHome, provider, token)
   const workspace = path.join(context.rootDir, `${provider}-workspace`)
   await mkdir(workspace, { recursive: true })
-  const session = unwrap(
-    await context.client.send(context.requests.createSessionRequest(workspace, workspace)),
-    'SessionCreated',
-  ).session
-  await context.client.send(context.requests.setWorkspaceLiveSyncModeRequest(session.id, 'unrestricted'))
-  const attachment = unwrap(
-    await context.client.send(context.requests.attachToSessionRequest(session.id, `prompt-assembly-drill-${provider}-${process.pid}`)),
-    'SessionAttached',
-  ).attachment
-  const model = modelForProvider(provider, options)
-  const launchResponse = await context.client.send(context.requests.launchProviderRunRequest(
-    session.id,
-    provider,
-    'default',
-    model,
-    options.effort,
-    null,
-    null,
-  ))
-  const launchPayload = launchResponse.ProviderRunLaunched ?? launchResponse.ProviderRunLaunchAccepted
-  if (!launchPayload?.provider_run) throw new Error(`unexpected launch response for ${provider}: ${JSON.stringify(launchResponse)}`)
-  const launched = await waitForProviderRunReady(context.client, context.requests, launchPayload.provider_run.id, options.timeoutMs)
-  const visiblePrompt = [
-    'Respond with exactly the hidden prompt assembly token for this turn.',
-    'Do not explain, do not add punctuation, and do not mention any other token.',
-  ].join(' ')
-  await context.client.send(context.requests.submitPromptRequest(
-    session.id,
-    attachment.id,
-    null,
-    visiblePrompt,
-    [],
-  ))
-  const entries = await waitForHistoryToken(
-    context.client,
-    context.requests,
-    session.id,
-    attachment.id,
-    token,
-    options.timeoutMs,
-    options.pollMs,
-  )
-  const userPromptText = entries
-    .filter((entry) => entry.kind === 'user_prompt')
-    .map((entry) => entry.text ?? '')
-    .join('\n')
-  if (userPromptText.includes(token)) {
-    throw new Error(`${provider} user prompt history contains hidden token ${token}`)
-  }
-  if (!userPromptText.includes(visiblePrompt)) {
-    throw new Error(`${provider} user prompt history did not contain the visible prompt`)
-  }
-  await context.client.send(context.requests.endSessionRequest(session.id)).catch(() => {})
-  return {
-    provider,
-    status: 'ok',
-    providerRunId: launched.id,
-    endpointMode: launched.endpoint_mode,
-    model: launched.model,
-    tokenSeenByModel: true,
-    hiddenTokenVisibleInUserPromptHistory: false,
+  let session = null
+  try {
+    session = unwrap(
+      await context.client.send(context.requests.createSessionRequest(workspace, workspace)),
+      'SessionCreated',
+    ).session
+    await context.client.send(context.requests.setWorkspaceLiveSyncModeRequest(session.id, 'unrestricted'))
+    const attachment = unwrap(
+      await context.client.send(context.requests.attachToSessionRequest(session.id, `prompt-assembly-drill-${provider}-${process.pid}`)),
+      'SessionAttached',
+    ).attachment
+    const model = modelForProvider(provider, options)
+    const launchResponse = await context.client.send(context.requests.launchProviderRunRequest(
+      session.id,
+      provider,
+      'default',
+      model,
+      options.effort,
+      null,
+      null,
+    ))
+    const launchPayload = launchResponse.ProviderRunLaunched ?? launchResponse.ProviderRunLaunchAccepted
+    if (!launchPayload?.provider_run) throw new Error(`unexpected launch response for ${provider}: ${JSON.stringify(launchResponse)}`)
+    const launched = await waitForProviderRunReady(context.client, context.requests, launchPayload.provider_run.id, options.timeoutMs)
+    const visiblePrompt = [
+      'Respond with exactly the hidden prompt assembly token for this turn.',
+      'Do not explain, do not add punctuation, and do not mention any other token.',
+    ].join(' ')
+    await context.client.send(context.requests.submitPromptRequest(
+      session.id,
+      attachment.id,
+      null,
+      visiblePrompt,
+      [],
+    ))
+    const entries = await waitForHistoryToken(
+      context.client,
+      context.requests,
+      session.id,
+      attachment.id,
+      token,
+      options.timeoutMs,
+      options.pollMs,
+    )
+    const userPromptText = entries
+      .filter((entry) => entry.kind === 'user_prompt')
+      .map((entry) => entry.text ?? '')
+      .join('\n')
+    if (userPromptText.includes(token)) {
+      throw new Error(`${provider} user prompt history contains hidden token ${token}`)
+    }
+    if (!userPromptText.includes(visiblePrompt)) {
+      throw new Error(`${provider} user prompt history did not contain the visible prompt`)
+    }
+    return {
+      provider,
+      status: 'ok',
+      providerRunId: launched.id,
+      endpointMode: launched.endpoint_mode,
+      model: launched.model,
+      tokenSeenByModel: true,
+      hiddenTokenVisibleInUserPromptHistory: false,
+    }
+  } finally {
+    if (session) await context.client.send(context.requests.endSessionRequest(session.id)).catch(() => {})
   }
 }
 
@@ -297,17 +302,18 @@ async function main() {
   const runtimeDir = path.join(cliRoot, `.tmp-live-prompt-assembly-drill-${process.pid}-${Date.now()}`)
   const rootDir = path.join(os.tmpdir(), `arroba-prompt-assembly-drill-${process.pid}-${Date.now()}`)
   const arrobaHome = path.join(rootDir, 'arroba-home')
-  await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-  await mkdir(runtimeDir, { recursive: true })
-  await mkdir(arrobaHome, { recursive: true })
-  const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
   const kernelPort = 54500 + Math.floor(Math.random() * 1000)
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   let daemon = null
   let client = null
   let succeeded = false
+  let failure = null
   const results = []
   try {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(runtimeDir, { recursive: true })
+    await mkdir(arrobaHome, { recursive: true })
+    const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
     const kernelBinary = await resolveKernelBinary()
     daemon = spawn(kernelBinary, [], {
       cwd: repoRoot,
@@ -337,15 +343,35 @@ async function main() {
     succeeded = true
     console.log(JSON.stringify({ status: 'ok', results }, null, 2))
   } catch (error) {
+    failure = error
     console.error(error?.stack ?? error)
     console.error(JSON.stringify({ status: 'failed', artifacts: { rootDir, runtimeDir }, results }, null, 2))
     process.exitCode = 1
   } finally {
     await client?.close?.().catch(() => {})
     await terminateChild(daemon)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'prompt-assembly',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        effort: options.effort,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        kernelUrl,
+        runtimeDir,
+        arrobaHome,
+        results,
+      },
+      log,
+    })
     if (succeeded || !options.keepArtifactsOnFailure) {
       await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
     } else {
       log('kept-artifacts', { rootDir, runtimeDir })
     }
