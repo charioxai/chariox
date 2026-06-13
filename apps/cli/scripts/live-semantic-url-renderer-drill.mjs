@@ -2,10 +2,10 @@
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -29,6 +29,10 @@ const {
 function logStep(name, details = null) {
   if (details == null) console.log(`[semantic-url-renderer-drill] ${name}`)
   else console.log(`[semantic-url-renderer-drill] ${name}`, JSON.stringify(details))
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 }
 
 function variant(response, key) {
@@ -79,6 +83,29 @@ async function stopProcess(child) {
   })
 }
 
+async function cleanupListeningPorts(ports) {
+  for (const port of ports) {
+    const result = await run('lsof', ['-ti', `tcp:${port}`]).catch(() => ({ code: 1, stdout: '' }))
+    if (result.code !== 0 || !result.stdout.trim()) continue
+    const pids = result.stdout
+      .split(/\s+/)
+      .map((value) => Number(value))
+      .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGTERM')
+      } catch {}
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 0)
+        process.kill(pid, 'SIGKILL')
+      } catch {}
+    }
+  }
+}
+
 async function freePort() {
   return await new Promise((resolve, reject) => {
     const server = net.createServer()
@@ -120,7 +147,7 @@ async function waitForGateway(baseUrl) {
   let lastError = null
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/health`)
+      const response = await fetchWithTimeout(`${baseUrl}/health`, {}, 5_000)
       if (response.ok) return
       lastError = new Error(`health status ${response.status}`)
     } catch (error) {
@@ -129,6 +156,30 @@ async function waitForGateway(baseUrl) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error(`gateway did not become ready: ${lastError?.message ?? String(lastError)}`)
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15_000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(`fetch timed out after ${timeoutMs}ms: ${url}`)), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function withTimeout(promise, timeoutMs, message) {
+  let timer = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 async function waitForProviderRunReady(client, providerRunId) {
@@ -170,6 +221,13 @@ async function startStaticSite(port) {
   return server
 }
 
+async function closeHttpServer(server) {
+  if (!server) return
+  server.closeAllConnections?.()
+  server.closeIdleConnections?.()
+  await new Promise((resolve) => server.close(resolve)).catch(() => {})
+}
+
 async function startSemanticSite({ port, gatewayUrl, kernelUrl, sessionId }) {
   const cache = new Map()
   const client = new LocalIpcClient(kernelUrl, {
@@ -189,7 +247,7 @@ async function startSemanticSite({ port, gatewayUrl, kernelUrl, sessionId }) {
       const key = `${page}:${prompt}`
       let runId = cache.get(key)
       if (!runId) {
-        const gatewayResponse = await fetch(`${gatewayUrl}/render/${encodeURIComponent(page)}/${encodeURIComponent(prompt)}`)
+        const gatewayResponse = await fetchWithTimeout(`${gatewayUrl}/render/${encodeURIComponent(page)}/${encodeURIComponent(prompt)}`)
         const body = await gatewayResponse.json()
         if (gatewayResponse.status !== 202 || !body.workflow_run?.id) {
           res.writeHead(502, { 'content-type': 'application/json' })
@@ -229,8 +287,12 @@ async function startSemanticSite({ port, gatewayUrl, kernelUrl, sessionId }) {
   })
   return {
     async close() {
-      await client.close().catch(() => {})
-      await new Promise((resolve) => server.close(resolve))
+      await withTimeout(
+        client.close(),
+        3_000,
+        'semantic site client close timed out after 3000ms',
+      ).catch(() => {})
+      await closeHttpServer(server)
     },
   }
 }
@@ -242,10 +304,31 @@ async function fetchUntilRendered(url, options = {}) {
   let lastBody = null
   const diagnostics = []
   while (Date.now() < deadline) {
-    const diagnostic = await options.pump?.()
-    if (diagnostic) diagnostics.push(diagnostic)
-    const response = await fetch(url)
-    const body = await response.text()
+    if (options.pump) {
+      try {
+        const diagnostic = await withTimeout(
+          Promise.resolve(options.pump()),
+          options.pumpTimeoutMs ?? 5_000,
+          `terminal pump timed out after ${options.pumpTimeoutMs ?? 5_000}ms`,
+        )
+        if (diagnostic) diagnostics.push(diagnostic)
+      } catch (error) {
+        diagnostics.push({ pump_error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    let response = null
+    let body = ''
+    try {
+      response = await fetchWithTimeout(url, {}, options.fetchTimeoutMs ?? 15_000)
+      body = await response.text()
+    } catch (error) {
+      body = error instanceof Error ? error.message : String(error)
+      if (!firstBody) firstBody = { status: 0, body }
+      lastBody = { status: 0, body }
+      diagnostics.push({ fetch_error: body })
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      continue
+    }
     if (!firstBody) firstBody = { status: response.status, body }
     lastBody = { status: response.status, body }
     if (response.status === 200 && body.includes('ARROBA_RENDER_NEON_GREEN') && body.includes('background') && body.includes('About Arroba Foods')) {
@@ -260,7 +343,7 @@ async function main() {
   const provider = process.env.ARROBA_SEMANTIC_RENDER_PROVIDER ?? 'codex'
   const model = process.env.ARROBA_SEMANTIC_RENDER_MODEL ?? 'gpt-5.4'
   const effort = process.env.ARROBA_SEMANTIC_RENDER_EFFORT ?? 'low'
-  const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-semantic-url-renderer-drill-'))
+  const root = path.join(repoRoot, '.artifacts', 'semantic-url-renderer', nowStamp())
   const workspace = path.join(root, 'workspace')
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
@@ -297,6 +380,7 @@ async function main() {
   let client = null
   let sessionId = null
   let succeeded = false
+  let failure = null
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -414,6 +498,9 @@ async function main() {
     const renderUrl = `${semanticUrl}/about/${encodeURIComponent('serve me this page with green neon colors in black background')}`
     logStep('invoke_semantic_url', { renderUrl })
     const render = await fetchUntilRendered(renderUrl, {
+      timeoutMs: Number(process.env.ARROBA_SEMANTIC_RENDER_TIMEOUT_MS ?? 420_000),
+      fetchTimeoutMs: Number(process.env.ARROBA_SEMANTIC_RENDER_FETCH_TIMEOUT_MS ?? 15_000),
+      pumpTimeoutMs: Number(process.env.ARROBA_SEMANTIC_RENDER_PUMP_TIMEOUT_MS ?? 5_000),
       pump: async () => {
         if (context.attachmentId) {
           const response = await client.send(pumpTerminalOutputRequest(sessionId, context.attachmentId)).catch(() => null)
@@ -438,18 +525,61 @@ async function main() {
 
     logStep('ok')
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    await semanticSite?.close?.().catch(() => {})
-    if (staticSite) await new Promise((resolve) => staticSite.close(resolve)).catch(() => {})
-    if (client && sessionId) await client.send(endSessionRequest(sessionId)).catch(() => {})
-    await client?.close?.().catch(() => {})
+    if (semanticSite?.close) {
+      await withTimeout(
+        semanticSite.close(),
+        5_000,
+        'semantic site close timed out after 5000ms',
+      ).catch((error) => logStep('semantic_site_close_failed', { error: error.message ?? String(error) }))
+    }
+    await closeHttpServer(staticSite)
+    if (client && sessionId) {
+      await withTimeout(
+        client.send(endSessionRequest(sessionId)),
+        5_000,
+        'end session timed out after 5000ms',
+      ).catch((error) => logStep('end_session_failed', { error: error.message ?? String(error) }))
+    }
+    if (client?.close) {
+      await withTimeout(
+        client.close(),
+        3_000,
+        'client close timed out after 3000ms',
+      ).catch((error) => logStep('client_close_failed', { error: error.message ?? String(error) }))
+    }
     await stopProcess(gateway)
     await stopProcess(kernel)
+    await cleanupListeningPorts([opencodePort, codexPort])
     if (!succeeded) {
       console.error('[semantic-url-renderer-drill] kernel logs', kernel?.logs ?? null)
       console.error('[semantic-url-renderer-drill] gateway logs', gateway?.logs ?? null)
     }
-    await rm(root, { recursive: true, force: true })
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'semantic-url-renderer',
+        provider,
+        model,
+        effort,
+        workspace,
+        kernelUrl,
+        gatewayUrl,
+        staticUrl,
+        semanticUrl,
+        kernelStdoutTail: kernel?.logs?.stdout?.slice(-4000) ?? '',
+        kernelStderrTail: kernel?.logs?.stderr?.slice(-4000) ?? '',
+        gatewayStdoutTail: gateway?.logs?.stdout?.slice(-4000) ?? '',
+        gatewayStderrTail: gateway?.logs?.stderr?.slice(-4000) ?? '',
+      },
+      log: logStep,
+    })
   }
 }
 
