@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import { historyOutlineRows } from "./lib/drill-history-outline.mjs"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -25,6 +26,7 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
 const marker = `NOP_${process.pid.toString(36)}_${Date.now().toString(36)}`
+const MAX_LOG_CHARS = 128_000
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
@@ -35,6 +37,20 @@ function unwrap(response, variant) {
 
 function makePort() {
   return 57000 + Math.floor(Math.random() * 2000)
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-")
+}
+
+function appendOutput(buffer, chunk) {
+  const next = buffer + chunk.toString("utf8")
+  if (next.length <= MAX_LOG_CHARS) return next
+  return next.slice(next.length - MAX_LOG_CHARS)
+}
+
+function tailLines(value, count = 80) {
+  return value.split("\n").slice(-count).join("\n")
 }
 
 async function waitForDaemon(kernelUrl, workspace, worktree) {
@@ -249,7 +265,7 @@ async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, pr
 }
 
 async function main() {
-  const root = path.join("/tmp", `arb-oc-native-${process.pid}-${Date.now()}`)
+  const root = path.join(repoRoot, ".artifacts", "live-opencode-native-tui-drill", nowStamp())
   const kernelPort = makePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
@@ -279,8 +295,17 @@ async function main() {
   let daemon = null
   let client = null
   let sessionId = null
+  let passed = false
+  let failure = null
+  let daemonStdout = ""
+  let daemonStderr = ""
+  let providerSessionA = null
+  let providerSessionB = null
+  let proxyA = null
+  let proxyB = null
+  let agents = []
   try {
-    await mkdir(root, { recursive: true })
+    await prepareDrillArtifacts(root)
     await mkdir(logs.aDir, { recursive: true })
     await mkdir(logs.bDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
@@ -296,8 +321,10 @@ async function main() {
         ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
         ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
-      stdio: ["ignore", "ignore", "inherit"],
+      stdio: ["ignore", "pipe", "pipe"],
     })
+    daemon.stdout.on("data", (chunk) => { daemonStdout = appendOutput(daemonStdout, chunk) })
+    daemon.stderr.on("data", (chunk) => { daemonStderr = appendOutput(daemonStderr, chunk) })
     await waitForDaemon(kernelUrl, workspace, worktree)
 
     await startScreen(screenA, logs.aDir, "bun", [
@@ -319,8 +346,8 @@ async function main() {
       ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyA,
     })
     sessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
-    const proxyA = (await waitForFileMatch(logs.a, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
-    const providerSessionA = (await waitForFileMatch(logs.a, /opencode sess:\s+([^\s]+)/)).match[1]
+    proxyA = (await waitForFileMatch(logs.a, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
+    providerSessionA = (await waitForFileMatch(logs.a, /opencode sess:\s+([^\s]+)/)).match[1]
 
     await startScreen(screenB, logs.bDir, "bun", [
       cliPath,
@@ -339,15 +366,15 @@ async function main() {
       ARROBA_OPENCODE_NATIVE_DEBUG: "1",
       ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyB,
     })
-    const proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
-    const providerSessionB = (await waitForFileMatch(logs.b, /opencode sess:\s+([^\s]+)/)).match[1]
+    proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
+    providerSessionB = (await waitForFileMatch(logs.b, /opencode sess:\s+([^\s]+)/)).match[1]
 
     client = new LocalIpcClient(kernelUrl)
     const attachment = unwrap(
       await client.send(attachToSessionRequest(sessionId, `opencode-native-drill-${process.pid}`)),
       "SessionAttached",
     ).attachment
-    const agents = await waitForNamedAgents(client, sessionId, ["oc-a", "oc-b"])
+    agents = await waitForNamedAgents(client, sessionId, ["oc-a", "oc-b"])
     await waitForActiveProviderRun(client, sessionId)
 
     await startScreen(screenCli, logs.cliDir, "bun", [
@@ -466,6 +493,10 @@ async function main() {
       },
       logs,
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenA)
@@ -476,10 +507,39 @@ async function main() {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS !== "1") {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-      await rm(automationSocket, { force: true }).catch(() => {})
+    if (passed && process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
+      console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket }))
+    } else {
+      await finalizeDrillArtifacts({
+        rootDir: root,
+        passed,
+        preserveOnFailure: true,
+        failure,
+        metadata: {
+          drill: "live-opencode-native-tui",
+          kernelUrl,
+          sessionId,
+          workspace,
+          worktree,
+          marker,
+          markers,
+          logs,
+          automationSocket,
+          agentAliases: agents.map((agent) => agent.alias),
+          providerSessions: {
+            "oc-a": providerSessionA,
+            "oc-b": providerSessionB,
+          },
+          proxies: {
+            "oc-a": proxyA,
+            "oc-b": proxyB,
+          },
+          daemonStdoutTail: tailLines(daemonStdout),
+          daemonStderrTail: tailLines(daemonStderr),
+        },
+      })
     }
+    await rm(automationSocket, { force: true }).catch(() => {})
   }
 }
 
