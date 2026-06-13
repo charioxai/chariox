@@ -634,7 +634,8 @@ async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
   throw new Error("timed out waiting for assistant completion")
 }
 
-async function waitForHistoryText(client, requests, sessionId, agentId, needle, timeoutMs, pollMs = 2_000) {
+async function waitForHistoryText(client, requests, sessionId, agentId, needle, timeoutMs, pollMs = 2_000, options = {}) {
+  const providerOutputOnly = options.providerOutputOnly === true
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const outline = unwrap(
@@ -645,7 +646,9 @@ async function waitForHistoryText(client, requests, sessionId, agentId, needle, 
     for (const agent of outline.agents ?? []) {
       for (const turn of agent.turns ?? []) {
         for (const entry of [turn.user_prompt, ...(turn.entries ?? []), turn.summary].filter(Boolean)) {
-          chunks.push(String(entry.entry?.text ?? entry.text ?? ""))
+          if (!providerOutputOnly || historyEntryIsProviderOutput(entry)) {
+            chunks.push(String(entry.entry?.text ?? entry.text ?? ""))
+          }
         }
         for (const blob of turn.blobs ?? []) {
           const content = unwrap(
@@ -653,7 +656,9 @@ async function waitForHistoryText(client, requests, sessionId, agentId, needle, 
             "SessionHistoryBlobContent",
           )
           for (const entry of content.entries ?? []) {
-            chunks.push(String(entry.entry?.text ?? entry.text ?? ""))
+            if (!providerOutputOnly || historyEntryIsProviderOutput(entry)) {
+              chunks.push(String(entry.entry?.text ?? entry.text ?? ""))
+            }
           }
         }
       }
@@ -663,6 +668,11 @@ async function waitForHistoryText(client, requests, sessionId, agentId, needle, 
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for history text ${needle}`)
+}
+
+function historyEntryIsProviderOutput(entry) {
+  const kind = String(entry.entry?.kind ?? entry.kind ?? "")
+  return kind === "provider_output" || kind === "assistant_message"
 }
 
 async function waitForSession(client, requests, sessionId, timeoutMs = 20_000, pollMs = 500) {

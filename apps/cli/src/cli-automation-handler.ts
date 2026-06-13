@@ -103,17 +103,18 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           )
           return deps.snapshot()
         }
-        if (deps.isAttached()) {
+        const session = deps.sessionState()
+        if (deps.isAttached() && !session.active_provider_run_id) {
           await launchProviderRun(
             deps.client,
-            deps.sessionState().id,
+            session.id,
             deps.options.provider ?? "opencode",
             deps.options.accountProfile,
             deps.options.model,
             deps.options.effort,
             deps.focusedAgentId(),
           )
-          await resizeSessionTerminal(deps.client, deps.sessionState().id)
+          await resizeSessionTerminal(deps.client, session.id)
         }
         deps.setPromptText(prompt)
         await deps.submitPrompt()

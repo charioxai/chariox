@@ -148,6 +148,7 @@ mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
+pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod provider_liveness_runtime;
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;

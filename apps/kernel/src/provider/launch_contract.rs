@@ -472,6 +472,22 @@ impl LaunchProviderRequest {
         self.external_provider_import = Some(import);
         self
     }
+
+    pub(crate) fn matches_existing_run_selection(&self, run: &super::RuntimeProviderRun) -> bool {
+        run.session_id() == self.session_id
+            && run.agent_instance_id() == self.agent_id.as_deref()
+            && run.owner_user_id() == self.owner_user_id
+            && run.adapter_key() == self.adapter_key
+            && run.provider() == self.provider
+            && run.account_profile() == self.account_profile
+            && run.model() == self.model
+            && run.variant() == self.variant.as_deref()
+            && run.client_interface() == self.client_interface
+            && run.working_directory() == self.working_directory.as_ref()
+            && run.write_access_mode() == self.write_access_mode
+            && run.execution_mode() == self.execution_mode.unwrap_or_default()
+            && run.permission_level() == self.permission_level.unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

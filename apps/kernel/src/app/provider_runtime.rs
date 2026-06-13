@@ -304,6 +304,13 @@ impl DaemonApp {
         &mut self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        let prepared =
+            self.prepare_app_provider_launch_request(request.clone(), "launch provider run")?;
+        if let Some(run) =
+            ProviderRunActivationState::reusable_native_tui_run_for_launch(self, &prepared)?
+        {
+            return Ok(run);
+        }
         let started = self.start_provider_launch(request)?;
         let binding = match ProviderProcessService::initialize_runtime_binding(&started.run) {
             Ok(binding) => binding,
@@ -378,8 +385,10 @@ mod tests {
         UserCredentialSourceConfig, UserCredentialUse,
     };
     use crate::error::DaemonError;
-    use crate::provider::{LaunchProviderRequest, ProviderResumeState, ProviderRunState};
-    use crate::session::{CreateSessionRequest, SessionAgentDefaults};
+    use crate::provider::{
+        LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, ProviderRunState,
+    };
+    use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults};
 
     use super::*;
     use crate::app::sanitize_resume_state_for_launch;
@@ -843,6 +852,156 @@ mod tests {
                 .expect("active run should remain addressable")
                 .state(),
             ProviderRunState::Running
+        );
+    }
+
+    #[test]
+    fn native_tui_provider_launch_reuses_compatible_starting_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+
+        let request =
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "sonnet")
+                .with_agent_id(agent.id())
+                .with_client_interface(ProviderClientInterface::NativeTui);
+        let started = app
+            .start_provider_launch(request.clone())
+            .expect("native launch should start");
+
+        let reused = app
+            .launch_provider(request)
+            .expect("compatible native launch should reuse");
+
+        assert_eq!(reused.id(), started.run.id());
+        assert_eq!(
+            app.providers()
+                .list_runs()
+                .into_iter()
+                .filter(|run| {
+                    run.session_id() == session.id()
+                        && run.agent_instance_id() == Some(agent.id())
+                        && run.client_interface() == ProviderClientInterface::NativeTui
+                        && run.state() != ProviderRunState::Ended
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn native_tui_provider_launch_rejects_parameter_mismatch_without_duplicate() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+
+        let request =
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "sonnet")
+                .with_agent_id(agent.id())
+                .with_client_interface(ProviderClientInterface::NativeTui);
+        let started = app
+            .start_provider_launch(request)
+            .expect("native launch should start");
+
+        let error = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "haiku",
+                )
+                .with_agent_id(agent.id())
+                .with_client_interface(ProviderClientInterface::NativeTui),
+            )
+            .expect_err("mismatched native launch should reject");
+
+        assert!(matches!(
+            error,
+            DaemonError::InvalidProviderRunState {
+                provider_run_id,
+                operation: "launch native TUI provider run with different parameters",
+                ..
+            } if provider_run_id == started.run.id()
+        ));
+        assert_eq!(
+            app.providers()
+                .list_runs()
+                .into_iter()
+                .filter(|run| {
+                    run.session_id() == session.id()
+                        && run.agent_instance_id() == Some(agent.id())
+                        && run.client_interface() == ProviderClientInterface::NativeTui
+                        && run.state() != ProviderRunState::Ended
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn prompt_submission_while_native_launch_is_starting_does_not_duplicate_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("session create should succeed");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-a",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("client should attach");
+
+        let started = app
+            .start_provider_launch(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id())
+                .with_client_interface(ProviderClientInterface::NativeTui),
+            )
+            .expect("native launch should start");
+
+        let outcome = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "queued while starting\n",
+                Vec::new(),
+            )
+            .expect("prompt submission should queue");
+
+        assert!(matches!(outcome, PromptSubmissionOutcome::Queued { .. }));
+        assert_eq!(
+            app.providers()
+                .get_run(started.run.id())
+                .expect("started run should remain")
+                .state(),
+            ProviderRunState::Starting
+        );
+        assert_eq!(
+            app.providers()
+                .list_runs()
+                .into_iter()
+                .filter(|run| {
+                    run.session_id() == session.id()
+                        && run.agent_instance_id() == Some(agent.id())
+                        && run.state() != ProviderRunState::Ended
+                })
+                .count(),
+            1
         );
     }
 

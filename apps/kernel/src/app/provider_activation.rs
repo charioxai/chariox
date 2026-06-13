@@ -15,6 +15,48 @@ pub(crate) struct StartedProviderLaunch {
 pub(super) struct ProviderRunActivationState;
 
 impl ProviderRunActivationState {
+    pub(super) fn reusable_native_tui_run_for_launch(
+        app: &mut DaemonApp,
+        request: &LaunchProviderRequest,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        if request.client_interface != ProviderClientInterface::NativeTui {
+            return Ok(None);
+        }
+        let Some(agent_id) = request.agent_id.as_deref() else {
+            return Ok(None);
+        };
+        let Some(run) = app
+            .providers()
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == request.session_id
+                    && run.agent_instance_id() == Some(agent_id)
+                    && run.client_interface() == ProviderClientInterface::NativeTui
+                    && matches!(
+                        run.state(),
+                        ProviderRunState::Starting | ProviderRunState::Running
+                    )
+            })
+            .max_by(|left, right| left.active_selection_cmp(right))
+        else {
+            return Ok(None);
+        };
+
+        if !request.matches_existing_run_selection(&run) {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run.id().to_string(),
+                state: run.state(),
+                operation: "launch native TUI provider run with different parameters",
+            });
+        }
+
+        app.sessions
+            .set_active_provider_run(&request.session_id, Some(run.id().to_string()))?;
+        app.update_provider_run_projection(run.clone());
+        Ok(Some(run))
+    }
+
     pub(super) fn start_provider_run_for_session(
         app: &mut DaemonApp,
         request: LaunchProviderRequest,
@@ -34,18 +76,22 @@ impl ProviderRunActivationState {
                     app.providers.clear_runtime(active_run_id);
                 }
                 ProviderRunState::Starting => {
-                    let outcome = app
-                        .providers
-                        .terminate_run_provider_only(&session_id, active_run_id)?;
-                    clear_active_provider_run_session_pointer(
-                        app,
-                        &session_id,
-                        outcome.run().id(),
-                    )?;
-                    app.update_provider_run_projection(outcome.into_run());
+                    if active_run.client_interface().is_arroba() {
+                        let outcome = app
+                            .providers
+                            .terminate_run_provider_only(&session_id, active_run_id)?;
+                        clear_active_provider_run_session_pointer(
+                            app,
+                            &session_id,
+                            outcome.run().id(),
+                        )?;
+                        app.update_provider_run_projection(outcome.into_run());
+                    }
                 }
                 ProviderRunState::Running => {
-                    if !app.provider_run_has_active_prompt(&session_id, &active_run)? {
+                    if active_run.client_interface().is_arroba()
+                        && !app.provider_run_has_active_prompt(&session_id, &active_run)?
+                    {
                         let outcome = app
                             .providers
                             .park_run_provider_only(&session_id, active_run_id)?;

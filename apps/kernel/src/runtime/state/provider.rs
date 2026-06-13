@@ -7,6 +7,49 @@ use super::owned::OwnedProviderRunExit;
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn reusable_native_tui_run_for_launch(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+        if request.client_interface != crate::provider::ProviderClientInterface::NativeTui {
+            return Ok(None);
+        }
+        let Some(agent_id) = request.agent_id.as_deref() else {
+            return Ok(None);
+        };
+        let Some(run) = self
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == request.session_id
+                    && run.agent_instance_id() == Some(agent_id)
+                    && run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
+                    && matches!(
+                        run.state(),
+                        crate::provider::ProviderRunState::Starting
+                            | crate::provider::ProviderRunState::Running
+                    )
+            })
+            .max_by(|left, right| left.active_selection_cmp(right))
+        else {
+            return Ok(None);
+        };
+
+        if !request.matches_existing_run_selection(&run) {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: run.id().to_string(),
+                state: run.state(),
+                operation: "launch native TUI provider run with different parameters",
+            });
+        }
+
+        self.session_store
+            .set_active_provider_run(&request.session_id, Some(run.id().to_string()))?;
+        self.provider_run_projection.update(run.clone());
+        Ok(Some(run))
+    }
+
     pub(super) fn start_provider_launch(
         &self,
         request: crate::provider::LaunchProviderRequest,

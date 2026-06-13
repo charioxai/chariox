@@ -1,5 +1,10 @@
 use super::*;
 
+pub(crate) enum ProviderLaunchStartOutcome {
+    Reused(crate::provider::RuntimeProviderRun),
+    Started(crate::app::StartedProviderLaunch, u64),
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn launch_provider_for_remote_lease_detached(
         &self,
@@ -204,7 +209,7 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::LaunchProviderRunRequest,
         caller_user_id: String,
-    ) -> Result<(crate::app::StartedProviderLaunch, u64), DaemonError> {
+    ) -> Result<ProviderLaunchStartOutcome, DaemonError> {
         let launch_request = self
             .owned
             .launch_provider_request_from_local_request(request);
@@ -224,6 +229,9 @@ impl KernelRuntimeState {
             let config = owned.config_projection.snapshot();
             let launch_request =
                 owned.prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?;
+            if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
+                return Ok(ProviderLaunchStartOutcome::Reused(run));
+            }
             crate::logging::info_with_fields(
                 "daemon.app",
                 "launching provider run",
@@ -312,7 +320,10 @@ impl KernelRuntimeState {
                 return Err(error);
             }
             owned.provider_run_projection.update(run);
-            Ok((started, config.provider_runtime_init_delay_ms))
+            Ok(ProviderLaunchStartOutcome::Started(
+                started,
+                config.provider_runtime_init_delay_ms,
+            ))
         }
     }
 

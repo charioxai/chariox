@@ -351,8 +351,8 @@ export async function runHostedRemoteCliPairingAssertions({
       prompt: `Reply with exactly ${localMarker} and nothing else.`,
     })
     await Promise.all([
-      waitForHistoryText(homeClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs),
-      waitForHistoryText(verificationClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs),
+      waitForHistoryText(homeClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs, undefined, { providerOutputOnly: true }),
+      waitForHistoryText(verificationClient, requests, localSession.id, localSnapshot.session.focusedAgentId, localMarker, pollTimeoutMs, undefined, { providerOutputOnly: true }),
     ])
 
     await remoteAutomation(remoteSocket, "submit_prompt", {
@@ -360,8 +360,8 @@ export async function runHostedRemoteCliPairingAssertions({
       timeoutMs: pollTimeoutMs,
     }, { runSsh, shellQuote, assert })
     await Promise.all([
-      waitForHistoryText(homeClient, requests, remoteSession.id, remoteSnapshot.session.focusedAgentId, remoteMarker, pollTimeoutMs),
-      waitForHistoryText(verificationClient, requests, remoteSession.id, remoteSnapshot.session.focusedAgentId, remoteMarker, pollTimeoutMs),
+      waitForHistoryText(homeClient, requests, remoteSession.id, remoteSnapshot.session.focusedAgentId, remoteMarker, pollTimeoutMs, undefined, { providerOutputOnly: true }),
+      waitForHistoryText(verificationClient, requests, remoteSession.id, remoteSnapshot.session.focusedAgentId, remoteMarker, pollTimeoutMs, undefined, { providerOutputOnly: true }),
     ])
 
     await localAutomation.send("exit").catch(() => {})

@@ -15,7 +15,7 @@ use crate::runtime::command_latency::{
     log_provider_runtime_binding_started, log_provider_runtime_binding_succeeded, CommandTrace,
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
-use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::state::{KernelRuntimeState, ProviderLaunchStartOutcome};
 
 #[derive(Clone)]
 pub(crate) struct ProviderLaunchCommandExecutor {
@@ -64,8 +64,15 @@ impl ProviderLaunchCommandExecutor {
             return Ok(response);
         }
         let launch_started_at_ms = crate::runtime::command_latency::now_ms();
-        let (started, runtime_init_delay_ms) =
-            self.store.start_launch(request, caller_user_id).await?;
+        let start_outcome = self.store.start_launch(request, caller_user_id).await?;
+        let (started, runtime_init_delay_ms) = match start_outcome {
+            ProviderLaunchStartOutcome::Reused(provider_run) => {
+                return Ok(LocalDaemonResponse::ProviderRunLaunched { provider_run });
+            }
+            ProviderLaunchStartOutcome::Started(started, runtime_init_delay_ms) => {
+                (started, runtime_init_delay_ms)
+            }
+        };
         let accepted = started.run.clone();
         log_provider_launch_accepted(
             &command_trace,
@@ -140,7 +147,7 @@ impl ProviderLaunchStore {
         &self,
         request: LaunchProviderRunRequest,
         caller_user_id: String,
-    ) -> Result<(StartedProviderLaunch, u64), DaemonError> {
+    ) -> Result<ProviderLaunchStartOutcome, DaemonError> {
         self.state
             .start_provider_launch(request, caller_user_id)
             .await

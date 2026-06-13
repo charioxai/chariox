@@ -90,6 +90,30 @@ test("automation action handler sets focused interaction custom reply", async ()
   assert.deepEqual(editing, [{ interactionId: "interaction-1", editing: true }])
 })
 
+test("automation prompt submit does not relaunch when the session has an active provider run", async () => {
+  let promptText = ""
+  let submitted = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    isAttached: () => true,
+    sessionState: () => ({
+      id: "session-1",
+      active_provider_run_id: "provider-run-1",
+    }) as RuntimeSession,
+    setPromptText: (value) => {
+      promptText = value
+    },
+    submitPrompt: async () => {
+      submitted = true
+    },
+    snapshot: () => ({ promptText, submitted }),
+  })
+
+  const result = await handler({ action: "submit_prompt", prompt: "hello" })
+
+  assert.deepEqual(result, { promptText: "hello", submitted: true })
+})
+
 function baseDeps() {
   return {
     client: null as never,
