@@ -40,7 +40,7 @@ Precedence:
 - `plan + approval-required` -> approval `untrusted`, sandbox `read-only`
 - `plan + yolo` -> approval `never`, sandbox `read-only`
 
-Workspace live sync launch policy remains authoritative when enabled and can still force stricter behavior.
+Workspace live sync launch policy remains authoritative when enabled. Managed mode can force stricter behavior when selective write fencing is unavailable. Tracked mode is observational, so Codex build runs use `danger-full-access` with the same native approval policy; this keeps repositories outside the selected synced roots editable instead of letting Codex's `workspace-write` sandbox block them before Arroba can observe the selected roots at turn end.
 
 Codex CLI documentation also refers to the strict approval policy as `unless-trusted`; the current
 app-server schema used by Arroba's supported Codex runtime names the same mode `untrusted`.
