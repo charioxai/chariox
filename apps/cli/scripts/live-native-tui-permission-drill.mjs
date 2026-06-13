@@ -6,6 +6,7 @@ import { mkdir, readFile, rm } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -383,7 +384,10 @@ async function runProvider(provider, options) {
   const automationSocket = path.join("/tmp", `arb-${provider}-perm-cli-${process.pid}.sock`)
   let daemon = null
   let client = null
+  let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
     daemon = spawn(kernelBinary, [], {
@@ -516,7 +520,11 @@ async function runProvider(provider, options) {
     else await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`, 5_000).catch(() => {})
     console.log(JSON.stringify({ provider, direction: "arroba_cli_to_provider", interaction: arrobaInteraction.title ?? arrobaInteraction.message }))
 
+    succeeded = true
     return { provider, status: "ok", sessionId, alias, markers, logs }
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)
@@ -526,10 +534,21 @@ async function runProvider(provider, options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_TUI_PERMISSION_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && process.exitCode)) {
-      console.log(JSON.stringify({ provider, artifactsKept: root }))
-    } else {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
+    const preserveOnFailure = options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_PERMISSION_ARTIFACTS === "1"
+    const finalized = await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure,
+      failure,
+      metadata: {
+        drill: "native-tui-permission",
+        provider,
+        kernelUrl,
+        logs,
+      },
+      log: (name, details) => console.log(`[native-tui-permission-drill] ${name}`, JSON.stringify(details)),
+    })
+    if (!finalized.preserved) {
       await rm(automationSocket, { force: true }).catch(() => {})
     }
     await rm(files.nativePrompt, { force: true }).catch(() => {})
