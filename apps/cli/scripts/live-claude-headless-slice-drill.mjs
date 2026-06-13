@@ -6,6 +6,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
   attachToSessionRequest,
@@ -243,7 +244,9 @@ async function main() {
   let sliceId = null
   let exportedClaudeCredentialsPath = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(workspace, { recursive: true })
     await mkdir(homeDir, { recursive: true })
     await mkdir(xdgConfigHome, { recursive: true })
@@ -377,6 +380,9 @@ async function main() {
       marker,
       historyEntries: history.entries.length,
     }, null, 2))
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) {
       if (sessionId) await client.send(endSessionRequest(sessionId)).catch(() => {})
@@ -388,9 +394,34 @@ async function main() {
     if (!succeeded && exportedClaudeCredentialsPath?.startsWith(root)) {
       await rm(exportedClaudeCredentialsPath, { force: true }).catch(() => {})
     }
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    } else {
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: "claude-headless-slice",
+        provider: options.provider,
+        model: options.model,
+        timeoutMs: options.timeoutMs,
+        relayUrl,
+        homeKernelUrl,
+        targetDaemonAlias,
+        workspace,
+        homeDir,
+        xdgConfigHome,
+        xdgStateHome,
+        xdgDataHome,
+        xdgCacheHome,
+        sessionId,
+        sliceId,
+        sliceBuildImagePolicy,
+        dockerHost: dockerHost ?? null,
+        dockerContext: dockerContext ?? null,
+      },
+      log: (name, details) => console.log(`[claude-headless-slice-drill] ${name}`, JSON.stringify(details)),
+    })
+    if (!succeeded && options.keepArtifactsOnFailure) {
       console.error(`[claude-headless-slice-drill] artifacts kept at ${root}`)
     }
   }
