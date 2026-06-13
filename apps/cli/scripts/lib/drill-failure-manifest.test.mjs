@@ -9,6 +9,7 @@ import {
   prepareDrillArtifacts,
 } from "./drill-artifacts.mjs"
 import {
+  findDrillFailureManifestPaths,
   formatDrillFailureManifestSummary,
   readDrillFailureManifest,
   summarizeDrillFailureManifest,
@@ -58,6 +59,27 @@ test("reads a manifest file directly", async () => {
   const manifest = await readDrillFailureManifest(file)
 
   assert.equal(manifest.rootDir, root)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("discovers preserved failure manifests below artifact roots", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-failure-find-"))
+  const first = path.join(root, "target", "run-one")
+  const second = path.join(root, ".artifacts", "run-two")
+  const ignored = path.join(root, "node_modules", "run-three")
+  await prepareDrillArtifacts(first)
+  await prepareDrillArtifacts(second)
+  await prepareDrillArtifacts(ignored)
+  await finalizeDrillArtifacts({ rootDir: first, passed: false, failure: new Error("first"), metadata: { drill: "first" } })
+  await finalizeDrillArtifacts({ rootDir: second, passed: false, failure: new Error("second"), metadata: { drill: "second" } })
+  await finalizeDrillArtifacts({ rootDir: ignored, passed: false, failure: new Error("ignored"), metadata: { drill: "ignored" } })
+
+  const manifests = await findDrillFailureManifestPaths(root)
+
+  assert.deepEqual(manifests, [
+    path.join(root, ".artifacts", "run-two", "arroba-drill-failure.json"),
+    path.join(root, "target", "run-one", "arroba-drill-failure.json"),
+  ])
   await rm(root, { recursive: true, force: true })
 })
 

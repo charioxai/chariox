@@ -55,6 +55,7 @@ Summarize one or more preserved roots or manifest files with:
 ```bash
 node apps/cli/scripts/drill-failure-summary.mjs path/to/preserved-root
 node apps/cli/scripts/drill-failure-summary.mjs path/to/arroba-drill-failure.json
+node apps/cli/scripts/drill-failure-summary.mjs --find apps/cli/target .artifacts
 ```
 
 Required top-level fields:
