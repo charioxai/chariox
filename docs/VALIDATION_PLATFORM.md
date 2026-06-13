@@ -13,6 +13,14 @@ Arroba runtime features must be validated through reusable drill primitives, not
 
 Matrix scripts that support `--report PATH` write JSON with schema `arroba.drill.matrix.v1`.
 
+Summarize one or more reports with:
+
+```bash
+node apps/cli/scripts/drill-matrix-report-summary.mjs path/to/matrix-report.json
+```
+
+The summary command exits non-zero when any input report has `status=failed`.
+
 Required top-level fields:
 
 - `schema`: always `arroba.drill.matrix.v1`.
