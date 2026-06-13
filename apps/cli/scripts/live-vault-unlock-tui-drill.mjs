@@ -5,6 +5,7 @@ import { mkdir, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { fileURLToPath } from "node:url"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
@@ -311,8 +312,12 @@ async function main() {
   let automation = null
   let client = null
   let succeeded = false
+  let failure = null
+  let sessionId = null
+  let agentId = null
 
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(path.join(configHome, "arroba"), { recursive: true })
     await writeFile(path.join(configHome, "arroba", "config.toml"), [
@@ -354,8 +359,8 @@ async function main() {
       log("relay-target-ready", { targetDaemonAlias })
     }
     const session = unwrap(await client.send(requests.createSessionRequest(workspace, workspace, "vault-tui")), "SessionCreated").session
-    const sessionId = session.id
-    const agentId = session.default_agent_id ?? session.agents?.[0]?.id
+    sessionId = session.id
+    agentId = session.default_agent_id ?? session.agents?.[0]?.id
     if (!agentId) throw new Error("created session did not expose an agent")
 
     const connectionArgs = options.remote
@@ -446,6 +451,9 @@ async function main() {
     }, null, 2), "utf8")
     succeeded = true
     console.log(JSON.stringify({ ok: true, mode: options.remote ? "vault-unlock-remote-tui" : "vault-unlock-tui", rootDir, sessionId, agentId }, null, 2))
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (automation) {
       await bestEffortWithTimeout(automation.send("exit"), 2_000)
@@ -455,11 +463,30 @@ async function main() {
     await terminateChild(cli)
     await terminateChild(daemon)
     await terminateChild(relay)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log("artifacts-retained", { rootDir })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: "vault-unlock-tui",
+        remote: options.remote,
+        unlockPolicy: options.unlockPolicy,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        kernelUrl,
+        relayUrl: options.remote ? relayUrl : null,
+        targetDaemonAlias: options.remote ? targetDaemonAlias : null,
+        workspace,
+        home,
+        configHome,
+        automationSocket,
+        sessionId,
+        agentId,
+      },
+      log,
+    })
+    if (!succeeded && options.keepArtifactsOnFailure) log("artifacts-retained", { rootDir })
   }
 }
 
