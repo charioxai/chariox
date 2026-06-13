@@ -1,9 +1,10 @@
 use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
-    AliasAgentRequest, AttachToSessionRequest, CancelWorkflowRunRequest, CreateSliceBackupRequest,
-    CreateWorkflowRequest, DestroyAgentRequest, ExtensionKind, FocusAgentRequest,
-    GetCredentialRequest, GetMcpServerRequest, GetSkillRequest, GrantAgentExtensionRequest,
+    AddWorkflowNodeRequest, AliasAgentRequest, AttachToSessionRequest, CancelWorkflowRunRequest,
+    CreateSliceBackupRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+    DestroyAgentRequest, ExtensionKind, FocusAgentRequest, GetCredentialRequest,
+    GetMcpServerRequest, GetSkillRequest, GrantAgentExtensionRequest,
     InvokeWorkflowEndpointRequest, ListAgentsRequest, ListCredentialsRequest,
     ListMcpServersRequest, ListSkillsRequest, ListSlicesRequest, ListWorkflowRunsRequest,
     ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ResumeWorkflowRunRequest,
@@ -136,13 +137,7 @@ impl CommandRouter {
                 return Ok(result);
             }
         };
-        let result = RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "command": args.command,
-                "response": response,
-            }),
-        };
+        let result = meta_command_success_result(&args.command, &response);
         self.audit_meta_run_command(
             Some(provider_run.id()),
             &session,
@@ -293,13 +288,7 @@ impl CommandRouter {
                 return Ok(result);
             }
         };
-        let result = RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "command": args.command,
-                "response": response,
-            }),
-        };
+        let result = meta_command_success_result(&args.command, &response);
         self.audit_meta_run_command(
             None,
             &session,
@@ -430,7 +419,13 @@ impl CommandRouter {
                 };
                 meta_agent_request(session, metaagent, &tokens[1..], &agents)
             }
-            "workflow" => meta_workflow_request(session, &tokens[1..]),
+            "workflow" => {
+                let agents = {
+                    let app = self.app.lock().await;
+                    app.agents().get_session_agents(session.id())
+                };
+                meta_workflow_request(session, metaagent, &tokens[1..], &agents)
+            }
             "mcp" => {
                 let agents = {
                     let app = self.app.lock().await;
@@ -647,7 +642,9 @@ fn meta_owned_regular_agent_from_session(
 
 fn meta_workflow_request(
     session: &crate::session::RuntimeSession,
+    metaagent: &crate::agent::AgentInstance,
     args: &[String],
+    agents: &[crate::agent::AgentInstance],
 ) -> Result<LocalDaemonRequest, DaemonError> {
     match args.first().map(String::as_str) {
         Some("list" | "ls") | None => Ok(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
@@ -657,11 +654,56 @@ fn meta_workflow_request(
             if args.len() > 2 {
                 return Err(meta_command_error("usage: workflow new [alias]"));
             }
+            if args.get(1).is_some_and(|arg| arg.starts_with('-')) {
+                return Err(meta_command_error("usage: workflow new [alias]"));
+            }
             Ok(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
                 session_id: session.id().to_string(),
                 alias: args.get(1).cloned(),
             }))
         }
+        Some("node") => match args.get(1).map(String::as_str) {
+            Some("add") => {
+                if args.len() != 4 {
+                    return Err(meta_command_error(
+                        "usage: workflow node add <workflow-ref> <owned-agent-ref>",
+                    ));
+                }
+                let agent = meta_owned_regular_agent_from_session(agents, metaagent, &args[3])?;
+                Ok(LocalDaemonRequest::AddWorkflowNode(
+                    AddWorkflowNodeRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        agent_id: agent.id().to_string(),
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
+            _ => Err(meta_command_error(
+                "usage: workflow node add <workflow-ref> <owned-agent-ref>",
+            )),
+        },
+        Some("endpoint") => match args.get(1).map(String::as_str) {
+            Some("new" | "create") => {
+                if args.len() < 4 || args.len() > 5 {
+                    return Err(meta_command_error(
+                        "usage: workflow endpoint new <workflow-ref> <entry-node-id> [alias]",
+                    ));
+                }
+                Ok(LocalDaemonRequest::CreateWorkflowEndpoint(
+                    CreateWorkflowEndpointRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        entry_node_id: args[3].clone(),
+                        alias: args.get(4).cloned(),
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
+            _ => Err(meta_command_error(
+                "usage: workflow endpoint new <workflow-ref> <entry-node-id> [alias]",
+            )),
+        },
         Some("run" | "start") => {
             if args.len() < 3 {
                 return Err(meta_command_error(
@@ -714,7 +756,7 @@ fn meta_workflow_request(
             ))
         }
         _ => Err(meta_command_error(
-            "usage: workflow <list|new|run|runs|cancel|resume> ...",
+            "usage: workflow <list|new|node|endpoint|run|runs|cancel|resume> ...",
         )),
     }
 }
@@ -835,7 +877,7 @@ fn meta_slice_request(args: &[String]) -> Result<LocalDaemonRequest, DaemonError
                 Some(_) => {
                     return Err(meta_command_error(
                         "usage: slice save-state <slice-ref> [--restart-agents|--shutdown]",
-                    ))
+                    ));
                 }
             };
             Ok(LocalDaemonRequest::SaveSliceState(SliceStateSaveRequest {
@@ -956,4 +998,143 @@ fn meta_command_failure_result(command: &str, error: DaemonError) -> RuntimeTool
             "error": error.to_string(),
         }),
     }
+}
+
+fn meta_command_success_result(command: &str, response: &LocalDaemonResponse) -> RuntimeToolResult {
+    RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "command": command,
+            "response": summarize_meta_command_response(response),
+        }),
+    }
+}
+
+fn summarize_meta_command_response(response: &LocalDaemonResponse) -> serde_json::Value {
+    match response {
+        LocalDaemonResponse::AgentSpawned { agent } => serde_json::json!({
+            "type": "AgentSpawned",
+            "agent": summarize_meta_agent(agent),
+        }),
+        LocalDaemonResponse::AgentAliased { agent, .. } => serde_json::json!({
+            "type": "AgentAliased",
+            "agent": summarize_meta_agent(agent),
+        }),
+        LocalDaemonResponse::AgentDestroyed { agent } => serde_json::json!({
+            "type": "AgentDestroyed",
+            "agent": summarize_meta_agent(agent),
+        }),
+        LocalDaemonResponse::AgentFocused { agent } => serde_json::json!({
+            "type": "AgentFocused",
+            "agent": summarize_meta_agent(agent),
+        }),
+        LocalDaemonResponse::AgentsListed { agents } => serde_json::json!({
+            "type": "AgentsListed",
+            "agents": agents.iter().map(summarize_meta_agent).collect::<Vec<_>>(),
+        }),
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => serde_json::json!({
+            "type": "WorkflowCreated",
+            "workflow": summarize_meta_workflow(workflow),
+        }),
+        LocalDaemonResponse::WorkflowsListed { workflows } => serde_json::json!({
+            "type": "WorkflowsListed",
+            "workflows": workflows.iter().map(summarize_meta_workflow).collect::<Vec<_>>(),
+        }),
+        LocalDaemonResponse::WorkflowNodeAdded { node, workflow, .. } => serde_json::json!({
+            "type": "WorkflowNodeAdded",
+            "node": summarize_meta_workflow_node(node),
+            "workflow": summarize_meta_workflow(workflow),
+        }),
+        LocalDaemonResponse::WorkflowEndpointCreated {
+            endpoint, workflow, ..
+        } => serde_json::json!({
+            "type": "WorkflowEndpointCreated",
+            "endpoint": summarize_meta_workflow_endpoint(endpoint),
+            "workflow": summarize_meta_workflow(workflow),
+        }),
+        LocalDaemonResponse::WorkflowRunInvoked {
+            workflow_run,
+            workflow,
+            endpoint,
+            ..
+        } => serde_json::json!({
+            "type": "WorkflowRunInvoked",
+            "workflow_run": summarize_meta_workflow_run(workflow_run),
+            "workflow": summarize_meta_workflow(workflow),
+            "endpoint": summarize_meta_workflow_endpoint(endpoint),
+        }),
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => serde_json::json!({
+            "type": "WorkflowRunsListed",
+            "workflow_runs": workflow_runs
+                .iter()
+                .map(summarize_meta_workflow_run)
+                .collect::<Vec<_>>(),
+        }),
+        _ => serde_json::json!({
+            "type": "CommandAccepted",
+            "detail": "response omitted from metaagent tool output; inspect session_overview or a dedicated list command for current state",
+        }),
+    }
+}
+
+fn summarize_meta_agent(agent: &crate::agent::AgentInstance) -> serde_json::Value {
+    serde_json::json!({
+        "id": agent.id(),
+        "agent_ref": agent.agent_ref(),
+        "alias": agent.alias(),
+        "role": agent.role(),
+        "provider": agent.provider(),
+        "model": agent.model(),
+    })
+}
+
+fn summarize_meta_workflow(workflow: &crate::session::WorkflowDefinition) -> serde_json::Value {
+    serde_json::json!({
+        "id": workflow.id(),
+        "alias": workflow.alias(),
+        "revision": workflow.revision(),
+        "nodes": workflow
+            .nodes()
+            .iter()
+            .map(summarize_meta_workflow_node)
+            .collect::<Vec<_>>(),
+        "endpoints": workflow
+            .endpoints()
+            .iter()
+            .map(summarize_meta_workflow_endpoint)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn summarize_meta_workflow_node(
+    node: &crate::session::WorkflowNodeDefinition,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": node.id(),
+        "agent_id": node.agent_id(),
+        "public_label": node.public_label(),
+        "can_complete_workflow_run": node.can_complete_workflow_run(),
+        "can_emit_intermediate_run_output": node.can_emit_intermediate_run_output(),
+    })
+}
+
+fn summarize_meta_workflow_endpoint(
+    endpoint: &crate::session::WorkflowEndpointDefinition,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": endpoint.id(),
+        "alias": endpoint.alias(),
+        "entry_node_id": endpoint.entry_node_id(),
+    })
+}
+
+fn summarize_meta_workflow_run(run: &crate::session::WorkflowRun) -> serde_json::Value {
+    serde_json::json!({
+        "id": run.id(),
+        "workflow_id": run.workflow_id(),
+        "endpoint_id": run.endpoint_id(),
+        "entry_node_id": run.entry_node_id(),
+        "status": run.status(),
+        "active_node_run_id": run.active_node_run_id(),
+    })
 }

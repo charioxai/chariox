@@ -213,14 +213,14 @@ impl KernelRuntimeState {
         let audit_provider_run_id = submission
             .dispatch
             .as_ref()
-            .map(|dispatch| dispatch.provider_run_id.as_str());
+            .map(|dispatch| dispatch.provider_run_id.clone());
         self.persist_metaagent_prompt_submission(
             session_id,
             metaagent,
             target_agent_id,
             &prompt_id,
             audit_status,
-            audit_provider_run_id,
+            audit_provider_run_id.as_deref(),
         );
         let agent_activity = self.agent_activity_for_session(&submission.session);
         if let Some(dispatch) = submission.dispatch.take() {
@@ -232,12 +232,11 @@ impl KernelRuntimeState {
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
-                "status": "submitted",
-                "response": crate::local::LocalDaemonResponse::PromptSubmitted {
-                    outcome: submission.outcome,
-                    session: submission.session,
-                    agent_activity,
-                },
+                "status": audit_status,
+                "outcome": summarize_metaagent_command_prompt_outcome(&submission.outcome),
+                "target_agent_id": target_agent_id,
+                "provider_run_id": audit_provider_run_id,
+                "agent_activity": summarize_metaagent_command_agent_activity(&agent_activity),
             }),
         })
     }
@@ -282,6 +281,51 @@ impl KernelRuntimeState {
             );
         }
     }
+}
+
+fn summarize_metaagent_command_prompt_outcome(
+    outcome: &crate::session::PromptSubmissionOutcome,
+) -> serde_json::Value {
+    match outcome {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => serde_json::json!({
+            "kind": "started",
+            "prompt": summarize_metaagent_command_prompt(prompt),
+        }),
+        crate::session::PromptSubmissionOutcome::Queued { prompt } => serde_json::json!({
+            "kind": "queued",
+            "prompt": summarize_metaagent_command_prompt(prompt),
+        }),
+    }
+}
+
+fn summarize_metaagent_command_prompt(
+    prompt: &crate::session::PromptQueueItem,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": prompt.id(),
+        "target_agent_id": prompt.target_agent_id(),
+        "status": prompt.status(),
+        "workflow_run_id": prompt.workflow_run_id(),
+        "workflow_node_run_id": prompt.workflow_node_run_id(),
+    })
+}
+
+fn summarize_metaagent_command_agent_activity(
+    activity: &std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "agents": activity
+            .iter()
+            .map(|(agent_id, state)| {
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "status": state.status,
+                    "prompt_status": state.prompt_status,
+                    "busy": state.busy,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
 }
 
 impl KernelRuntimeOwnedState {

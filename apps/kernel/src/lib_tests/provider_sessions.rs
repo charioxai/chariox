@@ -386,10 +386,12 @@ fn ended_sessions_reopen_on_attach_and_preserve_history() {
     assert!(history
         .iter()
         .any(|entry| entry.text.contains("restore me")));
-    assert!(operational_history.iter().any(|entry| entry
-        .content
-        .as_deref()
-        .is_some_and(|text| text.contains("restore me"))));
+    assert!(operational_history.iter().any(|entry| {
+        entry
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("restore me"))
+    }));
 }
 
 #[test]

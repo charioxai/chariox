@@ -88,19 +88,26 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         name: "workflow",
         aliases: &[
             "workflow new",
+            "workflow node add",
+            "workflow endpoint new",
             "workflow run",
             "workflow cancel",
             "workflow resume",
         ],
-        usage: "workflow <new|list|run|runs|cancel|resume> ...",
-        examples: &["workflow run qa-flow default \"Run QA\""],
+        usage: "workflow <new|list|node add|endpoint new|run|runs|cancel|resume> ...",
+        examples: &[
+            "workflow new qa-flow",
+            "workflow node add qa-flow reviewer",
+            "workflow endpoint new qa-flow node-1 default",
+            "workflow run qa-flow default \"Run QA\"",
+        ],
         tags: &["workflow", "orchestration"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "session workflow policy",
         routed: true,
-        description: "Create, run, cancel, resume, and observe workflows from above. Metaagents cannot be workflow nodes.",
+        description: "Create, wire, run, cancel, resume, and observe workflows from above. Metaagents cannot be workflow nodes.",
     },
     MetaCommandDoc {
         name: "mcp",
@@ -378,8 +385,19 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                 "list" | "ls" | "new" | "create" | "run" | "start" | "runs" | "cancel"
                 | "resume",
             ) => Some(MetaCommandExecutionPolicy::Routed),
+            Some("node") if matches!(tokens.get(2).map(String::as_str), Some("add")) => {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
+            Some("endpoint")
+                if matches!(
+                    tokens.get(2).map(String::as_str),
+                    Some("new" | "create")
+                ) =>
+            {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `workflow list`, `workflow new`, `workflow run`, `workflow runs`, `workflow cancel`, and `workflow resume` are routed for metaagent command execution yet".to_string(),
+                message: "only `workflow list`, `workflow new`, `workflow node add`, `workflow endpoint new`, `workflow run`, `workflow runs`, `workflow cancel`, and `workflow resume` are routed for metaagent command execution yet".to_string(),
             }),
         },
         "mcp" => match tokens.get(1).map(String::as_str) {
@@ -434,6 +452,9 @@ const ROUTED_COMMAND_CASES: &[&str] = &[
     "workflow ls",
     "workflow new qa-flow",
     "workflow create qa-flow",
+    "workflow node add qa-flow reviewer",
+    "workflow endpoint new qa-flow node-1 default",
+    "workflow endpoint create qa-flow node-1 default",
     "workflow run qa-flow default Run QA",
     "workflow start qa-flow default Run QA",
     "workflow runs qa-flow",

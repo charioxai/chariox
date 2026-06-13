@@ -432,11 +432,9 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(
-        owned_agents.iter().any(|agent| {
-            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
-        })
-    );
+    assert!(owned_agents
+        .iter()
+        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -597,8 +595,15 @@ async fn metaagent_run_command_submits_prompts_through_router_path() {
         Some("prompt worker \"please inspect the failing test\"")
     );
     assert!(
-        result.payload.get("response").is_some(),
-        "router response should be included"
+        result.payload.get("outcome").is_some(),
+        "compact prompt outcome should be included"
+    );
+    assert_eq!(
+        result
+            .payload
+            .get("status")
+            .and_then(serde_json::Value::as_str),
+        Some("submitted")
     );
     let steered = router
         .dispatch_authenticated_runtime_tool_call(
@@ -697,6 +702,16 @@ async fn metaagent_run_command_routes_core_workflow_commands() {
             workspace.to_string_lossy(),
         ))
         .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let peer_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("peer-worker")
+                .with_owner_user_id("user-2"),
+        )
+        .expect("peer worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -755,6 +770,114 @@ async fn metaagent_run_command_routes_core_workflow_commands() {
             .contains("meta-flow"),
         "{:?}",
         listed.payload
+    );
+
+    let help = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "workflow new --help"
+            }),
+        )
+        .await
+        .expect("workflow help-like aliases should return a structured usage error");
+    assert!(!help.ok);
+    assert!(
+        help.payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("usage: workflow new [alias]")),
+        "{:?}",
+        help.payload
+    );
+
+    let node_added = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "workflow node add meta-flow worker"
+            }),
+        )
+        .await
+        .expect("workflow node add command should dispatch");
+    assert!(node_added.ok, "{:?}", node_added.payload);
+    assert!(
+        serde_json::to_string(&node_added.payload)
+            .expect("payload should serialize")
+            .contains(worker.id()),
+        "{:?}",
+        node_added.payload
+    );
+    let node_id = node_added
+        .payload
+        .pointer("/response/node/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("node add response should include the node id")
+        .to_string();
+
+    let endpoint_created = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": format!("workflow endpoint new meta-flow {node_id} default")
+            }),
+        )
+        .await
+        .expect("workflow endpoint new command should dispatch");
+    assert!(endpoint_created.ok, "{:?}", endpoint_created.payload);
+    assert!(
+        endpoint_created
+            .payload
+            .pointer("/response/endpoint/alias")
+            .and_then(serde_json::Value::as_str)
+            == Some("default"),
+        "{:?}",
+        endpoint_created.payload
+    );
+
+    let meta_node = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "workflow node add meta-flow meta"
+            }),
+        )
+        .await
+        .expect("metaagent node add should return structured denial");
+    assert!(!meta_node.ok);
+    assert!(
+        meta_node
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        meta_node.payload
+    );
+
+    let peer_node = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": format!("workflow node add meta-flow {}", peer_worker.agent_ref())
+            }),
+        )
+        .await
+        .expect("peer node add should return structured denial");
+    assert!(!peer_node.ok);
+    assert!(
+        peer_node
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        peer_node.payload
     );
 
     let invalid_run = router
@@ -879,12 +1002,10 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(
-        session
-            .agents()
-            .iter()
-            .all(|agent| agent.id() != worker.id())
-    );
+    assert!(session
+        .agents()
+        .iter()
+        .all(|agent| agent.id() != worker.id()));
 }
 
 #[tokio::test]
@@ -1007,12 +1128,11 @@ async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
     app.sessions_mut()
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("collaborator should join session");
-    assert!(
-        app.sessions()
-            .get_session(&session_id)
-            .expect("session should remain")
-            .has_member("user-2")
-    );
+    assert!(app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should remain")
+        .has_member("user-2"));
 
     let owner_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-worker"))

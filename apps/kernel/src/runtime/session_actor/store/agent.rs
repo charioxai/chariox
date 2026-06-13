@@ -247,7 +247,7 @@ impl SessionRuntimeStore {
                 let session = match self.state.session_snapshot(&request.session_id).await {
                     Ok(session) => session,
                     Err(error) => {
-                        return self.with_session_projection_action_result(Err(error)).await
+                        return self.with_session_projection_action_result(Err(error)).await;
                     }
                 };
                 let requested_worktree_id = requested_worktree_for_scope

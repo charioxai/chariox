@@ -334,11 +334,9 @@ mod tests {
             command.payload["SetCredentialSecret"]["value"],
             "[redacted]"
         );
-        assert!(
-            !serde_json::to_string(&command.payload)
-                .unwrap()
-                .contains("super-secret")
-        );
+        assert!(!serde_json::to_string(&command.payload)
+            .unwrap()
+            .contains("super-secret"));
     }
 
     #[test]

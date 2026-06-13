@@ -108,9 +108,9 @@ async fn get_provider_run_uses_warmed_projection_without_app_lock() {
 
     tokio::task::yield_now().await;
     assert!(
-            provider_task.is_finished(),
-            "warmed GetProviderRun should be served from the provider-run projection without app lock access"
-        );
+        provider_task.is_finished(),
+        "warmed GetProviderRun should be served from the provider-run projection without app lock access"
+    );
     drop(app_guard);
 
     let provider_response = provider_task

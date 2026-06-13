@@ -2,8 +2,8 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
     claude_provider_catalog, default_provider_command_catalogs, ensure_codex_catalog_endpoint,
-    ensure_opencode_catalog_endpoint, resolve_claude_executable, CodexClient,
-    OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
+    ensure_opencode_catalog_endpoint, resolve_claude_executable, CodexClient, OpenCodeClient,
+    OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use arroba_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -149,11 +149,9 @@ pub(crate) fn provider_auth_status_response(
                 status: client.auth_status()?,
             })
         }
-        "claude" | "claude-headless" | "claude-p" => {
-            Ok(LocalDaemonResponse::ProviderAuthStatus {
-                status: claude_auth_status(&request.provider)?,
-            })
-        }
+        "claude" | "claude-headless" | "claude-p" => Ok(LocalDaemonResponse::ProviderAuthStatus {
+            status: claude_auth_status(&request.provider)?,
+        }),
         provider => Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
             message: format!("provider `{provider}` does not expose an auth status API"),
@@ -479,10 +477,8 @@ mod tests {
     #[test]
     fn provider_auth_status_accepts_claude_provider_modes() {
         let _guard = crate::env_lock::lock();
-        let path = std::env::temp_dir().join(format!(
-            "arroba-claude-auth-status-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("arroba-claude-auth-status-{}", std::process::id()));
         fs::write(
             &path,
             r#"#!/bin/sh

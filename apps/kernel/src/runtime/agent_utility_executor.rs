@@ -124,7 +124,7 @@ pub(crate) async fn run_agent_utility(
             return Err(DaemonError::LocalTransport {
                 operation: agent_utility_operation(kind),
                 message: "agent utility input kind did not match requested utility".to_string(),
-            })
+            });
         }
     };
     Ok(AgentUtilityResult {

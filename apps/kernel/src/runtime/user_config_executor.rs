@@ -6,11 +6,11 @@ use crate::local::{
     SetUserConfigValueRequest, SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest,
     UserConfigMutationEffect,
 };
-use crate::runtime::command::{KernelCommand, command_caller_user_id};
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::{KernelRuntimeState, ProviderReloadTrigger};
 use crate::runtime::user_config_policy::{
-    UserConfigMutation, summarize_provider_reload_outcomes, user_config_mutation_effects,
+    summarize_provider_reload_outcomes, user_config_mutation_effects, UserConfigMutation,
 };
 
 pub(crate) async fn execute_user_config_request(

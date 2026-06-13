@@ -30,10 +30,10 @@ pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
-pub use codex_runtime::{CodexRuntimeState, run_codex_utility_prompt};
+pub use codex_runtime::{run_codex_utility_prompt, CodexRuntimeState};
 pub use command_catalog::{
-    ProviderCommandCatalog, ProviderCommandCatalogDiscovery, ProviderCommandCatalogSource,
-    ProviderCommandDescriptor, default_provider_command_catalogs,
+    default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
+    ProviderCommandCatalogSource, ProviderCommandDescriptor,
 };
 pub use launch_contract::{
     AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata,
@@ -54,11 +54,11 @@ pub use opencode_client::{
     OpenCodeSessionSnapshot, OpenCodeToolState,
 };
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
-pub use prompt_signals::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
+};
+pub use prompt_signals::{
+    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
@@ -75,8 +75,8 @@ pub use types::{
     ProviderClientInterface, ProviderRunState,
 };
 pub(crate) use workspace_live_sync_policy::{
-    NATIVE_TUI_HIDDEN_INSTRUCTIONS_END, NATIVE_TUI_HIDDEN_INSTRUCTIONS_START,
-    WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH, native_tui_hidden_instructions_block,
+    native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,
+    NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
 };
 
 pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {

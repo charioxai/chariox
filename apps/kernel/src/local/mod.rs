@@ -45,12 +45,12 @@ pub use api::{
     ImportMcpServersRequest, ImportSkillsRequest, ImportSliceProviderAuthRequest,
     InspectGitCapabilityRequest, InstallMcpServerRequest, InstallSkillRequest,
     InvokeWorkflowEndpointRequest, IssueCloudRelayClientTokenRequest, JoinPairingInviteRequest,
-    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, LOCAL_DAEMON_PROTOCOL_VERSION,
-    LaunchProviderRunRequest, ListAgentsRequest, ListCloudCollaboratorsRequest,
-    ListCloudSessionMembersRequest, ListConnectorAdaptersRequest, ListConnectorsRequest,
-    ListCredentialsRequest, ListEnvironmentsRequest, ListExternalProviderSessionsRequest,
-    ListHomeExtensionAuditRequest, ListMcpServersRequest, ListMetaagentEventsRequest,
-    ListPairedClientsRequest, ListProviderProcessesRequest, ListQueuedWorkflowPromptsRequest,
+    JoinSessionInviteRequest, JoinTerminalPairingLinkRequest, LaunchProviderRunRequest,
+    ListAgentsRequest, ListCloudCollaboratorsRequest, ListCloudSessionMembersRequest,
+    ListConnectorAdaptersRequest, ListConnectorsRequest, ListCredentialsRequest,
+    ListEnvironmentsRequest, ListExternalProviderSessionsRequest, ListHomeExtensionAuditRequest,
+    ListMcpServersRequest, ListMetaagentEventsRequest, ListPairedClientsRequest,
+    ListProviderProcessesRequest, ListQueuedWorkflowPromptsRequest,
     ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest, ListScriptsRequest,
     ListSessionMembersRequest, ListSessionsRequest, ListSkillsRequest, ListSliceAuditRequest,
     ListSlicesRequest, ListTerminalsRequest, ListWorkflowPromptQueuesRequest,
@@ -115,8 +115,8 @@ pub use api::{
     WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncGroupStatus,
     WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState,
     WorkspaceLiveSyncTargetStatus, WorkspacePullRequestRecord, WorkspaceRepoFileEntry,
-    WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
+    WorkspaceRepoFileListing, WorkspaceWorktreeRecord, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 pub use client::LocalDaemonClient;
-pub use harness::{LocalHarnessReport, run_local_harness};
-pub use ipc::{LocalIpcClient, run_local_ipc_server, send_local_ipc_request};
+pub use harness::{run_local_harness, LocalHarnessReport};
+pub use ipc::{run_local_ipc_server, send_local_ipc_request, LocalIpcClient};

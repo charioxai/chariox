@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
@@ -419,14 +419,12 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(1)
         );
-        assert!(
-            agents
-                .iter()
-                .find(|agent| agent.id == "agent-1")
-                .expect("regular agent summary should project")
-                .metaagent_event_counts
-                .is_none()
-        );
+        assert!(agents
+            .iter()
+            .find(|agent| agent.id == "agent-1")
+            .expect("regular agent summary should project")
+            .metaagent_event_counts
+            .is_none());
     }
 
     #[test]

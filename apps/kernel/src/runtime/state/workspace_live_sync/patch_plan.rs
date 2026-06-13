@@ -138,10 +138,12 @@ pub(in crate::runtime::state) fn plan_workspace_live_sync_patch_operations(
                     let Some((_range, updated)) =
                         replace_unique_text(&source, &old_text, &new_text)
                     else {
-                        return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(workspace_live_sync_patch_rejected(
-                            from_path,
-                            "move patch old text was not found exactly once in the current artifact",
-                        )));
+                        return Ok(WorkspaceLiveSyncPatchPlanOutcome::Rejected(
+                            workspace_live_sync_patch_rejected(
+                                from_path,
+                                "move patch old text was not found exactly once in the current artifact",
+                            ),
+                        ));
                     };
                     source = updated;
                 }

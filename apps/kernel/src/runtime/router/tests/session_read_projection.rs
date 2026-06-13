@@ -35,9 +35,9 @@ async fn list_sessions_uses_warmed_projection_without_app_lock() {
 
     tokio::task::yield_now().await;
     assert!(
-            list_task.is_finished(),
-            "warmed ListSessions should be served from the session list projection without app lock access"
-        );
+        list_task.is_finished(),
+        "warmed ListSessions should be served from the session list projection without app lock access"
+    );
 
     drop(app_guard);
     let list_response = list_task
@@ -83,9 +83,9 @@ async fn get_session_state_uses_list_warmed_projection_without_app_lock() {
 
     tokio::task::yield_now().await;
     assert!(
-            state_task.is_finished(),
-            "ListSessions warm-up should hydrate GetSessionState projection entries without app lock access"
-        );
+        state_task.is_finished(),
+        "ListSessions warm-up should hydrate GetSessionState projection entries without app lock access"
+    );
 
     drop(app_guard);
     let state_response = state_task

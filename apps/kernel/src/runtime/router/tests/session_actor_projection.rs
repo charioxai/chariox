@@ -1192,9 +1192,9 @@ async fn prompt_complete_uses_agent_runtime_projection_when_session_projection_i
         tokio::task::yield_now().await;
     }
     assert!(
-            spawned_agent_lane_created,
-            "prompt complete should resolve the active prompt owner from the agent-runtime projection before touching the app lock"
-        );
+        spawned_agent_lane_created,
+        "prompt complete should resolve the active prompt owner from the agent-runtime projection before touching the app lock"
+    );
     assert!(
         !complete_task.is_finished(),
         "agent worker should still wait on the deliberately held app lock"
@@ -1394,9 +1394,9 @@ async fn prompt_cancel_uses_agent_runtime_projection_when_session_projection_is_
         tokio::task::yield_now().await;
     }
     assert!(
-            spawned_agent_lane_created,
-            "prompt cancel should resolve the active prompt owner from the agent-runtime projection before touching the app lock"
-        );
+        spawned_agent_lane_created,
+        "prompt cancel should resolve the active prompt owner from the agent-runtime projection before touching the app lock"
+    );
     assert!(
         !cancel_task.is_finished(),
         "agent worker should still wait on the deliberately held app lock"
