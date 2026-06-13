@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -49,7 +50,7 @@ function printHelp() {
     "  --effort low",
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     "  --keep-artifacts",
-    "  --keep-artifacts-on-failure",
+    "  --keep-artifacts-on-failure  Deprecated; failures are always preserved.",
   ].join("\n"))
 }
 
@@ -60,6 +61,10 @@ function sleep(ms) {
 function log(name, details) {
   if (details === undefined) console.log(`[claude-native-tui-spike] ${name}`)
   else console.log(`[claude-native-tui-spike] ${name}`, JSON.stringify(details))
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-")
 }
 
 function shellQuote(value) {
@@ -233,6 +238,13 @@ function countEvent(events, eventName) {
   return events.filter((event) => event.hook_event_name === eventName).length
 }
 
+function eventCounts(events) {
+  return events.reduce((counts, event) => {
+    counts[event.hook_event_name] = (counts[event.hook_event_name] ?? 0) + 1
+    return counts
+  }, {})
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -240,7 +252,7 @@ async function main() {
     return
   }
 
-  const root = path.join("/tmp", `arb-claude-native-tui-spike-${process.pid}-${Date.now()}`)
+  const root = path.join(repoRoot, ".artifacts", "live-claude-native-tui-spike", nowStamp())
   const logDir = path.join(root, "screens")
   const logs = {
     hiddenDir: path.join(logDir, "hidden"),
@@ -265,7 +277,11 @@ async function main() {
   const ptyScreen = `arroba-claude-pty-${process.pid}`
 
   let passed = false
+  let failure = null
+  let events = []
+  let ptyPromptInjectionObserved = false
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(logs.hiddenDir, { recursive: true })
     await mkdir(logs.toolDir, { recursive: true })
     await mkdir(logs.ptyDir, { recursive: true })
@@ -307,7 +323,6 @@ async function main() {
     await waitForEventCount(eventsFile, "Stop", 2, options.timeoutMs)
     await screenQuit(toolScreen)
 
-    let ptyPromptInjectionObserved = false
     let ptyEventsBefore = await readEvents(eventsFile)
     log("pty-injection attempt", { workspace: options.workspace })
     await startClaudeScreen(ptyScreen, logs.ptyDir, {
@@ -335,7 +350,7 @@ async function main() {
     }
     await screenQuit(ptyScreen)
 
-    const events = await readEvents(eventsFile)
+    events = await readEvents(eventsFile)
     await waitForEventCount(eventsFile, "UserPromptSubmit", 3, 1_000)
       .catch(() => {})
     await waitForEventCount(eventsFile, "Stop", 3, 1_000)
@@ -382,10 +397,7 @@ async function main() {
         ptyPromptInjectionIsBestEffort: !ptyPromptInjectionObserved,
       },
       markers,
-      eventCounts: events.reduce((counts, event) => {
-        counts[event.hook_event_name] = (counts[event.hook_event_name] ?? 0) + 1
-        return counts
-      }, {}),
+      eventCounts: eventCounts(events),
       artifacts: {
         root,
         logs,
@@ -393,14 +405,37 @@ async function main() {
         settingsPath,
       },
     }, null, 2))
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await screenQuit(hiddenScreen)
     await screenQuit(toolScreen)
     await screenQuit(ptyScreen)
-    if (!options.keepArtifacts && !(options.keepArtifactsOnFailure && !passed)) {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    } else {
+    if (passed && options.keepArtifacts) {
       log("kept artifacts", { root })
+    } else {
+      await finalizeDrillArtifacts({
+        rootDir: root,
+        passed,
+        preserveOnFailure: true,
+        failure,
+        log,
+        metadata: {
+          drill: "live-claude-native-tui-spike",
+          workspace: options.workspace,
+          model: options.model,
+          effort: options.effort,
+          timeoutMs: options.timeoutMs,
+          markers,
+          logs,
+          eventsFile,
+          settingsPath,
+          eventCount: events.length,
+          eventCounts: eventCounts(events),
+          ptyPromptInjectionObserved,
+        },
+      })
     }
   }
 }
