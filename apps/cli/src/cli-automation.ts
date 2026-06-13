@@ -10,6 +10,9 @@ export type CliAutomationRequest = {
   screen?: unknown
   choiceIndex?: unknown
   delta?: unknown
+  interactionId?: unknown
+  reply?: unknown
+  editing?: unknown
   daemonDisconnected?: unknown
   sessionId?: unknown
   statusLine?: unknown
@@ -37,6 +40,7 @@ export type CliAutomationSnapshot = {
   session?: Record<string, unknown> & { id?: unknown }
   selectedWorkflow?: (Record<string, unknown> & { alias?: unknown }) | null
   workflows?: Array<Record<string, unknown> & { alias?: unknown }>
+  interactions?: Array<Record<string, unknown> & { id?: unknown; agentId?: unknown }>
   shell?: Record<string, unknown> & { entries?: unknown[] }
   transcript?: Record<string, unknown> & { entries?: unknown[] }
   agentPanes?: Record<string, Array<Record<string, unknown>>>

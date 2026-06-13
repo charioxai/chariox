@@ -65,6 +65,8 @@ export function createCliAppProcessRuntimeComposition(
     getInteractionChoiceSelection: deps.getInteractionChoiceSelection,
     getInteractionCustomReply: deps.getInteractionCustomReply,
     isInteractionCustomEditing: deps.isInteractionCustomEditing,
+    setInteractionCustomReply: deps.setInteractionCustomReply,
+    setInteractionCustomEditing: deps.setInteractionCustomEditing,
     kernelConnected: deps.kernelConnected,
     setWorkspaceScreenMode: deps.setWorkspaceScreenMode,
     rebuildTranscript: deps.rebuildTranscript,

@@ -1440,6 +1440,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getInteractionChoiceSelection: interactionChoiceStore.getSelectedIndex,
     getInteractionCustomReply: interactionChoiceStore.getStoredCustomReply,
     isInteractionCustomEditing: interactionChoiceStore.isCustomEditing,
+    setInteractionCustomReply: interactionChoiceStore.setCustomReply,
+    setInteractionCustomEditing: interactionChoiceStore.setCustomEditing,
     kernelConnected,
     setWorkspaceScreenMode,
     rebuildTranscript,

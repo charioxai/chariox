@@ -65,6 +65,31 @@ test("automation action handler waits until snapshot filters match", async () =>
   assert.equal(attempts, 3)
 })
 
+test("automation action handler sets focused interaction custom reply", async () => {
+  const writes: Array<{ interactionId: string; reply: string }> = []
+  const editing: Array<{ interactionId: string; editing: boolean }> = []
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    focusedAgentId: () => "agent-1",
+    snapshot: () => ({
+      interactions: [
+        { id: "interaction-1", agentId: "agent-1" },
+      ],
+    }),
+    setInteractionCustomReply: (interactionId, reply) => {
+      writes.push({ interactionId, reply })
+    },
+    setInteractionCustomEditing: (interactionId, next) => {
+      editing.push({ interactionId, editing: next })
+    },
+  })
+
+  await handler({ action: "interaction_custom_reply", reply: "vault-passphrase", editing: true })
+
+  assert.deepEqual(writes, [{ interactionId: "interaction-1", reply: "vault-passphrase" }])
+  assert.deepEqual(editing, [{ interactionId: "interaction-1", editing: true }])
+})
+
 function baseDeps() {
   return {
     client: null as never,
@@ -88,6 +113,8 @@ function baseDeps() {
     connectDetachedKernelFromWaitingRoom: async () => {},
     submitFocusedInteractionChoice: async () => {},
     cycleFocusedInteractionChoice: () => {},
+    setInteractionCustomReply: () => {},
+    setInteractionCustomEditing: () => {},
     toggleBlob: () => {},
     restoreTerminalAndExit: async () => {},
   }

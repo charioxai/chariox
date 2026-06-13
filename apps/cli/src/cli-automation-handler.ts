@@ -37,6 +37,8 @@ export type CliAutomationActionDeps = {
   connectDetachedKernelFromWaitingRoom: () => Promise<void>
   submitFocusedInteractionChoice: (choiceIndex?: number) => Promise<unknown>
   cycleFocusedInteractionChoice: (delta: number) => void
+  setInteractionCustomReply: (interactionId: string, reply: string) => void
+  setInteractionCustomEditing: (interactionId: string, editing: boolean) => void
   toggleBlob: (entryId: number, collapsed: boolean) => void
   restoreTerminalAndExit: (exitCode: number) => Promise<void>
   sleep?: (ms: number) => Promise<void>
@@ -146,6 +148,18 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         deps.cycleFocusedInteractionChoice(delta)
         return deps.snapshot()
       }
+      case "interaction_custom_reply": {
+        const reply = typeof request.reply === "string" ? request.reply : ""
+        const interactionId = typeof request.interactionId === "string"
+          ? request.interactionId
+          : focusedInteractionId(deps.snapshot(), deps.focusedAgentId())
+        if (!interactionId) {
+          throw new Error("usage: interaction_custom_reply reply=<text> requires a focused interaction or interactionId")
+        }
+        deps.setInteractionCustomReply(interactionId, reply)
+        deps.setInteractionCustomEditing(interactionId, Boolean(request.editing))
+        return deps.snapshot()
+      }
       case "toggle_blob": {
         const entryId = typeof request.entryId === "number" ? request.entryId : Number.NaN
         if (!Number.isInteger(entryId)) {
@@ -176,6 +190,12 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         throw new Error(`unknown automation action '${action || String(request.action)}'`)
     }
   }
+}
+
+function focusedInteractionId(snapshot: CliAutomationSnapshot, focusedAgentId: string | null): string | null {
+  const interactions = Array.isArray(snapshot.interactions) ? snapshot.interactions : []
+  const interaction = interactions.find((entry) => entry.agentId === focusedAgentId) ?? interactions[0]
+  return typeof interaction?.id === "string" ? interaction.id : null
 }
 
 function automationPromptAttachments(attachments: unknown): PromptAttachmentPart[] {

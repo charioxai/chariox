@@ -61,6 +61,8 @@ export type CliAutomationProcessCompositionDeps = {
   getInteractionChoiceSelection: AnyFn
   getInteractionCustomReply: AnyFn
   isInteractionCustomEditing: AnyFn
+  setInteractionCustomReply: AnyFn
+  setInteractionCustomEditing: AnyFn
   kernelConnected: AnyFn
   setWorkspaceScreenMode: AnyFn
   rebuildTranscript: AnyFn
@@ -139,6 +141,8 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,
     cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,
+    setInteractionCustomReply: deps.setInteractionCustomReply,
+    setInteractionCustomEditing: deps.setInteractionCustomEditing,
     toggleBlob: deps.toggleBlob,
     restoreTerminalAndExit: deps.restoreTerminalAndExit,
     sleep: deps.sleep,
