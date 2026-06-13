@@ -17,10 +17,12 @@ Summarize one or more reports with:
 
 ```bash
 node apps/cli/scripts/drill-matrix-report-summary.mjs path/to/matrix-report.json
+node apps/cli/scripts/drill-matrix-report-summary.mjs --json --output path/to/aggregate.json path/to/*.json
 ```
 
 The summary command exits non-zero when any input report has `status=failed`.
 For dry-run reports, it prints selected scenario exit criteria so reviewers can confirm matrix scope before running live drills.
+The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`.
 
 Required top-level fields:
 

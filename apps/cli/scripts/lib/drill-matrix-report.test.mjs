@@ -9,6 +9,7 @@ import {
   formatDrillMatrixReportSummary,
   readDrillMatrixReport,
   summarizeDrillMatrixReport,
+  summarizeDrillMatrixReports,
   validateDrillMatrixReport,
 } from "./drill-matrix-report.mjs"
 
@@ -66,6 +67,41 @@ test("formats dry-run reports without failures", () => {
   assert.match(text, /- local: local runtime path is selected/)
   assert.match(text, /next: run without --dry-run/)
   assert.equal(drillMatrixReportExitCode([report]), 0)
+})
+
+test("aggregates multiple matrix reports for CI", () => {
+  const failed = matrixReport({
+    matrix: "remote",
+    scenarios: [
+      scenario("local", "passed"),
+      scenario("remote", "failed", { classification: "provider-auth", reason: "expired token" }),
+      scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
+    ],
+  })
+  const dryRun = matrixReport({
+    matrix: "workspace",
+    status: "dry-run",
+    dryRun: true,
+    durationMs: 25,
+    scenarios: [scenario("tracked", "dry-run")],
+  })
+
+  const aggregate = summarizeDrillMatrixReports([failed, dryRun])
+
+  assert.equal(aggregate.schema, "arroba.drill.matrix.aggregate.v1")
+  assert.equal(aggregate.status, "failed")
+  assert.deepEqual(aggregate.totals, {
+    reports: 2,
+    scenarios: 4,
+    passed: 1,
+    failed: 1,
+    skipped: 1,
+    dryRun: 1,
+    durationMs: 1025,
+  })
+  assert.deepEqual(aggregate.classifications, { "provider-auth": 1 })
+  assert.deepEqual(aggregate.failedScenarios, [{ matrix: "remote", id: "remote", classification: "provider-auth", reason: "expired token" }])
+  assert.deepEqual(aggregate.skippedScenarios, [{ matrix: "remote", id: "hetzner", reason: "skipped after previous failure" }])
 })
 
 test("reads and validates report files", async () => {

@@ -64,6 +64,58 @@ export function summarizeDrillMatrixReport(report) {
   }
 }
 
+export function summarizeDrillMatrixReports(reports) {
+  const summaries = reports.map((report) => summarizeDrillMatrixReport(report))
+  const totals = {
+    reports: summaries.length,
+    scenarios: 0,
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    dryRun: 0,
+    durationMs: 0,
+  }
+  const classifications = new Map()
+  const failedScenarios = []
+  const skippedScenarios = []
+  for (const summary of summaries) {
+    totals.scenarios += summary.scenarioCount
+    totals.passed += summary.counts.passed
+    totals.failed += summary.counts.failed
+    totals.skipped += summary.counts.skipped
+    totals.dryRun += summary.counts.dryRun
+    totals.durationMs += Number.isFinite(summary.durationMs) ? summary.durationMs : 0
+    for (const [classification, count] of Object.entries(summary.classifications)) {
+      classifications.set(classification, (classifications.get(classification) ?? 0) + count)
+    }
+    for (const scenario of summary.failedScenarios) {
+      failedScenarios.push({ matrix: summary.matrix, id: scenario.id, classification: scenario.classification ?? null, reason: scenario.reason ?? null })
+    }
+    for (const scenario of summary.skippedScenarios) {
+      skippedScenarios.push({ matrix: summary.matrix, id: scenario.id, reason: scenario.reason ?? null })
+    }
+  }
+  return {
+    schema: "arroba.drill.matrix.aggregate.v1",
+    status: totals.failed > 0
+      ? "failed"
+      : totals.reports > 0 && totals.dryRun === totals.scenarios
+        ? "dry-run"
+        : "passed",
+    totals,
+    classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    reports: summaries.map((summary) => ({
+      matrix: summary.matrix,
+      status: summary.status,
+      scenarioCount: summary.scenarioCount,
+      counts: summary.counts,
+      durationMs: summary.durationMs,
+    })),
+    failedScenarios,
+    skippedScenarios,
+  }
+}
+
 export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
   const summary = summarizeDrillMatrixReport(report)
   const lines = [
