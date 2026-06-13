@@ -669,6 +669,12 @@ async function waitForPromptPhase({
 
 async function historyProviderOutputMarkerGroups({ historyDir, providerHistoryDirs, markerGroups, sinceMs }) {
   const remaining = markerGroups.map((markers) => [...markers])
+  const outputs = await historyProviderOutputsSince({ historyDir, providerHistoryDirs, sinceMs })
+
+  return remaining.filter((markers) => !outputs.some((output) => markers.some((marker) => output.includes(marker))))
+}
+
+async function historyProviderOutputsSince({ historyDir, providerHistoryDirs, sinceMs }) {
   const outputByKey = new Map()
   const files = (await managedHistoryFiles(managedHistoryDirs(historyDir, providerHistoryDirs))).sort()
 
@@ -689,8 +695,15 @@ async function historyProviderOutputMarkerGroups({ historyDir, providerHistoryDi
     }
   }
 
-  const outputs = Array.from(outputByKey.values())
-  return remaining.filter((markers) => !outputs.some((output) => markers.some((marker) => output.includes(marker))))
+  return Array.from(outputByKey.values())
+}
+
+async function throwIfProviderFailureMarker({ historyDir, providerHistoryDirs, sinceMs }) {
+  const outputs = await historyProviderOutputsSince({ historyDir, providerHistoryDirs, sinceMs })
+  const failure = outputs.find((output) => /\b[A-Z0-9_]+_WORKSPACE_LIVE_SYNC_FAILED\b/.test(output))
+  if (failure) {
+    throw new Error(`provider reported workspace live sync failure marker: ${failure}`)
+  }
 }
 
 async function pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId }) {
@@ -704,6 +717,7 @@ async function waitForHistoryOutputMarkers({ historyDir, providerHistoryDirs, ma
   while (Date.now() - started < timeoutMs) {
     await pumpTerminalOutputIfAvailable({ client, sessionId, attachmentId })
     await throwIfProviderError({ historyDir, sinceMs })
+    await throwIfProviderFailureMarker({ historyDir, providerHistoryDirs, sinceMs })
     missing = await historyProviderOutputMarkerGroups({ historyDir, providerHistoryDirs, markerGroups, sinceMs })
     if (missing.length === 0) return
     await sleep(pollMs)
@@ -848,6 +862,10 @@ async function waitForManagedToolExpectationsAndFiles({
     lastMissingRequired = missingRequired
 
     const updates = await providerToolUpdatesSince({ historyDir, sinceMs })
+    const toolErrors = updates.filter((update) => update.status === 'error')
+    if (toolErrors.length > 0) {
+      throw new Error(`provider tool error while waiting for managed tool results: ${JSON.stringify(toolErrors)}`)
+    }
     missingExpectations = expectations.filter((expectation) =>
       !updates.some((update) => providerToolUpdateMatches(update, expectation))
     )
@@ -2673,7 +2691,7 @@ async function main() {
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
           'Every tool call in this turn must use `"domain":"opaque"`.',
-          'Do not include old_text, new_text, content_text, or patch_text in the opaque move call.',
+          'The opaque move call does not need text content. If your tool schema requires old_text or new_text fields, leave them empty.',
           `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
           `Step 2: call \`${tools.move}\` exactly once with JSON arguments {"from_path":"outputs/${provider}-opaque.bin","to_path":"outputs/${provider}-opaque-moved.bin","domain":"opaque"}.`,
           `Only after outputs/${provider}-opaque-moved.bin exists and outputs/${provider}-opaque.bin is gone, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_OPAQUE_MOVE_DONE and nothing else.`,
@@ -2820,6 +2838,7 @@ async function main() {
         `Call \`${tools.delete}\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"} to delete the pre-existing delete-me file.`,
         `Then call \`${tools.delete}\` with JSON arguments {"path":"outputs/${provider}-opaque-delete-me.bin","domain":"opaque"} to delete the pre-existing opaque delete-me file.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_DELETE_DONE and nothing else.`,
+        `If any delete reports applied:false or an error, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_FAILED and stop. Do not recreate, write, or repair deleted files.`,
       ].join('\n')
       deletePrompts.push({ provider, agent, prompt })
     }
