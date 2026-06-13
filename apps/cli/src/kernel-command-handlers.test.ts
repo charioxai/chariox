@@ -670,6 +670,47 @@ test("kernel health formatter gives worker-connectivity guidance for aggregate m
   assert.doesNotMatch(rendered, /\/extension sync-status <agent>/)
 })
 
+test("kernel remote-runtime formatter keeps home-proxy boundary visible after grants are revoked", () => {
+  const pendingRevoke = health({
+    remote_extension_sync: {
+      remote_agents: 1,
+      home_proxy_agents: 1,
+      home_proxy_grants: 0,
+      manifest_missing_agents: 0,
+      synced_agents: 0,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 1,
+      issues: [{
+        session_id: "session-1",
+        agent_id: "agent-1",
+        agent_ref: "A1",
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+        active_worker_provider_run_id: "worker-run-1",
+        state: "synced",
+        manifest_hash: "abcdef12",
+        last_error: null,
+        pending_revoke: true,
+        home_proxy_grants: [],
+        worktree_id: "/repo",
+      }],
+    },
+  })
+  const remoteRuntime = formatKernelRemoteRuntimeHealth(pendingRevoke)
+  const kernelHealth = formatKernelHealth(pendingRevoke)
+
+  assert.match(remoteRuntime, /remote extensions: remote_agents=1 home_proxy_agents=1 grants=0/)
+  assert.match(remoteRuntime, /remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only/)
+  assert.match(remoteRuntime, /pending_revoke=yes/)
+  assert.match(remoteRuntime, /next: keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
+  assert.match(kernelHealth, /remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only/)
+})
+
 test("kernel health formatter reports workspace live sync and collision issues", () => {
   const unhealthy = health({
     workspace_coordination: {
