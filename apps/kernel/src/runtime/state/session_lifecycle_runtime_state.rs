@@ -482,7 +482,7 @@ impl KernelRuntimeState {
 }
 
 fn codex_linux_slice_live_sync_request(
-    mut request: crate::session::CreateSessionRequest,
+    request: crate::session::CreateSessionRequest,
     slice: &crate::slice::SliceRecord,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
     if !is_codex_linux_local_docker_slice_session(&request, slice) {
@@ -493,9 +493,6 @@ fn codex_linux_slice_live_sync_request(
             operation: "session.create",
             message: "Codex Linux slice sessions do not support managed workspace live sync yet; use tracked live sync for this slice".to_string(),
         });
-    }
-    if request.workspace_live_sync_mode.is_none() {
-        request.workspace_live_sync_mode = Some(crate::config::WorkspaceLiveSyncMode::Tracked);
     }
     Ok(request)
 }
@@ -539,7 +536,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_linux_slice_sessions_default_to_tracked_live_sync() {
+    fn codex_linux_slice_sessions_keep_live_sync_off_by_default() {
         let request = crate::session::CreateSessionRequest::new("workspace", "worktree")
             .with_agent_defaults(crate::session::SessionAgentDefaults::new("codex"))
             .with_slice_ref("linux-slice");
@@ -547,10 +544,7 @@ mod tests {
         let adjusted = codex_linux_slice_live_sync_request(request, &slice("linux"))
             .expect("codex linux slice should be adjusted");
 
-        assert_eq!(
-            adjusted.workspace_live_sync_mode,
-            Some(crate::config::WorkspaceLiveSyncMode::Tracked)
-        );
+        assert_eq!(adjusted.workspace_live_sync_mode, None);
     }
 
     #[test]
@@ -566,6 +560,22 @@ mod tests {
         assert!(error
             .to_string()
             .contains("do not support managed workspace live sync"));
+    }
+
+    #[test]
+    fn codex_linux_slice_sessions_keep_explicit_tracked_live_sync() {
+        let request = crate::session::CreateSessionRequest::new("workspace", "worktree")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("codex"))
+            .with_slice_ref("linux-slice")
+            .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked);
+
+        let adjusted = codex_linux_slice_live_sync_request(request, &slice("linux"))
+            .expect("codex linux slice should accept tracked mode");
+
+        assert_eq!(
+            adjusted.workspace_live_sync_mode,
+            Some(crate::config::WorkspaceLiveSyncMode::Tracked)
+        );
     }
 
     #[test]
