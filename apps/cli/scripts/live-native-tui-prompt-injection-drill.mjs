@@ -6,6 +6,7 @@ import { mkdir, readFile, rm } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -284,7 +285,9 @@ async function runProvider(provider, options) {
   let daemon = null
   let client = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
     daemon = spawn(kernelBinary, [], {
       cwd: repoRoot,
@@ -393,6 +396,9 @@ async function runProvider(provider, options) {
     const result = { provider, status: "ok", sessionId, alias, outputMarker, logs }
     succeeded = true
     return result
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)
@@ -401,11 +407,22 @@ async function runProvider(provider, options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_TUI_INJECTION_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && !succeeded)) {
-      console.log(JSON.stringify({ provider, artifactsKept: root }))
-    } else {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-      if (logs.claudeScreen) await rm(path.dirname(path.dirname(logs.claudeScreen)), { recursive: true, force: true }).catch(() => {})
+    const preserveOnFailure = options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_INJECTION_ARTIFACTS === "1"
+    const finalized = await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure,
+      failure,
+      metadata: {
+        drill: "native-tui-prompt-injection",
+        provider,
+        kernelUrl,
+        logs,
+      },
+      log: (name, details) => console.log(`[native-tui-prompt-injection-drill] ${name}`, JSON.stringify(details)),
+    })
+    if (!finalized.preserved && logs.claudeScreen) {
+      await rm(path.dirname(path.dirname(logs.claudeScreen)), { recursive: true, force: true }).catch(() => {})
     }
   }
 }
