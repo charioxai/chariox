@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import { historyOutlineRows } from "./lib/drill-history-outline.mjs"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -25,6 +26,7 @@ const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
 const marker = `NP_${process.pid.toString(36)}_${Date.now().toString(36)}`
+const MAX_LOG_CHARS = 128_000
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
@@ -35,6 +37,20 @@ function unwrap(response, variant) {
 
 function makePort() {
   return 59000 + Math.floor(Math.random() * 2000)
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-")
+}
+
+function appendOutput(buffer, chunk) {
+  const next = buffer + chunk.toString("utf8")
+  if (next.length <= MAX_LOG_CHARS) return next
+  return next.slice(next.length - MAX_LOG_CHARS)
+}
+
+function tailLines(value, count = 80) {
+  return value.split("\n").slice(-count).join("\n")
 }
 
 async function waitForDaemon(kernelUrl, workspace, worktree) {
@@ -204,7 +220,7 @@ async function waitForAgentBadgeTone(socketPath, alias, tone, timeoutMs = 90_000
 }
 
 async function main() {
-  const root = path.join("/tmp", `arb-cdx-native-${process.pid}-${Date.now()}`)
+  const root = path.join(repoRoot, ".artifacts", "live-codex-native-tui-drill", nowStamp())
   const kernelPort = makePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
@@ -232,8 +248,15 @@ async function main() {
   let daemon = null
   let client = null
   let sessionId = null
+  let passed = false
+  let failure = null
+  let daemonStdout = ""
+  let daemonStderr = ""
+  let agents = []
+  let snapshot = null
+  let proxyUpstreamConnections = null
   try {
-    await mkdir(root, { recursive: true })
+    await prepareDrillArtifacts(root)
     await mkdir(logs.aDir, { recursive: true })
     await mkdir(logs.bDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
@@ -249,8 +272,10 @@ async function main() {
         ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
         ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
-      stdio: ["ignore", "ignore", "inherit"],
+      stdio: ["ignore", "pipe", "pipe"],
     })
+    daemon.stdout.on("data", (chunk) => { daemonStdout = appendOutput(daemonStdout, chunk) })
+    daemon.stderr.on("data", (chunk) => { daemonStderr = appendOutput(daemonStderr, chunk) })
     await waitForDaemon(kernelUrl, workspace, worktree)
 
     await startScreen(screenA, logs.aDir, "bun", [
@@ -308,7 +333,7 @@ async function main() {
       await client.send(attachToSessionRequest(sessionId, `codex-native-drill-${process.pid}`)),
       "SessionAttached",
     ).attachment
-    const agents = await waitForNamedAgents(client, sessionId, ["cdx-a", "cdx-b"])
+    agents = await waitForNamedAgents(client, sessionId, ["cdx-a", "cdx-b"])
     await waitForActiveProviderRun(client, sessionId)
 
     await startScreen(screenCli, logs.cliDir, "bun", [
@@ -337,7 +362,7 @@ async function main() {
         await sleep(250)
       }
     }
-    const snapshot = await automationRequest(automationSocket, {
+    snapshot = await automationRequest(automationSocket, {
       action: "wait_for",
       sessionId,
       shellEntryCount: 0,
@@ -406,6 +431,10 @@ async function main() {
     if (!proxyALog.includes("kernel_connected") || !proxyBLog.includes("kernel_connected")) {
       throw new Error("kernel did not connect downstream to both native proxies")
     }
+    proxyUpstreamConnections = {
+      "cdx-a": (proxyALog.match(/upstream_connected/g) ?? []).length,
+      "cdx-b": (proxyBLog.match(/upstream_connected/g) ?? []).length,
+    }
 
     const stateResponse = await client.send(getSessionStateRequest(sessionId))
     const state = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded).session
@@ -419,12 +448,13 @@ async function main() {
       observerSawAgents: snapshot.session.agentCount,
       badgeTransitions,
       focusedAgentId: state.focused_agent_id ?? null,
-      proxyUpstreamConnections: {
-        "cdx-a": (proxyALog.match(/upstream_connected/g) ?? []).length,
-        "cdx-b": (proxyBLog.match(/upstream_connected/g) ?? []).length,
-      },
+      proxyUpstreamConnections,
       logs,
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenA)
@@ -435,10 +465,33 @@ async function main() {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS !== "1") {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-      await rm(automationSocket, { force: true }).catch(() => {})
+    if (passed && process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
+      console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket }))
+    } else {
+      await finalizeDrillArtifacts({
+        rootDir: root,
+        passed,
+        preserveOnFailure: true,
+        failure,
+        metadata: {
+          drill: "live-codex-native-tui",
+          kernelUrl,
+          sessionId,
+          workspace,
+          worktree,
+          marker,
+          markers,
+          logs,
+          automationSocket,
+          agentAliases: agents.map((agent) => agent.alias),
+          observerSawAgents: snapshot?.session?.agentCount ?? null,
+          proxyUpstreamConnections,
+          daemonStdoutTail: tailLines(daemonStdout),
+          daemonStderrTail: tailLines(daemonStderr),
+        },
+      })
     }
+    await rm(automationSocket, { force: true }).catch(() => {})
   }
 }
 
