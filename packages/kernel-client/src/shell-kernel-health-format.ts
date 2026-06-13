@@ -423,7 +423,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     for (const collision of workspaceCoordination.worktree_collisions) {
       lines.push(`  workspace=${collision.workspace_id} worktree=${collision.worktree_id} sessions=${collision.session_ids.join(",")}`)
     }
-    lines.push("  next: move one session/agent to a different worktree or intentionally bind the worktrees with workspace live sync")
+    lines.push("  next: run /workspace sync targets and /workspace sync conflicts; move one session/agent to a different worktree or intentionally bind the worktrees")
   }
 
   if (workspaceCoordination.active_operation_claims.length > 0) {
@@ -469,7 +469,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
 
   if (externalChanges.live_watcher_scan_errors > 0) {
     lines.push(`workspace watcher scan errors: ${externalChanges.live_watcher_scan_errors}`)
-    lines.push("  next: check workspace paths and permissions, then refresh workspace live sync status")
+    lines.push("  next: run /workspace sync status, then /workspace sync ignore; check .arrobaignore, selected workspace paths, and permissions before refreshing")
   }
 }
 
