@@ -4,6 +4,7 @@ import http from 'node:http'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -23,13 +24,14 @@ const {
 } = requests
 
 function parseArgs(argv) {
-  const options = { keepArtifactsOnFailure: false, timeoutMs: 30_000 }
+  const options = { keepArtifactsOnFailure: true, timeoutMs: 30_000 }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--discard-artifacts-on-failure') options.keepArtifactsOnFailure = false
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node apps/cli/scripts/live-postgres-archive-adapter-drill.mjs [--keep-artifacts-on-failure] [--timeout-ms MS]')
+      console.log('Usage: node apps/cli/scripts/live-postgres-archive-adapter-drill.mjs [--keep-artifacts-on-failure|--discard-artifacts-on-failure] [--timeout-ms MS]')
       process.exit(0)
     } else {
       throw new Error(`unknown option: ${arg}`)
@@ -41,6 +43,10 @@ function parseArgs(argv) {
 function log(name, details) {
   if (details === undefined) console.log(`[postgres-archive-drill] ${name}`)
   else console.log(`[postgres-archive-drill] ${name}`, JSON.stringify(details))
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 }
 
 function tomlString(value) {
@@ -130,6 +136,22 @@ function startDaemon(binary, env) {
   child.stderr.on('data', (chunk) => { logs.stderr += chunk.toString() })
   child.logs = logs
   return child
+}
+
+async function stopDaemon(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  child.kill('SIGTERM')
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    sleep(5_000),
+  ])
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL')
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      sleep(2_000),
+    ])
+  }
 }
 
 async function waitForDaemon(kernelUrl, daemon, timeoutMs) {
@@ -652,7 +674,7 @@ async function waitForPendingAtLeast(dbPath, minimum, label, timeoutMs = 10_000)
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const ports = makePorts()
-  const root = path.join(repoRoot, 'target', 'live-postgres-archive-adapter-drill', `${process.pid}-${Date.now()}`)
+  const root = path.join(repoRoot, '.artifacts', 'postgres-archive-adapter', nowStamp())
   const home = path.join(root, 'home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state-home')
@@ -669,8 +691,12 @@ async function main() {
   let adapter = null
   let daemon = null
   let client = null
+  let session = null
+  let succeeded = false
+  let failure = null
 
   try {
+    await rm(root, { recursive: true, force: true }).catch(() => {})
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -726,7 +752,7 @@ async function main() {
     await waitForDaemon(kernelUrl, daemon, options.timeoutMs)
     client = new LocalIpcClient(kernelUrl)
 
-    const session = variant(await client.send(createSessionRequest(workspace, workspace, 'postgres-archive-drill')), 'SessionCreated').session
+    session = variant(await client.send(createSessionRequest(workspace, workspace, 'postgres-archive-drill')), 'SessionCreated').session
     const attachment = variant(await client.send(attachToSessionRequest(session.id, `postgres-archive-drill-${process.pid}`)), 'SessionAttached').attachment
     const agent = variant(
       await client.send(spawnAgentRequest(session.id, 'dev-stub', 'archive-agent', 'archive-drill-model', workspace, 'low')),
@@ -902,18 +928,43 @@ async function main() {
       artifactManifestRequests: adapter.state.artifactManifestRequests,
       searchMode: 'operational-and-postgres-archive',
     })
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
-    if (daemon && daemon.exitCode === null && daemon.signalCode === null) daemon.kill('SIGTERM')
+    await stopDaemon(daemon)
     if (adapter) await adapter.close().catch(() => {})
     await stopPostgres(container)
     await stopMinio(minio)
     await removeDockerNetwork(network)
-    if (!options.keepArtifactsOnFailure) {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    } else {
-      console.error(`[postgres-archive-drill] kept drill artifacts at ${root}`)
-    }
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'postgres-archive-adapter',
+        kernelUrl,
+        adapterUrl: `http://127.0.0.1:${ports.adapterPort}`,
+        sessionId: session?.id ?? null,
+        workspace,
+        historyPath,
+        artifactRoot,
+        artifactIndexPath,
+        docker: {
+          network,
+          postgres: container,
+          minio: minio?.minio ?? null,
+          minioClient: minio?.mc ?? null,
+        },
+        adapterState: adapter?.state ?? null,
+        daemonStdoutTail: daemon?.logs?.stdout?.slice(-4000) ?? '',
+        daemonStderrTail: daemon?.logs?.stderr?.slice(-4000) ?? '',
+      },
+      log,
+    })
   }
 }
 
