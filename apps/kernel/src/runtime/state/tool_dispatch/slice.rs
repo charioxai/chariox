@@ -1,10 +1,14 @@
 use base64::Engine;
+use wait_timeout::ChildExt;
 
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
 mod slice_browser;
 use slice_browser::*;
+
+const DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS: u64 = 70_000;
+const SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 
 impl KernelRuntimeState {
     pub(super) async fn dispatch_slice_runtime_tool_call(
@@ -186,12 +190,15 @@ impl KernelRuntimeState {
                     command_args.push(selector);
                 }
                 let output = run_slice_screen_command_with_stdin(command_args, secret).await?;
-                let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
-                payload["credential_id"] = serde_json::Value::String(args.credential_id.clone());
-                payload["submitted"] = serde_json::Value::Bool(args.submit && output.success);
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: output.success,
-                    payload,
+                    payload: secret_paste_payload(
+                        &slice_id,
+                        agent_id,
+                        &args.credential_id,
+                        args.submit && output.success,
+                        &output,
+                    ),
                 });
             }
             crate::transport::runtime_tools::SLICE_OPEN_URL_TOOL => {
@@ -352,6 +359,8 @@ struct SliceScreenCommandOutput {
     status_code: Option<i32>,
     stdout: String,
     stderr: String,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
 }
 
 async fn run_slice_screen_command(
@@ -396,24 +405,76 @@ async fn run_slice_screen_command_inner(
                     message: "slice screen command did not expose stdin".to_string(),
                 });
             };
-            child_stdin.write_all(stdin.as_bytes()).map_err(|error| {
-                DaemonError::LocalTransport {
+            if let Err(error) = child_stdin.write_all(stdin.as_bytes()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
                     message: format!("failed to write slice screen stdin: {error}"),
-                }
-            })?;
+                });
+            }
         }
-        let output = child
-            .wait_with_output()
+        drop(child.stdin.take());
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "run_slice_screen_command",
+                message: "slice screen command did not expose stdout".to_string(),
+            })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "run_slice_screen_command",
+                message: "slice screen command did not expose stderr".to_string(),
+            })?;
+        let stdout_reader = std::thread::spawn(move || read_child_output(stdout));
+        let stderr_reader = std::thread::spawn(move || read_child_output(stderr));
+        let status = match child
+            .wait_timeout(std::time::Duration::from_millis(
+                slice_screen_command_timeout_ms(),
+            ))
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: format!("failed to wait for `{tool_path}`: {error}"),
-            })?;
+            })? {
+            Some(status) => status,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(DaemonError::LocalTransport {
+                    operation: "run_slice_screen_command",
+                    message: format!(
+                        "slice screen command timed out after {}ms",
+                        slice_screen_command_timeout_ms()
+                    ),
+                });
+            }
+        };
+        let (stdout, stdout_truncated) =
+            stdout_reader
+                .join()
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "run_slice_screen_command",
+                    message: "slice screen stdout reader panicked".to_string(),
+                })??;
+        let (stderr, stderr_truncated) =
+            stderr_reader
+                .join()
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "run_slice_screen_command",
+                    message: "slice screen stderr reader panicked".to_string(),
+                })??;
         Ok(SliceScreenCommandOutput {
-            success: output.status.success(),
-            status_code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            success: status.success(),
+            status_code: status.code(),
+            stdout,
+            stderr,
+            stdout_truncated,
+            stderr_truncated,
         })
     })
     .await
@@ -421,6 +482,42 @@ async fn run_slice_screen_command_inner(
         operation: "run_slice_screen_command",
         message: error.to_string(),
     })?
+}
+
+fn slice_screen_command_timeout_ms() -> u64 {
+    std::env::var("ARROBA_SLICE_SCREEN_TOOL_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_SLICE_SCREEN_COMMAND_TIMEOUT_MS)
+}
+
+fn read_child_output<R: std::io::Read>(mut reader: R) -> Result<(String, bool), DaemonError> {
+    let mut stored = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "run_slice_screen_command",
+                message: format!("failed to read slice screen output: {error}"),
+            })?;
+        if read == 0 {
+            break;
+        }
+        let remaining = SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES.saturating_sub(stored.len());
+        if remaining > 0 {
+            stored.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+        if read > remaining {
+            truncated = true;
+        }
+    }
+    Ok((
+        String::from_utf8_lossy(&stored).trim().to_string(),
+        truncated,
+    ))
 }
 
 fn slice_tool_payload(
@@ -452,6 +549,18 @@ fn slice_tool_payload(
         "stderr".to_string(),
         serde_json::Value::String(output.stderr.clone()),
     );
+    if output.stdout_truncated {
+        payload.insert(
+            "stdout_truncated".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    if output.stderr_truncated {
+        payload.insert(
+            "stderr_truncated".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     for line in output.stdout.lines() {
         if let Some((key, value)) = line.split_once('=') {
             let value = value.trim();
@@ -468,6 +577,49 @@ fn slice_tool_payload(
                 _ => {}
             }
         }
+    }
+    serde_json::Value::Object(payload)
+}
+
+fn secret_paste_payload(
+    slice_id: &str,
+    agent_id: &str,
+    credential_id: &str,
+    submitted: bool,
+    output: &SliceScreenCommandOutput,
+) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "slice_id".to_string(),
+        serde_json::Value::String(slice_id.to_string()),
+    );
+    payload.insert(
+        "agent_id".to_string(),
+        serde_json::Value::String(agent_id.to_string()),
+    );
+    payload.insert(
+        "credential_id".to_string(),
+        serde_json::Value::String(credential_id.to_string()),
+    );
+    payload.insert("submitted".to_string(), serde_json::Value::Bool(submitted));
+    payload.insert(
+        "status_code".to_string(),
+        output
+            .status_code
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    if output.stdout_truncated {
+        payload.insert(
+            "stdout_truncated".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    if output.stderr_truncated {
+        payload.insert(
+            "stderr_truncated".to_string(),
+            serde_json::Value::Bool(true),
+        );
     }
     serde_json::Value::Object(payload)
 }
@@ -609,6 +761,8 @@ mod tests {
             ]
             .join("\n"),
             stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
         };
 
         let payload = slice_tool_payload("slice-1", "agent-1", &output);
@@ -621,5 +775,66 @@ mod tests {
             "slice screen is unavailable; missing xvfb,novnc"
         );
         assert_eq!(payload.get("viewer"), None);
+    }
+
+    #[test]
+    fn secret_paste_payload_does_not_reflect_helper_output() {
+        let output = SliceScreenCommandOutput {
+            success: true,
+            status_code: Some(0),
+            stdout: "typed super-secret-value".to_string(),
+            stderr: "debug super-secret-value".to_string(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+
+        let payload = secret_paste_payload("slice-1", "agent-1", "gmail-password", true, &output);
+        let serialized = serde_json::to_string(&payload).expect("payload should serialize");
+
+        assert!(serialized.contains("gmail-password"));
+        assert!(serialized.contains("\"submitted\":true"));
+        assert!(!serialized.contains("super-secret-value"));
+        assert!(payload.get("stdout").is_none());
+        assert!(payload.get("stderr").is_none());
+    }
+
+    #[test]
+    fn read_child_output_caps_stored_bytes_while_draining() {
+        let input = vec![b'a'; SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES + 1024];
+
+        let (output, truncated) =
+            read_child_output(std::io::Cursor::new(input)).expect("output should read");
+
+        assert!(truncated);
+        assert_eq!(output.len(), SLICE_SCREEN_COMMAND_OUTPUT_MAX_BYTES);
+    }
+
+    #[tokio::test]
+    async fn slice_screen_command_times_out() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "arroba-slice-timeout-test-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::create_dir_all(&root);
+        let script = root.join("slice-screen-timeout.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 1\n").expect("script should write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+                .expect("script should be executable");
+        }
+        std::env::set_var("ARROBA_SLICE_SCREEN_TOOL", &script);
+        std::env::set_var("ARROBA_SLICE_SCREEN_TOOL_TIMEOUT_MS", "50");
+
+        let error = run_slice_screen_command(vec!["status".to_string()])
+            .await
+            .expect_err("sleeping helper should time out");
+
+        assert!(error.to_string().contains("timed out"));
+        std::env::remove_var("ARROBA_SLICE_SCREEN_TOOL");
+        std::env::remove_var("ARROBA_SLICE_SCREEN_TOOL_TIMEOUT_MS");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

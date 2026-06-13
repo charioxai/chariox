@@ -38,7 +38,23 @@ pub struct CredentialHandleView {
     pub allowed_uses: Vec<UserCredentialUse>,
     pub injection_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<crate::config::UserCredentialMetadataConfig>,
+    pub metadata: Option<CredentialHandleMetadataView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialHandleMetadataView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,7 +171,10 @@ impl RuntimeSecretService {
                 allowed_hosts: credential.allowed_hosts.clone(),
                 allowed_uses: credential.allowed_uses.clone(),
                 injection_kind: injection_kind(&credential.injection).to_string(),
-                metadata: credential.metadata.clone(),
+                metadata: credential
+                    .metadata
+                    .as_ref()
+                    .map(CredentialHandleMetadataView::from),
             })
             .collect()
     }
@@ -346,7 +365,7 @@ impl RuntimeSecretService {
         let service = self.vault_service_name()?;
         let key = key.trim();
         self.vault_store.set_secret(service, key, value)?;
-        cache_vault_secret(service, key, value)?;
+        cache_vault_secret(self.vault_cache_key(key)?, value)?;
         Ok(())
     }
 
@@ -355,7 +374,7 @@ impl RuntimeSecretService {
         let service = self.vault_service_name()?;
         let key = key.trim();
         self.vault_store.delete_secret(service, key)?;
-        forget_cached_vault_secret(service, key)?;
+        forget_cached_vault_secret(self.vault_cache_key(key)?)?;
         Ok(())
     }
 
@@ -385,6 +404,33 @@ impl RuntimeSecretService {
                 ),
             ));
         }
+        let service = self.vault_service_name()?;
+        let cache_key = self.vault_cache_key(&vault_key)?;
+        let previous_credential = registry.get(&credential.id)?;
+        let previous_vault_key =
+            previous_credential
+                .as_ref()
+                .and_then(|credential| match &credential.source {
+                    UserCredentialSourceConfig::Vault { key } => Some(key.trim().to_string()),
+                    UserCredentialSourceConfig::Env { .. }
+                    | UserCredentialSourceConfig::File { .. } => None,
+                });
+        let previous_secret = previous_vault_key
+            .as_deref()
+            .filter(|previous_key| *previous_key == vault_key)
+            .and_then(|previous_key| self.vault_store.get_secret(service, previous_key).ok())
+            .map(Zeroizing::new);
+
+        crate::config::validate_credentials(std::slice::from_ref(&credential))?;
+        let _ = registry.path_for(&credential.id)?;
+        serde_yaml::to_string(&credential).map_err(|error| DaemonError::LocalTransport {
+            operation: "credential_vault_upsert",
+            message: format!(
+                "failed to serialize credential `{}` before vault write: {error}",
+                credential.id
+            ),
+        })?;
+
         self.set_vault_secret(&vault_key, secret)?;
         match registry.upsert(credential.clone()) {
             Ok((_credential, path)) => Ok(VaultCredentialUpsertResult {
@@ -394,7 +440,18 @@ impl RuntimeSecretService {
                 metadata_path: path,
             }),
             Err(error) => {
-                let _ = self.delete_vault_secret(&vault_key);
+                if let Some(previous_secret) = previous_secret {
+                    let _ =
+                        self.vault_store
+                            .set_secret(service, &vault_key, previous_secret.as_str());
+                    let _ = cache_vault_secret(cache_key, previous_secret.as_str());
+                } else if previous_credential.is_none()
+                    || previous_vault_key.as_deref() != Some(vault_key.as_str())
+                {
+                    let _ = self.delete_vault_secret(&vault_key);
+                } else {
+                    let _ = forget_cached_vault_secret(cache_key);
+                }
                 Err(error)
             }
         }
@@ -434,7 +491,7 @@ impl RuntimeSecretService {
                 let service = self.vault_service_name()?;
                 let key = key.trim();
                 self.ensure_vault_cache_available()?;
-                if let Some(secret) = cached_vault_secret(service, key)? {
+                if let Some(secret) = cached_vault_secret(self.vault_cache_key(key)?)? {
                     return Ok(secret);
                 }
                 let secret = self.vault_store.get_secret(service, key).map_err(|error| {
@@ -446,7 +503,7 @@ impl RuntimeSecretService {
                         ),
                     )
                 })?;
-                cache_vault_secret(service, key, &secret)?;
+                cache_vault_secret(self.vault_cache_key(key)?, &secret)?;
                 Ok(secret)
             }
         }
@@ -475,6 +532,21 @@ impl RuntimeSecretService {
         Err(DaemonError::LocalTransport {
             operation: "credential_vault_locked",
             message: "Arroba vault is locked".to_string(),
+        })
+    }
+
+    fn vault_cache_key(&self, key: &str) -> Result<VaultSecretCacheKey, DaemonError> {
+        Ok(VaultSecretCacheKey {
+            backend: match self.vault_backend {
+                crate::config::CredentialVaultBackend::ArrobaEncrypted => "arroba_encrypted",
+                crate::config::CredentialVaultBackend::ProcessMemory => "process_memory",
+            }
+            .to_string(),
+            path: expand_user_path(&self.vault_path)
+                .to_string_lossy()
+                .to_string(),
+            service: self.vault_service_name()?.to_string(),
+            key: key.trim().to_string(),
         })
     }
 
@@ -527,6 +599,19 @@ impl RuntimeSecretService {
                 credential.id
             ),
         ))
+    }
+}
+
+impl From<&crate::config::UserCredentialMetadataConfig> for CredentialHandleMetadataView {
+    fn from(metadata: &crate::config::UserCredentialMetadataConfig) -> Self {
+        Self {
+            created_by_kind: metadata.created_by_kind.clone(),
+            created_by_id: metadata.created_by_id.clone(),
+            session_id: metadata.session_id.clone(),
+            provider: metadata.provider.clone(),
+            created_at_ms: metadata.created_at_ms,
+            updated_at_ms: metadata.updated_at_ms,
+        }
     }
 }
 
@@ -665,36 +750,41 @@ fn validate_vault_key(key: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn cached_vault_secret(service: &str, key: &str) -> Result<Option<String>, DaemonError> {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct VaultSecretCacheKey {
+    backend: String,
+    path: String,
+    service: String,
+    key: String,
+}
+
+fn cached_vault_secret(cache_key: VaultSecretCacheKey) -> Result<Option<String>, DaemonError> {
     Ok(vault_secret_process_cache()
         .lock()
         .map_err(|error| {
             secret_error("credential_vault", format!("vault cache poisoned: {error}"))
         })?
-        .get(&(service.to_string(), key.to_string()))
+        .get(&cache_key)
         .map(|value| value.to_string()))
 }
 
-fn cache_vault_secret(service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
+fn cache_vault_secret(cache_key: VaultSecretCacheKey, value: &str) -> Result<(), DaemonError> {
     vault_secret_process_cache()
         .lock()
         .map_err(|error| {
             secret_error("credential_vault", format!("vault cache poisoned: {error}"))
         })?
-        .insert(
-            (service.to_string(), key.to_string()),
-            Zeroizing::new(value.to_string()),
-        );
+        .insert(cache_key, Zeroizing::new(value.to_string()));
     Ok(())
 }
 
-fn forget_cached_vault_secret(service: &str, key: &str) -> Result<(), DaemonError> {
+fn forget_cached_vault_secret(cache_key: VaultSecretCacheKey) -> Result<(), DaemonError> {
     vault_secret_process_cache()
         .lock()
         .map_err(|error| {
             secret_error("credential_vault", format!("vault cache poisoned: {error}"))
         })?
-        .remove(&(service.to_string(), key.to_string()));
+        .remove(&cache_key);
     Ok(())
 }
 
@@ -708,8 +798,10 @@ pub fn clear_vault_secret_process_cache() -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn vault_secret_process_cache() -> &'static Mutex<BTreeMap<(String, String), Zeroizing<String>>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<(String, String), Zeroizing<String>>>> = OnceLock::new();
+fn vault_secret_process_cache() -> &'static Mutex<BTreeMap<VaultSecretCacheKey, Zeroizing<String>>>
+{
+    static CACHE: OnceLock<Mutex<BTreeMap<VaultSecretCacheKey, Zeroizing<String>>>> =
+        OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -721,8 +813,8 @@ fn secret_error(operation: &'static str, message: String) -> DaemonError {
 mod tests {
     use super::*;
     use crate::config::{
-        CredentialVaultBackend, UserCredentialInjectionConfig, UserCredentialSourceConfig,
-        UserCredentialUse,
+        CredentialVaultBackend, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
+        UserCredentialSourceConfig, UserCredentialUse,
     };
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -814,6 +906,39 @@ mod tests {
         assert!(serialized.contains("github"));
         assert!(!serialized.contains("GH_TOKEN"));
         assert!(!serialized.contains("${secret}"));
+    }
+
+    #[test]
+    fn credential_handles_do_not_include_internal_vault_metadata() {
+        let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+            id: "gmail-password".to_string(),
+            description: Some("Gmail password".to_string()),
+            source: UserCredentialSourceConfig::Vault {
+                key: "gmail-password-vault-key".to_string(),
+            },
+            allowed_hosts: vec!["accounts.google.com".to_string()],
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+            metadata: Some(UserCredentialMetadataConfig {
+                created_by_kind: Some("agent".to_string()),
+                created_by_id: Some("agent-1".to_string()),
+                session_id: Some("session-1".to_string()),
+                provider: Some("codex".to_string()),
+                provider_run_id: Some("provider-run-1".to_string()),
+                vault_key: Some("gmail-password-vault-key".to_string()),
+                created_at_ms: Some(1),
+                updated_at_ms: Some(2),
+            }),
+        }]);
+
+        let serialized = serde_json::to_string(&service.list_handles()).unwrap();
+
+        assert!(serialized.contains("gmail-password"));
+        assert!(serialized.contains("agent-1"));
+        assert!(!serialized.contains("vault_key"));
+        assert!(!serialized.contains("gmail-password-vault-key"));
+        assert!(!serialized.contains("provider_run_id"));
+        assert!(!serialized.contains("provider-run-1"));
     }
 
     #[test]
@@ -1150,6 +1275,119 @@ mod tests {
                 .expect("warm cache should resolve without backing store read"),
             "generated-secret"
         );
+    }
+
+    #[test]
+    fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
+        let service_name = format!(
+            "arroba-cache-scope-test-{}",
+            crate::session::unix_epoch_ms()
+        );
+        let writer = RuntimeSecretService {
+            credentials: Vec::new(),
+            vault_service: service_name.clone(),
+            vault_backend: CredentialVaultBackend::ProcessMemory,
+            vault_path: "/tmp/arroba-cache-scope-a.json".to_string(),
+            vault_store: Arc::new(WriteOnlyVaultStore::default()),
+        };
+
+        writer
+            .set_vault_secret("shared-key", "scoped-secret")
+            .expect("writer should warm its scoped cache");
+
+        let reader = RuntimeSecretService {
+            credentials: vec![UserCredentialConfig {
+                id: "shared-key".to_string(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "shared-key".to_string(),
+                },
+                allowed_hosts: vec!["workspace".to_string()],
+                allowed_uses: vec![UserCredentialUse::Browser],
+                injection: UserCredentialInjectionConfig::Browser,
+                metadata: None,
+            }],
+            vault_service: service_name,
+            vault_backend: CredentialVaultBackend::ProcessMemory,
+            vault_path: "/tmp/arroba-cache-scope-b.json".to_string(),
+            vault_store: Arc::new(WriteOnlyVaultStore::default()),
+        };
+
+        let error = reader
+            .browser_secret_input("shared-key")
+            .expect_err("different vault path must not read another cache scope");
+
+        assert!(error.to_string().contains("backing store read unavailable"));
+    }
+
+    #[test]
+    fn upsert_vault_backed_credential_restores_previous_secret_on_metadata_write_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-vault-upsert-rollback-test-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("registry root should exist");
+        let registry = ArrobaCredentialRegistry::new(root.clone());
+        let vault = Arc::new(MemoryVaultStore::default());
+        let service = RuntimeSecretService::with_vault_store(
+            vec![UserCredentialConfig {
+                id: "browser-password".to_string(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "browser-password".to_string(),
+                },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![UserCredentialUse::Browser],
+                injection: UserCredentialInjectionConfig::Browser,
+                metadata: None,
+            }],
+            "arroba-test",
+            vault,
+        );
+        let credential = UserCredentialConfig {
+            id: "browser-password".to_string(),
+            description: Some("old".to_string()),
+            source: UserCredentialSourceConfig::Vault {
+                key: "browser-password".to_string(),
+            },
+            allowed_hosts: Vec::new(),
+            allowed_uses: vec![UserCredentialUse::Browser],
+            injection: UserCredentialInjectionConfig::Browser,
+            metadata: None,
+        };
+        registry
+            .upsert(credential.clone())
+            .expect("initial metadata should write");
+        service
+            .set_vault_secret("browser-password", "old-secret")
+            .expect("old secret should write");
+        let temp_metadata_path =
+            root.join(format!(".browser-password.yaml.{}.tmp", std::process::id()));
+        std::fs::create_dir(&temp_metadata_path)
+            .expect("registry temp metadata path should be blocked by a directory");
+
+        let error = service
+            .upsert_vault_backed_credential_with_secret(
+                &registry,
+                UserCredentialConfig {
+                    description: Some("new".to_string()),
+                    ..credential
+                },
+                "new-secret",
+                true,
+            )
+            .expect_err("read-only registry should reject metadata write");
+
+        assert!(error.to_string().contains("credential.upsert"));
+        assert_eq!(
+            service
+                .browser_secret_input("browser-password")
+                .expect("old secret should be restored"),
+            "old-secret"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
