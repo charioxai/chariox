@@ -20,8 +20,7 @@ pub(super) fn codex_permission_policy(
     permission_level: AgentPermissionLevel,
 ) -> CodexPermissionPolicy {
     match write_access_mode {
-        ProviderWriteAccessMode::Unrestricted
-        | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => {
+        ProviderWriteAccessMode::Unrestricted => {
             let yolo_build = execution_mode == AgentExecutionMode::Build
                 && permission_level == AgentPermissionLevel::Yolo;
             CodexPermissionPolicy {
@@ -42,6 +41,21 @@ pub(super) fn codex_permission_policy(
                 config_overrides: BTreeMap::new(),
             }
         }
+        ProviderWriteAccessMode::WorkspaceLiveSyncTracked => CodexPermissionPolicy {
+            approval_policy: match permission_level {
+                AgentPermissionLevel::Required => json!("untrusted"),
+                AgentPermissionLevel::Yolo => json!("never"),
+            },
+            sandbox: match execution_mode {
+                AgentExecutionMode::Build => "danger-full-access",
+                AgentExecutionMode::Plan => "read-only",
+            },
+            sandbox_policy: match execution_mode {
+                AgentExecutionMode::Build => json!({ "type": "dangerFullAccess" }),
+                AgentExecutionMode::Plan => json!({ "type": "readOnly" }),
+            },
+            config_overrides: BTreeMap::new(),
+        },
         ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
             #[cfg(target_os = "macos")]
             {

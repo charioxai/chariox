@@ -184,6 +184,34 @@ mod tests {
     }
 
     #[test]
+    fn tracked_live_sync_build_policy_does_not_sandbox_outside_repositories() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+        );
+
+        assert_eq!(policy.approval_policy, json!("untrusted"));
+        assert_eq!(policy.sandbox, "danger-full-access");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "dangerFullAccess" }));
+        assert!(policy.config_overrides.is_empty());
+    }
+
+    #[test]
+    fn tracked_live_sync_plan_policy_remains_read_only() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+        );
+
+        assert_eq!(policy.approval_policy, json!("never"));
+        assert_eq!(policy.sandbox, "read-only");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+        assert!(policy.config_overrides.is_empty());
+    }
+
+    #[test]
     fn unrestricted_yolo_build_policy_uses_full_filesystem_access() {
         let policy = codex_permission_policy(
             ProviderWriteAccessMode::Unrestricted,
