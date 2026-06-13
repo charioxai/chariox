@@ -77,6 +77,27 @@ function remoteRuntimeDegradedNextAction(health: DaemonHealthProjection): string
   return "run /kernel remote-runtime again after current runtime operations settle"
 }
 
+function appendRemoteRuntimeReadiness(
+  lines: string[],
+  health: DaemonHealthProjection,
+  { includeSupportBundle }: { readonly includeSupportBundle: boolean },
+): void {
+  const readiness = kernelRemoteRuntimeReadiness(health)
+  if (readiness.state === "ok") {
+    lines.push("remote runtime readiness: ok")
+    return
+  }
+  if (readiness.state === "degraded") {
+    lines.push(`remote runtime readiness: degraded (${readiness.attentionCount} attention)`)
+    lines.push(`remote runtime readiness next: ${remoteRuntimeDegradedNextAction(health)}`)
+    return
+  }
+  lines.push(`remote runtime readiness: blocked (${readiness.issueCount} issue${readiness.issueCount === 1 ? "" : "s"}, ${readiness.attentionCount} attention)`)
+  if (includeSupportBundle) {
+    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
+  }
+}
+
 export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
   const sliceLifecycle = health.slice_lifecycle
@@ -114,16 +135,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
     appendRemoteRuntimeProjectionInvariantIssues(lines, health)
   }
   appendRemoteRuntimeIssues(lines, health)
-  const readiness = kernelRemoteRuntimeReadiness(health)
-  if (readiness.state === "ok") {
-    lines.push("remote runtime readiness: ok")
-  } else if (readiness.state === "degraded") {
-    lines.push(`remote runtime readiness: degraded (${readiness.attentionCount} attention)`)
-    lines.push(`remote runtime readiness next: ${remoteRuntimeDegradedNextAction(health)}`)
-  } else {
-    lines.push(`remote runtime readiness: blocked (${readiness.issueCount} issue${readiness.issueCount === 1 ? "" : "s"}, ${readiness.attentionCount} attention)`)
-    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
-  }
+  appendRemoteRuntimeReadiness(lines, health, { includeSupportBundle: true })
   return lines.join("\n")
 }
 
@@ -291,6 +303,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   }
 
   appendRemoteRuntimeIssues(lines, health)
+  appendRemoteRuntimeReadiness(lines, health, { includeSupportBundle: false })
 
   if (health.projection_invariants.mismatches.length === 0) {
     lines.push(`projection invariants: ok (${health.projection_invariants.checked_sessions} session${health.projection_invariants.checked_sessions === 1 ? "" : "s"}, ${health.projection_invariants.checked_agents} agent${health.projection_invariants.checked_agents === 1 ? "" : "s"})`)

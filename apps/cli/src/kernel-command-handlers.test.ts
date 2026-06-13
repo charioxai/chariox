@@ -158,6 +158,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.doesNotMatch(rendered, /remote extension runtime:/)
   assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
+  assert.match(rendered, /remote runtime readiness: ok/)
   assert.match(rendered, /workspace coordination: claims=0 collisions=0 active_ops=0/)
   assert.match(rendered, /workspace live sync: reservations=0 artifacts=0 managed_write_fence=yes backend=macos-seatbelt tracked_runs=0 identity_changed=0 invalid_runs=0/)
   assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
@@ -1138,6 +1139,11 @@ test("kernel remote-runtime formatter reports slice operations as degraded atten
   assert.match(rendered, /remote runtime readiness next: wait for slice operations to settle; if they remain in progress, run \/slice list, then \/slice doctor for the affected slice/)
   assert.doesNotMatch(rendered, /support bundle:/)
   assert.doesNotMatch(rendered, /<slice>/)
+
+  const fullHealth = formatKernelHealth(settling)
+  assert.match(fullHealth, /remote runtime readiness: degraded \(2 attention\)/)
+  assert.match(fullHealth, /remote runtime readiness next: wait for slice operations to settle/)
+  assert.doesNotMatch(fullHealth, /support bundle:/)
 })
 
 test("kernel remote-runtime formatter reports settling manifests as degraded attention", async () => {
