@@ -96,6 +96,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`
+}
+
 function requireCondition(condition, message, details) {
   if (!condition) {
     throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
@@ -346,7 +350,9 @@ async function allowOutsideRepoProviderPermissions(client, sessionId, attachment
   const matchingInteractions = activeInteractions.filter((entry) => {
     if (entry.agent_id !== agentId || entry.kind !== 'permission' || respondedInteractionIds.has(entry.id)) return false
     const message = String(entry.message ?? '')
-    return message.includes(outsideRepo) || message.includes(outsideExpectedContent)
+    const title = String(entry.title ?? '')
+    if (message.includes(outsideRepo) || message.includes(outsideExpectedContent)) return true
+    return /external_directory/i.test(title)
   })
   for (const interaction of matchingInteractions) {
     log('answering-outside-repo-provider-interaction', {
@@ -624,14 +630,27 @@ async function main() {
 
     const outsideFilePath = path.join(outsideRepo, `${provider}-outside-repo-direct-write.txt`)
     const outsideExpectedContent = `outside-repo-direct-write-${provider}`
+    const outsideWriteCommand = [
+      'mkdir',
+      '-p',
+      shellQuote(path.dirname(outsideFilePath)),
+      '&&',
+      'printf',
+      '%s',
+      shellQuote(outsideExpectedContent),
+      '>',
+      shellQuote(outsideFilePath),
+    ].join(' ')
     await client.send(submitPromptRequest(
       sessionId,
       attachmentId,
       agentId,
       [
         `Invoke your provider-native bash/shell tool, not Arroba workspace live sync tools, to create the absolute file ${outsideFilePath}.`,
+        `Run this exact portable shell command: ${outsideWriteCommand}`,
         `The file content must be exactly ${outsideExpectedContent}.`,
         'This path is a separate Git repository outside the live-synced workspace and should be edited normally.',
+        'Do not use Python, Node, Perl, Ruby, or any Arroba file/write tool for this step.',
         'Do not only print a command; execute it through the provider-native tool.',
         'After the write succeeds, reply with exactly OUTSIDE_REPO_DIRECT_WRITE_DONE.',
       ].join(' '),
