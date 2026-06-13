@@ -12,6 +12,9 @@ pub(crate) enum ProviderReloadTrigger {
         agent_id: String,
         name: String,
     },
+    SessionWorkspaceLiveSyncModeChanged {
+        session_id: String,
+    },
     UserConfigChanged {
         path: String,
     },
@@ -78,6 +81,24 @@ impl KernelRuntimeState {
                     self.reload_agent_provider_for_policy(&session_id, &agent_id, &reason)
                         .await?,
                 );
+            }
+            ProviderReloadTrigger::SessionWorkspaceLiveSyncModeChanged { session_id } => {
+                let session = self.owned.session_store.get_session(&session_id)?;
+                let runs = self.owned.provider_store.list_runs();
+                let agent_ids = active_agent_provider_run_ids_for_session(&runs, session.id());
+                for agent_id in agent_ids {
+                    outcomes.push(
+                        self.reload_agent_provider_for_policy(
+                            session.id(),
+                            &agent_id,
+                            "session workspace live sync mode",
+                        )
+                        .await?,
+                    );
+                }
+                if outcomes.is_empty() {
+                    outcomes.push(ProviderReloadOutcome::Unaffected);
+                }
             }
             ProviderReloadTrigger::UserConfigChanged { path } => {
                 if !user_config_path_requires_provider_reload(&path) {
@@ -226,9 +247,30 @@ fn adapter_supports_policy_reload(adapter_key: &str) -> bool {
     matches!(adapter_key, "claude" | "codex" | "opencode")
 }
 
+fn active_agent_provider_run_ids_for_session(
+    runs: &[crate::provider::RuntimeProviderRun],
+    session_id: &str,
+) -> std::collections::BTreeSet<String> {
+    runs.iter()
+        .filter(|run| {
+            run.session_id() == session_id
+                && matches!(
+                    run.state(),
+                    crate::provider::ProviderRunState::Running
+                        | crate::provider::ProviderRunState::Starting
+                )
+        })
+        .filter_map(|run| run.agent_instance_id().map(str::to_string))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::adapter_supports_policy_reload;
+    use std::collections::BTreeMap;
+
+    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+
+    use super::{active_agent_provider_run_ids_for_session, adapter_supports_policy_reload};
 
     #[test]
     fn provider_reload_policy_includes_structured_real_provider_adapters() {
@@ -248,5 +290,55 @@ mod tests {
                 "{adapter} should not use provider relaunch policy"
             );
         }
+    }
+
+    #[test]
+    fn provider_reload_policy_selects_active_agent_runs_for_session_mode_changes() {
+        let mut running = provider_run("run-1", "session-1", Some("agent-1"));
+        running.mark_running();
+        let starting = provider_run("run-2", "session-1", Some("agent-2"));
+        let mut ended = provider_run("run-3", "session-1", Some("agent-3"));
+        ended.mark_ended();
+        let mut other_session = provider_run("run-4", "session-2", Some("agent-4"));
+        other_session.mark_running();
+        let mut session_run = provider_run("run-5", "session-1", None);
+        session_run.mark_running();
+
+        assert_eq!(
+            active_agent_provider_run_ids_for_session(
+                &[running, starting, ended, other_session, session_run],
+                "session-1",
+            ),
+            ["agent-1".to_string(), "agent-2".to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    fn provider_run(
+        run_id: &str,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> crate::provider::RuntimeProviderRun {
+        let mut request =
+            LaunchProviderRequest::new(session_id, "codex", "codex", "default", "gpt-5.2");
+        if let Some(agent_id) = agent_id {
+            request = request.with_agent_id(agent_id);
+        }
+        crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex:test".to_string(),
+                pty_target: None,
+                pty_program: Some("codex".to_string()),
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("ws://127.0.0.1:1".to_string()),
+            },
+        )
     }
 }

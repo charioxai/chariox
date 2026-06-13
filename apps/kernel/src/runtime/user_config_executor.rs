@@ -8,7 +8,7 @@ use crate::local::{
 };
 use crate::runtime::command::{KernelCommand, command_caller_user_id};
 use crate::runtime::projection::DaemonConfigProjectionStore;
-use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::state::{KernelRuntimeState, ProviderReloadTrigger};
 use crate::runtime::user_config_policy::{UserConfigMutation, user_config_mutation_effects};
 
 pub(crate) async fn execute_user_config_request(
@@ -110,12 +110,18 @@ pub(crate) async fn execute_set_workspace_live_sync_mode_request(
     command: &KernelCommand,
     request: SetWorkspaceLiveSyncModeRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let session_id = request.session_id.clone();
     let session = runtime_state.set_workspace_live_sync_mode(
-        &request.session_id,
+        &session_id,
         request.mode,
         &command_caller_user_id(command),
         Some(command),
     )?;
+    runtime_state
+        .apply_provider_reload_policy(ProviderReloadTrigger::SessionWorkspaceLiveSyncModeChanged {
+            session_id,
+        })
+        .await?;
     Ok(LocalDaemonResponse::WorkspaceLiveSyncModeUpdated { session })
 }
 
