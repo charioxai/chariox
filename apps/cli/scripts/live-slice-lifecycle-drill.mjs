@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { makeAvailablePorts } from './lib/drill-runtime-helpers.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -330,8 +331,6 @@ async function runWaitingRoomSliceDeleteDrill(client, workspace, runLabel) {
 }
 
 async function main() {
-  await assertDockerReady()
-  const dockerHost = await currentDockerHost()
   const runLabel = `${process.pid}-${Date.now()}`
   const agentDefaults = {
     provider: 'dev-stub',
@@ -347,24 +346,28 @@ async function main() {
   const stateHome = path.join(root, 'state')
   const ports = await makeAvailablePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-  const env = {
-    ...process.env,
-    HOME: home,
-    XDG_CONFIG_HOME: configHome,
-    XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.openCodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `slice-lifecycle-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-    ...(dockerHost ? { DOCKER_HOST: dockerHost } : {}),
-  }
 
   let daemon = null
   let client = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(root)
+    await assertDockerReady()
+    const dockerHost = await currentDockerHost()
+    const env = {
+      ...process.env,
+      HOME: home,
+      XDG_CONFIG_HOME: configHome,
+      XDG_STATE_HOME: stateHome,
+      ARROBA_KERNEL_PORT: String(ports.kernelPort),
+      ARROBA_MCP_PORT: String(ports.mcpPort),
+      ARROBA_OPENCODE_PORT: String(ports.openCodePort),
+      ARROBA_CODEX_PORT: String(ports.codexPort),
+      ARROBA_DAEMON_ID: `slice-lifecycle-drill-${process.pid}-${Date.now()}`,
+      ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+      ...(dockerHost ? { DOCKER_HOST: dockerHost } : {}),
+    }
     await mkdir(workspace, { recursive: true })
     await mkdir(otherWorktree, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -522,11 +525,24 @@ async function main() {
     assert(incompatibleDeleted.id === incompatibleSlice.id, 'incompatible slice should be deletable after scope rejection')
     succeeded = true
     log('pass', { workspace })
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await client?.close?.().catch(() => {})
     await stopDaemon(daemon)
-    if (succeeded) await rm(root, { recursive: true, force: true })
-    else log('artifacts-kept', { root, daemonStdout: daemon?.stdoutText?.slice(-2000), daemonStderr: daemon?.stderrText?.slice(-2000) })
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      failure,
+      metadata: {
+        drill: 'slice-lifecycle',
+        provider: agentDefaults.provider,
+        model: agentDefaults.model,
+      },
+      log,
+    })
+    if (!succeeded) log('daemon-tail', { daemonStdout: daemon?.stdoutText?.slice(-2000), daemonStderr: daemon?.stderrText?.slice(-2000) })
   }
 }
 
