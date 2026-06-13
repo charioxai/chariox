@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -298,8 +299,10 @@ async function main() {
   let daemon = null
   let client = null
   let succeeded = false
+  let failure = null
 
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(workspaceA, { recursive: true })
     await mkdir(workspaceB, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -529,17 +532,30 @@ operations:
       'runtime-register-required-approval.png',
       'runtime-global-visibility-workspace-b.png',
     ] })
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await client?.close?.().catch(() => {})
     await stopDaemon(daemon)
-    if (succeeded) await rm(root, { recursive: true, force: true })
-    else {
-      log('artifacts-kept', {
-        root,
-        daemonStdout: daemon?.stdoutText?.slice(-4000),
-        daemonStderr: daemon?.stderrText?.slice(-4000),
-      })
-    }
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'runtime-register-extension',
+        workspaceA,
+        workspaceB,
+        kernelUrl,
+        reportCount: report.length,
+        scenarios: report.map((entry) => entry.scenario).filter(Boolean),
+        artifactLog: path.join(artifactsDir, 'runtime-register-extension-drill-log.json'),
+        daemonStdoutTail: daemon?.stdoutText?.slice(-4000) ?? '',
+        daemonStderrTail: daemon?.stderrText?.slice(-4000) ?? '',
+      },
+      log,
+    })
   }
 }
 
