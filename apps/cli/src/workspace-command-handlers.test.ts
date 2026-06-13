@@ -58,6 +58,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   const modeUpdates: string[] = []
   const defaultUpdates: string[] = []
   const statusUpdates: string[] = []
+  const appliedSessions: string[] = []
   const auditCalls: string[] = []
   const auditEvents: RecallEvent[] = [{
     event_id: "event-1",
@@ -92,12 +93,16 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
     },
     setWorkspaceLiveSyncMode: async (sessionId, mode) => {
       modeUpdates.push(`${sessionId}:${mode}`)
+      return { session: session({ workspace_live_sync_mode: mode }) }
     },
     setUserConfigValue: async (path, value) => {
       defaultUpdates.push(`${path}:${value}`)
     },
     appendNotice: (message) => notices.push(message),
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
+    applySessionState: (nextSession) => {
+      appliedSessions.push(nextSession.workspace_live_sync_mode ?? "config-default")
+    },
   })
 
   await runWorkspace(deps, "/workspace sync status")
@@ -130,7 +135,17 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[4] ?? "", /scope=selected_workspace_worktree; other_repositories=unrestricted/)
   assert.match(notices[4] ?? "", /caller=Client client=cli-1 machine=machine-1 worktree=\/repo\/main/)
   assert.match(notices[4] ?? "", /Next: use \/workspace sync status/)
-  assert.deepEqual(statusUpdates, ["conflict", "conflict", "conflict", "conflict"])
+  assert.deepEqual(statusUpdates, [
+    "conflict",
+    "conflict",
+    "conflict",
+    "conflict",
+    "conflict",
+    "conflict",
+    "conflict",
+    "conflict",
+  ])
+  assert.deepEqual(appliedSessions, ["tracked", "managed", "tracked", "unrestricted"])
   assert.deepEqual(auditCalls, ["session-1:3"])
   assert.deepEqual(modeUpdates, [
     "session-1:tracked",
@@ -151,7 +166,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   await runWorkspace(deps, "/workspace sync targets")
   assert.match(notices[0] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
   assert.doesNotMatch(notices[0] ?? "", /No workspace live sync targets/)
-  assert.equal(statusUpdates.length, 5)
+  assert.equal(statusUpdates.length, 9)
 })
 
 test("workspace sync audit renders empty state", async () => {
@@ -280,7 +295,7 @@ function workspaceDeps(
   }
 }
 
-function session(): RuntimeSession {
+function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
     alias: null,
@@ -296,5 +311,6 @@ function session(): RuntimeSession {
     max_agents: 1,
     agents: [],
     config_state: { version: 1, values: {} },
+    ...overrides,
   }
 }

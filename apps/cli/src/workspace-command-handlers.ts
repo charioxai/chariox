@@ -156,7 +156,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync enable [managed|tracked]", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
+    await applyWorkspaceLiveSyncModeChange(deps, mode)
     deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode, { action: "enabled" }), "info")
     return
   }
@@ -165,7 +165,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync off|managed|tracked", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, workspaceLiveSyncModeProtocolValue(action))
+    await applyWorkspaceLiveSyncModeChange(deps, workspaceLiveSyncModeProtocolValue(action))
     deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(action), "info")
     return
   }
@@ -174,7 +174,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync disable", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, "unrestricted")
+    await applyWorkspaceLiveSyncModeChange(deps, "unrestricted")
     deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage("unrestricted"), "info")
     return
   }
@@ -184,7 +184,7 @@ async function handleWorkspaceSyncCommand(
       deps.flashFooter("usage: /workspace sync mode off|managed|tracked", "error")
       return
     }
-    await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, workspaceLiveSyncModeProtocolValue(mode))
+    await applyWorkspaceLiveSyncModeChange(deps, workspaceLiveSyncModeProtocolValue(mode))
     deps.flashFooter(formatWorkspaceLiveSyncModeChangeMessage(mode), "info")
     return
   }
@@ -196,6 +196,30 @@ async function handleWorkspaceSyncCommand(
     return
   }
   deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|audit|off|managed|tracked|default|link", "error")
+}
+
+async function applyWorkspaceLiveSyncModeChange(
+  deps: WorkspaceCommandHandlerDeps,
+  mode: WorkspaceLiveSyncModeProtocolValue,
+): Promise<void> {
+  if (!deps.setWorkspaceLiveSyncMode) return
+  const result = await deps.setWorkspaceLiveSyncMode(deps.sessionState().id, mode)
+  const session = workspaceLiveSyncModeUpdateSession(result)
+  if (session) {
+    deps.applySessionState(session)
+  }
+  if (deps.getWorkspaceLiveSyncStatus) {
+    const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.setWorkspaceLiveSyncStatus?.(status)
+  }
+}
+
+function workspaceLiveSyncModeUpdateSession(result: unknown): RuntimeSession | null {
+  if (!result || typeof result !== "object" || !("session" in result)) return null
+  const session = (result as { session?: unknown }).session
+  return session && typeof session === "object" && "id" in session
+    ? session as RuntimeSession
+    : null
 }
 
 export async function handleWorktreeSlashCommand(
