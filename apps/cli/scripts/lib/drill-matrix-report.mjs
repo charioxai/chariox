@@ -94,6 +94,10 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
     lines.push(`skipped scenarios: ${summary.skippedScenarios.map((scenario) => scenario.id).join(", ")}`)
   }
 
+  if (summary.status === "dry-run") {
+    appendDryRunCriteria(lines, report.scenarios)
+  }
+
   if (summary.failedScenarios.length === 0) {
     lines.push(summary.status === "dry-run" ? "next: run without --dry-run to execute selected scenarios" : "next: no failed matrix scenarios")
   }
@@ -116,6 +120,17 @@ function nextActionForScenario(scenario) {
     return "inspect the expected-failure assertion; the scenario failed differently than planned"
   }
   return "inspect preserved drill artifacts and rerun the command recorded in this report"
+}
+
+function appendDryRunCriteria(lines, scenarios) {
+  const withCriteria = scenarios
+    .map((scenario) => ({ scenario, criteria: exitCriteriaForScenario(scenario) }))
+    .filter((entry) => entry.criteria.length > 0)
+  if (withCriteria.length === 0) return
+  lines.push("selected scenario criteria:")
+  for (const { scenario, criteria } of withCriteria) {
+    lines.push(`- ${scenario.id}: ${criteria.join("; ")}`)
+  }
 }
 
 function validateDrillMatrixScenario(scenario, source) {

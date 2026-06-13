@@ -56,12 +56,14 @@ test("formats dry-run reports without failures", () => {
   const report = matrixReport({
     status: "dry-run",
     dryRun: true,
-    scenarios: [scenario("local", "dry-run")],
+    scenarios: [scenario("local", "dry-run", { exitCriteria: ["local runtime path is selected"] })],
   })
 
   const text = formatDrillMatrixReportSummary(report)
 
   assert.match(text, /status=dry-run/)
+  assert.match(text, /selected scenario criteria:/)
+  assert.match(text, /- local: local runtime path is selected/)
   assert.match(text, /next: run without --dry-run/)
   assert.equal(drillMatrixReportExitCode([report]), 0)
 })

@@ -20,6 +20,7 @@ node apps/cli/scripts/drill-matrix-report-summary.mjs path/to/matrix-report.json
 ```
 
 The summary command exits non-zero when any input report has `status=failed`.
+For dry-run reports, it prints selected scenario exit criteria so reviewers can confirm matrix scope before running live drills.
 
 Required top-level fields:
 
