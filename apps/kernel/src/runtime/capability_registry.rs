@@ -17,7 +17,7 @@ use crate::local::{
 
 pub(crate) fn execute_capability_registry_request(
     request: LocalDaemonRequest,
-    vault_service: Option<&str>,
+    credential_vault: crate::config::UserCredentialVaultConfig,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::InstallMcpServer(request) => {
@@ -72,7 +72,7 @@ pub(crate) fn execute_capability_registry_request(
         LocalDaemonRequest::GetConnector(request) => execute_get_connector_request(request),
         LocalDaemonRequest::ListConnectors(request) => execute_list_connectors_request(request),
         LocalDaemonRequest::TestConnector(request) => {
-            execute_test_connector_request(request, vault_service)
+            execute_test_connector_request(request, credential_vault)
         }
         LocalDaemonRequest::UpsertSkill(request) => execute_upsert_skill_request(request),
         LocalDaemonRequest::InstallSkill(request) => execute_install_skill_request(request),
@@ -222,15 +222,11 @@ pub(crate) fn execute_list_connectors_request(
 
 pub(crate) fn execute_test_connector_request(
     request: TestConnectorRequest,
-    vault_service: Option<&str>,
+    vault_config: crate::config::UserCredentialVaultConfig,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = crate::connector::ArrobaConnectorRegistry::user()?;
     let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
     let max_safety = crate::connector::ConnectorSafety::parse(request.allow.as_deref())?;
-    let vault_config = crate::config::UserCredentialVaultConfig {
-        service: vault_service.unwrap_or("arroba").to_string(),
-        ..crate::config::UserCredentialVaultConfig::default()
-    };
     let execution = registry.execute_once(
         &adapters,
         &request.name,

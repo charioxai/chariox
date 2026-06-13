@@ -140,17 +140,13 @@ impl CommandRouter {
             | LocalDaemonRequest::ImportSkills(_)
             | LocalDaemonRequest::GetSkill(_)
             | LocalDaemonRequest::ListSkills(_)) => {
-                let vault_service = self
+                let credential_vault = self
                     .config_projection
                     .snapshot()
                     .user_config
-                    .credential_vault
-                    .service;
-                return execute_capability_registry_request(
-                    request.clone(),
-                    Some(vault_service.as_str()),
-                )
-                .map(Some);
+                    .credential_vault;
+                return execute_capability_registry_request(request.clone(), credential_vault)
+                    .map(Some);
             }
             _ => {}
         }
