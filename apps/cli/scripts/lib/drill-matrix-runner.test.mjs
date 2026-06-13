@@ -82,12 +82,13 @@ test("treats matching expected failures as pass", async () => {
 
   assert.equal(results[0].ok, true)
   assert.equal(results[0].expectedFailure, true)
+  assert.equal(results[0].classification, "expected-failure")
   await rm(dir, { recursive: true, force: true })
 })
 
 test("stops after the first unexpected failure unless configured otherwise", async () => {
   const dir = await fixtureDir()
-  const fail = await writeFixtureScript(dir, "fail.mjs", "process.exit(3)")
+  const fail = await writeFixtureScript(dir, "fail.mjs", "console.error('Token refresh failed: 401'); process.exit(3)")
   const pass = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
 
   const results = await runDrillMatrix({
@@ -102,6 +103,7 @@ test("stops after the first unexpected failure unless configured otherwise", asy
 
   assert.equal(results.length, 1)
   assert.equal(results[0].ok, false)
+  assert.equal(results[0].classification, "provider-auth")
   await rm(dir, { recursive: true, force: true })
 })
 

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 
 export function parseDrillScenarioIds(value) {
   if (value == null) return null
@@ -64,8 +65,9 @@ export async function runDrillMatrix({
   console.log(`[${matrixName}] summary`)
   for (const result of results) {
     const expected = result.expectedFailure ? " expected_failure" : ""
+    const classification = result.classification ? ` classification=${result.classification}` : ""
     console.log(
-      `  ${result.ok ? "pass" : "fail"} ${result.scenario.id}${expected} duration_ms=${result.durationMs}${
+      `  ${result.ok ? "pass" : "fail"} ${result.scenario.id}${expected} duration_ms=${result.durationMs}${classification}${
         result.reason ? ` ${result.reason}` : ""
       }`,
     )
@@ -111,16 +113,18 @@ async function runMatrixScenario({ matrixName, scenario, commandForScenario, cwd
     const expected = scenario.expectedOutputIncludes
     if (!expected || output.includes(expected)) {
       console.log(`[${matrixName}] pass ${scenario.id} expected_failure duration_ms=${durationMs}`)
-      return { scenario, ok: true, durationMs, expectedFailure: true }
+      return { scenario, ok: true, durationMs, expectedFailure: true, classification: "expected-failure" }
     }
     const reason = `expected failure output to include ${JSON.stringify(expected)}`
-    console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} ${reason}`)
-    return { scenario, ok: false, durationMs, reason }
+    const classification = classifyDrillChildFailure(output)
+    console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
+    return { scenario, ok: false, durationMs, reason, classification }
   }
 
   const reason = status.error?.message ?? `code=${status.code} signal=${status.signal ?? "none"}`
-  console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} ${reason}`)
-  return { scenario, ok: false, durationMs, reason }
+  const classification = classifyDrillChildFailure(`${output}\n${status.error?.message ?? ""}`)
+  console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
+  return { scenario, ok: false, durationMs, reason, classification }
 }
 
 function requirementsFor(scenario) {
