@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import { access, mkdir, rm } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -192,6 +192,10 @@ function logStep(name, details = null) {
   else console.log(`[relay-drill] ${name}`, JSON.stringify(details))
 }
 
+function nowStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+}
+
 async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl)
@@ -255,7 +259,11 @@ async function waitForCompletion(remoteClient, sessionId, attachmentId, eventBuc
 }
 
 function spawnProcess(command, args, options) {
-  return spawn(command, args, { ...options, stdio: ['ignore', 'ignore', 'inherit'] })
+  const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] })
+  child.logs = { stdout: '', stderr: '' }
+  child.stdout.on('data', (chunk) => { child.logs.stdout += chunk.toString() })
+  child.stderr.on('data', (chunk) => { child.logs.stderr += chunk.toString() })
+  return child
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
@@ -297,34 +305,12 @@ async function main() {
   }
 
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-relay-drill-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(cliRoot, '.artifacts', 'relay-runtime', nowStamp())
+  await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(rootDir, { recursive: true })
-  const cliRuntimeDir = path.join(cliRoot, '.tmp-live-relay-runtime-drill')
+  const cliRuntimeDir = path.join(rootDir, 'cli-runtime')
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
-  ;({ LocalIpcClient, requests: {
-    createSessionRequest,
-    attachToSessionRequest,
-    getSessionStateRequest,
-    listSessionsRequest,
-    launchProviderRunRequest,
-    submitPromptRequest,
-    pumpTerminalOutputRequest,
-    endSessionRequest,
-  } } = await loadCliModules(cliRuntimeDir))
-  const envs = makeChildrenEnv(ports, rootDir)
-  const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-  const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
-  const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
-    path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
-  )
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
 
   let relayChild = null
   let daemonChild = null
@@ -332,8 +318,34 @@ async function main() {
   let remoteClient = null
   let sessionId = null
   let eventLog = []
+  let succeeded = false
+  let failure = null
+  let envs = null
+  let kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
+  let relayUrl = `ws://127.0.0.1:${ports.relayPort}`
 
   try {
+    ;({ LocalIpcClient, requests: {
+      createSessionRequest,
+      attachToSessionRequest,
+      getSessionStateRequest,
+      listSessionsRequest,
+      launchProviderRunRequest,
+      submitPromptRequest,
+      pumpTerminalOutputRequest,
+      endSessionRequest,
+    } } = await loadCliModules(cliRuntimeDir))
+    envs = makeChildrenEnv(ports, rootDir)
+    const relayBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/Cargo.toml'),
+      'arroba-relay',
+    )
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
     logStep('spawn_relay', { relayUrl, daemonAlias: envs.daemonAlias, relayToken: envs.relayToken })
     relayChild = spawnProcess(
       relayBinary,
@@ -477,6 +489,10 @@ async function main() {
       },
       status: 'ok',
     }, null, 2))
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (remoteClient) {
       if (sessionId) await remoteClient.send(endSessionRequest(sessionId)).catch(() => {})
@@ -487,8 +503,35 @@ async function main() {
     if (localClient) await localClient.close().catch(() => {})
     await terminateChild(daemonChild)
     await terminateChild(relayChild)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    await rm(path.join(cliRoot, '.tmp-live-relay-runtime-drill'), { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'relay-runtime',
+        relayUrl,
+        kernelUrl,
+        daemonId: envs?.daemonId ?? null,
+        daemonAlias: envs?.daemonAlias ?? null,
+        sessionId,
+        provider: options.provider,
+        model: options.model,
+        eventCounts: {
+          total: eventLog.length,
+          sessionSnapshots: eventLog.filter((event) => event.event === 'session_snapshot').length,
+          terminalOutput: eventLog.filter((event) => event.event === 'terminal_output').length,
+          completed: eventLog.filter((event) => event.event === 'assistant_message_completed').length,
+          transportClosed: eventLog.filter((event) => event.event === 'transport_closed').length,
+          transportResumed: eventLog.filter((event) => event.event === 'transport_resumed').length,
+        },
+        relayStdoutTail: relayChild?.logs?.stdout?.slice(-4000) ?? '',
+        relayStderrTail: relayChild?.logs?.stderr?.slice(-4000) ?? '',
+        daemonStdoutTail: daemonChild?.logs?.stdout?.slice(-4000) ?? '',
+        daemonStderrTail: daemonChild?.logs?.stderr?.slice(-4000) ?? '',
+      },
+      log: logStep,
+    })
   }
 }
 
