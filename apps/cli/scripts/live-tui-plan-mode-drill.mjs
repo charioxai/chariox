@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import net from 'node:net'
-import { mkdir, rm, stat } from 'node:fs/promises'
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -196,10 +197,14 @@ async function main() {
 
   let daemon = null
   let cli = null
+  let cliStdout = ''
+  let cliStderr = ''
   let automation = null
   let client = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     const { cliDist, kernelBinary } = await ensureBuilt()
@@ -225,14 +230,24 @@ async function main() {
       '--client-id', `tui-plan-mode-drill-${process.pid}`,
     ]
     cli = spawn('script', cliArgs, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
-    let cliStdout = ''
-    let cliStderr = ''
     cli.stdout.on('data', (chunk) => { cliStdout += chunk.toString() })
     cli.stderr.on('data', (chunk) => { cliStderr += chunk.toString() })
-
-    await waitForSocket(automationSocket).catch((error) => {
-      throw new Error(`${error.message}\n--- cli stdout ---\n${cliStdout.slice(-4000)}\n--- cli stderr ---\n${cliStderr.slice(-4000)}`)
+    const cliStartupFailure = new Promise((resolve) => {
+      cli.once('error', (error) => resolve(error))
+      cli.once('exit', (code, signal) => {
+        if (code !== 0) resolve(new Error(`CLI exited before automation socket was ready: code=${code} signal=${signal ?? 'none'}`))
+      })
     })
+
+    try {
+      const startupFailure = await Promise.race([
+        waitForSocket(automationSocket).then(() => null),
+        cliStartupFailure,
+      ])
+      if (startupFailure) throw startupFailure
+    } catch (error) {
+      throw new Error(`${error.message}\n--- cli stdout ---\n${cliStdout.slice(-4000)}\n--- cli stderr ---\n${cliStderr.slice(-4000)}`)
+    }
     automation = createAutomationClient(automationSocket)
     await automation.send('ping')
     const snapshot = await automation.send('snapshot')
@@ -312,17 +327,33 @@ async function main() {
     })
     await automation.send('exit').catch(() => {})
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     automation?.close()
     await client?.close?.().catch(() => {})
     await terminateChild(cli)
     await terminateChild(daemon)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-      await rm(automationSocket, { force: true }).catch(() => {})
-    } else {
-      log('kept-artifacts', { rootDir })
+    if (!succeeded && options.keepArtifactsOnFailure) {
+      await mkdir(rootDir, { recursive: true }).catch(() => {})
+      await writeFile(path.join(rootDir, 'cli-stdout.log'), cliStdout, 'utf8').catch(() => {})
+      await writeFile(path.join(rootDir, 'cli-stderr.log'), cliStderr, 'utf8').catch(() => {})
     }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'tui-plan-mode',
+        kernelUrl,
+        workspace,
+        automationSocket,
+      },
+      log,
+    })
+    await rm(automationSocket, { force: true }).catch(() => {})
   }
 }
 
