@@ -1584,12 +1584,18 @@ async function runTrackedTargetOriginPhase({
   const headsBefore = Object.fromEntries(await Promise.all(allWorkspaces.map(async (worktree) => [worktree, await gitHead(worktree)])))
   const completionSinceMs = Date.now()
   const marker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_TARGET_ORIGIN_DONE`
+  const targetOriginScript = [
+    `printf '${provider}-target-origin-modified\\n' > target-origin.txt`,
+    'mkdir -p outputs',
+    `printf '${provider}-target-origin-added\\n' > outputs/${provider}-target-origin-added.txt`,
+  ].join('\n')
   await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
     'This is a live Arroba workspace live sync tracked-mode target-origin drill.',
     'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
-    `Run direct writes in the current workspace so that target-origin.txt becomes exactly "${provider}-target-origin-modified\\n".`,
-    `Create outputs/${provider}-target-origin-added.txt containing exactly "${provider}-target-origin-added\\n".`,
-    `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
+    'Run this exact POSIX shell script once from the current workspace directory:',
+    targetOriginScript,
+    'Do not inspect, read, list, or verify any files before or after running the script.',
+    `After the script completes, reply exactly ${marker} and nothing else.`,
   ].join('\n'), []))
 
   await waitForCompletionsAndFiles({
@@ -1814,6 +1820,11 @@ async function runTrackedOutsideWorkspacePhase({
 }) {
   const completionSinceMs = Date.now()
   const marker = `${provider.toUpperCase()}_TRACKED_OUTSIDE_WORKSPACE_DONE`
+  const siblingWriteRelativePath = `../sibling-repo/${provider}-tracked-sibling.txt`
+  const outsideWorkspaceScript = [
+    'mkdir -p ../sibling-repo',
+    `printf '${provider}-tracked-sibling\\n' > ${siblingWriteRelativePath}`,
+  ].join('\n')
   const respondedInteractionIds = new Set()
   const allowOutsideWorkspacePermission = async () => {
     const state = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
@@ -1834,9 +1845,11 @@ async function runTrackedOutsideWorkspacePhase({
   }
   await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
     'This is a live Arroba workspace live sync outside-workspace permission drill.',
-    `Create ${siblingWritePath} containing exactly "${provider}-tracked-sibling\\n".`,
+    'Run this exact POSIX shell script once from the current workspace directory:',
+    outsideWorkspaceScript,
     'Do not edit files in the current workspace.',
-    `After that direct filesystem write completes, reply exactly ${marker} and nothing else.`,
+    'Do not inspect, read, list, or verify any files before or after running the script.',
+    `After the script completes, reply exactly ${marker} and nothing else.`,
   ].join('\n'), []))
   await waitForCompletionsAndFiles({
     client,
@@ -1953,18 +1966,25 @@ async function runTrackedWorkspaceLiveSyncDrill({
   const completionSinceMs = Date.now()
   const marker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_DONE`
   const siblingWritePath = path.join(siblingWorkspace, `${provider}-tracked-sibling.txt`)
+  const trackedScript = [
+    `printf 'line-a\\n${provider}-tracked-modified\\n' > tracked.txt`,
+    'mkdir -p outputs ignored',
+    `printf '${provider}-tracked-added\\n' > outputs/${provider}-tracked-added.txt`,
+    `printf '\\000\\005\\377\\012' > outputs/${provider}-tracked-binary.bin`,
+    `rm -f outputs/${provider}-tracked-delete.txt`,
+    `mv outputs/${provider}-tracked-rename-source.txt outputs/${provider}-tracked-renamed.txt`,
+    `printf '${provider}-tracked-renamed\\n' > outputs/${provider}-tracked-renamed.txt`,
+    `printf 'alpha\\nbeta\\n${provider}-tracked-source\\nomega\\n' > outputs/${provider}-tracked-rebase.txt`,
+    `printf 'one\\n${provider}-tracked-source-conflict\\nthree\\n' > outputs/${provider}-tracked-conflict.txt`,
+    `printf '${provider}-ignored\\n' > ignored/${provider}-ignored.txt`,
+  ].join('\n')
   await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
     'This is a live Arroba workspace live sync tracked-mode drill.',
     'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
-    `Run direct writes in the current workspace so that tracked.txt becomes exactly "line-a\\n${provider}-tracked-modified\\n".`,
-    `Create outputs/${provider}-tracked-added.txt containing exactly "${provider}-tracked-added\\n".`,
-    `Create outputs/${provider}-tracked-binary.bin containing exactly the four bytes with hex 0005ff0a.`,
-    `Delete outputs/${provider}-tracked-delete.txt.`,
-    `Rename outputs/${provider}-tracked-rename-source.txt to outputs/${provider}-tracked-renamed.txt and make the renamed file contain exactly "${provider}-tracked-renamed\\n".`,
-    `Modify outputs/${provider}-tracked-rebase.txt so it becomes exactly "alpha\\nbeta\\n${provider}-tracked-source\\nomega\\n".`,
-    `Modify outputs/${provider}-tracked-conflict.txt so it becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
-    `Create ignored/${provider}-ignored.txt containing exactly "${provider}-ignored\\n".`,
-    `After those direct filesystem writes complete, reply exactly ${marker} and nothing else.`,
+    'Run this exact POSIX shell script once from the current workspace directory:',
+    trackedScript,
+    'Do not inspect, read, list, or verify any files before or after running the script.',
+    `After the script completes, reply exactly ${marker} and nothing else.`,
   ].join('\n'), []))
 
   await waitForCompletionsAndFiles({

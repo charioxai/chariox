@@ -330,13 +330,16 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
         &kernel.public_key,
         &plaintext,
     )?;
-    let (mut socket, _) =
-        connect_async(&relay_url)
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "connect temporary relay peer socket",
-                message: error.to_string(),
-            })?;
+    let (mut socket, _) = timeout(response_timeout, connect_async(&relay_url))
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "connect temporary relay peer socket",
+            message: format!("timed out after {}ms", response_timeout.as_millis()),
+        })?
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "connect temporary relay peer socket",
+            message: error.to_string(),
+        })?;
     let request_id = format!(
         "daemon-peer-tmp-{}-{}-{}",
         std::process::id(),

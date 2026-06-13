@@ -42,59 +42,7 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
         &self,
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let config = self.state.owned.config_projection.snapshot();
-        if config.daemon_id != context.home_kernel_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "invocation was sent to the wrong home kernel".to_string(),
-            });
-        }
-        let agent = self
-            .state
-            .owned
-            .agent_store
-            .get_agent(&context.home_agent_id)?;
-        if agent.session_id() != context.home_session_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "agent does not belong to invocation session".to_string(),
-            });
-        }
-        let Some(remote_execution) = agent.remote_execution() else {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "agent is not remote-backed".to_string(),
-            });
-        };
-        if remote_execution.leased_agent_id != context.leased_agent_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "leased agent does not match home agent binding".to_string(),
-            });
-        }
-        if context.worker_kernel_id.as_deref() != Some(remote_execution.worker_kernel_id.as_str()) {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "worker kernel does not match home agent binding".to_string(),
-            });
-        }
-        if context.worker_machine_id.as_deref() != Some(remote_execution.worker_machine_id.as_str())
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "worker machine does not match home agent binding".to_string(),
-            });
-        }
-        if remote_execution.active_worker_provider_run_id.as_deref()
-            != Some(context.worker_provider_run_id.as_str())
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "home extension invocation",
-                message: "worker provider run does not match active remote agent binding"
-                    .to_string(),
-            });
-        }
-        Ok(agent)
+        authorize_remote_home_context(self.state, context, "home extension invocation")
     }
 
     pub(in crate::runtime::state::tool_dispatch) fn authorize_granted_agent(
@@ -124,6 +72,89 @@ impl<'a> HomeExtensionAuthorizationService<'a> {
             });
         }
         Ok(agent)
+    }
+}
+
+pub(in crate::runtime::state::tool_dispatch) fn authorize_remote_home_context(
+    state: &KernelRuntimeState,
+    context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+    operation: &'static str,
+) -> Result<crate::agent::AgentInstance, DaemonError> {
+    let config = state.owned.config_projection.snapshot();
+    if config.daemon_id != context.home_kernel_id {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "invocation was sent to the wrong home kernel".to_string(),
+        });
+    }
+    let agent = state.owned.agent_store.get_agent(&context.home_agent_id)?;
+    if agent.session_id() != context.home_session_id {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "agent does not belong to invocation session".to_string(),
+        });
+    }
+    let Some(remote_execution) = agent.remote_execution() else {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "agent is not remote-backed".to_string(),
+        });
+    };
+    if remote_execution.leased_agent_id != context.leased_agent_id {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "leased agent does not match home agent binding".to_string(),
+        });
+    }
+    if context.worker_kernel_id.as_deref() != Some(remote_execution.worker_kernel_id.as_str()) {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "worker kernel does not match home agent binding".to_string(),
+        });
+    }
+    if context.worker_machine_id.as_deref() != Some(remote_execution.worker_machine_id.as_str()) {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "worker machine does not match home agent binding".to_string(),
+        });
+    }
+    match remote_execution.active_worker_provider_run_id.as_deref() {
+        Some(active_provider_run_id)
+            if !active_provider_run_id.is_empty()
+                && active_provider_run_id == context.worker_provider_run_id =>
+        {
+            Ok(agent)
+        }
+        None | Some("") => {
+            let session = state
+                .owned
+                .session_store
+                .get_session(&context.home_session_id)?;
+            if state
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &context.home_agent_id)
+                .is_none()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation,
+                    message: "worker provider run does not match active remote agent binding"
+                        .to_string(),
+                });
+            }
+            let _ = state
+                .owned
+                .agent_store
+                .set_remote_execution_active_worker_provider_run_id(
+                    &context.home_agent_id,
+                    Some(context.worker_provider_run_id.clone()),
+                )?;
+            Ok(agent)
+        }
+        Some(_) => Err(DaemonError::LocalTransport {
+            operation,
+            message: "worker provider run does not match active remote agent binding".to_string(),
+        }),
     }
 }
 
