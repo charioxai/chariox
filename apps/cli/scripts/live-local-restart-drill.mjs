@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -23,7 +24,7 @@ const {
   createWorkflowEndpointRequest,
   invokeWorkflowEndpointRequest,
   getSessionStateRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryOutlineRequest,
   searchRecallRequest,
   listAgentsRequest,
   listSessionsRequest,
@@ -166,6 +167,19 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+function historyOutlineText(outline) {
+  return (outline.agents ?? [])
+    .flatMap((agent) => agent.turns ?? [])
+    .flatMap((turn) => [
+      turn.user_prompt,
+      ...(turn.entries ?? []),
+      ...(turn.summary ? [turn.summary] : []),
+      ...(turn.blobs ?? []).map((blob) => ({ entry: { text: blob.summary } })),
+    ])
+    .map((row) => row?.entry?.text ?? '')
+    .join('\n')
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : []
 }
@@ -204,7 +218,9 @@ async function main() {
   let client = null
   let sessionId = null
   let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -350,8 +366,11 @@ async function main() {
       `workflow run failure event does not mention kernel restart: ${JSON.stringify(restoredRun.failure_events ?? [])}`,
     )
 
-    const transcript = await client.send(getSessionHistoryRequest(sessionId, 200, 20_000))
-    assert(JSON.stringify(transcript).includes(historyMarker), 'session transcript did not retain completed prompt marker')
+    const transcript = variant(
+      await client.send(getSessionHistoryOutlineRequest(sessionId, [restoredAgent.id], 10)),
+      'SessionHistoryOutline',
+    )
+    assert(historyOutlineText(transcript).includes(historyMarker), 'session transcript did not retain completed prompt marker')
     const search = await client.send(searchRecallRequest(historyMarker, { session_id: sessionId, limit: 10 }))
     assert(JSON.stringify(search).includes(historyMarker), 'recall search did not find completed prompt marker')
     log('restored-state-verified', {
@@ -363,14 +382,24 @@ async function main() {
 
     await client.send(endSessionRequest(sessionId)).catch(() => {})
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await client?.close().catch(() => {})
     await stopDaemon(daemon)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    } else {
-      log('kept-artifacts', { rootDir })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'local-restart',
+        kernelUrl,
+        daemonId,
+      },
+      log,
+    })
   }
 }
 
