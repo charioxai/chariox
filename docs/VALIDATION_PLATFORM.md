@@ -5,6 +5,7 @@ Arroba runtime features must be validated through reusable drill primitives, not
 ## Shared Primitives
 
 - Artifact lifecycle: use `apps/cli/scripts/lib/drill-artifacts.mjs` to prepare drill roots and preserve failed runs with `arroba-drill-failure.json`.
+- Failure summaries: use `apps/cli/scripts/lib/drill-failure-manifest.mjs` or `apps/cli/scripts/drill-failure-summary.mjs` to validate and summarize preserved failed runs without printing credentials or large payloads.
 - Matrix execution: use `apps/cli/scripts/lib/drill-matrix-runner.mjs` for scenario selection, include-gate enforcement, command rendering, expected-failure handling, failure classification, skipped-scenario accounting, summaries, and optional reports.
 - Child failure classification: use `apps/cli/scripts/lib/drill-child-process.mjs` so provider auth/account failures are separated from runtime regressions.
 - Feature fixtures: put reusable setup and assertions under `apps/cli/scripts/lib/`; entry scripts should stay thin.
@@ -43,6 +44,27 @@ Required scenario fields:
 - `command`, `args`.
 
 Reports must not include credentials, relay tokens, provider tokens, prompt bodies, file contents, or unredacted connector payloads. If a drill needs detailed failure output, preserve the artifact directory and record a pointer in the failure manifest instead of embedding sensitive logs in the matrix report.
+
+## Failure Manifests
+
+Failed drills that preserve artifacts write `arroba-drill-failure.json` with schema `arroba.drill.failure.v1`.
+
+Summarize one or more preserved roots or manifest files with:
+
+```bash
+node apps/cli/scripts/drill-failure-summary.mjs path/to/preserved-root
+node apps/cli/scripts/drill-failure-summary.mjs path/to/arroba-drill-failure.json
+```
+
+Required top-level fields:
+
+- `schema`: always `arroba.drill.failure.v1`.
+- `rootDir`: preserved artifact root.
+- `failedAt`: ISO timestamp for the failure.
+- `metadata`: non-secret drill context such as drill name, provider profile, relay mode, or scenario id.
+- `error`: error name, message, and optional stack.
+
+Failure summaries redact sensitive metadata keys and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
 
 ## Scenario Selection
 
