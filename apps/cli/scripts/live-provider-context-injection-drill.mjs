@@ -3,11 +3,11 @@ import { randomBytes } from "node:crypto"
 import { createWriteStream } from "node:fs"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import net from "node:net"
-import os from "node:os"
 import path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import WebSocket from "ws"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 const repoRoot = path.resolve(new URL("../../..", import.meta.url).pathname)
 const cliRoot = path.join(repoRoot, "apps/cli")
@@ -64,9 +64,13 @@ Options:
   --provider-model claude-headless=sonnet
   --timeout-ms 240000
   --worktree /path/to/worktree
-  --keep-artifacts-on-failure
+  --keep-artifacts-on-failure  Deprecated; failures are always preserved.
   --include-midturn-steering     Also submit a second provider-native prompt before the first turn completes and report the observed behavior.
 `)
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-")
 }
 
 async function reservePort() {
@@ -1384,10 +1388,11 @@ function summarizeProbe(input) {
 
 async function main() {
   const options = parseArgs(process.argv)
-  const root = path.join(os.tmpdir(), `arroba-provider-context-drill-${process.pid}-${Date.now()}`)
-  await mkdir(root, { recursive: true })
+  const root = path.join(repoRoot, ".artifacts", "live-provider-context-injection-drill", nowStamp())
+  await prepareDrillArtifacts(root)
   const results = []
   let failed = false
+  let failure = null
   try {
     for (const provider of options.providers) {
       if (provider === "codex") {
@@ -1403,15 +1408,29 @@ async function main() {
       }
     }
     failed = results.some((result) => result.status === "failed")
+    if (failed) failure = new Error("provider context injection drill reported failed results")
     console.log(JSON.stringify({ status: failed ? "failed" : "ok", artifacts: root, results }, null, 2))
   } catch (error) {
     failed = true
+    failure = error
     console.error(error)
     console.error(JSON.stringify({ status: "failed", artifacts: root, results }, null, 2))
   } finally {
-    if (!failed || !options.keepArtifacts) {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    }
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: !failed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: "live-provider-context-injection",
+        worktree: options.worktree,
+        providers: options.providers,
+        providerModels: Object.fromEntries(options.providerModels.entries()),
+        timeoutMs: options.timeoutMs,
+        includeMidturnSteering: options.includeMidturnSteering,
+        results,
+      },
+    })
   }
   if (failed) process.exitCode = 1
 }
