@@ -11,7 +11,8 @@ const PROVIDER_ACCOUNT_PATTERNS = [
 ]
 
 const PROVIDER_AUTH_PATTERNS = [
-  /401\b/i,
+  /\b(?:http|status(?: code)?|response|token refresh failed:?)\s*401\b/i,
+  /\b401\s+unauthori[sz]ed\b/i,
   /unauthori[sz]ed/i,
   /authentication/i,
   /not logged in/i,

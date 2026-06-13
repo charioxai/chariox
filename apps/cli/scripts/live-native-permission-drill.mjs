@@ -5,6 +5,7 @@ import { mkdir, rm, stat, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -354,8 +355,10 @@ async function main() {
   let attachmentId = null
   let sessionId = null
   let succeeded = false
+  let failure = null
 
   try {
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     const { cliDist, kernelBinary } = await ensureCliBuilt()
 
@@ -505,6 +508,9 @@ async function main() {
 
     succeeded = true
     log('success', { provider, model })
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (automation) {
       await bestEffortWithTimeout(automation.send('exit'), 2_000)
@@ -515,11 +521,21 @@ async function main() {
     }
     await terminateChild(cli)
     await terminateChild(daemon)
-    if (!succeeded && options.keepArtifactsOnFailure) {
-      log('artifacts-kept', { rootDir })
-    } else {
-      await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'native-permission',
+        provider,
+        model,
+        noSpawnDaemon: options.noSpawnDaemon,
+        machineRef: options.machineRef,
+        kernelUrl,
+      },
+      log,
+    })
   }
 }
 
