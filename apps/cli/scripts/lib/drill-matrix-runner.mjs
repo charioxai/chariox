@@ -40,6 +40,15 @@ export function quoteDrillCommand(command, args) {
   return [command, ...args].map((part) => (/[ "'\\]/.test(part) ? JSON.stringify(part) : part)).join(" ")
 }
 
+export function extractDrillArtifactHints(text) {
+  const hints = new Set()
+  for (const line of String(text ?? "").split("\n")) {
+    collectArtifactHintsFromJsonLine(hints, line)
+    collectArtifactHintsFromTextLine(hints, line)
+  }
+  return [...hints].sort()
+}
+
 export async function runDrillMatrix({
   matrixName,
   scenarios,
@@ -145,18 +154,19 @@ async function runMatrixScenario({ matrixName, scenario, commandForScenario, cwd
     const expected = scenario.expectedOutputIncludes
     if (!expected || output.includes(expected)) {
       console.log(`[${matrixName}] pass ${scenario.id} expected_failure duration_ms=${durationMs}`)
-      return { scenario, ok: true, durationMs, expectedFailure: true, classification: "expected-failure", command, args }
+      return { scenario, ok: true, durationMs, expectedFailure: true, classification: "expected-failure", command, args, artifactHints: extractDrillArtifactHints(output) }
     }
     const reason = `expected failure output to include ${JSON.stringify(expected)}`
     const classification = classifyDrillChildFailure(output)
     console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
-    return { scenario, ok: false, durationMs, reason, classification, command, args }
+    return { scenario, ok: false, durationMs, reason, classification, command, args, artifactHints: extractDrillArtifactHints(output) }
   }
 
   const reason = status.error?.message ?? `code=${status.code} signal=${status.signal ?? "none"}`
-  const classification = classifyDrillChildFailure(`${output}\n${status.error?.message ?? ""}`)
+  const failureOutput = `${output}\n${status.error?.message ?? ""}`
+  const classification = classifyDrillChildFailure(failureOutput)
   console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
-  return { scenario, ok: false, durationMs, reason, classification, command, args }
+  return { scenario, ok: false, durationMs, reason, classification, command, args, artifactHints: extractDrillArtifactHints(failureOutput) }
 }
 
 function requirementsFor(scenario) {
@@ -197,9 +207,57 @@ async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, resul
       reason: result.reason ?? null,
       command: result.command,
       args: result.args,
+      artifactHints: Array.isArray(result.artifactHints) ? result.artifactHints : [],
     })),
   }
   await mkdir(path.dirname(reportPath), { recursive: true })
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
   console.log(`[${matrixName}] report ${reportPath}`)
+}
+
+function collectArtifactHintsFromJsonLine(hints, line) {
+  const jsonStart = line.indexOf("{")
+  if (jsonStart === -1) return
+  try {
+    collectArtifactHintsFromValue(hints, JSON.parse(line.slice(jsonStart)))
+  } catch {
+    // Not every drill log line with braces is JSON.
+  }
+}
+
+function collectArtifactHintsFromValue(hints, value, key = "") {
+  if (typeof value === "string") {
+    if (isArtifactKey(key) && looksLikeArtifactPath(value)) hints.add(value)
+    return
+  }
+  if (!value || typeof value !== "object") return
+  if (Array.isArray(value)) {
+    for (const item of value) collectArtifactHintsFromValue(hints, item, key)
+    return
+  }
+  for (const [childKey, childValue] of Object.entries(value)) {
+    collectArtifactHintsFromValue(hints, childValue, childKey)
+  }
+}
+
+function collectArtifactHintsFromTextLine(hints, line) {
+  const patterns = [
+    /\bartifacts?(?:\s+\w+){0,4}\s+(?:at|root|kept|preserved|retained):?\s+(\/[^\s"']+)/ig,
+    /\b(?:artifactRoot|rootDir|manifestPath)\s*[=:]\s*(\/[^\s"',}]+)/g,
+  ]
+  for (const pattern of patterns) {
+    for (const match of line.matchAll(pattern)) {
+      if (looksLikeArtifactPath(match[1])) hints.add(match[1])
+    }
+  }
+}
+
+function isArtifactKey(key) {
+  return /artifact|rootDir|manifestPath/i.test(key)
+}
+
+function looksLikeArtifactPath(value) {
+  return typeof value === "string"
+    && value.length < 500
+    && (/^\/[^ ]+/.test(value) || value.includes(".artifacts") || value.includes("arroba-drill"))
 }

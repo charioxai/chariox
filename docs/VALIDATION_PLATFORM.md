@@ -42,6 +42,7 @@ Required scenario fields:
 - `status`: `passed`, `failed`, `skipped`, or `dry-run`.
 - `expectedFailure`, `classification`, `durationMs`, `reason`.
 - `command`, `args`.
+- `artifactHints`: optional paths to preserved artifact roots or failure manifests discovered from child drill output.
 
 Reports must not include credentials, relay tokens, provider tokens, prompt bodies, file contents, or unredacted connector payloads. If a drill needs detailed failure output, preserve the artifact directory and record a pointer in the failure manifest instead of embedding sensitive logs in the matrix report.
 

@@ -37,6 +37,7 @@ test("formats failed and skipped scenarios with next actions", () => {
         classification: "provider-account",
         reason: "insufficient balance",
         exitCriteria: ["remote worker executes the selected provider turn", "home observes completion"],
+        artifactHints: ["/tmp/arroba-drill-remote"],
       }),
       scenario("cloud", "skipped", { reason: "skipped after previous failure" }),
     ],
@@ -49,6 +50,7 @@ test("formats failed and skipped scenarios with next actions", () => {
   assert.match(text, /classifications: provider-account=1/)
   assert.match(text, /- remote classification=provider-account reason=insufficient balance/)
   assert.match(text, /criteria: remote worker executes the selected provider turn; home observes completion/)
+  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
   assert.match(text, /next: check provider quota or billing/)
   assert.match(text, /skipped scenarios: cloud/)
 })
@@ -141,6 +143,11 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), exitCriteria: [1] }],
   }), /scenarios\[0\] has invalid exitCriteria/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [{ ...scenario("broken", "passed"), artifactHints: [1] }],
+  }), /scenarios\[0\] has invalid artifactHints/)
 })
 
 function matrixReport(overrides = {}) {
@@ -171,6 +178,7 @@ function scenario(id, status, overrides = {}) {
     reason: null,
     command: "node",
     args: [`${id}.mjs`],
+    artifactHints: [],
     ...overrides,
   }
 }

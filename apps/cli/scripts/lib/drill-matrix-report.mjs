@@ -138,6 +138,10 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
       if (criteria.length > 0) {
         lines.push(`  criteria: ${criteria.join("; ")}`)
       }
+      const artifactHints = artifactHintsForScenario(scenario)
+      if (artifactHints.length > 0) {
+        lines.push(`  artifacts: ${artifactHints.join(", ")}`)
+      }
       lines.push(`  next: ${nextActionForScenario(scenario)}`)
     }
   }
@@ -225,6 +229,12 @@ function validateDrillMatrixScenario(scenario, source) {
   if (!Array.isArray(scenario.args) || !scenario.args.every((value) => typeof value === "string")) {
     throw new Error(`${source} has invalid args`)
   }
+  if (scenario.artifactHints !== undefined && (
+    !Array.isArray(scenario.artifactHints)
+    || !scenario.artifactHints.every((value) => typeof value === "string")
+  )) {
+    throw new Error(`${source} has invalid artifactHints`)
+  }
 }
 
 function nonEmptyString(value) {
@@ -234,5 +244,11 @@ function nonEmptyString(value) {
 function exitCriteriaForScenario(scenario) {
   return Array.isArray(scenario.exitCriteria)
     ? scenario.exitCriteria.filter((criterion) => typeof criterion === "string" && criterion.trim().length > 0)
+    : []
+}
+
+function artifactHintsForScenario(scenario) {
+  return Array.isArray(scenario.artifactHints)
+    ? scenario.artifactHints.filter((hint) => typeof hint === "string" && hint.trim().length > 0)
     : []
 }

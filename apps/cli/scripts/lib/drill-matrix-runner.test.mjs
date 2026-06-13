@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  extractDrillArtifactHints,
   parseDrillScenarioIds,
   quoteDrillCommand,
   runDrillMatrix,
@@ -45,6 +46,20 @@ test("selects default scenarios by enabled requirements", () => {
 
 test("quotes commands consistently", () => {
   assert.equal(quoteDrillCommand("node", ["plain", "two words", "quote'here"]), 'node plain "two words" "quote\'here"')
+})
+
+test("extracts artifact hints from structured and text drill output", () => {
+  const hints = extractDrillArtifactHints([
+    '[drill] preserved-failed-run {"rootDir":"/tmp/arroba-drill-one","manifestPath":"/tmp/arroba-drill-one/arroba-drill-failure.json","token":"secret"}',
+    'remote workspace live sync permission drill artifacts kept at /tmp/arroba-drill-two',
+    'ignored token=/not-an-artifact-token',
+  ].join("\n"))
+
+  assert.deepEqual(hints, [
+    "/tmp/arroba-drill-one",
+    "/tmp/arroba-drill-one/arroba-drill-failure.json",
+    "/tmp/arroba-drill-two",
+  ])
 })
 
 test("runs a passing matrix scenario", async () => {
@@ -139,6 +154,26 @@ test("stops after the first unexpected failure unless configured otherwise", asy
   const report = JSON.parse(await readFile(reportPath, "utf8"))
   assert.equal(report.status, "failed")
   assert.equal(report.scenarios[1].status, "skipped")
+  assert.deepEqual(report.scenarios[0].artifactHints, [])
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("records artifact hints in failed scenario reports", async () => {
+  const dir = await fixtureDir()
+  const fail = await writeFixtureScript(dir, "fail-artifacts.mjs", "console.error('artifacts kept at /tmp/arroba-drill-failed'); process.exit(3)")
+  const reportPath = path.join(dir, "artifacts.json")
+
+  const results = await runDrillMatrix({
+    matrixName: "test-matrix",
+    scenarios: [{ id: "fail", description: "failing scenario", script: fail }],
+    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+    cwd: dir,
+    reportPath,
+  })
+
+  assert.deepEqual(results[0].artifactHints, ["/tmp/arroba-drill-failed"])
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.deepEqual(report.scenarios[0].artifactHints, ["/tmp/arroba-drill-failed"])
   await rm(dir, { recursive: true, force: true })
 })
 
