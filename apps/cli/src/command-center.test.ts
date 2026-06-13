@@ -79,6 +79,37 @@ test("buildCommandCenterItems describes home-proxy extension sync recovery", () 
   assert.equal(items.find((item) => item.value === "/extension sync-retry ")?.description, "Retry projected home-proxy manifest sync after worker recovery")
 })
 
+test("buildCommandCenterItems finds runtime recovery commands by user-facing terms", () => {
+  const context = {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode" as const,
+    focusedProvider: "opencode" as const,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+  }
+
+  assert.equal(buildCommandCenterItems("/run missing", context).some((item) => item.value === "/kernel "), true)
+
+  const staleManifest = new Set(buildCommandCenterItems("/extension manifest stale", context).map((item) => item.value))
+  assert.equal(staleManifest.has("/extension sync-status "), true)
+  assert.equal(staleManifest.has("/extension sync-retry "), true)
+
+  const revokePending = new Set(buildCommandCenterItems("/extension sync revoke pending", context).map((item) => item.value))
+  assert.equal(revokePending.has("/extension sync-status "), true)
+  assert.equal(revokePending.has("/extension sync-retry "), true)
+
+  const sliceMissing = new Set(buildCommandCenterItems("/slice missing", context).map((item) => item.value))
+  assert.equal(sliceMissing.has("/slice doctor "), true)
+  assert.equal(sliceMissing.has("/slice auth login "), true)
+
+  const workspaceCollision = new Set(buildCommandCenterItems("/workspace sync collision", context).map((item) => item.value))
+  assert.equal(workspaceCollision.has("/workspace sync conflicts"), true)
+
+  const ignoreRules = new Set(buildCommandCenterItems("/workspace sync arrobaignore", context).map((item) => item.value))
+  assert.equal(ignoreRules.has("/workspace sync ignore"), true)
+})
+
 test("buildCommandCenterItems explains slice spawn primitives", () => {
   const items = buildCommandCenterItems("/agent", {
     providerCatalog: fallbackProviderCatalog(),

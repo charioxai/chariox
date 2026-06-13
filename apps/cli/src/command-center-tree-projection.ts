@@ -5,6 +5,7 @@ export type CommandNode = {
   label: string
   description: string
   value: string
+  searchAliases?: string[]
   children?: CommandNode[]
 }
 
@@ -37,7 +38,7 @@ export function mapNodeToItem(node: CommandNode): CommandCenterItem {
     description: node.children?.length ? `${node.description} (${node.children.length})` : node.description,
     kind: node.children?.length ? "group" : "command",
     value: node.value,
-    ...(node.children?.length ? { searchAliases: collectDescendantSearchAliases(node) } : {}),
+    ...commandNodeSearchAliases(node),
   }
 }
 
@@ -48,16 +49,30 @@ export function mapRootGroup(node: CommandNode): CommandCenterItem {
     description: node.children?.length ? `${node.description} (${node.children.length})` : node.description,
     kind: "group",
     value: node.value,
-    ...(node.children?.length ? { searchAliases: collectDescendantSearchAliases(node) } : {}),
+    ...commandNodeSearchAliases(node),
   }
+}
+
+function commandNodeSearchAliases(node: CommandNode): { searchAliases: string[] } | Record<string, never> {
+  const aliases = [
+    ...(node.searchAliases ?? []),
+    ...(node.children?.length ? collectDescendantSearchAliases(node) : []),
+  ]
+  return aliases.length > 0 ? { searchAliases: aliases } : {}
 }
 
 function collectDescendantSearchAliases(node: CommandNode): string[] {
   const aliases = new Set<string>()
+  for (const alias of node.searchAliases ?? []) {
+    aliases.add(alias)
+  }
   for (const child of node.children ?? []) {
     aliases.add(child.label)
     aliases.add(child.value.trim())
     aliases.add(child.description)
+    for (const alias of child.searchAliases ?? []) {
+      aliases.add(alias)
+    }
     for (const alias of collectDescendantSearchAliases(child)) {
       aliases.add(alias)
     }
