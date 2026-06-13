@@ -4,6 +4,7 @@ import { mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
@@ -20,6 +21,21 @@ function assert(condition, message, details = null) {
   if (!condition) {
     throw new Error(`${message}${details == null ? "" : `\n${JSON.stringify(details, null, 2)}`}`)
   }
+}
+
+function parseArgs(argv) {
+  const options = { keepArtifactsOnFailure: false }
+  for (const arg of argv) {
+    if (arg === "--") continue
+    if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
+    else if (arg === "--help" || arg === "-h") {
+      console.log("Usage: node apps/cli/scripts/live-kernel-identity-session-drill.mjs [--keep-artifacts-on-failure]")
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument: ${arg}`)
+    }
+  }
+  return options
 }
 
 async function run(command, args, options = {}) {
@@ -127,6 +143,7 @@ function makeEnv(rootDir, port) {
 }
 
 async function main() {
+  const options = parseArgs(process.argv.slice(2))
   const runId = `${process.pid}-${Date.now()}`
   const rootDir = path.join(os.tmpdir(), `arroba-kernel-identity-${runId}`)
   const workspace = path.join(rootDir, "workspace")
@@ -138,6 +155,12 @@ async function main() {
   const envB = makeEnv(rootDir, portB)
   let kernel = null
   let client = null
+  let succeeded = false
+  let failure = null
+  let sessionId = null
+  let statusA1 = null
+  let statusA2 = null
+  let statusB = null
 
   const [{ LocalIpcClient }, requests] = await Promise.all([
     import("../../../packages/kernel-client/dist/ipc.js"),
@@ -145,19 +168,19 @@ async function main() {
   ])
 
   try {
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     const binary = await buildKernel()
 
     log("start-kernel-a", { port: portA })
     kernel = startKernel(binary, envA, "kernel-a")
     client = await openClient(LocalIpcClient, requests, urlA)
-    const statusA1 = await relayStatus(client, requests)
+    statusA1 = await relayStatus(client, requests)
     const created = unwrap(
       await client.send(requests.createSessionRequest(workspace, workspace, "identity-drill-session")),
       "SessionCreated",
     )
-    const sessionId = created.session.id
+    sessionId = created.session.id
     assert(sessionId, "kernel A should create a session", created)
     log("kernel-a-ready", { kernelId: statusA1.daemon_id, machineId: statusA1.machine_id, sessionId })
     await client.close()
@@ -168,7 +191,7 @@ async function main() {
     log("restart-kernel-a", { port: portA })
     kernel = startKernel(binary, envA, "kernel-a-restart")
     client = await openClient(LocalIpcClient, requests, urlA)
-    const statusA2 = await relayStatus(client, requests)
+    statusA2 = await relayStatus(client, requests)
     assert(statusA2.daemon_id === statusA1.daemon_id, "same host/port should retain kernel id", { first: statusA1, second: statusA2 })
     assert(statusA2.machine_id === statusA1.machine_id, "same machine should retain machine id", { first: statusA1, second: statusA2 })
     assert((await listSessionIds(client, requests)).includes(sessionId), "same kernel id should restore its session")
@@ -180,7 +203,7 @@ async function main() {
     log("start-kernel-b", { port: portB })
     kernel = startKernel(binary, envB, "kernel-b")
     client = await openClient(LocalIpcClient, requests, urlB)
-    const statusB = await relayStatus(client, requests)
+    statusB = await relayStatus(client, requests)
     assert(statusB.daemon_id !== statusA1.daemon_id, "different host/port should get a distinct kernel id", { first: statusA1, second: statusB })
     assert(statusB.machine_id === statusA1.machine_id, "different kernel on same OS user should share machine id", { first: statusA1, second: statusB })
     assert(!(await listSessionIds(client, requests)).includes(sessionId), "different kernel id should not list kernel A session")
@@ -198,10 +221,33 @@ async function main() {
     assert(deleted.deleted_sessions?.some((session) => session.id === sessionId), "delete should remove kernel A session", deleted)
     assert(!(await listSessionIds(client, requests)).includes(sessionId), "kernel A session should be gone after delete")
     log("pass")
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await client?.close().catch(() => {})
     await stopKernel(kernel)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: "kernel-identity-session",
+        workspace,
+        portA,
+        portB,
+        urlA,
+        urlB,
+        sessionId,
+        statusA1,
+        statusA2,
+        statusB,
+      },
+      log,
+    })
+    if (!succeeded && options.keepArtifactsOnFailure) log("artifacts-retained", { rootDir })
   }
 }
 
