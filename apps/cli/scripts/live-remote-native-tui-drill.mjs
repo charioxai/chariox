@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import os from "node:os"
 import { promisify } from "node:util"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -1190,9 +1191,6 @@ async function main() {
     printHelp()
     return
   }
-  await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "arroba-kernel")
-  await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "arroba-relay")
-
   const root = path.join("/tmp", `arb-remote-native-tui-${process.pid}-${Date.now()}`)
   const ports = await makeAvailablePorts()
   const relayToken = `remote-native-token-${process.pid}`
@@ -1217,8 +1215,11 @@ async function main() {
   let workerKernel = null
   const managedSlices = []
   let succeeded = false
+  let failure = null
   try {
-    await mkdir(root, { recursive: true })
+    await prepareDrillArtifacts(root)
+    await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "arroba-kernel")
+    await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "arroba-relay")
     await mkdir(homeDir, { recursive: true })
     await mkdir(xdgConfigHome, { recursive: true })
     await mkdir(xdgStateHome, { recursive: true })
@@ -1444,8 +1445,12 @@ async function main() {
       scenarios,
     }, null, 2))
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    if (succeeded || !options.keepArtifactsOnFailure) {
+    const preserveFailedRun = !succeeded && options.keepArtifactsOnFailure
+    if (!preserveFailedRun) {
       for (const slice of managedSlices.splice(0)) {
         await deleteHomeManagedSlice(homeKernelUrl, slice.id).catch((error) => {
           console.error(`home-managed slice cleanup failed: ${error.message}`)
@@ -1456,9 +1461,29 @@ async function main() {
     await terminateChild(kernel)
     await terminateChild(relayTunnel)
     await terminateChild(relay)
-    if (succeeded || !options.keepArtifactsOnFailure) {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    } else {
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: "remote-native-tui",
+        providers: options.providers.join(","),
+        standardHomeWorker: options.standardHomeWorker,
+        hetznerWorker: options.hetznerWorker,
+        homeManagedSliceLocalDocker: options.homeManagedSliceLocalDocker,
+        includePermissions: options.includePermissions,
+        includeAttachments: options.includeAttachments,
+        includeMcpSkills: options.includeMcpSkills,
+        relayUrl,
+        homeKernelUrl,
+        workerKernelUrl,
+        targetDaemonAlias,
+        workerMachineAlias,
+      },
+      log: (name, details) => console.log(`[remote-native-tui-drill] ${name}`, JSON.stringify(details)),
+    })
+    if (preserveFailedRun) {
       console.error(`remote native TUI drill artifacts kept at ${root}`)
       for (const slice of managedSlices) {
         console.error(`home-managed slice ${slice.id} left running`)
