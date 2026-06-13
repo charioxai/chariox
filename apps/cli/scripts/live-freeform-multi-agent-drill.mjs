@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
-import { access, mkdir, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -36,6 +36,7 @@ const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_TIMEOUT_MS = 240_000
 const DEFAULT_POLL_MS = 1_000
+const MAX_LOG_CHARS = 128_000
 
 function parseArgs(argv) {
   const options = {
@@ -126,6 +127,34 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
 
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function appendOutput(buffer, chunk) {
+  const next = buffer + chunk.toString()
+  if (next.length <= MAX_LOG_CHARS) return next
+  return next.slice(next.length - MAX_LOG_CHARS)
+}
+
+function tailLines(value, count = 80) {
+  return value.split('\n').slice(-count).join('\n')
+}
+
+async function writeIfPresent(filePath, value) {
+  if (!value) return
+  await writeFile(filePath, value, 'utf8').catch(() => {})
+}
+
+function summarizeEvents(events) {
+  const counts = new Map()
+  for (const event of events) {
+    const key = event.event ?? event.type ?? 'unknown'
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
   if (explicit) return explicit
@@ -179,64 +208,78 @@ async function main() {
   }
 
   const runtimeDir = path.join(cliRoot, '.tmp-live-freeform-multi-agent-drill')
-  const rootDir = path.join(os.tmpdir(), `arroba-freeform-multi-agent-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-freeform-multi-agent-drill', nowStamp())
+  let succeeded = false
+  let failure = null
+  let client = null
+  let daemonChild = null
+  let daemonStdout = ''
+  let daemonStderr = ''
+  let kernelUrl = options.kernel
+  let sessionId = null
+  let attachmentId = null
+  let agents = []
+  let listedAgents = []
+  let processes = []
+  let finalState = null
+  const events = []
+
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(runtimeDir, { recursive: true })
-  await mkdir(rootDir, { recursive: true })
 
-  const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
-  const {
-    attachToSessionRequest,
-    createSessionRequest,
-    endSessionRequest,
-    getSessionStateRequest,
-    listAgentsRequest,
-    listProviderProcessesRequest,
-    spawnAgentRequest,
-    submitPromptRequest,
-  } = requests
-
-  let daemonChild = null
-  let kernelUrl = options.kernel
-  if (options.spawnDaemon) {
-    const ports = makePorts()
-    kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-    const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
-    )
-    daemonChild = spawn(daemonBinary, [], {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        ARROBA_KERNEL_PORT: String(ports.kernelPort),
-        ARROBA_MCP_PORT: String(ports.mcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-        ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: `freeform-drill-${process.pid}-${Date.now()}`,
-        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-        ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
-      },
-      stdio: ['ignore', 'ignore', 'inherit'],
-    })
-    await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, options.workspace, options.worktree)
-  }
-
-  const client = new LocalIpcClient(kernelUrl)
-  const events = []
-  let sessionId = null
+  let endSessionRequest = null
   try {
+    await prepareDrillArtifacts(rootDir)
+    const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
+    const {
+      attachToSessionRequest,
+      createSessionRequest,
+      getSessionStateRequest,
+      listAgentsRequest,
+      listProviderProcessesRequest,
+      spawnAgentRequest,
+      submitPromptRequest,
+    } = requests
+    endSessionRequest = requests.endSessionRequest
+
+    if (options.spawnDaemon) {
+      const ports = makePorts()
+      kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
+      const daemonBinary = await resolveBinary(
+        path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+        path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+        'arroba-kernel',
+      )
+      daemonChild = spawn(daemonBinary, [], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          ARROBA_KERNEL_PORT: String(ports.kernelPort),
+          ARROBA_MCP_PORT: String(ports.mcpPort),
+          ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+          ARROBA_CODEX_PORT: String(ports.codexPort),
+          ARROBA_DAEMON_ID: `freeform-drill-${process.pid}-${Date.now()}`,
+          ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+          ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      daemonChild.stdout.on('data', (chunk) => { daemonStdout = appendOutput(daemonStdout, chunk) })
+      daemonChild.stderr.on('data', (chunk) => { daemonStderr = appendOutput(daemonStderr, chunk) })
+      await waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, options.workspace, options.worktree)
+    }
+
+    client = new LocalIpcClient(kernelUrl)
     const session = unwrap(await client.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated').session
     sessionId = session.id
     const attachment = unwrap(
       await client.send(attachToSessionRequest(session.id, `freeform-drill-${Date.now()}`)),
       'SessionAttached',
     ).attachment
+    attachmentId = attachment.id
     client.onKernelEvent((event) => events.push({ ...event, observed_at_ms: Date.now() }))
     await client.subscribeToKernelEvents(session.id, attachment.id)
 
-    const agents = []
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const agent = unwrapVariant(
@@ -259,9 +302,10 @@ async function main() {
     }
 
     const completions = await waitForCompletions(client, session.id, attachment.id, events, agents.length, options.timeoutMs, options.pollMs)
-    const finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
-    const listedAgents = unwrapVariant(await client.send(listAgentsRequest(session.id)), 'AgentsListed').agents || []
-    const processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
+    finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+    listedAgents = unwrapVariant(await client.send(listAgentsRequest(session.id)), 'AgentsListed').agents || []
+    processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
+    succeeded = true
 
     console.log(JSON.stringify({
       status: 'ok',
@@ -285,12 +329,54 @@ async function main() {
       })),
       focusedAgentId: finalState.session?.focused_agent_id ?? finalState.focused_agent_id ?? null,
     }, null, 2))
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    if (sessionId) {
+    if (client && sessionId && endSessionRequest) {
       await client.send(endSessionRequest(sessionId)).catch(() => {})
     }
-    await client.close().catch(() => {})
+    await client?.close().catch(() => {})
     await terminateChild(daemonChild)
+    await writeIfPresent(path.join(rootDir, 'daemon.stdout.log'), daemonStdout)
+    await writeIfPresent(path.join(rootDir, 'daemon.stderr.log'), daemonStderr)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      failure,
+      metadata: {
+        drill: 'live-freeform-multi-agent',
+        kernelUrl,
+        workspace: options.workspace,
+        worktree: options.worktree,
+        providers: options.providers,
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        spawnDaemon: options.spawnDaemon,
+        sessionId,
+        attachmentId,
+        agents: agents.map((agent) => ({
+          id: agent.id,
+          alias: agent.alias,
+          provider: agent.provider,
+        })),
+        listedAgentCount: listedAgents.length,
+        providerProcesses: processes.map((process) => ({
+          processId: process.process_id,
+          provider: process.provider,
+          pid: process.pid ?? null,
+          ownerRunIds: process.owner_provider_run_ids || [],
+        })),
+        focusedAgentId: finalState?.session?.focused_agent_id ?? finalState?.focused_agent_id ?? null,
+        eventCount: events.length,
+        eventCounts: summarizeEvents(events),
+        recentEvents: events.slice(-20),
+        daemonStdoutTail: tailLines(daemonStdout),
+        daemonStderrTail: tailLines(daemonStderr),
+      },
+    })
   }
 }
 
