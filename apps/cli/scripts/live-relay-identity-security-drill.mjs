@@ -3,11 +3,29 @@ import { createHmac } from 'node:crypto'
 import net from 'node:net'
 import { spawn } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
+import os from 'node:os'
+import path from 'node:path'
 import WebSocket from 'ws'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const repoRoot = new URL('../../..', import.meta.url).pathname
 const issuer = 'arroba-cloud-drill'
 const secret = 'relay-identity-drill-secret'
+
+function parseArgs(argv) {
+  const options = { keepArtifactsOnFailure: false }
+  for (const arg of argv) {
+    if (arg === '--') continue
+    if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--help' || arg === '-h') {
+      console.log('Usage: node apps/cli/scripts/live-relay-identity-security-drill.mjs [--keep-artifacts-on-failure]')
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument: ${arg}`)
+    }
+  }
+  return options
+}
 
 function base64url(input) {
   return Buffer.from(input).toString('base64url')
@@ -145,24 +163,35 @@ function requireCondition(condition, message, detail = null) {
 }
 
 async function main() {
-  const port = await freePort()
-  const url = `ws://127.0.0.1:${port}`
-  const relay = spawn('cargo', ['run', '--manifest-path', `${repoRoot}/apps/relay/Cargo.toml`, '--bin', 'arroba-relay'], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      ARROBA_RELAY_HOST: '127.0.0.1',
-      ARROBA_RELAY_PORT: String(port),
-      ARROBA_RELAY_SCOPED_ISSUER: issuer,
-      ARROBA_RELAY_SCOPED_HMAC_SECRET: secret,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  const preserveOnFailure = process.argv.slice(2).includes('--keep-artifacts-on-failure')
+  const rootDir = path.join(os.tmpdir(), `arroba-relay-identity-security-${process.pid}-${Date.now()}`)
+  let options = { keepArtifactsOnFailure: preserveOnFailure }
+  let succeeded = false
+  let failure = null
+  let port = null
+  let url = null
+  let relay = null
   let stderr = ''
-  relay.stderr.on('data', (chunk) => { stderr += String(chunk) })
-  relay.stdout.on('data', () => {})
+  const passedChecks = []
+  await prepareDrillArtifacts(rootDir)
 
   try {
+    options = parseArgs(process.argv.slice(2))
+    port = await freePort()
+    url = `ws://127.0.0.1:${port}`
+    relay = spawn('cargo', ['run', '--manifest-path', `${repoRoot}/apps/relay/Cargo.toml`, '--bin', 'arroba-relay'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        ARROBA_RELAY_HOST: '127.0.0.1',
+        ARROBA_RELAY_PORT: String(port),
+        ARROBA_RELAY_SCOPED_ISSUER: issuer,
+        ARROBA_RELAY_SCOPED_HMAC_SECRET: secret,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    relay.stderr.on('data', (chunk) => { stderr += String(chunk) })
+    relay.stdout.on('data', () => {})
     await waitForRelay(url)
 
     const daemonAToken = signToken(claims({
@@ -205,6 +234,7 @@ async function main() {
     await sleep(100)
     requireCondition(daemonA.readyState === WebSocket.OPEN, 'daemon A registration was rejected')
     requireCondition(daemonB.readyState === WebSocket.OPEN, 'daemon B registration was rejected')
+    passedChecks.push('daemon registrations accepted in separate realms')
 
     const clientA = await connect(url)
     const connectedAPromise = nextJson(clientA, 'client A connect')
@@ -215,6 +245,7 @@ async function main() {
     })
     const connectedA = await connectedAPromise
     requireCondition(connectedA.kind === 'client_connected', 'valid paired client did not connect', connectedA)
+    passedChecks.push('realm A client connected to daemon A')
 
     const metadataA = await connect(url)
     const metadataAPromise = nextJson(metadataA, 'realm A metadata')
@@ -227,22 +258,26 @@ async function main() {
     const metadataResponse = await metadataAPromise
     requireCondition(metadataResponse.machines?.length === 1, 'realm A metadata leaked or missed machines', metadataResponse)
     requireCondition(metadataResponse.machines[0].machine_id === 'machine-a', 'realm A metadata returned the wrong machine', metadataResponse)
+    passedChecks.push('realm A metadata isolated to machine A')
 
     await expectCloseAfterSend(url, {
       kind: 'daemon_register',
       registration: daemonRegistration({ token: 'invalid-machine-token', daemonId: 'daemon-x', machineId: 'machine-x' }).registration,
     }, 'unpaired machine registration')
+    passedChecks.push('invalid daemon token rejected')
 
     await expectCloseAfterSend(url, {
       kind: 'daemon_register',
       registration: daemonRegistration({ token: clientAToken, daemonId: 'daemon-client-token', machineId: 'machine-client-token' }).registration,
     }, 'client token daemon registration')
+    passedChecks.push('client token rejected for daemon registration')
 
     await expectCloseAfterSend(url, {
       kind: 'client_connect',
       auth_token: 'invalid-client-token',
       target: { daemon_id: 'daemon-a', daemon_alias: null },
     }, 'unpaired client connect')
+    passedChecks.push('invalid client token rejected')
 
     await expectCloseAfterSend(url, {
       kind: 'client_metadata_request',
@@ -250,18 +285,21 @@ async function main() {
       auth_token: daemonAToken,
       query: { kind: 'list_live_machines' },
     }, 'daemon token metadata query')
+    passedChecks.push('daemon token rejected for metadata')
 
     await expectCloseAfterSend(url, {
       kind: 'client_connect',
       auth_token: expiredClientToken,
       target: { daemon_id: 'daemon-a', daemon_alias: null },
     }, 'expired/revoked client connect')
+    passedChecks.push('expired client token rejected')
 
     await expectCloseAfterSend(url, {
       kind: 'client_connect',
       auth_token: clientAToken,
       target: { daemon_id: 'daemon-b', daemon_alias: null },
     }, 'cross-realm client route')
+    passedChecks.push('cross-realm client route rejected')
 
     const clientB = await connect(url)
     const metadataBPromise = nextJson(clientB, 'realm B metadata')
@@ -274,14 +312,39 @@ async function main() {
     const metadataB = await metadataBPromise
     requireCondition(metadataB.machines?.length === 1, 'realm B metadata leaked or missed machines', metadataB)
     requireCondition(metadataB.machines[0].machine_id === 'machine-b', 'realm B metadata returned the wrong machine', metadataB)
+    passedChecks.push('realm B metadata isolated to machine B')
 
     console.log('live relay identity security drill passed')
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    relay.kill('SIGTERM')
-    await sleep(200)
-    if (relay.exitCode == null) relay.kill('SIGKILL')
+    if (relay) {
+      relay.kill('SIGTERM')
+      await sleep(200)
+      if (relay.exitCode == null) relay.kill('SIGKILL')
+    }
     if (process.env.ARROBA_DEBUG_DRILL === '1' && stderr.trim()) {
       console.error(stderr)
+    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'relay-identity-security',
+        url,
+        port,
+        issuer,
+        passedChecks,
+        relayStderrTail: stderr.slice(-4000),
+      },
+      log: (name, details) => console.log(`[relay-identity-security-drill] ${name}`, JSON.stringify(details)),
+    })
+    if (!succeeded && options.keepArtifactsOnFailure) {
+      console.error(`[relay-identity-security-drill] artifacts retained at ${rootDir}`)
     }
   }
 }
