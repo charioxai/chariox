@@ -103,6 +103,17 @@ async function handleWorkspaceSyncCommand(
     deps.flashFooter(`workspace live sync ${status.footer_state}`, "info")
     return
   }
+  if (action === "doctor") {
+    if (!deps.getWorkspaceLiveSyncStatus) {
+      deps.flashFooter("workspace live sync status is not available", "error")
+      return
+    }
+    const status = await deps.getWorkspaceLiveSyncStatus()
+    deps.setWorkspaceLiveSyncStatus?.(status)
+    deps.appendNotice(formatWorkspaceLiveSyncDoctor(status))
+    deps.flashFooter(`workspace live sync doctor: ${workspaceLiveSyncHealthLabel(status)}`, "info")
+    return
+  }
   if (action === "targets") {
     if (!deps.getWorkspaceLiveSyncStatus) {
       deps.flashFooter("workspace live sync status is not available", "error")
@@ -195,7 +206,7 @@ async function handleWorkspaceSyncCommand(
     })
     return
   }
-  deps.flashFooter("usage: /workspace sync status|targets|conflicts|ignore|audit|off|managed|tracked|default|link", "error")
+  deps.flashFooter("usage: /workspace sync status|doctor|targets|conflicts|ignore|audit|off|managed|tracked|default|link", "error")
 }
 
 async function applyWorkspaceLiveSyncModeChange(
@@ -395,6 +406,33 @@ function formatWorkspaceLiveSyncConflicts(status: WorkspaceLiveSyncStatus): stri
   )).join("\n")
 }
 
+function formatWorkspaceLiveSyncDoctor(status: WorkspaceLiveSyncStatus): string {
+  const health = workspaceLiveSyncHealthLabel(status)
+  const next = workspaceLiveSyncNextAction(status)
+  const lines = [
+    `Workspace live sync doctor: ${health}`,
+    `Mode: ${status.mode}`,
+    `Footer: ${status.footer_state}`,
+    "Scope: selected workspace/worktree only; other repositories are unrestricted",
+    `Groups: ${status.sync_groups.length}`,
+    `Targets: ${status.targets.length}`,
+    `Ready targets: ${status.sync_groups.reduce((sum, group) => sum + group.ready_targets, 0)}`,
+    `Degraded targets: ${status.sync_groups.reduce((sum, group) => sum + group.degraded_targets, 0)}`,
+    `Conflicted targets: ${status.sync_groups.reduce((sum, group) => sum + group.conflicted_targets, 0)}`,
+    `Conflicts: ${status.conflicts.length}`,
+  ]
+  const problems = workspaceLiveSyncProblems(status)
+  if (problems.length > 0) {
+    lines.push("Problems:")
+    lines.push(...problems.map((problem) => `- ${problem}`))
+  } else {
+    lines.push("Problems: none")
+  }
+  if (next) lines.push(`Next: ${next}`)
+  lines.push("Inspect: /workspace sync targets; /workspace sync conflicts; /workspace sync ignore; /workspace sync audit")
+  return lines.join("\n")
+}
+
 export function formatWorkspaceLiveSyncAudit(events: readonly RecallEvent[]): string {
   if (events.length === 0) {
     return "No workspace live sync audit events.\nNext: change mode with /workspace sync off|managed|tracked, then rerun /workspace sync audit"
@@ -462,6 +500,37 @@ function workspaceLiveSyncNextAction(status: WorkspaceLiveSyncStatus): string {
     return "wait for sync to settle, or inspect /workspace sync targets"
   }
   return ""
+}
+
+function workspaceLiveSyncHealthLabel(status: WorkspaceLiveSyncStatus): string {
+  if (status.conflicts.length > 0 || status.footer_state === "conflict") return "conflict"
+  if (status.sync_groups.some((group) => group.degraded_targets > 0) || status.targets.some((target) => target.status === "degraded")) return "degraded"
+  if (status.mode === "unrestricted" || status.footer_state === "off") return "off"
+  if (status.targets.length === 0) return "no-targets"
+  if (status.footer_state === "syncing") return "syncing"
+  return "healthy"
+}
+
+function workspaceLiveSyncProblems(status: WorkspaceLiveSyncStatus): string[] {
+  const problems: string[] = []
+  if (status.mode === "unrestricted" || status.footer_state === "off") {
+    problems.push("live sync is off for this session")
+  }
+  if (status.targets.length === 0 && status.mode !== "unrestricted") {
+    problems.push("no synced worktrees or remote attachments are linked")
+  }
+  for (const group of status.sync_groups) {
+    if (group.degraded_targets > 0) {
+      problems.push(`${group.group_name} has ${group.degraded_targets} degraded target${group.degraded_targets === 1 ? "" : "s"}`)
+    }
+    if (group.conflicted_targets > 0) {
+      problems.push(`${group.group_name} has ${group.conflicted_targets} conflicted target${group.conflicted_targets === 1 ? "" : "s"}`)
+    }
+  }
+  for (const conflict of status.conflicts) {
+    problems.push(`${conflict.path} blocked on ${conflict.target_user_id}:${conflict.target_repo_root}`)
+  }
+  return problems
 }
 
 async function attachWorkspaceLink(

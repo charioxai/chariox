@@ -106,6 +106,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   })
 
   await runWorkspace(deps, "/workspace sync status")
+  await runWorkspace(deps, "/workspace sync doctor")
   await runWorkspace(deps, "/workspace sync targets")
   await runWorkspace(deps, "/workspace sync conflicts")
   await runWorkspace(deps, "/workspace sync ignore")
@@ -122,20 +123,27 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[0] ?? "", /Next: inspect \/workspace sync conflicts, ask an agent to reconcile, then rerun \/workspace sync status/)
   assert.match(notices[0] ?? "", /Rules: ignored\/\*\*, \*\.secret/)
   assert.match(notices[0] ?? "", /Force excludes: \.git\/\*\*, \.arroba\/\*\*/)
-  assert.match(notices[1] ?? "", /conflict shared: user-2 \/repo\/peer branch=main machine=machine-2 kernel=kernel-2/)
-  assert.match(notices[1] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
-  assert.match(notices[1] ?? "", /Next: inspect \/workspace sync conflicts/)
-  assert.match(notices[2] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
-  assert.match(notices[3] ?? "", /Ignore file: \.arrobaignore/)
-  assert.match(notices[3] ?? "", /rule ignored\/\*\*/)
-  assert.match(notices[3] ?? "", /rule \*\.secret/)
-  assert.match(notices[3] ?? "", /force-exclude \.git\/\*\*/)
-  assert.match(notices[4] ?? "", /Workspace live sync audit: 1/)
-  assert.match(notices[4] ?? "", /2026-06-02T12:00:00.000Z managed -> tracked by user-1 via Local/)
-  assert.match(notices[4] ?? "", /scope=selected_workspace_worktree; other_repositories=unrestricted/)
-  assert.match(notices[4] ?? "", /caller=Client client=cli-1 machine=machine-1 worktree=\/repo\/main/)
-  assert.match(notices[4] ?? "", /Next: use \/workspace sync status/)
+  assert.match(notices[1] ?? "", /Workspace live sync doctor: conflict/)
+  assert.match(notices[1] ?? "", /Scope: selected workspace\/worktree only; other repositories are unrestricted/)
+  assert.match(notices[1] ?? "", /Problems:/)
+  assert.match(notices[1] ?? "", /shared has 1 conflicted target/)
+  assert.match(notices[1] ?? "", /src\/app\.ts blocked on user-2:\/repo\/peer/)
+  assert.match(notices[1] ?? "", /Inspect: \/workspace sync targets; \/workspace sync conflicts; \/workspace sync ignore; \/workspace sync audit/)
+  assert.match(notices[2] ?? "", /conflict shared: user-2 \/repo\/peer branch=main machine=machine-2 kernel=kernel-2/)
+  assert.match(notices[2] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
+  assert.match(notices[2] ?? "", /Next: inspect \/workspace sync conflicts/)
+  assert.match(notices[3] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
+  assert.match(notices[4] ?? "", /Ignore file: \.arrobaignore/)
+  assert.match(notices[4] ?? "", /rule ignored\/\*\*/)
+  assert.match(notices[4] ?? "", /rule \*\.secret/)
+  assert.match(notices[4] ?? "", /force-exclude \.git\/\*\*/)
+  assert.match(notices[5] ?? "", /Workspace live sync audit: 1/)
+  assert.match(notices[5] ?? "", /2026-06-02T12:00:00.000Z managed -> tracked by user-1 via Local/)
+  assert.match(notices[5] ?? "", /scope=selected_workspace_worktree; other_repositories=unrestricted/)
+  assert.match(notices[5] ?? "", /caller=Client client=cli-1 machine=machine-1 worktree=\/repo\/main/)
+  assert.match(notices[5] ?? "", /Next: use \/workspace sync status/)
   assert.deepEqual(statusUpdates, [
+    "conflict",
     "conflict",
     "conflict",
     "conflict",
@@ -166,7 +174,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   await runWorkspace(deps, "/workspace sync targets")
   assert.match(notices[0] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
   assert.doesNotMatch(notices[0] ?? "", /No workspace live sync targets/)
-  assert.equal(statusUpdates.length, 9)
+  assert.equal(statusUpdates.length, 10)
 })
 
 test("workspace sync audit renders empty state", async () => {

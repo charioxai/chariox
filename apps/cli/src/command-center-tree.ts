@@ -357,6 +357,7 @@ export const COMMAND_TREE: CommandNode[] = [
       { id: "workspace-link-attach", label: "link attach", description: "Attach the current worktree to a link", value: "/workspace link attach " },
       { id: "workspace-link-detach", label: "link detach", description: "Detach the current worktree from a link", value: "/workspace link detach " },
       { id: "workspace-sync-status", label: "sync status", description: "Show workspace live sync status and ignore rules", value: "/workspace sync status" },
+      { id: "workspace-sync-doctor", label: "sync doctor", description: "Diagnose workspace live sync health, blockers, and recovery commands", value: "/workspace sync doctor" },
       { id: "workspace-sync-targets", label: "sync targets", description: "List workspace live sync targets", value: "/workspace sync targets" },
       { id: "workspace-sync-conflicts", label: "sync conflicts", description: "List workspace live sync conflicts", value: "/workspace sync conflicts" },
       { id: "workspace-sync-ignore", label: "sync ignore", description: "Show workspace live sync ignore rules", value: "/workspace sync ignore" },
