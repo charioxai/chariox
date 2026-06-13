@@ -17,6 +17,7 @@ function parseArgs(argv) {
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
     remote: false,
+    unlockPolicy: "ttl",
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -24,12 +25,16 @@ function parseArgs(argv) {
     else if (arg === "--poll-ms") options.pollMs = Number(argv[++i])
     else if (arg === "--keep-artifacts-on-failure") options.keepArtifactsOnFailure = true
     else if (arg === "--remote") options.remote = true
+    else if (arg === "--unlock-policy") options.unlockPolicy = argv[++i]
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: node apps/cli/scripts/live-vault-unlock-tui-drill.mjs [--remote] [--timeout-ms 120000]")
+      console.log("Usage: node apps/cli/scripts/live-vault-unlock-tui-drill.mjs [--remote] [--unlock-policy ttl|always] [--timeout-ms 120000]")
       process.exit(0)
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
+  }
+  if (!["ttl", "always"].includes(options.unlockPolicy)) {
+    throw new Error(`unsupported --unlock-policy ${options.unlockPolicy}`)
   }
   return options
 }
@@ -315,7 +320,7 @@ async function main() {
       'backend = "arroba_encrypted"',
       `service = "arroba-vault-tui-${process.pid}"`,
       `path = "${path.join(rootDir, "vault", "vault.db").replaceAll("\\", "\\\\")}"`,
-      'unlock_policy = "ttl"',
+      `unlock_policy = "${options.unlockPolicy}"`,
       "default_ttl_minutes = 30",
       "max_ttl_minutes = 240",
       'agent_management = "allow"',
@@ -387,25 +392,38 @@ async function main() {
       throw new Error(`unlock interaction was not secret input: ${JSON.stringify(firstUnlock.interaction)}`)
     }
     await automation.send("interaction_custom_reply", { interactionId: firstUnlock.interaction.id, reply: passphrase })
-    await automation.send("interaction_move", { delta: 1 })
+    if (options.unlockPolicy !== "always") {
+      await automation.send("interaction_move", { delta: 1 })
+    }
     await automation.send("interaction_submit")
     await unwrapRequest(firstSet, "first vault secret set")
-    const unlocked = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
-    if (unlocked.unlocked !== true) throw new Error(`vault should be unlocked after TUI response: ${JSON.stringify(unlocked)}`)
+    const firstStatus = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
+    if (options.unlockPolicy === "always") {
+      if (firstStatus.unlocked !== false) {
+        throw new Error(`always policy should lock after one operation: ${JSON.stringify(firstStatus)}`)
+      }
+    } else if (firstStatus.unlocked !== true) {
+      throw new Error(`vault should be unlocked after TUI response: ${JSON.stringify(firstStatus)}`)
+    }
     log("unlock-passed", { choices: firstUnlock.interaction.choices?.map((choice) => choice.id) })
 
-    const manage = requestResult(client.send(requests.manageCredentialVaultRequest(sessionId, agentId)))
-    const manageInteraction = await waitForInteraction(automation, agentId, "Arroba Vault Unlocked", options.timeoutMs, options.pollMs)
-    await automation.send("interaction_move", { delta: 1 })
-    await automation.send("interaction_submit")
-    await unwrapRequest(manage, "vault manage")
-    const extended = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
-    if (extended.unlocked !== true) throw new Error(`vault should remain unlocked after extend: ${JSON.stringify(extended)}`)
-    log("manage-passed", { choices: manageInteraction.interaction.choices?.map((choice) => choice.id) })
+    let manageInteraction = null
+    let extended = null
+    let locked = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
+    if (options.unlockPolicy !== "always") {
+      const manage = requestResult(client.send(requests.manageCredentialVaultRequest(sessionId, agentId)))
+      manageInteraction = await waitForInteraction(automation, agentId, "Arroba Vault Unlocked", options.timeoutMs, options.pollMs)
+      await automation.send("interaction_move", { delta: 1 })
+      await automation.send("interaction_submit")
+      await unwrapRequest(manage, "vault manage")
+      extended = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
+      if (extended.unlocked !== true) throw new Error(`vault should remain unlocked after extend: ${JSON.stringify(extended)}`)
+      log("manage-passed", { choices: manageInteraction.interaction.choices?.map((choice) => choice.id) })
 
-    await client.send(requests.lockCredentialVaultRequest())
-    const locked = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
-    if (locked.unlocked !== false) throw new Error(`vault should be locked after lock: ${JSON.stringify(locked)}`)
+      await client.send(requests.lockCredentialVaultRequest())
+      locked = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
+      if (locked.unlocked !== false) throw new Error(`vault should be locked after lock: ${JSON.stringify(locked)}`)
+    }
 
     const secondSet = requestResult(client.send(requests.setCredentialSecretRequest("m26-tui-secret-2", "m26-tui-secret-value-2", { sessionId, agentId })))
     const secondUnlock = await waitForInteraction(automation, agentId, "Unlock Arroba Vault", options.timeoutMs, options.pollMs)
@@ -419,9 +437,11 @@ async function main() {
       sessionId,
       agentId,
       firstUnlockChoices: firstUnlock.interaction.choices?.map((choice) => choice.id) ?? [],
-      manageChoices: manageInteraction.interaction.choices?.map((choice) => choice.id) ?? [],
+      manageChoices: manageInteraction?.interaction.choices?.map((choice) => choice.id) ?? [],
       secondUnlockChoices: secondUnlock.interaction.choices?.map((choice) => choice.id) ?? [],
-      unlocked,
+      unlockPolicy: options.unlockPolicy,
+      firstStatus,
+      locked,
       extended,
     }, null, 2), "utf8")
     succeeded = true
