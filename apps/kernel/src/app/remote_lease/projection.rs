@@ -13,9 +13,8 @@ use arroba_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
 
-const REMOTE_COMPLETION_HARVEST_RETRY_DELAYS_MS: &[u64] = &[250, 500, 1_000, 2_000, 4_000];
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(10);
+    std::time::Duration::from_secs(60);
 
 impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn drain_leased_runtime_projection(
@@ -720,46 +719,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider_run_id: &str,
     ) {
         let relay_config = self.app.relay_config_for_remote_execution(remote_execution);
-        let mut attempt = 0usize;
-        let response = loop {
-            let response = self.app.block_on_relay_future(
-                send_peer_request_via_temporary_connection_with_timeout(
-                    &relay_config,
-                    ClientTarget {
-                        daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                        daemon_alias: None,
-                    },
-                    RelayPeerRequest::ObserveLeasedGitAfter {
-                        leased_agent_id: remote_execution.leased_agent_id.clone(),
-                        provider_run_id: provider_run_id.to_string(),
-                    },
-                    REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT,
-                ),
-            );
-            match response {
-                Err(error @ DaemonError::LocalTransport { .. })
-                    if attempt < REMOTE_COMPLETION_HARVEST_RETRY_DELAYS_MS.len() =>
-                {
-                    let delay_ms = REMOTE_COMPLETION_HARVEST_RETRY_DELAYS_MS[attempt];
-                    crate::logging::warn_with_fields(
-                        "daemon.remote_prompt_dispatch",
-                        "retrying projected remote completion observation harvest",
-                        serde_json::json!({
-                            "worker_kernel_id": remote_execution.worker_kernel_id,
-                            "leased_agent_id": remote_execution.leased_agent_id,
-                            "provider_run_id": provider_run_id,
-                            "attempt": attempt + 1,
-                            "next_attempt": attempt + 2,
-                            "delay_ms": delay_ms,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    attempt += 1;
-                }
-                other => break other,
-            }
-        };
+        let response = self.app.block_on_relay_future(
+            send_peer_request_via_temporary_connection_with_timeout(
+                &relay_config,
+                ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::ObserveLeasedGitAfter {
+                    leased_agent_id: remote_execution.leased_agent_id.clone(),
+                    provider_run_id: provider_run_id.to_string(),
+                },
+                REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT,
+            ),
+        );
         match response {
             Ok(RelayPeerResponse::LeasedGitObserved {
                 git_observations,

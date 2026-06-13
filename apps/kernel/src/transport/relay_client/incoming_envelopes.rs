@@ -103,15 +103,18 @@ pub(super) async fn handle_incoming_envelope(
             caller_identity: _,
             encrypted_event,
         } => {
-            if let Err(error) = handle_daemon_peer_event(router, encrypted_event).await {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "failed to handle relay peer event",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-            }
+            let router = Arc::clone(router);
+            tokio::spawn(async move {
+                if let Err(error) = handle_daemon_peer_event(&router, encrypted_event).await {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "failed to handle relay peer event",
+                        serde_json::json!({
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            });
         }
         RelayEnvelope::DaemonSubscribe {
             relay_request_id,
