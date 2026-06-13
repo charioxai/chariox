@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { historyOutlineText } from './lib/drill-history-outline.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -165,19 +166,6 @@ function oneOfVariant(response, keys) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
-}
-
-function historyOutlineText(outline) {
-  return (outline.agents ?? [])
-    .flatMap((agent) => agent.turns ?? [])
-    .flatMap((turn) => [
-      turn.user_prompt,
-      ...(turn.entries ?? []),
-      ...(turn.summary ? [turn.summary] : []),
-      ...(turn.blobs ?? []).map((blob) => ({ entry: { text: blob.summary } })),
-    ])
-    .map((row) => row?.entry?.text ?? '')
-    .join('\n')
 }
 
 function asArray(value) {
@@ -370,7 +358,10 @@ async function main() {
       await client.send(getSessionHistoryOutlineRequest(sessionId, [restoredAgent.id], 10)),
       'SessionHistoryOutline',
     )
-    assert(historyOutlineText(transcript).includes(historyMarker), 'session transcript did not retain completed prompt marker')
+    assert(
+      historyOutlineText(transcript, { includeUserPrompt: true }).includes(historyMarker),
+      'session transcript did not retain completed prompt marker',
+    )
     const search = await client.send(searchRecallRequest(historyMarker, { session_id: sessionId, limit: 10 }))
     assert(JSON.stringify(search).includes(historyMarker), 'recall search did not find completed prompt marker')
     log('restored-state-verified', {

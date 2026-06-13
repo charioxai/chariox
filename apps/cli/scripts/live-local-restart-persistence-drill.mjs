@@ -5,6 +5,7 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { historyOutlineText } from './lib/drill-history-outline.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -142,19 +143,6 @@ async function startDaemon(kernelBinary, env) {
 
 function agentByAlias(agents, alias) {
   return agents.find((agent) => agent.alias === alias)
-}
-
-function historyOutlineText(outline) {
-  return (outline.agents ?? [])
-    .flatMap((agent) => agent.turns ?? [])
-    .flatMap((turn) => [
-      turn.user_prompt,
-      ...(turn.entries ?? []),
-      ...(turn.summary ? [turn.summary] : []),
-      ...(turn.blobs ?? []).map((blob) => ({ entry: { text: blob.summary } })),
-    ])
-    .map((row) => row?.entry?.text ?? '')
-    .join('\n')
 }
 
 async function main() {
@@ -374,7 +362,7 @@ async function main() {
 
     const history = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [restoredWorker.id], 10)), 'SessionHistoryOutline')
     assert.equal(
-      historyOutlineText(history).includes(promptMarker),
+      historyOutlineText(history, { includeUserPrompt: true }).includes(promptMarker),
       true,
     )
     const search = unwrap(await client.send(searchRecallRequest(promptMarker, { session_id: sessionId, limit: 10 })), 'RecallEvents')

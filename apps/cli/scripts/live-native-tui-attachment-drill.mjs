@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
+import { historyOutlineText } from "./lib/drill-history-outline.mjs"
 
 import WebSocket from "ws"
 
@@ -148,15 +149,7 @@ async function waitForHistoryOutput(client, sessionId, attachmentId, agentId, ex
       await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 8)),
       "SessionHistoryOutline",
     )
-    const output = (outline.agents ?? [])
-      .flatMap((agent) => agent.turns ?? [])
-      .flatMap((turn) => [
-        ...(turn.entries ?? []),
-        ...(turn.summary ? [turn.summary] : []),
-        ...(turn.blobs ?? []).map((blob) => ({ entry: { text: blob.summary } })),
-      ])
-      .map((row) => row.entry?.text ?? "")
-      .join("")
+    const output = historyOutlineText(outline)
     if (output.includes(expected)) return output
     await sleep(1_000)
   }
