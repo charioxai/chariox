@@ -167,6 +167,7 @@ mod runtime_interaction_owned_state;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;
+mod runtime_vault_unlock_state;
 mod session;
 mod session_collaboration_state;
 mod session_lifecycle_runtime_state;

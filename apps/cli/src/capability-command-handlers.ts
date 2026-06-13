@@ -57,6 +57,9 @@ export type CapabilityCommandHandlerDeps = {
   listCredentials?: () => Promise<ArrobaCredentialConfig[]>
   getCredential?: (id: string) => Promise<ArrobaCredentialConfig>
   setCredentialSecret?: (key: string, value: string) => Promise<string>
+  getCredentialVaultStatus?: () => Promise<Record<string, unknown>>
+  lockCredentialVault?: () => Promise<Record<string, unknown>>
+  manageCredentialVault?: () => Promise<{ action: string; status: Record<string, unknown> }>
   readSecret?: (prompt: string) => Promise<string>
   registerCredential?: (sourcePath: string) => Promise<ArrobaCredentialConfig>
   removeCredential?: (id: string) => Promise<ArrobaCredentialConfig>
@@ -380,16 +383,6 @@ export async function handleEnvironmentSlashCommand(
     deps.flashFooter(`registered environment ${environment.name}`, "info")
     return
   }
-  if (action === "set") {
-    const key = command.args[1]
-    if (!key || !deps.setCredentialSecret) return deps.flashFooter("usage: /credential set <vault-key>", "error")
-    if (!deps.readSecret) return deps.flashFooter("credential set requires hidden input support", "error")
-    const value = await deps.readSecret(`credential ${key}: `)
-    if (!value) return deps.flashFooter("credential value must not be empty", "error")
-    await deps.setCredentialSecret(key, value)
-    deps.flashFooter(`credential ${key} stored in OS keychain`, "info")
-    return
-  }
   if (action === "remove" || action === "unregister") {
     const name = command.args[1]
     if (!name || !deps.removeEnvironment) return deps.flashFooter(`usage: /env ${action} <name>`, "error")
@@ -488,6 +481,42 @@ export async function handleCredentialSlashCommand(
     deps.flashFooter(`registered credential ${credential.id}`, "info")
     return
   }
+  if (action === "set") {
+    const key = command.args[1]
+    if (!key || !deps.setCredentialSecret) return deps.flashFooter("usage: /credential set <vault-key>", "error")
+    if (!deps.readSecret) return deps.flashFooter("credential set requires hidden input support", "error")
+    const value = await deps.readSecret(`credential ${key}: `)
+    if (!value) return deps.flashFooter("credential value must not be empty", "error")
+    await deps.setCredentialSecret(key, value)
+    deps.flashFooter(`credential ${key} stored in Arroba Vault`, "info")
+    return
+  }
+  if (action === "vault") {
+    const vaultAction = command.args[1] ?? "status"
+    if (vaultAction === "status") {
+      if (!deps.getCredentialVaultStatus) return deps.flashFooter("credential vault status is not available in this daemon", "error")
+      const status = await deps.getCredentialVaultStatus()
+      deps.appendNotice(JSON.stringify(status, null, 2))
+      deps.flashFooter(status.unlocked === true ? "vault unlocked" : "vault locked", "info")
+      return
+    }
+    if (vaultAction === "lock") {
+      if (!deps.lockCredentialVault) return deps.flashFooter("credential vault lock is not available in this daemon", "error")
+      const status = await deps.lockCredentialVault()
+      deps.appendNotice(JSON.stringify(status, null, 2))
+      deps.flashFooter("vault locked", "info")
+      return
+    }
+    if (vaultAction === "manage") {
+      if (!deps.manageCredentialVault) return deps.flashFooter("credential vault manage is not available in this daemon", "error")
+      const result = await deps.manageCredentialVault()
+      deps.appendNotice(JSON.stringify(result.status, null, 2))
+      deps.flashFooter(`vault ${result.action}`, "info")
+      return
+    }
+    deps.flashFooter("usage: /credential vault status|lock|manage", "error")
+    return
+  }
   if (action === "remove" || action === "unregister") {
     const id = command.args[1]
     if (!id || !deps.removeCredential) return deps.flashFooter(`usage: /credential ${action} <id>`, "error")
@@ -495,7 +524,7 @@ export async function handleCredentialSlashCommand(
     deps.flashFooter(`removed credential ${credential.id}`, "info")
     return
   }
-  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id>", "error")
+  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|lock|manage", "error")
 }
 
 export async function handleConnectorSlashCommand(

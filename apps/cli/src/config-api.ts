@@ -6,8 +6,12 @@ import type {
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import {
+  type CredentialVaultRequestContext,
+  getCredentialVaultStatusRequest,
   getUserConfigRequest,
   getUserConfigSchemaRequest,
+  lockCredentialVaultRequest,
+  manageCredentialVaultRequest,
   setWorkspaceLiveSyncModeRequest,
   setUserConfigValueRequest,
   setCredentialSecretRequest,
@@ -55,7 +59,31 @@ export async function setCredentialSecret(
   client: LocalIpcClient,
   key: string,
   value: string,
+  context: CredentialVaultRequestContext = {},
 ): Promise<string> {
-  const response = await client.send<Record<string, unknown>>(setCredentialSecretRequest(key, value))
+  const response = await client.send<Record<string, unknown>>(setCredentialSecretRequest(key, value, context))
   return expectVariant<{ key: string }>(response, "CredentialSecretStored").key
+}
+
+export async function getCredentialVaultStatus(
+  client: LocalIpcClient,
+): Promise<Record<string, unknown>> {
+  const response = await client.send<Record<string, unknown>>(getCredentialVaultStatusRequest())
+  return expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultStatus").status
+}
+
+export async function lockCredentialVault(
+  client: LocalIpcClient,
+): Promise<Record<string, unknown>> {
+  const response = await client.send<Record<string, unknown>>(lockCredentialVaultRequest())
+  return expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultLocked").status
+}
+
+export async function manageCredentialVault(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentId?: string | null,
+): Promise<{ action: string; status: Record<string, unknown> }> {
+  const response = await client.send<Record<string, unknown>>(manageCredentialVaultRequest(sessionId, agentId))
+  return expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultManaged")
 }

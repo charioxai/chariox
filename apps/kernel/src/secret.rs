@@ -19,9 +19,9 @@ use crate::error::DaemonError;
 mod vault;
 use vault::vault_store_for_config;
 pub use vault::{
-    arroba_encrypted_vault_status, extend_arroba_encrypted_vault, is_arroba_vault_locked_error,
-    lock_arroba_encrypted_vault, unlock_arroba_encrypted_vault, ArrobaVaultUnlockStatus,
-    CredentialVaultStore, VaultUnlockLease,
+    ArrobaVaultUnlockStatus, CredentialVaultStore, VaultUnlockLease, arroba_encrypted_vault_status,
+    clear_all_arroba_encrypted_vault_unlocks, extend_arroba_encrypted_vault,
+    is_arroba_vault_locked_error, lock_arroba_encrypted_vault, unlock_arroba_encrypted_vault,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -71,6 +71,8 @@ pub struct CredentialHttpResponse {
 pub struct RuntimeSecretService {
     credentials: Vec<UserCredentialConfig>,
     vault_service: String,
+    vault_backend: crate::config::CredentialVaultBackend,
+    vault_path: String,
     vault_store: Arc<dyn CredentialVaultStore>,
 }
 
@@ -109,6 +111,8 @@ impl RuntimeSecretService {
         Self {
             credentials,
             vault_service: vault_service.into(),
+            vault_backend: crate::config::CredentialVaultBackend::ProcessMemory,
+            vault_path: UserCredentialVaultConfig::default().path,
             vault_store,
         }
     }
@@ -117,11 +121,13 @@ impl RuntimeSecretService {
         credentials: Vec<UserCredentialConfig>,
         vault_config: &UserCredentialVaultConfig,
     ) -> Result<Self, DaemonError> {
-        Ok(Self::with_vault_store(
+        Ok(Self {
             credentials,
-            vault_config.service.clone(),
-            vault_store_for_config(vault_config)?,
-        ))
+            vault_service: vault_config.service.clone(),
+            vault_backend: vault_config.backend,
+            vault_path: vault_config.path.clone(),
+            vault_store: vault_store_for_config(vault_config)?,
+        })
     }
 
     pub fn credential_env_names(&self) -> BTreeSet<String> {
@@ -249,7 +255,7 @@ impl RuntimeSecretService {
                 return Err(secret_error(
                     "http_request_with_credential",
                     format!("unsupported HTTP method `{method}`"),
-                ))
+                ));
             }
         };
         for (name, value) in headers {
@@ -426,6 +432,7 @@ impl RuntimeSecretService {
             UserCredentialSourceConfig::Vault { key } => {
                 let service = self.vault_service_name()?;
                 let key = key.trim();
+                self.ensure_vault_cache_available()?;
                 if let Some(secret) = cached_vault_secret(service, key)? {
                     return Ok(secret);
                 }
@@ -453,6 +460,21 @@ impl RuntimeSecretService {
             ));
         }
         Ok(service)
+    }
+
+    fn ensure_vault_cache_available(&self) -> Result<(), DaemonError> {
+        if self.vault_backend != crate::config::CredentialVaultBackend::ArrobaEncrypted {
+            return Ok(());
+        }
+        let status = arroba_encrypted_vault_status(&self.vault_path)?;
+        if status.unlocked {
+            return Ok(());
+        }
+        clear_vault_secret_process_cache()?;
+        Err(DaemonError::LocalTransport {
+            operation: "credential_vault_locked",
+            message: format!("Arroba vault `{}` is locked", status.path.display()),
+        })
     }
 
     fn ensure_use_allowed(
@@ -672,6 +694,16 @@ fn forget_cached_vault_secret(service: &str, key: &str) -> Result<(), DaemonErro
     Ok(())
 }
 
+pub fn clear_vault_secret_process_cache() -> Result<(), DaemonError> {
+    vault_secret_process_cache()
+        .lock()
+        .map_err(|error| {
+            secret_error("credential_vault", format!("vault cache poisoned: {error}"))
+        })?
+        .clear();
+    Ok(())
+}
+
 fn vault_secret_process_cache() -> &'static Mutex<BTreeMap<(String, String), String>> {
     static CACHE: OnceLock<Mutex<BTreeMap<(String, String), String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -844,9 +876,11 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body_json, Some(serde_json::json!({ "ok": true })));
-        assert!(!serde_json::to_string(&response)
-            .unwrap()
-            .contains("test-secret"));
+        assert!(
+            !serde_json::to_string(&response)
+                .unwrap()
+                .contains("test-secret")
+        );
     }
 
     #[test]
@@ -882,9 +916,11 @@ mod tests {
             .expect_err("wrong host should be rejected");
 
         assert!(error.to_string().contains("not allowed for host"));
-        assert!(!error
-            .to_string()
-            .contains("ARROBA_TEST_SECRET_MISSING_TOKEN"));
+        assert!(
+            !error
+                .to_string()
+                .contains("ARROBA_TEST_SECRET_MISSING_TOKEN")
+        );
     }
 
     #[test]
@@ -908,9 +944,11 @@ mod tests {
             .expect_err("wrong browser host should be rejected before env secret read");
 
         assert!(error.to_string().contains("not allowed for host"));
-        assert!(!error
-            .to_string()
-            .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN"));
+        assert!(
+            !error
+                .to_string()
+                .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN")
+        );
     }
 
     #[test]
@@ -985,9 +1023,11 @@ mod tests {
         let error = service
             .browser_secret_input("browser_password")
             .expect_err("browser input should require browser injection");
-        assert!(error
-            .to_string()
-            .contains("not configured for browser input"));
+        assert!(
+            error
+                .to_string()
+                .contains("not configured for browser input")
+        );
         std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
     }
 
@@ -1031,10 +1071,12 @@ mod tests {
             Some(credential)
         );
         let resolving_service = RuntimeSecretService::with_vault_store(
-            vec![registry
-                .get("generated-browser-password")
-                .expect("credential should read")
-                .expect("credential should exist")],
+            vec![
+                registry
+                    .get("generated-browser-password")
+                    .expect("credential should read")
+                    .expect("credential should exist"),
+            ],
             "arroba-test",
             service.vault_store.clone(),
         );
@@ -1114,6 +1156,63 @@ mod tests {
                 .expect("warm cache should resolve without backing store read"),
             "generated-secret"
         );
+    }
+
+    #[test]
+    fn encrypted_vault_cache_is_not_readable_after_lock() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-encrypted-cache-lock-test-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("vault.json");
+        let config = UserCredentialVaultConfig {
+            backend: CredentialVaultBackend::ArrobaEncrypted,
+            service: format!(
+                "arroba-encrypted-cache-lock-test-{}",
+                crate::session::unix_epoch_ms()
+            ),
+            path: path.to_string_lossy().to_string(),
+            ..UserCredentialVaultConfig::default()
+        };
+        unlock_arroba_encrypted_vault(
+            &path,
+            "correct horse battery staple",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("vault should unlock");
+        let service = RuntimeSecretService::with_vault_config(
+            vec![UserCredentialConfig {
+                id: "generated-password".to_string(),
+                description: None,
+                source: UserCredentialSourceConfig::Vault {
+                    key: "generated-password".to_string(),
+                },
+                allowed_hosts: vec!["workspace".to_string()],
+                allowed_uses: vec![UserCredentialUse::Browser],
+                injection: UserCredentialInjectionConfig::Browser,
+                metadata: None,
+            }],
+            &config,
+        )
+        .expect("encrypted service should initialize");
+        service
+            .set_vault_secret("generated-password", "generated-secret")
+            .expect("vault write should succeed");
+        assert_eq!(
+            service
+                .browser_secret_input("generated-password")
+                .expect("warm cache should resolve while unlocked"),
+            "generated-secret"
+        );
+
+        lock_arroba_encrypted_vault(&path).expect("vault should lock");
+        let error = service
+            .browser_secret_input("generated-password")
+            .expect_err("locked encrypted vault must not read warm cache");
+        assert!(is_arroba_vault_locked_error(&error));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1208,8 +1307,10 @@ mod tests {
         let error = RuntimeSecretService::with_vault_config(Vec::new(), &config)
             .expect_err("home kernels should not use volatile process memory by accident");
 
-        assert!(error
-            .to_string()
-            .contains("only allowed inside Arroba slices"));
+        assert!(
+            error
+                .to_string()
+                .contains("only allowed inside Arroba slices")
+        );
     }
 }

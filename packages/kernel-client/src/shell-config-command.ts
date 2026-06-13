@@ -4,9 +4,12 @@ import type {
 } from "./kernel-types.js"
 import {
   deleteCredentialSecretRequest,
+  getCredentialVaultStatusRequest,
   getCredentialRequest,
   getUserConfigRequest,
   getUserConfigSchemaRequest,
+  lockCredentialVaultRequest,
+  manageCredentialVaultRequest,
   listCredentialsRequest,
   registerCredentialRequest,
   removeCredentialRequest,
@@ -16,6 +19,7 @@ import {
   upsertCredentialRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult } from "./shell-core.js"
+import type { ShellContext } from "./shell-core.js"
 import {
   configMutationMessage,
   formatConfigSchemaKeys,
@@ -105,8 +109,43 @@ function normalizeWorkspaceLiveSyncPolicy(value: string): "off" | "managed" | "t
 export async function executeCredentialCommand(
   parsed: ParsedShellCommand,
   deps: ShellConfigCommandDeps,
+  context: ShellContext = {
+    workspace: "",
+    worktree: "",
+    provider: "",
+    model: "",
+    effort: "",
+    variables: {},
+  },
 ): Promise<ShellCommandResult> {
   const [action, key, ...rest] = parsed.args
+  if (action === "vault") {
+    const vaultAction = key ?? "status"
+    if (vaultAction === "status") {
+      const response = await deps.client.send(getCredentialVaultStatusRequest())
+      const status = expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultStatus").status
+      return {
+        ok: true,
+        message: status.unlocked === true ? "vault unlocked" : "vault locked",
+        data: { status },
+        format: "json",
+      }
+    }
+    if (vaultAction === "lock") {
+      const response = await deps.client.send(lockCredentialVaultRequest())
+      const status = expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultLocked").status
+      return { ok: true, message: "vault locked", data: { status }, format: "json" }
+    }
+    if (vaultAction === "manage") {
+      if (!context.sessionId) {
+        return { ok: false, message: "credential vault manage requires an attached session" }
+      }
+      const response = await deps.client.send(manageCredentialVaultRequest(context.sessionId, context.agentId))
+      const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultManaged")
+      return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
+    }
+    return { ok: false, message: "usage: credential vault status|lock|manage" }
+  }
   if (!action || action === "list" || action === "ls") {
     const response = await deps.client.send(listCredentialsRequest())
     const credentials = expectVariant<{ credentials: Array<Record<string, unknown>> }>(response, "CredentialsListed").credentials
@@ -173,8 +212,8 @@ export async function executeCredentialCommand(
     if (!value) {
       return { ok: false, message: "credential value must not be empty" }
     }
-    await deps.client.send(setCredentialSecretRequest(key, value))
-    return { ok: true, message: `credential ${key} stored in OS keychain` }
+    await deps.client.send(setCredentialSecretRequest(key, value, credentialVaultContext(context)))
+    return { ok: true, message: `credential ${key} stored in Arroba Vault` }
   }
   if (action === "delete" || action === "remove" || action === "rm") {
     if (!key || rest.length > 0) {
@@ -185,10 +224,10 @@ export async function executeCredentialCommand(
       const credential = expectVariant<{ credential: { id: string } }>(response, "CredentialRemoved").credential
       return { ok: true, message: `removed credential ${credential.id}`, data: { credential } }
     }
-    await deps.client.send(deleteCredentialSecretRequest(key))
-    return { ok: true, message: `credential ${key} deleted from OS keychain` }
+    await deps.client.send(deleteCredentialSecretRequest(key, credentialVaultContext(context)))
+    return { ok: true, message: `credential ${key} deleted from Arroba Vault` }
   }
-  return { ok: false, message: "usage: credential list|show|register|upsert-json|remove|set|delete" }
+  return { ok: false, message: "usage: credential list|show|register|upsert-json|remove|set|delete|vault" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
@@ -196,4 +235,11 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
+}
+
+function credentialVaultContext(context: ShellContext) {
+  return {
+    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+    ...(context.agentId ? { agentId: context.agentId } : {}),
+  }
 }

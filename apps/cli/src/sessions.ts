@@ -45,6 +45,9 @@ export type SessionActivitySummary = {
   error_agent_count: number
   remote_agent_count?: number
   missing_worker_provider_run_count?: number
+  home_proxy_agent_count?: number
+  remote_extension_sync_issue_count?: number
+  remote_extension_pending_revoke_count?: number
 }
 
 export type SessionBootstrapDecision =

@@ -39,6 +39,7 @@ pub enum VaultUnlockLease {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrobaVaultUnlockStatus {
     pub path: PathBuf,
+    pub unlocked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
 }
@@ -176,7 +177,7 @@ pub fn unlock_arroba_encrypted_vault(
     validate_passphrase(passphrase)?;
     let now_ms = crate::session::unix_epoch_ms();
     let expires_at_ms = match lease {
-        VaultUnlockLease::Operation => Some(now_ms),
+        VaultUnlockLease::Operation => Some(now_ms + 5 * 60_000),
         VaultUnlockLease::TtlMinutes(minutes) => Some(now_ms + minutes.saturating_mul(60_000)),
         VaultUnlockLease::KernelShutdown => None,
     };
@@ -197,6 +198,7 @@ pub fn unlock_arroba_encrypted_vault(
         .insert(path.clone(), UnlockedVault { key, expires_at_ms });
     Ok(ArrobaVaultUnlockStatus {
         path,
+        unlocked: true,
         expires_at_ms,
     })
 }
@@ -229,6 +231,7 @@ pub fn extend_arroba_encrypted_vault(
     };
     Ok(ArrobaVaultUnlockStatus {
         path,
+        unlocked: true,
         expires_at_ms: vault.expires_at_ms,
     })
 }
@@ -237,22 +240,31 @@ pub fn arroba_encrypted_vault_status(
     path: impl AsRef<Path>,
 ) -> Result<ArrobaVaultUnlockStatus, DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
-    let expires_at_ms = unlocked_vaults()
+    let mut unlocked = unlocked_vaults()
         .lock()
-        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?
-        .get(&path)
-        .and_then(|vault| {
-            if vault.is_expired(crate::session::unix_epoch_ms()) {
-                None
-            } else {
-                Some(vault.expires_at_ms)
-            }
-        })
-        .flatten();
+        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    let (is_unlocked, expires_at_ms) = match unlocked.get(&path) {
+        Some(vault) if !vault.is_expired(now_ms) => (true, vault.expires_at_ms),
+        Some(_) => {
+            unlocked.remove(&path);
+            (false, None)
+        }
+        None => (false, None),
+    };
     Ok(ArrobaVaultUnlockStatus {
         path,
+        unlocked: is_unlocked,
         expires_at_ms,
     })
+}
+
+pub fn clear_all_arroba_encrypted_vault_unlocks() -> Result<(), DaemonError> {
+    unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?
+        .clear();
+    Ok(())
 }
 
 pub fn is_arroba_vault_locked_error(error: &DaemonError) -> bool {

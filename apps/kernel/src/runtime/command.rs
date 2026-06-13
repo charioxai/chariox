@@ -111,6 +111,8 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
     match request {
         LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({
             "SetCredentialSecret": {
+                "session_id": request.session_id,
+                "agent_id": request.agent_id,
                 "key": request.key,
                 "value": "[redacted]"
             }
@@ -316,6 +318,8 @@ mod tests {
             None,
             None,
             &LocalDaemonRequest::SetCredentialSecret(SetCredentialSecretRequest {
+                session_id: None,
+                agent_id: None,
                 key: "github-token".to_string(),
                 value: "super-secret".to_string(),
             }),
@@ -330,9 +334,11 @@ mod tests {
             command.payload["SetCredentialSecret"]["value"],
             "[redacted]"
         );
-        assert!(!serde_json::to_string(&command.payload)
-            .unwrap()
-            .contains("super-secret"));
+        assert!(
+            !serde_json::to_string(&command.payload)
+                .unwrap()
+                .contains("super-secret")
+        );
     }
 
     #[test]

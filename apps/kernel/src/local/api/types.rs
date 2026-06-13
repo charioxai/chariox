@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 138;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 139;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -226,6 +226,9 @@ pub enum LocalDaemonRequest {
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
     SetCredentialSecret(SetCredentialSecretRequest),
     DeleteCredentialSecret(DeleteCredentialSecretRequest),
+    GetCredentialVaultStatus(GetCredentialVaultStatusRequest),
+    LockCredentialVault(LockCredentialVaultRequest),
+    ManageCredentialVault(ManageCredentialVaultRequest),
     ListSlices(ListSlicesRequest),
     CreateSlice(CreateSliceRequest),
     GetSlice(SliceRefRequest),
@@ -688,6 +691,16 @@ pub enum LocalDaemonResponse {
     },
     CredentialSecretDeleted {
         key: String,
+    },
+    CredentialVaultStatus {
+        status: crate::secret::ArrobaVaultUnlockStatus,
+    },
+    CredentialVaultLocked {
+        status: crate::secret::ArrobaVaultUnlockStatus,
+    },
+    CredentialVaultManaged {
+        status: crate::secret::ArrobaVaultUnlockStatus,
+        action: String,
     },
     SlicesListed {
         slices: Vec<SliceRecord>,

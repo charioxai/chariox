@@ -43,6 +43,20 @@ impl LocalRequestMetadata {
         self
     }
 
+    fn optional_session(mut self, session_id: Option<&str>) -> Self {
+        if let Some(session_id) = session_id {
+            self.session_id = Some(session_id.to_string());
+        }
+        self
+    }
+
+    fn optional_agent(mut self, agent_id: Option<&str>) -> Self {
+        if let Some(agent_id) = agent_id {
+            self.agent_id = Some(agent_id.to_string());
+        }
+        self
+    }
+
     fn provider_run(mut self, provider_run_id: &str) -> Self {
         self.provider_run_id = Some(provider_run_id.to_string());
         self
@@ -90,6 +104,27 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::SetWorkspaceLiveSyncMode(request) => {
             LocalRequestMetadata::new("workspace_live_sync.mode", Normal)
                 .session(&request.session_id)
+        }
+        LocalDaemonRequest::SetCredentialSecret(request) => {
+            LocalRequestMetadata::new("credential.secret.set", Normal)
+                .optional_session(request.session_id.as_deref())
+                .optional_agent(request.agent_id.as_deref())
+        }
+        LocalDaemonRequest::DeleteCredentialSecret(request) => {
+            LocalRequestMetadata::new("credential.secret.delete", Normal)
+                .optional_session(request.session_id.as_deref())
+                .optional_agent(request.agent_id.as_deref())
+        }
+        LocalDaemonRequest::GetCredentialVaultStatus(_) => {
+            LocalRequestMetadata::new("credential_vault.status", Normal)
+        }
+        LocalDaemonRequest::LockCredentialVault(_) => {
+            LocalRequestMetadata::new("credential_vault.lock", Normal)
+        }
+        LocalDaemonRequest::ManageCredentialVault(request) => {
+            LocalRequestMetadata::new("credential_vault.manage", Interactive)
+                .session(&request.session_id)
+                .optional_agent(request.agent_id.as_deref())
         }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
@@ -351,6 +386,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UnsetUserConfigValue(_) => "config.unset",
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
+        LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
+        LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
+        LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",
         LocalDaemonRequest::RegisterCredential(_) => "credential.register",
         LocalDaemonRequest::UpsertCredential(_) => "credential.upsert",
         LocalDaemonRequest::RemoveCredential(_) => "credential.remove",

@@ -25,6 +25,25 @@ test("resolveInteractionChoiceSubmission submits regular choices", () => {
   })
 })
 
+test("resolveInteractionChoiceSubmission can attach custom replies to fixed choices", () => {
+  assert.deepEqual(resolveInteractionChoiceSubmission({
+    interaction: interaction({
+      custom_choice: {
+        id: "passphrase",
+        label: "Passphrase",
+        input_kind: "secret",
+      },
+    }),
+    selectedIndex: 0,
+    customReply: "vault-passphrase",
+  }), {
+    action: "submit",
+    selectedIndex: 0,
+    choiceId: "allow",
+    customReply: "vault-passphrase",
+  })
+})
+
 test("resolveInteractionChoiceSubmission validates custom replies", () => {
   const source = interaction({
     custom_choice: {

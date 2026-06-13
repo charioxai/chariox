@@ -69,6 +69,7 @@ export function resolveInteractionChoiceSubmission(options: {
     ? interaction.custom_choice
     : null
   const choice = customChoice ? null : interaction.choices[selectedIndex]
+  const fixedChoiceWithCustomReply = Boolean(choice && interaction.custom_choice && options.customReply)
   if (!choice) {
     if (!customChoice) {
       return { action: "unavailable" }
@@ -82,7 +83,7 @@ export function resolveInteractionChoiceSubmission(options: {
     action: "submit",
     selectedIndex,
     choiceId: customChoice?.id ?? choice!.id,
-    customReply: customChoice ? options.customReply : null,
+    customReply: customChoice || fixedChoiceWithCustomReply ? options.customReply : null,
   }
 }
 

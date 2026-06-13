@@ -159,6 +159,12 @@ impl KernelRuntimeState {
                 {
                     Some(secret) => secret,
                     None => {
+                        let _vault_unlock = self
+                            .ensure_vault_unlocked_for_provider_run(
+                                provider_run,
+                                "runtime_tool_paste_secret_to_slice",
+                            )
+                            .await?;
                         let user_config = self.owned.config_projection.snapshot().user_config;
                         let credentials = crate::credential::load_user_credentials()?;
                         let service = crate::secret::RuntimeSecretService::with_vault_config(

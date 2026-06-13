@@ -45,6 +45,8 @@ pub const SEND_SECRET_TO_TERMINAL_TOOL: &str = "arroba.send_secret_to_terminal";
 pub const SEND_SECRET_TO_TERMINAL_TOOL_ALIAS: &str = "send_secret_to_terminal";
 pub const PASTE_SECRET_TO_SLICE_TOOL: &str = "arroba.paste_secret_to_slice";
 pub const PASTE_SECRET_TO_SLICE_TOOL_ALIAS: &str = "paste_secret_to_slice";
+pub const MANAGE_CREDENTIAL_VAULT_TOOL: &str = "arroba.manage_credential_vault";
+pub const MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS: &str = "manage_credential_vault";
 pub const REQUEST_POPUP_TOOL: &str = "arroba.request_popup";
 pub const REQUEST_POPUP_TOOL_ALIAS: &str = "request_popup";
 pub const SLICE_SCREEN_STATUS_TOOL: &str = "arroba.slice_screen_status";
@@ -209,6 +211,12 @@ pub struct RegisterConnectorPathArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterConnectorAdapterPathArgs {
     pub path: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManageCredentialVaultArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1202,6 +1210,21 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: MANAGE_CREDENTIAL_VAULT_TOOL.to_string(),
+            description: "Check, lock, or request the Arroba Vault unlock/extend popup for the current session. Passphrases and secrets are never returned to the model.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "lock", "popup"],
+                        "description": "Defaults to popup. status returns locked/unlocked metadata; lock clears in-memory vault keys; popup asks the user to unlock, extend, lock, or dismiss."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
             description: "Request a synchronous Arroba popup in the current agent pane. The tool call blocks until the user answers or a timeout/default resolves it, then returns the selected reply.".to_string(),
             input_schema: serde_json::json!({
@@ -1316,6 +1339,7 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
         PASTE_SECRET_TO_SLICE_TOOL => PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
+        MANAGE_CREDENTIAL_VAULT_TOOL => MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS,
         REQUEST_POPUP_TOOL => REQUEST_POPUP_TOOL_ALIAS,
         _ => return None,
     };
@@ -1361,6 +1385,11 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_paste_secret_to_slice"
         | "mcp__arroba__paste_secret_to_slice"
         | "mcp__arroba__arroba_paste_secret_to_slice" => Some(PASTE_SECRET_TO_SLICE_TOOL),
+        MANAGE_CREDENTIAL_VAULT_TOOL
+        | MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS
+        | "arroba_manage_credential_vault"
+        | "mcp__arroba__manage_credential_vault"
+        | "mcp__arroba__arroba_manage_credential_vault" => Some(MANAGE_CREDENTIAL_VAULT_TOOL),
         REQUEST_POPUP_TOOL
         | REQUEST_POPUP_TOOL_ALIAS
         | "arroba_request_popup"

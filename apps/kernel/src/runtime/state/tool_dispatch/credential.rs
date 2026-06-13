@@ -31,6 +31,12 @@ impl KernelRuntimeState {
             }
             crate::transport::runtime_tools::CREATE_GENERATED_CREDENTIAL_TOOL => {
                 self.ensure_agent_can_manage_user_vault(provider_run)?;
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_provider_run(
+                        provider_run,
+                        "runtime_tool_create_generated_credential",
+                    )
+                    .await?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::CreateGeneratedCredentialArgs,
                 >(arguments)
@@ -70,6 +76,12 @@ impl KernelRuntimeState {
             }
             crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL => {
                 self.ensure_agent_can_manage_user_vault(provider_run)?;
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_provider_run(
+                        provider_run,
+                        "runtime_tool_request_credential_secret",
+                    )
+                    .await?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::RequestCredentialSecretArgs,
                 >(arguments)
@@ -194,15 +206,14 @@ impl KernelRuntimeState {
                                 .await;
                         });
                     }
-                    let resolution =
-                        resolution_rx
-                            .await
-                            .map_err(|error| DaemonError::LocalTransport {
-                                operation: "runtime_tool_request_credential_secret",
-                                message: format!(
+                    let resolution = resolution_rx.await.map_err(|error| {
+                        DaemonError::LocalTransport {
+                            operation: "runtime_tool_request_credential_secret",
+                            message: format!(
                                 "credential secret interaction dropped before resolution: {error}"
                             ),
-                            })?;
+                        }
+                    })?;
                     crate::provider::ProviderNativeInteractionResolution {
                         status: resolution.status.to_string(),
                         choice_id: resolution.choice_id,
@@ -253,6 +264,12 @@ impl KernelRuntimeState {
                 })
             }
             crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL => {
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_provider_run(
+                        provider_run,
+                        "runtime_tool_http_request_with_credential",
+                    )
+                    .await?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
                 >(arguments)
@@ -289,6 +306,12 @@ impl KernelRuntimeState {
                 })
             }
             crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_provider_run(
+                        provider_run,
+                        "runtime_tool_send_secret_to_terminal",
+                    )
+                    .await?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::SendSecretToTerminalArgs,
                 >(arguments)
@@ -313,6 +336,66 @@ impl KernelRuntimeState {
                         "target": "current_provider_run",
                     }),
                 })
+            }
+            crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManageCredentialVaultArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_manage_credential_vault",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let action = args.action.as_deref().unwrap_or("popup");
+                let user_config = self.owned.config_projection.snapshot().user_config;
+                let vault_path = user_config.credential_vault.path.clone();
+                match action {
+                    "status" => {
+                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "action": "status",
+                                "status": status,
+                            }),
+                        })
+                    }
+                    "lock" => {
+                        crate::secret::lock_arroba_encrypted_vault(&vault_path)?;
+                        crate::secret::clear_vault_secret_process_cache()?;
+                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "action": "locked",
+                                "status": status,
+                            }),
+                        })
+                    }
+                    "popup" => {
+                        let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                            DaemonError::LocalTransport {
+                                operation: "runtime_tool_manage_credential_vault",
+                                message: "provider run is not bound to an agent".to_string(),
+                            }
+                        })?;
+                        let (status, action) = self
+                            .manage_credential_vault_unlock(provider_run.session_id(), agent_id)
+                            .await?;
+                        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "action": action,
+                                "status": status,
+                            }),
+                        })
+                    }
+                    other => Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_manage_credential_vault",
+                        message: format!(
+                            "unsupported vault action `{other}`; expected status, lock, or popup"
+                        ),
+                    }),
+                }
             }
             crate::transport::runtime_tools::REQUEST_POPUP_TOOL => {
                 let args = serde_json::from_value::<
@@ -524,6 +607,13 @@ impl KernelRuntimeState {
                     &context.home_session_id,
                     &agent,
                 )?;
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_agent(
+                        &context.home_session_id,
+                        agent.id(),
+                        "runtime_tool_create_generated_credential",
+                    )
+                    .await?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::CreateGeneratedCredentialArgs,
                 >(arguments)
@@ -573,6 +663,13 @@ impl KernelRuntimeState {
                 .await
             }
             crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL => {
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_agent(
+                        &context.home_session_id,
+                        agent.id(),
+                        "runtime_tool_http_request_with_credential",
+                    )
+                    .await?;
                 let service = self.home_runtime_secret_service()?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
@@ -617,6 +714,60 @@ impl KernelRuntimeState {
                             .to_string(),
                 })
             }
+            crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::ManageCredentialVaultArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_manage_credential_vault",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let action = args.action.as_deref().unwrap_or("popup");
+                let user_config = self.owned.config_projection.snapshot().user_config;
+                let vault_path = user_config.credential_vault.path.clone();
+                match action {
+                    "status" => {
+                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "action": "status",
+                                "status": status,
+                            }),
+                        })
+                    }
+                    "lock" => {
+                        crate::secret::lock_arroba_encrypted_vault(&vault_path)?;
+                        crate::secret::clear_vault_secret_process_cache()?;
+                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "action": "locked",
+                                "status": status,
+                            }),
+                        })
+                    }
+                    "popup" => {
+                        let (status, action) = self
+                            .manage_credential_vault_unlock(&context.home_session_id, agent.id())
+                            .await?;
+                        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                            ok: true,
+                            payload: serde_json::json!({
+                                "action": action,
+                                "status": status,
+                            }),
+                        })
+                    }
+                    other => Err(DaemonError::LocalTransport {
+                        operation: "runtime_tool_manage_credential_vault",
+                        message: format!(
+                            "unsupported vault action `{other}`; expected status, lock, or popup"
+                        ),
+                    }),
+                }
+            }
             crate::transport::runtime_tools::REQUEST_POPUP_TOOL => Err(DaemonError::LocalTransport {
                 operation: "home credential proxy",
                 message: "request_popup is not a credential vault operation".to_string(),
@@ -634,7 +785,14 @@ impl KernelRuntimeState {
         credential_id: String,
         injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
     ) -> Result<(String, String), DaemonError> {
-        let _agent = self.authorize_home_credential_context(&context)?;
+        let agent = self.authorize_home_credential_context(&context)?;
+        let _vault_unlock = self
+            .ensure_vault_unlocked_for_agent(
+                &context.home_session_id,
+                agent.id(),
+                "home_credential_secret_resolve",
+            )
+            .await?;
         let service = self.home_runtime_secret_service()?;
         let secret_input = match injection {
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
@@ -655,6 +813,13 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         self.ensure_agent_can_manage_user_vault_for_agent(&context.home_session_id, agent)?;
+        let _vault_unlock = self
+            .ensure_vault_unlocked_for_agent(
+                &context.home_session_id,
+                agent.id(),
+                "runtime_tool_request_credential_secret",
+            )
+            .await?;
         let args = serde_json::from_value::<
             crate::transport::runtime_tools::RequestCredentialSecretArgs,
         >(arguments)
@@ -786,55 +951,11 @@ impl KernelRuntimeState {
         &self,
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let config = self.owned.config_projection.snapshot();
-        if config.daemon_id != context.home_kernel_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "credential request was sent to the wrong home kernel".to_string(),
-            });
-        }
-        let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
-        if agent.session_id() != context.home_session_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "agent does not belong to credential request session".to_string(),
-            });
-        }
-        let Some(remote_execution) = agent.remote_execution() else {
-            return Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "agent is not remote-backed".to_string(),
-            });
-        };
-        if remote_execution.leased_agent_id != context.leased_agent_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "leased agent does not match home agent binding".to_string(),
-            });
-        }
-        if context.worker_kernel_id.as_deref() != Some(remote_execution.worker_kernel_id.as_str()) {
-            return Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "worker kernel does not match home agent binding".to_string(),
-            });
-        }
-        if context.worker_machine_id.as_deref() != Some(remote_execution.worker_machine_id.as_str())
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "worker machine does not match home agent binding".to_string(),
-            });
-        }
-        if remote_execution.active_worker_provider_run_id.as_deref()
-            != Some(context.worker_provider_run_id.as_str())
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "worker provider run does not match active remote agent binding"
-                    .to_string(),
-            });
-        }
-        Ok(agent)
+        super::home_extension_authorizer::authorize_remote_home_context(
+            self,
+            context,
+            "home credential proxy",
+        )
     }
 
     fn home_runtime_secret_service(

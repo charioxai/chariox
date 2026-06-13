@@ -236,6 +236,45 @@ test("executeShellCommand stores credentials only through hidden reader", async 
   ])
 })
 
+test("executeShellCommand manages encrypted credential vault state", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GetCredentialVaultStatus" in request) {
+          return { CredentialVaultStatus: { status: { unlocked: false } } }
+        }
+        if ("ManageCredentialVault" in request) {
+          return { CredentialVaultManaged: { action: "extended_60m", status: { unlocked: true } } }
+        }
+        return { CredentialVaultLocked: { status: { unlocked: false } } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+
+  const statusResult = await executeShellCommand(parseShellCommand("credential vault status"), context, { client: fake.client })
+  const manageResult = await executeShellCommand(parseShellCommand("credential vault manage"), context, { client: fake.client })
+  const lockResult = await executeShellCommand(parseShellCommand("credential vault lock"), context, { client: fake.client })
+
+  assert.equal(statusResult.ok, true)
+  assert.equal(statusResult.message, "vault locked")
+  assert.equal(manageResult.ok, true)
+  assert.equal(manageResult.message, "vault extended_60m")
+  assert.equal(lockResult.ok, true)
+  assert.deepEqual(requests, [
+    { GetCredentialVaultStatus: null },
+    { ManageCredentialVault: { session_id: "session-1", agent_id: "agent-1" } },
+    { LockCredentialVault: null },
+  ])
+})
+
 test("executeShellCommand installs and updates MCP servers", async () => {
   const installed: ArrobaMcpServerConfig = {
     name: "playwright",

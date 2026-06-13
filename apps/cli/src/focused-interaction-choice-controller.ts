@@ -79,9 +79,11 @@ export function createFocusedInteractionChoiceController(
       return true
     }
     deps.setSelectedIndex(interaction.id, submitDecision.selectedIndex)
-    const submittedSecret = interaction.custom_choice
-      && submitDecision.selectedIndex === interactionCustomChoiceIndex(interaction)
-      && interaction.custom_choice.input_kind === "secret"
+    const submittedSecret = Boolean(
+      interaction.custom_choice
+        && submitDecision.customReply
+        && interaction.custom_choice.input_kind === "secret",
+    )
     if (submittedSecret) {
       deps.clearCustomReply(interaction.id)
       deps.setCustomEditing(interaction.id, false)

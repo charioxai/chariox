@@ -8,30 +8,42 @@ mod workspace_live_sync_tests {
     fn workspace_live_sync_specs_expose_read_and_edit_tools() {
         let specs = workspace_live_sync_runtime_tool_specs();
         assert!(specs.iter().any(|spec| spec.name == READ_ARTIFACT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == READ_ARTIFACT_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == READ_ARTIFACT_TOOL_ALIAS)
+        );
         assert!(specs.iter().any(|spec| spec.name == EDIT_ARTIFACT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == EDIT_ARTIFACT_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == EDIT_ARTIFACT_TOOL_ALIAS)
+        );
         assert!(!specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == PATCH_ARTIFACT_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == PATCH_ARTIFACT_TOOL_ALIAS)
+        );
         assert!(!specs.iter().any(|spec| spec.name == APPLY_PATCH_TOOL_ALIAS));
         assert!(specs.iter().any(|spec| spec.name == WRITE_ARTIFACT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == WRITE_ARTIFACT_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == WRITE_ARTIFACT_TOOL_ALIAS)
+        );
         assert!(specs.iter().any(|spec| spec.name == DELETE_ARTIFACT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == DELETE_ARTIFACT_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == DELETE_ARTIFACT_TOOL_ALIAS)
+        );
         assert!(specs.iter().any(|spec| spec.name == MOVE_ARTIFACT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == MOVE_ARTIFACT_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == MOVE_ARTIFACT_TOOL_ALIAS)
+        );
     }
 
     #[test]
@@ -40,21 +52,31 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == LIST_EXTENSIONS_TOOL));
         assert!(specs.iter().any(|spec| spec.name == REQUEST_EXTENSION_TOOL));
         assert!(specs.iter().any(|spec| spec.name == REGISTER_MCP_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REGISTER_SKILL_PATH_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REGISTER_ENVIRONMENT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REGISTER_SCRIPT_PATH_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REGISTER_CONNECTOR_PATH_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REGISTER_CONNECTOR_ADAPTER_PATH_TOOL));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == REGISTER_SKILL_PATH_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == REGISTER_ENVIRONMENT_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == REGISTER_SCRIPT_PATH_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == REGISTER_CONNECTOR_PATH_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == REGISTER_CONNECTOR_ADAPTER_PATH_TOOL)
+        );
         assert!(!specs.iter().any(|spec| spec.name == "list_extensions"));
         assert!(!specs.iter().any(|spec| spec.name == "request_extension"));
     }
@@ -71,9 +93,11 @@ mod workspace_live_sync_tests {
     #[test]
     fn workflow_specs_expose_agent_app_action_tool() {
         let specs = workflow_runtime_tool_specs();
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == AGENT_APP_ACTION_TOOL_QUALIFIED));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == AGENT_APP_ACTION_TOOL_QUALIFIED)
+        );
         assert_eq!(
             canonical_workflow_tool_name("mcp__arroba__arroba_agent_app_action"),
             Some(AGENT_APP_ACTION_TOOL)
@@ -94,77 +118,117 @@ mod workspace_live_sync_tests {
     #[test]
     fn slice_specs_expose_screen_input_and_ocr_tools() {
         let specs = slice_runtime_tool_specs();
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_SCREEN_STATUS_TOOL_ALIAS)
+        );
         assert!(specs.iter().any(|spec| spec.name == SLICE_SCREENSHOT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_SCREENSHOT_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_SCREENSHOT_TOOL_ALIAS)
+        );
         assert!(specs.iter().any(|spec| spec.name == SLICE_OCR_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_FIND_TEXT_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_MOUSE_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_KEYBOARD_TOOL));
         assert!(specs.iter().any(|spec| spec.name == SLICE_OPEN_URL_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_STATUS_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_STATUS_TOOL_ALIAS));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_FIND_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_FILL_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_CLICK_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_SUBMIT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_TEXT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_TEXT_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_IDLE_TOOL));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_STATUS_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_STATUS_TOOL_ALIAS)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_FIND_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_FILL_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_CLICK_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_SUBMIT_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_TEXT_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_TEXT_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == SLICE_BROWSER_WAIT_FOR_IDLE_TOOL)
+        );
     }
 
     #[test]
     fn credential_specs_expose_browser_secret_paste_tool() {
         let specs = credential_runtime_tool_specs();
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL_ALIAS));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS));
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == PASTE_SECRET_TO_SLICE_TOOL_ALIAS)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL)
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|spec| spec.name == REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS)
+        );
     }
 
     #[test]
@@ -251,6 +315,10 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_credential_tool_name("mcp__arroba__paste_secret_to_slice"),
             Some(PASTE_SECRET_TO_SLICE_TOOL)
+        );
+        assert_eq!(
+            canonical_credential_tool_name("manage_credential_vault"),
+            Some(MANAGE_CREDENTIAL_VAULT_TOOL)
         );
         assert_eq!(canonical_credential_tool_name("unknown"), None);
     }

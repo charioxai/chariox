@@ -1,13 +1,15 @@
 use crate::error::DaemonError;
 use crate::local::{
-    DeleteCredentialSecretRequest, GetUserConfigRequest, GetUserConfigSchemaRequest,
-    LocalDaemonRequest, LocalDaemonResponse, SetCredentialSecretRequest, SetUserConfigValueRequest,
-    SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest, UserConfigMutationEffect,
+    DeleteCredentialSecretRequest, GetCredentialVaultStatusRequest, GetUserConfigRequest,
+    GetUserConfigSchemaRequest, LocalDaemonRequest, LocalDaemonResponse,
+    LockCredentialVaultRequest, ManageCredentialVaultRequest, SetCredentialSecretRequest,
+    SetUserConfigValueRequest, SetWorkspaceLiveSyncModeRequest, UnsetUserConfigValueRequest,
+    UserConfigMutationEffect,
 };
-use crate::runtime::command::{command_caller_user_id, KernelCommand};
+use crate::runtime::command::{KernelCommand, command_caller_user_id};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::user_config_policy::{user_config_mutation_effects, UserConfigMutation};
+use crate::runtime::user_config_policy::{UserConfigMutation, user_config_mutation_effects};
 
 pub(crate) async fn execute_user_config_request(
     config_projection: &DaemonConfigProjectionStore,
@@ -32,10 +34,31 @@ pub(crate) async fn execute_user_config_request(
             execute_unset_user_config_value_request(runtime_state, request).await
         }
         LocalDaemonRequest::SetCredentialSecret(request) => {
-            execute_set_credential_secret_request(config_projection, request).await
+            execute_set_credential_secret_request(
+                config_projection,
+                runtime_state,
+                command,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::DeleteCredentialSecret(request) => {
-            execute_delete_credential_secret_request(config_projection, request).await
+            execute_delete_credential_secret_request(
+                config_projection,
+                runtime_state,
+                command,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::GetCredentialVaultStatus(request) => {
+            execute_get_credential_vault_status_request(config_projection, request).await
+        }
+        LocalDaemonRequest::LockCredentialVault(request) => {
+            execute_lock_credential_vault_request(config_projection, request).await
+        }
+        LocalDaemonRequest::ManageCredentialVault(request) => {
+            execute_manage_credential_vault_request(runtime_state, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "user config request",
@@ -133,8 +156,18 @@ async fn apply_user_config_mutation(
 
 pub(crate) async fn execute_set_credential_secret_request(
     config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
     request: SetCredentialSecretRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _vault_unlock = runtime_state
+        .ensure_vault_unlocked_for_command_context(
+            command,
+            request.session_id.as_deref(),
+            request.agent_id.as_deref(),
+            "credential_secret_set",
+        )
+        .await?;
     let user_config = config_projection.snapshot().user_config;
     let service = crate::secret::RuntimeSecretService::with_vault_config(
         Vec::new(),
@@ -146,8 +179,18 @@ pub(crate) async fn execute_set_credential_secret_request(
 
 pub(crate) async fn execute_delete_credential_secret_request(
     config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
     request: DeleteCredentialSecretRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _vault_unlock = runtime_state
+        .ensure_vault_unlocked_for_command_context(
+            command,
+            request.session_id.as_deref(),
+            request.agent_id.as_deref(),
+            "credential_secret_delete",
+        )
+        .await?;
     let user_config = config_projection.snapshot().user_config;
     let service = crate::secret::RuntimeSecretService::with_vault_config(
         Vec::new(),
@@ -155,4 +198,44 @@ pub(crate) async fn execute_delete_credential_secret_request(
     )?;
     service.delete_vault_secret(&request.key)?;
     Ok(LocalDaemonResponse::CredentialSecretDeleted { key: request.key })
+}
+
+pub(crate) async fn execute_get_credential_vault_status_request(
+    config_projection: &DaemonConfigProjectionStore,
+    _request: GetCredentialVaultStatusRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let status = credential_vault_status(config_projection)?;
+    Ok(LocalDaemonResponse::CredentialVaultStatus { status })
+}
+
+pub(crate) async fn execute_lock_credential_vault_request(
+    config_projection: &DaemonConfigProjectionStore,
+    _request: LockCredentialVaultRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let user_config = config_projection.snapshot().user_config;
+    let path = user_config.credential_vault.path.clone();
+    crate::secret::lock_arroba_encrypted_vault(&path)?;
+    crate::secret::clear_vault_secret_process_cache()?;
+    let status = crate::secret::arroba_encrypted_vault_status(&path)?;
+    Ok(LocalDaemonResponse::CredentialVaultLocked { status })
+}
+
+pub(crate) async fn execute_manage_credential_vault_request(
+    runtime_state: &KernelRuntimeState,
+    request: ManageCredentialVaultRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let (status, action) = runtime_state
+        .manage_credential_vault_unlock(
+            &request.session_id,
+            request.agent_id.as_deref().unwrap_or("vault"),
+        )
+        .await?;
+    Ok(LocalDaemonResponse::CredentialVaultManaged { status, action })
+}
+
+fn credential_vault_status(
+    config_projection: &DaemonConfigProjectionStore,
+) -> Result<crate::secret::ArrobaVaultUnlockStatus, DaemonError> {
+    let user_config = config_projection.snapshot().user_config;
+    crate::secret::arroba_encrypted_vault_status(&user_config.credential_vault.path)
 }

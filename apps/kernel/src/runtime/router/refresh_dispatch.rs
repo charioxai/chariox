@@ -62,7 +62,10 @@ impl CommandRouter {
             | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
-            | LocalDaemonRequest::DeleteCredentialSecret(_)) => {
+            | LocalDaemonRequest::DeleteCredentialSecret(_)
+            | LocalDaemonRequest::GetCredentialVaultStatus(_)
+            | LocalDaemonRequest::LockCredentialVault(_)
+            | LocalDaemonRequest::ManageCredentialVault(_)) => {
                 execute_user_config_request(
                     &self.config_projection,
                     &self.runtime_state,

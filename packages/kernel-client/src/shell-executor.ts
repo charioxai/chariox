@@ -82,7 +82,7 @@ export async function executeShellCommand(
     case "config":
       return executeConfigCommand(parsed, deps)
     case "credential":
-      return executeCredentialCommand(parsed, deps)
+      return executeCredentialCommand(parsed, deps, context)
     case "mcp":
       return executeMcpCommand(parsed, context, deps)
     case "skill":
