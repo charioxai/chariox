@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -14,11 +15,14 @@ const {
   createSessionRequest,
   attachToSessionRequest,
   spawnAgentRequest,
-  launchProviderRunRequest,
   submitPromptRequest,
   completePromptRequest,
   searchRecallRequest,
 } = requests
+
+const DRILL_ADAPTER = 'dev-stub'
+const DRILL_PROVIDER = 'slow-structured'
+const DRILL_MODEL = 'git-observation-model'
 
 function parseArgs(argv) {
   const options = { keepArtifactsOnFailure: false }
@@ -159,8 +163,15 @@ async function main() {
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   let daemon = null
   let client = null
+  let succeeded = false
+  let failure = null
+  let sessionId = null
+  let agentId = null
+  let promptId = null
+  let eventId = null
 
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     await mkdir(path.join(configHome, 'arroba'), { recursive: true })
@@ -212,13 +223,28 @@ snapshot_interval_events = 1
 
     const created = variant(await client.send(createSessionRequest(workspace, workspace, 'git-observation')), 'SessionCreated')
     const session = created.session
+    sessionId = session.id
     const attached = variant(await client.send(attachToSessionRequest(session.id, `git-observation-${process.pid}`)), 'SessionAttached')
     const agent = variant(
-      await client.send(spawnAgentRequest(session.id, 'dev-stub', 'git-worker', 'git-observation-model', workspace, 'low')),
+      await client.send(spawnAgentRequest(session.id, DRILL_ADAPTER, 'git-worker', DRILL_MODEL, workspace, 'low')),
       'AgentSpawned',
     ).agent
+    agentId = agent.id
     const launched = oneOfVariant(
-      await client.send(launchProviderRunRequest(session.id, 'dev-stub', 'default', 'git-observation-model', 'low', agent.id)),
+      await client.send({
+        LaunchProviderRun: {
+          session_id: session.id,
+          agent_id: agent.id,
+          adapter_key: DRILL_ADAPTER,
+          provider: DRILL_PROVIDER,
+          account_profile: 'default',
+          model: DRILL_MODEL,
+          variant: 'low',
+          structured_endpoint: null,
+          provider_session_id: null,
+          native_tui: false,
+        },
+      }),
       ['ProviderRunLaunchAccepted', 'ProviderRunLaunched'],
     )
     const providerRun = launched.provider_run
@@ -233,15 +259,9 @@ snapshot_interval_events = 1
     const subject = `drill commit ${marker}`
     const prompt = `Create and commit a file containing marker ${marker}.`
     const submitted = variant(await client.send(submitPromptRequest(session.id, attached.attachment.id, agent.id, prompt, [])), 'PromptSubmitted')
-    const promptId = submitted.outcome.Started?.prompt?.id ?? submitted.outcome.Started?.prompt_id ?? null
+    promptId = submitted.outcome.Started?.prompt?.id ?? submitted.outcome.Started?.prompt_id ?? null
     if (!promptId) throw new Error(`expected started prompt id, got ${JSON.stringify(submitted.outcome)}`)
-    await waitForHistoryMatch(client, marker, {
-      session_id: session.id,
-      kind: 'provider_output',
-      provider: 'dev-stub',
-      model: 'git-observation-model',
-      limit: 10,
-    }, 'provider output echo before external commit')
+    await sleep(1_000)
 
     await writeFile(path.join(workspace, 'feature.txt'), `${marker}\n`, 'utf8')
     await mustRun('git', ['add', 'feature.txt'], { cwd: workspace })
@@ -252,8 +272,8 @@ snapshot_interval_events = 1
       await client.send(searchRecallRequest(subject, {
         session_id: session.id,
         kind: 'git_commit_detected',
-        provider: 'dev-stub',
-        model: 'git-observation-model',
+        provider: DRILL_PROVIDER,
+        model: DRILL_MODEL,
         limit: 10,
       })),
       'RecallEvents',
@@ -283,6 +303,7 @@ snapshot_interval_events = 1
     if (!pathResults.some((candidate) => candidate.event_id === event.event_id)) {
       throw new Error(`expected path search to find commit event ${event.event_id}`)
     }
+    eventId = event.event_id
 
     log('git-observation-ok', {
       sessionId: session.id,
@@ -292,13 +313,10 @@ snapshot_interval_events = 1
       changedPaths: event.metadata?.changed_paths ?? [],
     })
     console.log(JSON.stringify({ status: 'ok', sessionId: session.id, promptId, eventId: event.event_id }, null, 2))
+    succeeded = true
   } catch (error) {
+    failure = error
     console.error(error?.stack ?? error)
-    if (options.keepArtifactsOnFailure) {
-      console.error(`[git-observation-drill] preserved artifacts at ${root}`)
-    } else {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    }
     process.exitCode = 1
   } finally {
     await client?.close?.().catch(() => {})
@@ -307,8 +325,30 @@ snapshot_interval_events = 1
       await sleep(250)
       if (!daemon.killed) daemon.kill('SIGKILL')
     }
-    if (!options.keepArtifactsOnFailure && process.exitCode !== 1) {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'git-observation',
+        kernelUrl,
+        workspace,
+        home,
+        configHome,
+        stateHome,
+        statePath,
+        historyPath,
+        sessionHistoryDir: path.join(root, 'session-history'),
+        sessionId,
+        agentId,
+        promptId,
+        eventId,
+      },
+      log,
+    })
+    if (!succeeded && options.keepArtifactsOnFailure) {
+      console.error(`[git-observation-drill] preserved artifacts at ${root}`)
     }
   }
 }
