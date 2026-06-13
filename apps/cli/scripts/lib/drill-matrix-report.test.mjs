@@ -73,6 +73,28 @@ test("reads and validates report files", async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+test("rejects malformed matrix reports", () => {
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    status: "unknown",
+  }), /invalid status/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    durationMs: -1,
+  }), /invalid durationMs/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [{ ...scenario("broken", "passed"), command: "" }],
+  }), /scenarios\[0\] is missing command/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [{ ...scenario("broken", "passed"), args: [1] }],
+  }), /scenarios\[0\] has invalid args/)
+})
+
 function matrixReport(overrides = {}) {
   return {
     schema: "arroba.drill.matrix.v1",

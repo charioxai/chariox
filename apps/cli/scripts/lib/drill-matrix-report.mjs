@@ -13,8 +13,23 @@ export function validateDrillMatrixReport(report, source = "report") {
   if (report.schema !== "arroba.drill.matrix.v1") {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(report.schema)}`)
   }
+  if (!nonEmptyString(report.matrix)) {
+    throw new Error(`${source} is missing matrix`)
+  }
+  if (!["passed", "failed", "dry-run"].includes(report.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
+  }
+  if (typeof report.dryRun !== "boolean") {
+    throw new Error(`${source} is missing dryRun`)
+  }
+  if (!Number.isFinite(report.durationMs) || report.durationMs < 0) {
+    throw new Error(`${source} has invalid durationMs`)
+  }
   if (!Array.isArray(report.scenarios)) {
     throw new Error(`${source} is missing scenarios`)
+  }
+  for (const [index, scenario] of report.scenarios.entries()) {
+    validateDrillMatrixScenario(scenario, `${source}.scenarios[${index}]`)
   }
 }
 
@@ -97,4 +112,44 @@ function nextActionForScenario(scenario) {
     return "inspect the expected-failure assertion; the scenario failed differently than planned"
   }
   return "inspect preserved drill artifacts and rerun the command recorded in this report"
+}
+
+function validateDrillMatrixScenario(scenario, source) {
+  if (!scenario || typeof scenario !== "object") {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!nonEmptyString(scenario.id)) {
+    throw new Error(`${source} is missing id`)
+  }
+  if (!nonEmptyString(scenario.description)) {
+    throw new Error(`${source} is missing description`)
+  }
+  if (!Array.isArray(scenario.requires) || !scenario.requires.every((value) => typeof value === "string")) {
+    throw new Error(`${source} has invalid requires`)
+  }
+  if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
+  }
+  if (typeof scenario.expectedFailure !== "boolean") {
+    throw new Error(`${source} is missing expectedFailure`)
+  }
+  if (scenario.classification !== null && typeof scenario.classification !== "string") {
+    throw new Error(`${source} has invalid classification`)
+  }
+  if (!Number.isFinite(scenario.durationMs) || scenario.durationMs < 0) {
+    throw new Error(`${source} has invalid durationMs`)
+  }
+  if (scenario.reason !== null && typeof scenario.reason !== "string") {
+    throw new Error(`${source} has invalid reason`)
+  }
+  if (!nonEmptyString(scenario.command)) {
+    throw new Error(`${source} is missing command`)
+  }
+  if (!Array.isArray(scenario.args) || !scenario.args.every((value) => typeof value === "string")) {
+    throw new Error(`${source} has invalid args`)
+  }
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0
 }
