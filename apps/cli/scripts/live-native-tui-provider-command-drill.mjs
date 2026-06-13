@@ -1,10 +1,11 @@
 import { spawn, execFile } from "node:child_process"
 import net from "node:net"
 import path from "node:path"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 import WebSocket from "ws"
 
@@ -13,7 +14,7 @@ import {
   attachToSessionRequest,
   createSessionRequest,
   endSessionRequest,
-  getSessionHistoryRequest,
+  getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
 } from "../dist/ipc-requests.js"
@@ -117,6 +118,22 @@ function startScreen(name, logDir, command, args, env) {
   ], { env, cwd: logDir })
 }
 
+async function finalizeProviderArtifacts({ root, provider, passed, failure, options, kernelUrl, logs }) {
+  await finalizeDrillArtifacts({
+    rootDir: root,
+    passed,
+    preserveOnFailure: options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_COMMAND_ARTIFACTS === "1",
+    failure,
+    metadata: {
+      drill: "native-tui-provider-command",
+      provider,
+      kernelUrl,
+      logs,
+    },
+    log: (name, details) => console.log(`[native-tui-provider-command-drill] ${name}`, JSON.stringify(details)),
+  })
+}
+
 async function waitForNamedAgent(client, sessionId, alias) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const agents = unwrap(await client.send(listAgentsRequest(sessionId)), "AgentsListed").agents ?? []
@@ -131,11 +148,18 @@ async function waitForHistoryOutput(client, sessionId, attachmentId, agentId, ex
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const page = unwrap(await client.send(getSessionHistoryRequest(sessionId, 300, 100_000, null, agentId)), "SessionHistory")
-    const output = page.entries
-      .map((row) => row.entry)
-      .filter((entry) => entry && entry.kind !== "user_prompt")
-      .map((entry) => entry.text ?? "")
+    const outline = unwrap(
+      await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 8)),
+      "SessionHistoryOutline",
+    )
+    const output = (outline.agents ?? [])
+      .flatMap((agent) => agent.turns ?? [])
+      .flatMap((turn) => [
+        ...(turn.entries ?? []),
+        ...(turn.summary ? [turn.summary] : []),
+        ...(turn.blobs ?? []).map((blob) => ({ entry: { text: blob.summary } })),
+      ])
+      .map((row) => row.entry?.text ?? "")
       .join("")
     if (output.includes(expected)) return output
     await sleep(1_000)
@@ -236,7 +260,10 @@ async function runCodex(options) {
   }
   const commandFile = path.join(root, "codex-command.txt")
   let daemon = null
+  let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
     daemon = spawn(kernelBinary, [], {
       cwd: repoRoot,
@@ -305,7 +332,11 @@ async function runCodex(options) {
       throw new Error(`codex provider command failed: ${JSON.stringify(commandResponse)}`)
     }
     await waitForFileContent(commandFile, "codex-provider-command")
+    succeeded = true
     return { provider, status: "ok", sessionId, threadId, proxyUrl, logs }
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await screenQuit(screenNative)
     if (daemon && daemon.exitCode == null) {
@@ -313,11 +344,7 @@ async function runCodex(options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_TUI_COMMAND_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && process.exitCode)) {
-      console.log(JSON.stringify({ provider, artifactsKept: root }))
-    } else {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    }
+    await finalizeProviderArtifacts({ root, provider, passed: succeeded, failure, options, kernelUrl, logs })
   }
 }
 
@@ -339,7 +366,10 @@ async function runOpenCode(options) {
   const commandMarker = `${marker}_OPENCODE_PROVIDER_COMMAND`
   let daemon = null
   let client = null
+  let succeeded = false
+  let failure = null
   try {
+    await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
     await mkdir(worktree, { recursive: true })
     await writeFile(path.join(worktree, "opencode.json"), JSON.stringify({
@@ -403,7 +433,11 @@ async function runOpenCode(options) {
       throw new Error("OpenCode provider command did not pass through native proxy")
     }
     await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, commandMarker)
+    succeeded = true
     return { provider, status: "ok", sessionId, providerSessionId, proxyUrl, commandName, logs }
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)
@@ -412,11 +446,7 @@ async function runOpenCode(options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (process.env.ARROBA_KEEP_NATIVE_TUI_COMMAND_ARTIFACTS === "1" || (options.keepArtifactsOnFailure && process.exitCode)) {
-      console.log(JSON.stringify({ provider, artifactsKept: root }))
-    } else {
-      await rm(root, { recursive: true, force: true }).catch(() => {})
-    }
+    await finalizeProviderArtifacts({ root, provider, passed: succeeded, failure, options, kernelUrl, logs })
   }
 }
 
