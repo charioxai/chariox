@@ -25,6 +25,42 @@ export async function runDistributedRuntimeMatrixReportsFor(options) {
   return [ossOutputDir, cloudOutputDir]
 }
 
+export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
+  generatedMatrixRoots = [],
+  validationSuiteArtifactIndexes = [],
+} = {}) {
+  return {
+    matrixReports: {
+      enabled: options.runMatrixReports === true,
+      roots: [...generatedMatrixRoots].map((item) => path.resolve(item)).sort(),
+      dryRun: options.matrixDryRun === true,
+      continueOnFailure: options.matrixContinueOnFailure === true,
+      commands: options.runMatrixReports === true
+        ? distributedRuntimeMatrixCommandsFor({
+          cloudOutputDir: distributedRuntimeMatrixOutputDirFor(options, "cloud"),
+          cloudRoot: options.cloudRoot,
+          commonArgs: [
+            ...(options.matrixDryRun ? ["--dry-run"] : []),
+            ...(options.matrixContinueOnFailure ? ["--continue-on-failure"] : []),
+          ],
+          ossOutputDir: distributedRuntimeMatrixOutputDirFor(options, "oss"),
+          ossRoot: options.ossRoot,
+        }).map(distributedRuntimeMatrixCommandSummary)
+        : [],
+    },
+    validationSuites: {
+      enabled: options.runValidationSuites === true,
+      artifactIndexes: [...validationSuiteArtifactIndexes].map((item) => path.resolve(item)).sort(),
+      outputRoots: options.runValidationSuites === true
+        ? [
+          distributedRuntimeValidationSuiteOutputDirFor(options, "cloud"),
+          distributedRuntimeValidationSuiteOutputDirFor(options, "oss"),
+        ].map((item) => path.resolve(item)).sort()
+        : [],
+    },
+  }
+}
+
 export function distributedRuntimeMatrixCommandsFor({
   cloudOutputDir,
   cloudRoot,
@@ -92,6 +128,16 @@ export function distributedRuntimeMatrixOutputDirFor(options, repo) {
     return path.join(options.ossRoot, ".artifacts", "drill-matrices", "distributed-runtime-gate")
   }
   return path.join(options.cloudRoot, ".artifacts", "drill-matrices", "distributed-runtime-gate")
+}
+
+export function distributedRuntimeMatrixCommandSummary(command) {
+  return {
+    artifactIndexPath: path.join(command.outputDir, `${path.basename(command.reportFileName, ".json")}-artifacts.json`),
+    args: [...command.args],
+    cwd: command.cwd,
+    reportPath: path.join(command.outputDir, command.reportFileName),
+    scriptPath: command.scriptPath,
+  }
 }
 
 export async function runDistributedRuntimeMatrixReportCommand({

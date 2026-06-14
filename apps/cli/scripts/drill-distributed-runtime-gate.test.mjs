@@ -47,6 +47,20 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
 
     assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
+    assert.deepEqual(report.generatedEvidence, {
+      matrixReports: {
+        commands: [],
+        continueOnFailure: false,
+        dryRun: false,
+        enabled: false,
+        roots: [],
+      },
+      validationSuites: {
+        artifactIndexes: [],
+        enabled: false,
+        outputRoots: [],
+      },
+    })
     assert.equal(report.checks.artifacts.status, "passed")
     assert.deepEqual(report.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
     assert.deepEqual(report.checks.artifacts.missingArtifactCoverageAreas, [])
@@ -228,6 +242,15 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
     assert.equal(report.checks.artifacts.aggregate.evidenceRepos.cloud, 1)
     assert.equal(report.checks.artifacts.aggregate.evidenceRepos.oss, 1)
     assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 2)
+    assert.deepEqual(report.generatedEvidence.validationSuites, {
+      artifactIndexes: expectedArtifactIndexes.sort(),
+      enabled: true,
+      outputRoots: [
+        path.join(validationSuiteOutputRoot, "cloud"),
+        path.join(validationSuiteOutputRoot, "oss"),
+      ].sort(),
+    })
+    assert.equal(report.generatedEvidence.matrixReports.enabled, false)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -240,6 +263,8 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     const cloudRoot = path.join(rootDir, "arroba-cloud")
     const matrixOutputRoot = path.join(rootDir, "generated-matrices")
     const validationSuiteOutputRoot = path.join(rootDir, "generated-validation-suites")
+    const outputPath = path.join(rootDir, "distributed-runtime-gate.json")
+    const artifactIndexPath = path.join(rootDir, "distributed-runtime-gate-artifacts.json")
     await writeFakeValidationSuiteScript({
       classification: "validation-suite",
       evidenceRepo: "oss",
@@ -265,9 +290,16 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "--run-matrix-reports",
       "--matrix-output-root",
       matrixOutputRoot,
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
       "--json",
     ])).stdout)
+    const fileReport = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
+    assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
     assert.equal(report.checks.artifacts.status, "passed")
     assert.equal(report.checks.matrices.status, "passed")
@@ -281,6 +313,26 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     assert.deepEqual(report.checks.matrices.missingScenarios, [])
     assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
     assert.equal(report.checks.matrices.aggregate.matrixNames["workspace-live-sync-matrix"], 1)
+    assert.equal(report.generatedEvidence.matrixReports.enabled, true)
+    assert.deepEqual(report.generatedEvidence.matrixReports.roots, [
+      path.join(matrixOutputRoot, "cloud"),
+      path.join(matrixOutputRoot, "oss"),
+    ].sort())
+    assert.equal(report.generatedEvidence.matrixReports.commands.length, 6)
+    assert.equal(report.generatedEvidence.matrixReports.commands[0].reportPath, path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix.json"))
+    assert.deepEqual(report.generatedEvidence.validationSuites.artifactIndexes, [
+      path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+    ].sort())
+    assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "validation-suite-run,matrix-report")
+    assert.equal(artifactIndex.metadata.generatedMatrixRoots, [
+      path.join(matrixOutputRoot, "cloud"),
+      path.join(matrixOutputRoot, "oss"),
+    ].sort().join(","))
+    assert.equal(artifactIndex.metadata.generatedValidationSuiteRoots, [
+      path.join(validationSuiteOutputRoot, "cloud"),
+      path.join(validationSuiteOutputRoot, "oss"),
+    ].sort().join(","))
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

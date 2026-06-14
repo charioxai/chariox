@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
+  distributedRuntimeGeneratedEvidenceSummaryFor,
   runDistributedRuntimeMatrixReportsFor,
   runDistributedRuntimeValidationSuitesFor,
 } from "./lib/drill-distributed-runtime-evidence.mjs"
@@ -100,6 +101,10 @@ async function main() {
     }
     const validationSuiteArtifactIndexes = await runDistributedRuntimeValidationSuitesFor(options)
     const generatedMatrixRoots = await runDistributedRuntimeMatrixReportsFor(options)
+    const generatedEvidence = distributedRuntimeGeneratedEvidenceSummaryFor(options, {
+      generatedMatrixRoots,
+      validationSuiteArtifactIndexes,
+    })
     const report = await runDrillValidationGate({
       artifactIndexes: [...options.artifactIndexes, ...validationSuiteArtifactIndexes],
       artifactRoots: artifactRootsFor(options),
@@ -128,15 +133,20 @@ async function main() {
       requiredProviders: options.requiredProviders,
       requiredScenarios: options.requiredScenarios,
     })
+    const outputReport = {
+      ...report,
+      generatedEvidence,
+    }
     if (options.outputPath) {
       await writeDrillJsonArtifactOutput({
         outputPath: options.outputPath,
         artifactIndexPath: options.outputArtifactIndexPath,
-        value: report,
+        value: outputReport,
         metadata: {
           drill: "distributed-runtime-gate",
           status: report.status,
           preset: "distributed-runtime",
+          ...generatedEvidenceMetadataFor(generatedEvidence),
           ossRoot: options.ossRoot,
           cloudRoot: options.cloudRoot,
           ...validationGateEvidenceSourceMetadata(report, {
@@ -148,11 +158,11 @@ async function main() {
       })
     }
     if (options.json) {
-      console.log(JSON.stringify(report, null, 2))
+      console.log(JSON.stringify(outputReport, null, 2))
     } else {
-      console.log(formatDrillValidationGateSummary(report))
+      console.log(formatDrillValidationGateSummary(outputReport))
     }
-    process.exitCode = drillValidationGateExitCode(report)
+    process.exitCode = drillValidationGateExitCode(outputReport)
   } finally {
     if (generatedBundleDir) {
       await rm(generatedBundleDir, { recursive: true, force: true }).catch(() => {})
@@ -320,6 +330,26 @@ function failureRootsFor(options) {
     )
   }
   return [...new Set(roots.map((item) => path.resolve(item)))].sort()
+}
+
+function generatedEvidenceKindsFor(generatedEvidence) {
+  const kinds = []
+  if (generatedEvidence.validationSuites.enabled) kinds.push("validation-suite-run")
+  if (generatedEvidence.matrixReports.enabled) kinds.push("matrix-report")
+  return kinds
+}
+
+function generatedEvidenceMetadataFor(generatedEvidence) {
+  const kinds = generatedEvidenceKindsFor(generatedEvidence)
+  return {
+    ...(kinds.length > 0 ? { generatedEvidenceKinds: kinds.join(",") } : {}),
+    ...(generatedEvidence.matrixReports.roots.length > 0
+      ? { generatedMatrixRoots: generatedEvidence.matrixReports.roots.join(",") }
+      : {}),
+    ...(generatedEvidence.validationSuites.outputRoots.length > 0
+      ? { generatedValidationSuiteRoots: generatedEvidence.validationSuites.outputRoots.join(",") }
+      : {}),
+  }
 }
 
 main().catch((error) => {

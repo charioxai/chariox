@@ -3,6 +3,7 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  distributedRuntimeGeneratedEvidenceSummaryFor,
   distributedRuntimeMatrixCommandsFor,
   distributedRuntimeMatrixOutputDirFor,
   distributedRuntimeValidationSuiteOutputDirFor,
@@ -97,4 +98,72 @@ test("builds distributed runtime generated evidence output directories", () => {
     distributedRuntimeValidationSuiteOutputDirFor({ ...options, validationSuiteOutputRoot: "/tmp/suites" }, "oss"),
     path.join("/tmp/suites", "oss"),
   )
+})
+
+test("builds distributed runtime generated evidence summary", () => {
+  const options = {
+    cloudRoot: "/repo/arroba-cloud",
+    matrixContinueOnFailure: true,
+    matrixDryRun: true,
+    matrixOutputRoot: "/tmp/matrices",
+    ossRoot: "/repo/arroba",
+    runMatrixReports: true,
+    runValidationSuites: true,
+    validationSuiteOutputRoot: "/tmp/suites",
+  }
+
+  const summary = distributedRuntimeGeneratedEvidenceSummaryFor(options, {
+    generatedMatrixRoots: ["/tmp/matrices/oss", "/tmp/matrices/cloud"],
+    validationSuiteArtifactIndexes: [
+      "/tmp/suites/oss/arroba-drill-artifacts.json",
+      "/tmp/suites/cloud/arroba-drill-artifacts.json",
+    ],
+  })
+
+  assert.equal(summary.matrixReports.enabled, true)
+  assert.equal(summary.matrixReports.dryRun, true)
+  assert.equal(summary.matrixReports.continueOnFailure, true)
+  assert.deepEqual(summary.matrixReports.roots, ["/tmp/matrices/cloud", "/tmp/matrices/oss"])
+  assert.equal(summary.matrixReports.commands.length, 6)
+  assert.deepEqual(summary.matrixReports.commands[0], {
+    artifactIndexPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix-artifacts.json"),
+    args: ["--dry-run", "--continue-on-failure", "--include-hetzner"],
+    cwd: "/repo/arroba",
+    reportPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix.json"),
+    scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
+  })
+  assert.deepEqual(summary.validationSuites, {
+    artifactIndexes: [
+      "/tmp/suites/cloud/arroba-drill-artifacts.json",
+      "/tmp/suites/oss/arroba-drill-artifacts.json",
+    ],
+    enabled: true,
+    outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
+  })
+})
+
+test("builds empty generated evidence summary when generation is disabled", () => {
+  const summary = distributedRuntimeGeneratedEvidenceSummaryFor({
+    cloudRoot: "/repo/arroba-cloud",
+    matrixContinueOnFailure: false,
+    matrixDryRun: false,
+    ossRoot: "/repo/arroba",
+    runMatrixReports: false,
+    runValidationSuites: false,
+  })
+
+  assert.deepEqual(summary, {
+    matrixReports: {
+      commands: [],
+      continueOnFailure: false,
+      dryRun: false,
+      enabled: false,
+      roots: [],
+    },
+    validationSuites: {
+      artifactIndexes: [],
+      enabled: false,
+      outputRoots: [],
+    },
+  })
 })
