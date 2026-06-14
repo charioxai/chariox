@@ -66,6 +66,7 @@ Summarize one or more preserved roots or manifest files with:
 node apps/cli/scripts/drill-failure-summary.mjs path/to/preserved-root
 node apps/cli/scripts/drill-failure-summary.mjs path/to/arroba-drill-failure.json
 node apps/cli/scripts/drill-failure-summary.mjs --find apps/cli/target .artifacts
+node apps/cli/scripts/drill-failure-summary.mjs --json --output path/to/failure-aggregate.json --find apps/cli/target .artifacts
 ```
 
 Required top-level fields:
@@ -78,6 +79,7 @@ Required top-level fields:
 
 Failure summaries redact sensitive metadata keys and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
 When more than one failure manifest is selected, the summary command prints an aggregate owner/classification section so preserved failure batches can be routed quickly.
+The `--json`/`--output` aggregate schema is `arroba.drill.failure.aggregate.v1`.
 
 ## Scenario Selection
 
