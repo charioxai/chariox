@@ -162,6 +162,42 @@ test("gates matrix reports by required provider coverage", async () => {
   }
 })
 
+test("gates matrix reports by required scenario coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      scenarios: [
+        scenario("local-single-user", "passed"),
+        scenario("remote-collab", "passed"),
+      ],
+    }))
+
+    const pass = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredScenarios: ["local-single-user,remote-collab"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.matrices.requiredScenarios, ["local-single-user", "remote-collab"])
+    assert.deepEqual(pass.checks.matrices.missingScenarios, [])
+    assert.match(formatDrillValidationGateSummary(pass), /matrix_required_scenarios=local-single-user,remote-collab missing=none/)
+
+    const fail = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredScenarios: ["hetzner-collab", "local-single-user"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.matrices.missingScenarios, ["hetzner-collab"])
+    assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports for missing scenarios: hetzner-collab",
+    }])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("rejects unknown required deployment presets", async () => {
   await assert.rejects(
     () => runDrillValidationGate({
@@ -458,11 +494,13 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       matrixReports: [reportPath],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
+      requiredScenarios: ["local"],
     })
     const failed = await runDrillValidationGate({
       matrixReports: [reportPath],
       requiredDeploymentPresets: ["hosted-cloud", "local"],
       requiredProviders: ["claude", "codex"],
+      requiredScenarios: ["remote"],
     })
     const aggregate = summarizeDrillValidationGateReports([passed, failed], {
       sources: ["passed.json", "failed.json"],
@@ -474,6 +512,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingDeploymentPresets: { "hosted-cloud": 1 },
       requiredProviders: { claude: 1, codex: 2 },
       missingProviders: { claude: 1 },
+      requiredScenarios: { local: 1, remote: 1 },
+      missingScenarios: { remote: 1 },
     })
     assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
       {
@@ -481,18 +521,23 @@ test("summarizes validation gate matrix coverage across reports", async () => {
         missingDeploymentPresets: [],
         requiredProviders: ["codex"],
         missingProviders: [],
+        requiredScenarios: ["local"],
+        missingScenarios: [],
       },
       {
         requiredDeploymentPresets: ["hosted-cloud", "local"],
         missingDeploymentPresets: ["hosted-cloud"],
         requiredProviders: ["claude", "codex"],
         missingProviders: ["claude"],
+        requiredScenarios: ["remote"],
+        missingScenarios: ["remote"],
       },
     ])
     const text = formatDrillValidationGateAggregateSummary(aggregate)
     assert.match(text, /coverage:/)
     assert.match(text, /required_deployment_presets: hosted-cloud=1 local=2/)
     assert.match(text, /missing_providers: claude=1/)
+    assert.match(text, /missing_scenarios: remote=1/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

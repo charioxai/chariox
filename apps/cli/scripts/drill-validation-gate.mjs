@@ -28,6 +28,8 @@ function printHelp() {
     "                         Fail when matrix reports do not cover each deployment preset; repeatable",
     "  --require-provider NAME[,NAME]",
     "                         Fail when matrix reports do not cover each provider; repeatable",
+    "  --require-scenario ID[,ID]",
+    "                         Fail when matrix reports do not include each scenario id; repeatable",
     "  --json                 Print gate report JSON",
     "  --output PATH          Write gate report JSON to PATH",
     "  --output-artifact-index PATH",
@@ -78,6 +80,7 @@ function parseArgs(argv) {
     requireComplete: false,
     requiredDeploymentPresets: [],
     requiredProviders: [],
+    requiredScenarios: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -99,6 +102,14 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--require-provider=")) {
       options.requiredProviders.push(arg.slice("--require-provider=".length))
+    }
+    else if (arg === "--require-scenario") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-scenario requires a value")
+      options.requiredScenarios.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-scenario=")) {
+      options.requiredScenarios.push(arg.slice("--require-scenario=".length))
     }
     else if (arg === "--artifact-index") {
       const value = argv[index + 1]
