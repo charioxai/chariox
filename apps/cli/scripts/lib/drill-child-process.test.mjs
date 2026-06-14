@@ -88,6 +88,12 @@ test('classifies kernel authority drift failures', () => {
   )
 })
 
+test('classifies duplicate provider run binding health failures as kernel authority', () => {
+  assert.equal(classifyDrillChildFailure('daemon health duplicate_arroba_agent_bindings: agent-1 has run-a and run-b'), 'kernel-authority')
+  assert.equal(classifyDrillChildFailure('daemon health multi_interface_agent_bindings: agent-1 has Arroba and native TUI runs'), 'kernel-authority')
+  assert.equal(classifyDrillChildFailure('multiple provider runs are bound to agent agent-1'), 'kernel-authority')
+})
+
 test('classifies remote extension manifest sync failures', () => {
   const text = 'remote extension manifest sync failed; home validation remains authoritative'
 

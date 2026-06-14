@@ -69,6 +69,10 @@ const RUNTIME_TIMEOUT_PATTERNS = [
 
 const KERNEL_AUTHORITY_PATTERNS = [
   /agent [`'"][^`'"]+[`'"] does not belong to session/i,
+  /duplicate_arroba_agent_bindings/i,
+  /multi_interface_agent_bindings/i,
+  /duplicate .*provider run .*bindings?/i,
+  /multiple .*provider runs? .*bound .*agent/i,
   /wrong (?:leased agent|lease|provider run|collab user|session|agent)/i,
   /forged .*manifest/i,
   /stale .*manifest/i,
