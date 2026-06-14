@@ -57,6 +57,10 @@ export function formatDrillValidationGateSummary(report) {
     if (runtimeSignals.length > 0) {
       lines.push(`artifact_runtime_signals=${runtimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)
     }
+    const runtimeSignalOwners = Object.entries(artifacts.aggregate.runtimeSignalOwners ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (runtimeSignalOwners.length > 0) {
+      lines.push(`artifact_runtime_signal_owners=${runtimeSignalOwners.map(([owner, count]) => `${owner}:${count}`).join(",")}`)
+    }
     const owners = Object.entries(artifacts.aggregate.owners ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (owners.length > 0) {
       lines.push(`artifact_owners=${owners.map(([owner, count]) => `${owner}:${count}`).join(",")}`)

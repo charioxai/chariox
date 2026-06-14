@@ -34,6 +34,10 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactRuntimeSignalOwners, {
+    "kernel-authority": 1,
+    "runtime-state": 1,
+  })
   assert.deepEqual(aggregate.coverage.artifactSchemas, {
     "arroba.drill.validation_suite_run.v1": 1,
   })
@@ -61,6 +65,10 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeSignalOwners, {
+    "kernel-authority": 1,
+    "runtime-state": 1,
+  })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.owners, {
     "validation-platform": 1,
   })
@@ -73,6 +81,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /required_artifact_schemas=arroba\.drill\.validation_suite_run\.v1 missing=none/)
   assert.match(text, /- artifact_schemas: arroba.drill.validation_suite_run.v1=1/)
   assert.match(text, /- artifact_runtime_signals: session-authority=2 workspace-live-sync-state=1/)
+  assert.match(text, /- artifact_runtime_signal_owners: kernel-authority=1 runtime-state=1/)
   assert.match(text, /- artifact_owners: validation-platform=1/)
   assert.match(text, /- artifact_classifications: cloud-validation-suite=1/)
   assert.match(text, /matrix_runtime_signal_sources:/)
@@ -183,6 +192,7 @@ test("reports executable validation suite remediation for missing suite-run aggr
         aggregate: {
           schemas: {},
           runtimeSignals: {},
+          runtimeSignalOwners: {},
         },
       },
     },
@@ -307,6 +317,10 @@ function reportFixture(overrides = {}) {
           runtimeSignals: {
             "session-authority": 2,
             "workspace-live-sync-state": 1,
+          },
+          runtimeSignalOwners: {
+            "kernel-authority": 1,
+            "runtime-state": 1,
           },
           owners: {
             "validation-platform": 1,

@@ -5,8 +5,14 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
     ...Object.keys(report.checks?.matrices?.aggregate?.runtimeSignals ?? {}),
     ...Object.keys(report.checks?.matrices?.aggregate?.runtimeSignalScenarios ?? {}),
   ])
+  const signalOwners = new Set([
+    ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignalOwners ?? {}),
+  ])
   return signals.size > 0
-    ? { runtimeSignals: [...signals].sort().join(",") }
+    ? {
+      runtimeSignals: [...signals].sort().join(","),
+      ...(signalOwners.size > 0 ? { runtimeSignalOwners: [...signalOwners].sort().join(",") } : {}),
+    }
     : {}
 }
 
@@ -36,13 +42,20 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.failureRuntimeSignals ?? {}),
     ...Object.keys(aggregate.matrixRuntimeSignalSources ?? {}),
   ])
+  const signalOwners = new Set([
+    ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
+  ])
   return signals.size > 0
-    ? { runtimeSignals: [...signals].sort().join(",") }
+    ? {
+      runtimeSignals: [...signals].sort().join(","),
+      ...(signalOwners.size > 0 ? { runtimeSignalOwners: [...signalOwners].sort().join(",") } : {}),
+    }
     : {}
 }
 
 export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const owners = new Set([
+    ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.artifactOwners ?? {}),
     ...(aggregate.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
   ])
