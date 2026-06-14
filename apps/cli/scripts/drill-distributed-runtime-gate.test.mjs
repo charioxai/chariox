@@ -233,6 +233,59 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
   }
 })
 
+test("distributed runtime gate can run matrix reports as evidence", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const matrixOutputRoot = path.join(rootDir, "generated-matrices")
+    const validationSuiteOutputRoot = path.join(rootDir, "generated-validation-suites")
+    await writeFakeValidationSuiteScript({
+      classification: "validation-suite",
+      evidenceRepo: "oss",
+      file: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+    })
+    await writeFakeValidationSuiteScript({
+      classification: "cloud-validation-suite",
+      evidenceRepo: "cloud",
+      file: path.join(cloudRoot, "scripts", "cloud-validation-suite.mjs"),
+    })
+    await writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossRoot })
+
+    const report = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--run-validation-suites",
+      "--validation-suite-output-root",
+      validationSuiteOutputRoot,
+      "--run-matrix-reports",
+      "--matrix-output-root",
+      matrixOutputRoot,
+      "--json",
+    ])).stdout)
+
+    assert.equal(report.status, "passed")
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.equal(report.checks.matrices.status, "passed")
+    assert.deepEqual(report.checks.matrices.roots, [
+      path.join(matrixOutputRoot, "cloud"),
+      path.join(matrixOutputRoot, "oss"),
+    ].sort())
+    assert.deepEqual(report.checks.matrices.missingMatrices, [])
+    assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
+    assert.deepEqual(report.checks.matrices.missingProviders, [])
+    assert.deepEqual(report.checks.matrices.missingScenarios, [])
+    assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
+    assert.equal(report.checks.matrices.aggregate.matrixNames["workspace-live-sync-matrix"], 1)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("distributed runtime gate requires executed Cloud validation suite artifacts", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {
@@ -671,6 +724,164 @@ async function writeFailureManifest(file, {
     error: { name: "Error", message, stack: null },
   }, null, 2)}\n`, "utf8")
   return file
+}
+
+async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossRoot }) {
+  await writeFakeMatrixScript({
+    file: path.join(ossRoot, "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
+    report: matrixReport({
+      matrix: "native-provider-tui-matrix",
+      metadata: {
+        deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("local-native-tui", "kernel-authority", ["provider-run-lifecycle", "session-authority"]),
+        scenario("permission-visibility", "ui-client-projection", ["permission-interaction"]),
+        scenario("remote-native-tui", "relay-runtime", ["provider-run-lifecycle", "session-authority"]),
+        scenario("slice-native-tui", "worker-execution", ["provider-run-lifecycle", "session-authority"]),
+        scenario("transcript-parity", "provider-error", ["client-projection-health"]),
+        scenario("provider-auth-health", "provider-auth", ["provider-run-lifecycle"]),
+      ],
+    }),
+  })
+  await writeFakeMatrixScript({
+    file: path.join(ossRoot, "apps", "cli", "scripts", "live-remote-agent-runtime-matrix-drill.mjs"),
+    report: matrixReport({
+      matrix: "remote-agent-runtime-matrix",
+      metadata: {
+        deploymentPresets: "hetzner,hosted-cloud,same-host-remote,self-hosted-relay",
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+        scenario("lease-reconnect", "relay-target-freshness", ["lease-health", "relay-target-freshness"]),
+        scenario("provider-run-binding", "worker-execution", ["lease-health", "provider-run-lifecycle"]),
+        scenario("remote-prompt-dispatch", "relay-runtime", ["agent-lifecycle", "provider-run-lifecycle"]),
+        scenario("single-user-remote-agent", "ui-client-projection", ["agent-lifecycle", "client-projection-health", "session-authority"]),
+      ],
+    }),
+  })
+  await writeFakeMatrixScript({
+    file: path.join(ossRoot, "apps", "cli", "scripts", "live-remote-home-extension-matrix-drill.mjs"),
+    report: matrixReport({
+      matrix: "remote-home-extension-matrix",
+      metadata: {
+        deploymentPresets: "hetzner,local,self-hosted-relay",
+      },
+      scenarios: [
+        scenario("local-single", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+        scenario("local-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+        scenario("hetzner-single", "worker-execution", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+        scenario("hetzner-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+      ],
+    }),
+  })
+  await writeFakeMatrixScript({
+    file: path.join(ossRoot, "apps", "cli", "scripts", "live-slice-runtime-matrix-drill.mjs"),
+    report: matrixReport({
+      matrix: "slice-runtime-matrix",
+      metadata: {
+        deploymentPresets: "local,self-hosted-relay",
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("agent-reuse", "worker-execution", ["agent-lifecycle", "slice-runtime-state"]),
+        scenario("docker-browser-state", "docker-runtime", ["slice-runtime-state"]),
+        scenario("provider-auth", "slice-auth", ["provider-run-lifecycle", "slice-auth-state"]),
+        scenario("session-start", "kernel-authority", ["session-authority", "slice-runtime-state"]),
+        scenario("slice-lifecycle", "slice-runtime", ["slice-runtime-state"]),
+      ],
+    }),
+  })
+  await writeFakeMatrixScript({
+    file: path.join(ossRoot, "apps", "cli", "scripts", "live-workspace-live-sync-matrix-drill.mjs"),
+    report: matrixReport({
+      matrix: "workspace-live-sync-matrix",
+      metadata: {
+        deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+        providers: "codex,opencode",
+      },
+      scenarios: [
+        scenario("local-managed-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+        scenario("local-tracked-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+        scenario("local-permission-codex", "kernel-authority", ["session-authority", "workspace-live-sync-state"]),
+        scenario("remote-managed-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+        scenario("remote-tracked-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+        scenario("remote-tracked-restart-codex", "relay-target-freshness", ["relay-target-freshness", "session-authority", "workspace-live-sync-state"]),
+      ],
+    }),
+  })
+  await writeFakeMatrixScript({
+    file: path.join(cloudRoot, "scripts", "staging-slice-runtime-matrix.mjs"),
+    report: matrixReport({
+      matrix: "cloud-slice-runtime-matrix",
+      metadata: {
+        deploymentPresets: "hosted-cloud",
+        providerCount: 3,
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
+      ],
+    }),
+  })
+}
+
+function matrixReport({ matrix, metadata, scenarios }) {
+  return {
+    schema: "arroba.drill.matrix.v1",
+    matrix,
+    status: "passed",
+    dryRun: false,
+    startedAt: "2026-06-13T00:00:00.000Z",
+    completedAt: "2026-06-13T00:00:01.000Z",
+    durationMs: 1000,
+    metadata,
+    scenarios,
+  }
+}
+
+async function writeFakeMatrixScript({ file, report }) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `#!/usr/bin/env node
+import { createHash } from "node:crypto"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import path from "node:path"
+
+const args = process.argv.slice(2)
+const reportPath = valueFor("--report")
+const artifactIndexPath = valueFor("--artifact-index") ?? valueFor("--output-artifact-index")
+await mkdir(path.dirname(reportPath), { recursive: true })
+const report = ${JSON.stringify(report, null, 2)}
+await writeFile(reportPath, \`\${JSON.stringify(report, null, 2)}\\n\`, "utf8")
+if (artifactIndexPath) {
+  const bytes = await readFile(reportPath)
+  const index = {
+    schema: "arroba.drill.artifact_index.v1",
+    rootDir: path.dirname(reportPath),
+    createdAt: "2026-06-13T00:00:02.000Z",
+    metadata: {
+      drill: report.matrix,
+      matrix: report.matrix,
+      artifactKinds: "matrix-report",
+    },
+    artifacts: [{
+      path: path.basename(reportPath),
+      schema: report.schema,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sizeBytes: bytes.byteLength,
+    }],
+  }
+  await writeFile(artifactIndexPath, \`\${JSON.stringify(index, null, 2)}\\n\`, "utf8")
+}
+
+function valueFor(flag) {
+  const index = args.indexOf(flag)
+  if (index < 0 || !args[index + 1]) return null
+  return args[index + 1]
+}
+`, "utf8")
 }
 
 async function writeFakeValidationSuiteScript({

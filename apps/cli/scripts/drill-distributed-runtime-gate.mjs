@@ -51,6 +51,13 @@ function printHelp() {
     "                         Run OSS and Cloud validation suites and feed their artifact indexes into this gate",
     "  --validation-suite-output-root DIR",
     "                         Write generated validation-suite evidence below DIR; defaults to each repo's .artifacts",
+    "  --run-matrix-reports",
+    "                         Run distributed runtime matrix scripts and feed their reports into this gate",
+    "  --matrix-output-root DIR",
+    "                         Write generated matrix reports below DIR; defaults to each repo's .artifacts",
+    "  --matrix-dry-run       Forward --dry-run to generated matrix reports",
+    "  --matrix-continue-on-failure",
+    "                         Forward --continue-on-failure to generated matrix reports",
     "  --platform-bundle DIR   Use an existing drill platform bundle instead of generating one",
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
   "  --require-complete      Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
@@ -91,12 +98,13 @@ async function main() {
       await writeDrillPlatformBundle(platformBundleDir)
     }
     const validationSuiteArtifactIndexes = await runValidationSuitesFor(options)
+    const generatedMatrixRoots = await runMatrixReportsFor(options)
     const report = await runDrillValidationGate({
       artifactIndexes: [...options.artifactIndexes, ...validationSuiteArtifactIndexes],
       artifactRoots: artifactRootsFor(options),
       failureInputs: options.failureInputs,
       failureRoots: failureRootsFor(options),
-      matrixRoots: matrixRootsFor(options),
+      matrixRoots: matrixRootsFor(options, generatedMatrixRoots),
       maxDepth: options.maxDepth,
       platformBundleDir,
       presets: ["distributed-runtime"],
@@ -163,6 +171,9 @@ function parseArgs(argv) {
     includeDefaultArtifacts: false,
     includeDefaultFailures: false,
     json: false,
+    matrixContinueOnFailure: false,
+    matrixDryRun: false,
+    matrixOutputRoot: null,
     matrixRoots: [],
     maxDepth: 8,
     ossRoot: defaultOssRoot,
@@ -170,6 +181,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    runMatrixReports: false,
     runValidationSuites: false,
     validationSuiteOutputRoot: null,
     ...validationGateRequirementOptionDefaults(),
@@ -181,7 +193,10 @@ function parseArgs(argv) {
     else if (arg === "--no-default-roots") options.defaultRoots = false
     else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
     else if (arg === "--include-default-failures") options.includeDefaultFailures = true
+    else if (arg === "--matrix-continue-on-failure") options.matrixContinueOnFailure = true
+    else if (arg === "--matrix-dry-run") options.matrixDryRun = true
     else if (arg === "--require-complete") options.requireComplete = true
+    else if (arg === "--run-matrix-reports") options.runMatrixReports = true
     else if (arg === "--run-validation-suites") options.runValidationSuites = true
     else if (arg === "--oss-root") {
       options.ossRoot = path.resolve(readValue(argv, index, arg))
@@ -223,6 +238,11 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--validation-suite-output-root=")) {
       options.validationSuiteOutputRoot = path.resolve(arg.slice("--validation-suite-output-root=".length))
+    } else if (arg === "--matrix-output-root") {
+      options.matrixOutputRoot = path.resolve(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--matrix-output-root=")) {
+      options.matrixOutputRoot = path.resolve(arg.slice("--matrix-output-root=".length))
     } else if (arg === "--platform-bundle") {
       options.platformBundleDir = readValue(argv, index, arg)
       index += 1
@@ -268,8 +288,8 @@ function readValue(argv, index, flag) {
   return value
 }
 
-function matrixRootsFor(options) {
-  const roots = [...options.matrixRoots]
+function matrixRootsFor(options, generatedMatrixRoots = []) {
+  const roots = [...options.matrixRoots, ...generatedMatrixRoots]
   if (options.defaultRoots) {
     roots.push(
       path.join(options.ossRoot, ".artifacts", "drill-matrices"),
@@ -288,6 +308,116 @@ function artifactRootsFor(options) {
     )
   }
   return [...new Set(roots.map((item) => path.resolve(item)))].sort()
+}
+
+async function runMatrixReportsFor(options) {
+  if (!options.runMatrixReports) return []
+  const ossOutputDir = matrixOutputDirFor(options, "oss")
+  const cloudOutputDir = matrixOutputDirFor(options, "cloud")
+  const commonArgs = [
+    ...(options.matrixDryRun ? ["--dry-run"] : []),
+    ...(options.matrixContinueOnFailure ? ["--continue-on-failure"] : []),
+  ]
+  const matrixCommands = [
+    {
+      artifactIndexFlag: "--artifact-index",
+      cwd: options.ossRoot,
+      outputDir: ossOutputDir,
+      reportFileName: "native-provider-tui-matrix.json",
+      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
+      extraArgs: ["--include-hetzner"],
+    },
+    {
+      artifactIndexFlag: "--artifact-index",
+      cwd: options.ossRoot,
+      outputDir: ossOutputDir,
+      reportFileName: "remote-agent-runtime-matrix.json",
+      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-remote-agent-runtime-matrix-drill.mjs"),
+      extraArgs: ["--include-hetzner", "--include-hosted-cloud"],
+    },
+    {
+      artifactIndexFlag: "--artifact-index",
+      cwd: options.ossRoot,
+      outputDir: ossOutputDir,
+      reportFileName: "remote-home-extension-matrix.json",
+      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-remote-home-extension-matrix-drill.mjs"),
+      extraArgs: ["--include-hetzner"],
+    },
+    {
+      artifactIndexFlag: "--artifact-index",
+      cwd: options.ossRoot,
+      outputDir: ossOutputDir,
+      reportFileName: "slice-runtime-matrix.json",
+      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-slice-runtime-matrix-drill.mjs"),
+      extraArgs: ["--include-self-hosted-relay"],
+    },
+    {
+      artifactIndexFlag: "--artifact-index",
+      cwd: options.ossRoot,
+      outputDir: ossOutputDir,
+      reportFileName: "workspace-live-sync-matrix.json",
+      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-workspace-live-sync-matrix-drill.mjs"),
+      extraArgs: ["--include-remote", "--include-hetzner", "--include-opencode"],
+    },
+    {
+      artifactIndexFlag: "--output-artifact-index",
+      cwd: options.cloudRoot,
+      outputDir: cloudOutputDir,
+      reportFileName: "cloud-slice-runtime-matrix.json",
+      scriptPath: path.join(options.cloudRoot, "scripts", "staging-slice-runtime-matrix.mjs"),
+      extraArgs: ["--include-hosted-cloud", "--include-vault"],
+    },
+  ]
+  for (const command of matrixCommands) {
+    await runMatrixReportCommand({
+      ...command,
+      commonArgs,
+    })
+  }
+  return [ossOutputDir, cloudOutputDir]
+}
+
+function matrixOutputDirFor(options, repo) {
+  if (options.matrixOutputRoot) {
+    return path.join(options.matrixOutputRoot, repo)
+  }
+  if (repo === "oss") {
+    return path.join(options.ossRoot, ".artifacts", "drill-matrices", "distributed-runtime-gate")
+  }
+  return path.join(options.cloudRoot, ".artifacts", "drill-matrices", "distributed-runtime-gate")
+}
+
+async function runMatrixReportCommand({
+  artifactIndexFlag,
+  commonArgs,
+  cwd,
+  extraArgs,
+  outputDir,
+  reportFileName,
+  scriptPath,
+}) {
+  const reportPath = path.join(outputDir, reportFileName)
+  const artifactIndexPath = path.join(outputDir, `${path.basename(reportFileName, ".json")}-artifacts.json`)
+  try {
+    await execFile(process.execPath, [
+      scriptPath,
+      ...commonArgs,
+      ...extraArgs,
+      "--report",
+      reportPath,
+      artifactIndexFlag,
+      artifactIndexPath,
+    ], { cwd, maxBuffer: 1024 * 1024 * 20 })
+  } catch (error) {
+    const stderr = typeof error.stderr === "string" && error.stderr.trim().length > 0
+      ? `\nstderr:\n${error.stderr.trim()}`
+      : ""
+    const stdout = typeof error.stdout === "string" && error.stdout.trim().length > 0
+      ? `\nstdout:\n${error.stdout.trim()}`
+      : ""
+    throw new Error(`matrix report failed: ${scriptPath}${stderr}${stdout}`)
+  }
+  return reportPath
 }
 
 async function runValidationSuitesFor(options) {
