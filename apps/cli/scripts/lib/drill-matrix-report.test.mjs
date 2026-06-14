@@ -110,6 +110,7 @@ test("aggregates multiple matrix reports for CI", () => {
     durationMs: 1025,
   })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1 })
+  assert.deepEqual(aggregate.owners, { "provider-account": 1 })
   assert.deepEqual(aggregate.failedScenarios, [{
     matrix: "remote",
     id: "remote",
@@ -128,6 +129,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /matrix aggregate:/)
   assert.match(text, /status=failed reports=2 scenarios=4 passed=1 failed=1 skipped=1 dry_run=1/)
   assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token/)
+  assert.match(text, /owners: provider-account=1/)
   assert.match(text, /next: refresh provider login/)
   assert.match(text, /incomplete scenarios:/)
   assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure/)

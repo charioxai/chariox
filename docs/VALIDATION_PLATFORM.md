@@ -32,7 +32,7 @@ For dry-run reports, it prints selected scenario exit criteria so reviewers can 
 Use `--require-complete` for release/staging gates that must reject skipped or dry-run scenarios even when no scenario failed.
 When more than one report is selected, the human summary prints an aggregate section with total coverage, failure owners, next actions, and incomplete scenarios.
 Failed-scenario summaries include an owner and next action so humans and CI can route the fix without opening raw logs first.
-The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `failedScenarios` entries include `classification`, `owner`, `reason`, and `nextAction`, and its `incompleteScenarios` entries list skipped and dry-run coverage gaps.
+The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `owners` map counts failed-scenario owners, its `failedScenarios` entries include `classification`, `owner`, `reason`, and `nextAction`, and its `incompleteScenarios` entries list skipped and dry-run coverage gaps.
 
 Required top-level fields:
 

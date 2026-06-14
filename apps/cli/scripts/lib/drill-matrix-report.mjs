@@ -91,6 +91,7 @@ export function summarizeDrillMatrixReports(reports) {
     durationMs: 0,
   }
   const classifications = new Map()
+  const owners = new Map()
   const failedScenarios = []
   const skippedScenarios = []
   const incompleteScenarios = []
@@ -113,6 +114,8 @@ export function summarizeDrillMatrixReports(reports) {
         reason: scenario.reason ?? null,
         nextAction: nextActionForScenario(scenario),
       })
+      const owner = ownerForScenario(scenario)
+      owners.set(owner, (owners.get(owner) ?? 0) + 1)
     }
     for (const scenario of summary.skippedScenarios) {
       skippedScenarios.push({ matrix: summary.matrix, id: scenario.id, reason: scenario.reason ?? null })
@@ -131,6 +134,7 @@ export function summarizeDrillMatrixReports(reports) {
         : "passed",
     totals,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     reports: summaries.map((summary) => ({
       matrix: summary.matrix,
       status: summary.status,
@@ -200,6 +204,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const classifications = Object.entries(aggregate.classifications)
   if (classifications.length > 0) {
     lines.push(`classifications: ${classifications.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
+  }
+  const owners = Object.entries(aggregate.owners)
+  if (owners.length > 0) {
+    lines.push(`owners: ${owners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
   }
 
   if (aggregate.failedScenarios.length > 0) {
@@ -345,6 +353,9 @@ function validateDrillMatrixAggregate(aggregate) {
   }
   if (!Array.isArray(aggregate.failedScenarios)) {
     throw new Error("aggregate is missing failedScenarios")
+  }
+  if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {
+    throw new Error("aggregate is missing owners")
   }
   if (!Array.isArray(aggregate.incompleteScenarios)) {
     throw new Error("aggregate is missing incompleteScenarios")
