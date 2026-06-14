@@ -68,6 +68,16 @@ test('classifies relay runtime failures', () => {
   )
 })
 
+test('classifies relay target heartbeat freshness failures', () => {
+  const text = 'Selected relay kernel target is stale (last heartbeat 91s ago); relaunch or wait for a fresh heartbeat'
+
+  assert.equal(classifyDrillChildFailure(text), 'relay-target-freshness')
+  assert.match(
+    formatDrillChildFailure('browser relay bootstrap drill', 1, null, '', text),
+    /Relay target heartbeat freshness blocked validation/,
+  )
+})
+
 test('classifies runtime state timeouts', () => {
   const text = 'timed out waiting for agents to become idle: agent-1\nlast_observation=[{"agentState":"Working"}]'
 

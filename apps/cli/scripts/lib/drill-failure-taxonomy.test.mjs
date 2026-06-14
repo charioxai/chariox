@@ -14,6 +14,7 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("provider-auth"), "provider-account")
   assert.equal(drillFailureOwnerForClassification("cloud-runtime"), "cloud-deployment")
   assert.equal(drillFailureOwnerForClassification("relay-runtime"), "runtime-network")
+  assert.equal(drillFailureOwnerForClassification("relay-target-freshness"), "runtime-network")
   assert.equal(drillFailureOwnerForClassification("runtime-timeout"), "runtime-state")
   assert.equal(drillFailureOwnerForClassification("kernel-authority"), "kernel-authority")
   assert.equal(drillFailureOwnerForClassification("remote-extension-sync"), "kernel-authority")
@@ -28,6 +29,7 @@ test("maps classifications to owners", () => {
 
 test("exposes known classifications", () => {
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("kernel-authority"))
+  assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("relay-target-freshness"))
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("slice-runtime"))
   assert.deepEqual(DRILL_FAILURE_CLASSIFICATION_KINDS, [...DRILL_FAILURE_CLASSIFICATION_KINDS].sort())
   assert.equal(isKnownDrillFailureClassification("slice-runtime"), true)
@@ -59,6 +61,10 @@ test("formats target-specific next actions", () => {
     drillFailureNextActionForClassification("ui-client-projection", { target: "scenario" }),
     "inspect web/TUI terminal projection logs, transcript rendering state, and preserved screenshots or terminal captures, then rerun the scenario",
   )
+  assert.equal(
+    drillFailureNextActionForClassification("relay-target-freshness", { target: "scenario" }),
+    "inspect relay target heartbeat freshness, selected kernel id/alias, and kernel presence logs, then rerun the scenario",
+  )
 })
 
 test("builds manifest classification records from taxonomy", () => {
@@ -82,6 +88,11 @@ test("builds stable failure taxonomy manifest", () => {
     entry.kind === "kernel-authority"
       && entry.owner === "kernel-authority"
       && entry.nextAction.includes("session, agent, lease")
+  )))
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "relay-target-freshness"
+      && entry.owner === "runtime-network"
+      && entry.nextAction.includes("heartbeat freshness")
   )))
   assert(manifest.classifications.some((entry) => (
     entry.kind === "remote-extension-sync"

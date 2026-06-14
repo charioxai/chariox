@@ -60,6 +60,13 @@ const RELAY_RUNTIME_PATTERNS = [
   /target.*(?:stale|offline)/i,
 ]
 
+const RELAY_TARGET_FRESHNESS_PATTERNS = [
+  /selected relay kernel target is stale/i,
+  /relay target .*heartbeat .*stale/i,
+  /relay target .*no heartbeat received/i,
+  /last heartbeat \d+s ago/i,
+]
+
 const TEST_HARNESS_PATTERNS = [
   /spawn (?:cargo|tar|openssl|pnpm|bun|script|screen) ENOENT/i,
   /missing built binary/i,
@@ -138,6 +145,9 @@ export function classifyDrillChildFailure(text) {
   if (CLOUD_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'cloud-runtime'
   }
+  if (RELAY_TARGET_FRESHNESS_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'relay-target-freshness'
+  }
   if (RELAY_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'relay-runtime'
   }
@@ -189,6 +199,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'relay-runtime'
       ? 'Relay transport blocked validation before the runtime behavior could be proven.'
+      : null,
+    classification === 'relay-target-freshness'
+      ? 'Relay target heartbeat freshness blocked validation before the runtime behavior could be proven.'
       : null,
     classification === 'test-harness'
       ? 'Local drill prerequisites or build tooling blocked validation before the runtime behavior could be proven.'
