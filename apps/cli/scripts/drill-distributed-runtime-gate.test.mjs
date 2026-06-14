@@ -55,6 +55,10 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.ok(report.checks.matrices.requiredMatrixRuntimeSignals.includes("slice-auth-state"))
     assert.deepEqual(report.checks.matrices.aggregate.runtimeSignalScenarios["slice-auth-state"].map((entry) => entry.id), ["provider-auth"])
     assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
+    assert.deepEqual(
+      report.checks.matrices.aggregate.reports.find((entry) => entry.matrix === "cloud-slice-runtime-matrix").providers,
+      ["claude", "codex", "opencode"],
+    )
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 1)
     assert.equal(artifactIndex.metadata.drill, "distributed-runtime-gate")
     assert.equal(artifactIndex.metadata.preset, "distributed-runtime")
@@ -202,9 +206,13 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       matrix: "cloud-slice-runtime-matrix",
       metadata: {
         deploymentPresets: "hosted-cloud",
+        providerCount: 3,
+        providers: "claude,codex,opencode",
+        defaultModel: "provider-default",
+        providerModelOverrides: "",
       },
       scenarios: [
-        scenario("ui-projection", "ui-client-projection", ["client-projection-health"]),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
   }
@@ -225,7 +233,7 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   }, null, 2)}\n`, "utf8")
 }
 
-function scenario(id, classification, runtimeSignals = []) {
+function scenario(id, classification, runtimeSignals = [], overrides = {}) {
   return {
     id,
     description: `${id} scenario`,
@@ -241,5 +249,6 @@ function scenario(id, classification, runtimeSignals = []) {
     artifactHints: [],
     exitCriteria: [`${id} exit criteria`],
     runtimeSignals,
+    ...overrides,
   }
 }

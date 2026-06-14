@@ -40,9 +40,13 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       matrix: "cloud-slice-runtime-matrix",
       metadata: {
         deploymentPresets: "hosted-cloud",
+        providerCount: 3,
+        providers: "claude,codex,opencode",
+        defaultModel: "provider-default",
+        providerModelOverrides: "",
       },
       scenarios: [
-        scenario("ui-projection", "ui-client-projection", ["client-projection-health"]),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
 
@@ -98,6 +102,10 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.deepEqual(report.checks.matrices.aggregate.runtimeSignalScenarios["slice-auth-state"].map((entry) => entry.id), ["provider-auth"])
     assert.equal(report.checks.matrices.aggregate.matrixNames["slice-runtime-matrix"], 1)
     assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
+    assert.deepEqual(
+      report.checks.matrices.aggregate.reports.find((entry) => entry.matrix === "cloud-slice-runtime-matrix").providers,
+      ["claude", "codex", "opencode"],
+    )
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 1)
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["local"], 1)
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["self-hosted-relay"], 1)
@@ -135,9 +143,13 @@ test("cross repo validation gate can disable default roots for focused evidence 
       matrix: "cloud-slice-runtime-matrix",
       metadata: {
         deploymentPresets: "hosted-cloud",
+        providerCount: 3,
+        providers: "claude,codex,opencode",
+        defaultModel: "provider-default",
+        providerModelOverrides: "",
       },
       scenarios: [
-        scenario("hosted-slice-browser-e2e", "ui-client-projection", ["client-projection-health"]),
+        scenario("hosted-slice-browser-e2e", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
 
@@ -209,7 +221,7 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   }, null, 2)}\n`, "utf8")
 }
 
-function scenario(id, classification, runtimeSignals = []) {
+function scenario(id, classification, runtimeSignals = [], overrides = {}) {
   return {
     id,
     description: `${id} scenario`,
@@ -224,5 +236,6 @@ function scenario(id, classification, runtimeSignals = []) {
     args: [`${id}.mjs`],
     artifactHints: [],
     runtimeSignals,
+    ...overrides,
   }
 }
