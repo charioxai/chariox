@@ -36,6 +36,9 @@ function printHelp() {
     "  --matrix-root ROOT      Discover matrix reports below ROOT; repeatable",
     "  --include-default-artifacts",
     "                         Discover artifact indexes under each repo's .artifacts root",
+    "  --include-default-failures",
+    "                         Discover failure manifests under each repo's .artifacts root",
+    "  --failure-root ROOT     Discover failure manifests below ROOT; repeatable",
     "  --platform-bundle DIR   Use an existing drill platform bundle instead of generating one",
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
     "  --require-complete      Fail when matrix reports include skipped or dry-run scenarios",
@@ -69,6 +72,7 @@ async function main() {
     }
     const report = await runDrillValidationGate({
       artifactRoots: artifactRootsFor(options),
+      failureRoots: failureRootsFor(options),
       matrixRoots: matrixRootsFor(options),
       maxDepth: options.maxDepth,
       platformBundleDir,
@@ -116,8 +120,10 @@ function parseArgs(argv) {
   const options = {
     cloudRoot: defaultCloudRoot,
     defaultRoots: true,
+    failureRoots: [],
     help: false,
     includeDefaultArtifacts: false,
+    includeDefaultFailures: false,
     json: false,
     matrixRoots: [],
     maxDepth: 8,
@@ -134,6 +140,7 @@ function parseArgs(argv) {
     else if (arg === "--json") options.json = true
     else if (arg === "--no-default-roots") options.defaultRoots = false
     else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
+    else if (arg === "--include-default-failures") options.includeDefaultFailures = true
     else if (arg === "--require-complete") options.requireComplete = true
     else if (arg === "--oss-root") {
       options.ossRoot = path.resolve(readValue(argv, index, arg))
@@ -150,6 +157,11 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--matrix-root=")) {
       options.matrixRoots.push(arg.slice("--matrix-root=".length))
+    } else if (arg === "--failure-root") {
+      options.failureRoots.push(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--failure-root=")) {
+      options.failureRoots.push(arg.slice("--failure-root=".length))
     } else if (arg === "--platform-bundle") {
       options.platformBundleDir = readValue(argv, index, arg)
       index += 1
@@ -212,6 +224,17 @@ function artifactRootsFor(options) {
     path.join(options.ossRoot, ".artifacts"),
     path.join(options.cloudRoot, ".artifacts"),
   ].map((item) => path.resolve(item)).sort()
+}
+
+function failureRootsFor(options) {
+  const roots = [...options.failureRoots]
+  if (options.includeDefaultFailures) {
+    roots.push(
+      path.join(options.ossRoot, ".artifacts"),
+      path.join(options.cloudRoot, ".artifacts"),
+    )
+  }
+  return [...new Set(roots.map((item) => path.resolve(item)))].sort()
 }
 
 main().catch((error) => {
