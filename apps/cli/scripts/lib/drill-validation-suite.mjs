@@ -28,6 +28,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-validation-gate-aggregate.test.mjs",
   "apps/cli/scripts/lib/drill-validation-gate-args.test.mjs",
   "apps/cli/scripts/lib/drill-validation-gate-matrix-check.test.mjs",
+  "apps/cli/scripts/lib/drill-validation-gate-platform-check.test.mjs",
   "apps/cli/scripts/lib/drill-validation-gate-presets.test.mjs",
   "apps/cli/scripts/lib/drill-validation-gate.test.mjs",
   "apps/cli/scripts/lib/drill-validation-suite.test.mjs",
@@ -45,6 +46,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-artifacts.test.mjs",
       "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
       "apps/cli/scripts/lib/drill-platform-bundle.test.mjs",
+      "apps/cli/scripts/lib/drill-validation-gate-platform-check.test.mjs",
     ]),
   },
   {
