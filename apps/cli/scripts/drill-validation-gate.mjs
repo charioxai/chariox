@@ -2,6 +2,10 @@
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
+  parseValidationGateRequirementArg,
+  validationGateRequirementOptionDefaults,
+} from "./lib/drill-validation-gate-args.mjs"
+import {
   describeDrillValidationGatePresets,
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
@@ -99,15 +103,8 @@ function parseArgs(argv) {
     outputArtifactIndexPath: null,
     outputPath: null,
     platformBundleDir: null,
-    presets: [],
     requireComplete: false,
-    requiredPlatformCoverageAreas: [],
-    requiredFailureClassifications: [],
-    requiredMatrices: [],
-    requiredMatrixClassifications: [],
-    requiredDeploymentPresets: [],
-    requiredProviders: [],
-    requiredScenarios: [],
+    ...validationGateRequirementOptionDefaults({ presetKey: "presets" }),
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -115,144 +112,87 @@ function parseArgs(argv) {
     else if (arg === "--json") options.json = true
     else if (arg === "--list-presets") options.listPresets = true
     else if (arg === "--require-complete") options.requireComplete = true
-    else if (arg === "--preset") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--preset requires a value")
-      options.presets.push(value)
-      index += 1
-    } else if (arg.startsWith("--preset=")) {
-      options.presets.push(arg.slice("--preset=".length))
-    }
-    else if (arg === "--require-platform-coverage-area") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-platform-coverage-area requires a value")
-      options.requiredPlatformCoverageAreas.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-platform-coverage-area=")) {
-      options.requiredPlatformCoverageAreas.push(arg.slice("--require-platform-coverage-area=".length))
-    }
-    else if (arg === "--require-failure-classification") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-failure-classification requires a value")
-      options.requiredFailureClassifications.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-failure-classification=")) {
-      options.requiredFailureClassifications.push(arg.slice("--require-failure-classification=".length))
-    }
-    else if (arg === "--require-matrix") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-matrix requires a value")
-      options.requiredMatrices.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-matrix=")) {
-      options.requiredMatrices.push(arg.slice("--require-matrix=".length))
-    }
-    else if (arg === "--require-matrix-classification") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-matrix-classification requires a value")
-      options.requiredMatrixClassifications.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-matrix-classification=")) {
-      options.requiredMatrixClassifications.push(arg.slice("--require-matrix-classification=".length))
-    }
-    else if (arg === "--require-deployment-preset") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-deployment-preset requires a value")
-      options.requiredDeploymentPresets.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-deployment-preset=")) {
-      options.requiredDeploymentPresets.push(arg.slice("--require-deployment-preset=".length))
-    }
-    else if (arg === "--require-provider") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-provider requires a value")
-      options.requiredProviders.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-provider=")) {
-      options.requiredProviders.push(arg.slice("--require-provider=".length))
-    }
-    else if (arg === "--require-scenario") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-scenario requires a value")
-      options.requiredScenarios.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-scenario=")) {
-      options.requiredScenarios.push(arg.slice("--require-scenario=".length))
-    }
-    else if (arg === "--artifact-index") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--artifact-index requires a value")
-      options.artifactIndexes.push(value)
-      index += 1
-    } else if (arg.startsWith("--artifact-index=")) {
-      options.artifactIndexes.push(arg.slice("--artifact-index=".length))
-    } else if (arg === "--artifact-root") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--artifact-root requires a value")
-      options.artifactRoots.push(value)
-      index += 1
-    } else if (arg.startsWith("--artifact-root=")) {
-      options.artifactRoots.push(arg.slice("--artifact-root=".length))
-    } else if (arg === "--platform-bundle") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--platform-bundle requires a value")
-      options.platformBundleDir = value
-      index += 1
-    } else if (arg.startsWith("--platform-bundle=")) {
-      options.platformBundleDir = arg.slice("--platform-bundle=".length)
-    } else if (arg === "--matrix-report") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--matrix-report requires a value")
-      options.matrixReports.push(value)
-      index += 1
-    } else if (arg.startsWith("--matrix-report=")) {
-      options.matrixReports.push(arg.slice("--matrix-report=".length))
-    } else if (arg === "--matrix-root") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--matrix-root requires a value")
-      options.matrixRoots.push(value)
-      index += 1
-    } else if (arg.startsWith("--matrix-root=")) {
-      options.matrixRoots.push(arg.slice("--matrix-root=".length))
-    } else if (arg === "--failure-manifest") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--failure-manifest requires a value")
-      options.failureInputs.push(value)
-      index += 1
-    } else if (arg.startsWith("--failure-manifest=")) {
-      options.failureInputs.push(arg.slice("--failure-manifest=".length))
-    } else if (arg === "--failure-root") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--failure-root requires a value")
-      options.failureRoots.push(value)
-      index += 1
-    } else if (arg.startsWith("--failure-root=")) {
-      options.failureRoots.push(arg.slice("--failure-root=".length))
-    } else if (arg === "--max-depth") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--max-depth requires a value")
-      options.maxDepth = parseDrillMaxDepth(value)
-      index += 1
-    } else if (arg.startsWith("--max-depth=")) {
-      options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
-    } else if (arg === "--output") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--output requires a value")
-      options.outputPath = value
-      index += 1
-    } else if (arg.startsWith("--output=")) {
-      options.outputPath = arg.slice("--output=".length)
-    } else if (arg === "--output-artifact-index") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--output-artifact-index requires a value")
-      options.outputArtifactIndexPath = value
-      index += 1
-    } else if (arg.startsWith("--output-artifact-index=")) {
-      options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
-    } else if (arg.startsWith("--")) {
-      throw new Error(`unknown argument: ${arg}`)
-    } else {
-      throw new Error(`unexpected argument: ${arg}`)
+    else {
+      const requirementIndex = parseValidationGateRequirementArg(argv, index, options)
+      if (requirementIndex !== null) {
+        index = requirementIndex
+        continue
+      }
+      if (arg === "--artifact-index") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--artifact-index requires a value")
+        options.artifactIndexes.push(value)
+        index += 1
+      } else if (arg.startsWith("--artifact-index=")) {
+        options.artifactIndexes.push(arg.slice("--artifact-index=".length))
+      } else if (arg === "--artifact-root") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--artifact-root requires a value")
+        options.artifactRoots.push(value)
+        index += 1
+      } else if (arg.startsWith("--artifact-root=")) {
+        options.artifactRoots.push(arg.slice("--artifact-root=".length))
+      } else if (arg === "--platform-bundle") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--platform-bundle requires a value")
+        options.platformBundleDir = value
+        index += 1
+      } else if (arg.startsWith("--platform-bundle=")) {
+        options.platformBundleDir = arg.slice("--platform-bundle=".length)
+      } else if (arg === "--matrix-report") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--matrix-report requires a value")
+        options.matrixReports.push(value)
+        index += 1
+      } else if (arg.startsWith("--matrix-report=")) {
+        options.matrixReports.push(arg.slice("--matrix-report=".length))
+      } else if (arg === "--matrix-root") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--matrix-root requires a value")
+        options.matrixRoots.push(value)
+        index += 1
+      } else if (arg.startsWith("--matrix-root=")) {
+        options.matrixRoots.push(arg.slice("--matrix-root=".length))
+      } else if (arg === "--failure-manifest") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--failure-manifest requires a value")
+        options.failureInputs.push(value)
+        index += 1
+      } else if (arg.startsWith("--failure-manifest=")) {
+        options.failureInputs.push(arg.slice("--failure-manifest=".length))
+      } else if (arg === "--failure-root") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--failure-root requires a value")
+        options.failureRoots.push(value)
+        index += 1
+      } else if (arg.startsWith("--failure-root=")) {
+        options.failureRoots.push(arg.slice("--failure-root=".length))
+      } else if (arg === "--max-depth") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--max-depth requires a value")
+        options.maxDepth = parseDrillMaxDepth(value)
+        index += 1
+      } else if (arg.startsWith("--max-depth=")) {
+        options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
+      } else if (arg === "--output") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--output requires a value")
+        options.outputPath = value
+        index += 1
+      } else if (arg.startsWith("--output=")) {
+        options.outputPath = arg.slice("--output=".length)
+      } else if (arg === "--output-artifact-index") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--output-artifact-index requires a value")
+        options.outputArtifactIndexPath = value
+        index += 1
+      } else if (arg.startsWith("--output-artifact-index=")) {
+        options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
+      } else if (arg.startsWith("--")) {
+        throw new Error(`unknown argument: ${arg}`)
+      } else {
+        throw new Error(`unexpected argument: ${arg}`)
+      }
     }
   }
   if (options.outputArtifactIndexPath && !options.outputPath) {

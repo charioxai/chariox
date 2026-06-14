@@ -2,6 +2,10 @@
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
+  parseValidationGateRequirementArg,
+  validationGateRequirementOptionDefaults,
+} from "./lib/drill-validation-gate-args.mjs"
+import {
   drillValidationGateAggregateExitCode,
   findDrillValidationGateReportPaths,
   formatDrillValidationGateAggregateSummary,
@@ -92,17 +96,18 @@ function parseArgs(argv) {
     maxDepth: 8,
     outputArtifactIndexPath: null,
     outputPath: null,
-    requiredDeploymentPresets: [],
-    requiredFailureClassifications: [],
-    requiredMatrices: [],
-    requiredMatrixClassifications: [],
-    requiredPlatformCoverageAreas: [],
-    requiredProviders: [],
-    requiredPresets: [],
-    requiredScenarios: [],
+    ...validationGateRequirementOptionDefaults({ presetKey: "requiredPresets" }),
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
+    const requirementIndex = parseValidationGateRequirementArg(argv, index, options, {
+      presetFlag: "--require-preset",
+      presetKey: "requiredPresets",
+    })
+    if (requirementIndex !== null) {
+      index = requirementIndex
+      continue
+    }
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
     else if (arg === "--gate-report") {
@@ -126,62 +131,6 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--max-depth=")) {
       options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
-    } else if (arg === "--require-preset") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-preset requires a value")
-      options.requiredPresets.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-preset=")) {
-      options.requiredPresets.push(arg.slice("--require-preset=".length))
-    } else if (arg === "--require-platform-coverage-area") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-platform-coverage-area requires a value")
-      options.requiredPlatformCoverageAreas.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-platform-coverage-area=")) {
-      options.requiredPlatformCoverageAreas.push(arg.slice("--require-platform-coverage-area=".length))
-    } else if (arg === "--require-failure-classification") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-failure-classification requires a value")
-      options.requiredFailureClassifications.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-failure-classification=")) {
-      options.requiredFailureClassifications.push(arg.slice("--require-failure-classification=".length))
-    } else if (arg === "--require-matrix") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-matrix requires a value")
-      options.requiredMatrices.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-matrix=")) {
-      options.requiredMatrices.push(arg.slice("--require-matrix=".length))
-    } else if (arg === "--require-matrix-classification") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-matrix-classification requires a value")
-      options.requiredMatrixClassifications.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-matrix-classification=")) {
-      options.requiredMatrixClassifications.push(arg.slice("--require-matrix-classification=".length))
-    } else if (arg === "--require-deployment-preset") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-deployment-preset requires a value")
-      options.requiredDeploymentPresets.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-deployment-preset=")) {
-      options.requiredDeploymentPresets.push(arg.slice("--require-deployment-preset=".length))
-    } else if (arg === "--require-provider") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-provider requires a value")
-      options.requiredProviders.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-provider=")) {
-      options.requiredProviders.push(arg.slice("--require-provider=".length))
-    } else if (arg === "--require-scenario") {
-      const value = argv[index + 1]
-      if (!value || value.startsWith("--")) throw new Error("--require-scenario requires a value")
-      options.requiredScenarios.push(value)
-      index += 1
-    } else if (arg.startsWith("--require-scenario=")) {
-      options.requiredScenarios.push(arg.slice("--require-scenario=".length))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
