@@ -163,6 +163,9 @@ export function formatDrillValidationGateSummary(report) {
 
   const platform = report.checks.platformBundle
   lines.push(`platform_bundle=${platform.status}${platform.dir ? ` dir=${platform.dir}` : ""}${platform.error ? ` error=${platform.error}` : ""}`)
+  if (platform.validationSuite) {
+    lines.push(`platform_validation_suite_tests=${platform.validationSuite.testCount} coverage=${platform.validationSuite.coverageAreas.map((area) => `${area.id}:${area.testCount}`).join(",")}`)
+  }
 
   const artifacts = report.checks.artifacts
   lines.push(`artifacts=${artifacts.status} roots=${artifacts.roots.length} inputs=${artifacts.inputs.length} indexes=${artifacts.indexPaths.length}`)
@@ -305,6 +308,7 @@ function validatePlatformBundleCheck(check, source) {
   for (const [index, artifact] of check.artifacts.entries()) {
     validatePlatformBundleArtifact(artifact, `${source}.artifacts[${index}]`)
   }
+  validatePlatformValidationSuiteSummary(check.validationSuite, `${source}.validationSuite`)
 }
 
 function validateArtifactIndexCheck(check, source) {
@@ -372,6 +376,40 @@ function validatePlatformBundleArtifact(artifact, source) {
   }
   if (!Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 0) {
     throw new Error(`${source} has invalid sizeBytes`)
+  }
+}
+
+function validatePlatformValidationSuiteSummary(summary, source) {
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!Number.isSafeInteger(summary.testCount) || summary.testCount <= 0) {
+    throw new Error(`${source} has invalid testCount`)
+  }
+  if (!Array.isArray(summary.coverageAreas) || summary.coverageAreas.length === 0) {
+    throw new Error(`${source} has invalid coverageAreas`)
+  }
+  let coveredTests = 0
+  const areaIds = new Set()
+  for (const [index, area] of summary.coverageAreas.entries()) {
+    const areaSource = `${source}.coverageAreas[${index}]`
+    if (!area || typeof area !== "object" || Array.isArray(area)) {
+      throw new Error(`${areaSource} is not an object`)
+    }
+    if (!nonEmptyString(area.id)) {
+      throw new Error(`${areaSource} has invalid id`)
+    }
+    if (areaIds.has(area.id)) {
+      throw new Error(`${source} has duplicate coverage area ${area.id}`)
+    }
+    areaIds.add(area.id)
+    if (!Number.isSafeInteger(area.testCount) || area.testCount <= 0) {
+      throw new Error(`${areaSource} has invalid testCount`)
+    }
+    coveredTests += area.testCount
+  }
+  if (coveredTests !== summary.testCount) {
+    throw new Error(`${source} coverageAreas do not match testCount`)
   }
 }
 
@@ -543,6 +581,7 @@ async function platformBundleCheck(platformBundleDir) {
   if (!platformBundleDir) return { status: "skipped", dir: null }
   try {
     const bundle = await verifyDrillPlatformBundle(platformBundleDir)
+    const validationSuite = await readPlatformBundleValidationSuite(platformBundleDir)
     return {
       status: "passed",
       dir: platformBundleDir,
@@ -552,6 +591,7 @@ async function platformBundleCheck(platformBundleDir) {
         sha256: artifact.sha256,
         sizeBytes: artifact.sizeBytes,
       })),
+      validationSuite,
     }
   } catch (error) {
     return {
@@ -559,6 +599,17 @@ async function platformBundleCheck(platformBundleDir) {
       dir: platformBundleDir,
       error: error instanceof Error ? error.message : String(error),
     }
+  }
+}
+
+async function readPlatformBundleValidationSuite(platformBundleDir) {
+  const suite = JSON.parse(await readFile(path.join(platformBundleDir, "validation-suite.json"), "utf8"))
+  return {
+    testCount: suite.testCount,
+    coverageAreas: suite.coverage.map((area) => ({
+      id: area.id,
+      testCount: area.testCount,
+    })),
   }
 }
 

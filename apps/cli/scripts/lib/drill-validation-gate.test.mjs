@@ -39,11 +39,22 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.equal(drillValidationGateExitCode(report), 0)
     assert.equal(report.checks.configuration.status, "passed")
     assert.equal(report.checks.platformBundle.status, "passed")
+    assert.deepEqual(report.checks.platformBundle.validationSuite, {
+      testCount: 25,
+      coverageAreas: [
+        { id: "artifact-contracts", testCount: 7 },
+        { id: "failure-diagnostics", testCount: 3 },
+        { id: "matrix-validation", testCount: 6 },
+        { id: "runtime-fixtures", testCount: 7 },
+        { id: "suite-contract", testCount: 2 },
+      ],
+    })
     assert.equal(report.checks.matrices.status, "passed")
     assert.equal(report.checks.failures.status, "skipped")
     assert.deepEqual(report.nextActions, [])
     assert.doesNotThrow(() => validateDrillValidationGateReport(report))
     assert.match(formatDrillValidationGateSummary(report), /status=passed/)
+    assert.match(formatDrillValidationGateSummary(report), /platform_validation_suite_tests=25 coverage=artifact-contracts:7/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -252,6 +263,35 @@ test("rejects malformed platform bundle artifact evidence", async () => {
     assert.throws(
       () => formatDrillValidationGateSummary(malformed),
       /artifacts\[0\] has invalid sha256/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects inconsistent platform bundle validation suite evidence", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    const report = await runDrillValidationGate({ platformBundleDir: bundleDir })
+    const malformed = {
+      ...report,
+      checks: {
+        ...report.checks,
+        platformBundle: {
+          ...report.checks.platformBundle,
+          validationSuite: {
+            ...report.checks.platformBundle.validationSuite,
+            coverageAreas: report.checks.platformBundle.validationSuite.coverageAreas.slice(1),
+          },
+        },
+      },
+    }
+
+    assert.throws(
+      () => formatDrillValidationGateSummary(malformed),
+      /coverageAreas do not match testCount/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
