@@ -20,6 +20,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     const outputPath = path.join(rootDir, "gate.json")
     const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), { evidenceRepo: "oss" })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
     const { stdout } = await execFile(process.execPath, [
@@ -49,8 +50,11 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.equal(report.checks.artifacts.status, "passed")
     assert.deepEqual(report.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
     assert.deepEqual(report.checks.artifacts.missingArtifactCoverageAreas, [])
-    assert.equal(report.checks.artifacts.aggregate.coverageAreas["distributed-observability"], 1)
+    assert.equal(report.checks.artifacts.aggregate.coverageAreas["distributed-observability"], 2)
     assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactKinds, ["validation-suite-run"])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactEvidenceRepos, ["cloud", "oss"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactEvidenceRepos, [])
     assert.deepEqual(report.presets, ["distributed-runtime"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
@@ -71,7 +75,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.equal(artifactIndex.metadata.preset, "distributed-runtime")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.matrixEvidenceRepos, "cloud,oss")
-    assert.equal(artifactIndex.metadata.artifactEvidenceRepos, "cloud")
+    assert.equal(artifactIndex.metadata.artifactEvidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.coverageAreas, "distributed-observability,suite-contract")
     const indexedRuntimeSignals = artifactIndex.metadata.runtimeSignals.split(",")
     assert.equal(indexedRuntimeSignals.includes("home-extension-manifest-sync"), true)
@@ -98,6 +102,10 @@ test("distributed runtime gate requires default artifact indexes", async () => {
     const ossRoot = path.join(rootDir, "arroba")
     const cloudRoot = path.join(rootDir, "arroba-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
+      coverageAreas: ["suite-contract"],
+      evidenceRepo: "oss",
+    })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
     await assert.rejects(
@@ -131,14 +139,14 @@ test("distributed runtime gate requires default artifact indexes", async () => {
     ])).stdout)
     assert.equal(discovered.status, "passed")
     assert.equal(discovered.checks.artifacts.status, "passed")
-    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
+    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 2)
     assert.deepEqual(discovered.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
     assert.deepEqual(discovered.checks.artifacts.missingArtifactSchemas, [])
+    assert.deepEqual(discovered.checks.artifacts.requiredArtifactEvidenceRepos, ["cloud", "oss"])
+    assert.deepEqual(discovered.checks.artifacts.missingArtifactEvidenceRepos, [])
     assert.deepEqual(discovered.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
     assert.deepEqual(discovered.checks.artifacts.missingArtifactCoverageAreas, [])
-    assert.deepEqual(discovered.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
-      path.join(".artifacts", "validation-suite"),
-    ])
+    assert.deepEqual(discovered.checks.artifacts.aggregate.evidenceRepos, { cloud: 1, oss: 1 })
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -183,6 +191,10 @@ test("distributed runtime gate requires Cloud validation suite distributed obser
     const ossRoot = path.join(rootDir, "arroba")
     const cloudRoot = path.join(rootDir, "arroba-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
+      coverageAreas: ["suite-contract"],
+      evidenceRepo: "oss",
+    })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
       coverageAreas: ["suite-contract"],
     })
@@ -205,7 +217,7 @@ test("distributed runtime gate requires Cloud validation suite distributed obser
         assert.deepEqual(report.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
         assert.deepEqual(report.checks.artifacts.missingArtifactCoverageAreas, ["distributed-observability"])
         assert.match(report.checks.artifacts.error, /missing required artifact coverage areas: distributed-observability/)
-        assert.equal(report.checks.artifacts.aggregate.coverageAreas["suite-contract"], 1)
+        assert.equal(report.checks.artifacts.aggregate.coverageAreas["suite-contract"], 2)
         return true
       },
     )
@@ -220,6 +232,7 @@ test("distributed runtime gate can include default failure manifests", async () 
     const ossRoot = path.join(rootDir, "arroba")
     const cloudRoot = path.join(rootDir, "arroba-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), { evidenceRepo: "oss" })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
     await writeFailureManifest(path.join(cloudRoot, ".artifacts", "failed-run", "arroba-drill-failure.json"), {
       drill: "cloud-slice-runtime-matrix",
@@ -274,6 +287,7 @@ test("distributed runtime gate reports missing hosted Cloud evidence", async () 
     const ossRoot = path.join(rootDir, "arroba")
     const cloudRoot = path.join(rootDir, "arroba-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: false })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), { evidenceRepo: "oss" })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
     await assert.rejects(
@@ -434,6 +448,7 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
 
 async function writeValidationSuiteArtifact(rootDir, {
   coverageAreas = ["distributed-observability", "suite-contract"],
+  evidenceRepo = "cloud",
 } = {}) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
   await mkdir(rootDir, { recursive: true })
@@ -466,7 +481,13 @@ async function writeValidationSuiteArtifact(rootDir, {
   await writeDrillArtifactIndex({
     rootDir,
     artifacts: ["cloud-validation-suite.json"],
-    metadata: { drill: "cloud-validation-suite", tests: 1, coverageAreas: coverageAreas.join(",") },
+    metadata: {
+      drill: "cloud-validation-suite",
+      tests: 1,
+      coverageAreas: coverageAreas.join(","),
+      artifactKinds: "validation-suite-run",
+      evidenceRepos: evidenceRepo,
+    },
   })
 }
 
@@ -488,7 +509,12 @@ async function writeValidationSuiteManifestArtifact(rootDir) {
   await writeDrillArtifactIndex({
     rootDir,
     artifacts: ["cloud-validation-suite.json"],
-    metadata: { drill: "cloud-validation-suite", tests: 1 },
+    metadata: {
+      drill: "cloud-validation-suite",
+      tests: 1,
+      artifactKinds: "validation-suite",
+      evidenceRepos: "cloud",
+    },
   })
 }
 

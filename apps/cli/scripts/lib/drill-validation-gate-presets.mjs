@@ -9,6 +9,8 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
     requiredArtifactCoverageAreas: Object.freeze(["distributed-observability"]),
     requiredArtifactSchemas: Object.freeze(["arroba.drill.validation_suite_run.v1"]),
+    requiredArtifactKinds: Object.freeze(["validation-suite-run"]),
+    requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),
     requiredRuntimeSignals: Object.freeze([
       "agent-lifecycle",
       "client-projection-health",
@@ -173,6 +175,8 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredPlatformCoverageAreas: [...(preset.requiredPlatformCoverageAreas ?? [])],
       requiredArtifactCoverageAreas: [...(preset.requiredArtifactCoverageAreas ?? [])],
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
+      requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
+      requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
@@ -190,6 +194,8 @@ export function expandValidationGatePresetRequirements({
   requiredPlatformCoverageAreas,
   requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
+  requiredArtifactKinds = [],
+  requiredArtifactEvidenceRepos = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications,
   requiredMatrices,
@@ -203,6 +209,8 @@ export function expandValidationGatePresetRequirements({
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
     requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
     requiredArtifactSchemas: [...requiredArtifactSchemas],
+    requiredArtifactKinds: [...requiredArtifactKinds],
+    requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
     requiredRuntimeSignals: [...requiredRuntimeSignals],
     requiredFailureClassifications: [...requiredFailureClassifications],
     requiredMatrices: [...requiredMatrices],
@@ -217,6 +225,8 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredPlatformCoverageAreas.push(...(preset.requiredPlatformCoverageAreas ?? []))
     expanded.requiredArtifactCoverageAreas.push(...(preset.requiredArtifactCoverageAreas ?? []))
     expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
+    expanded.requiredArtifactKinds.push(...(preset.requiredArtifactKinds ?? []))
+    expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
     expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
@@ -261,6 +271,40 @@ export function normalizeRequiredArtifactSchemas(requiredArtifactSchemas) {
     }
   }
   return [...new Set(schemas)].sort()
+}
+
+export function normalizeRequiredArtifactKinds(requiredArtifactKinds) {
+  if (!Array.isArray(requiredArtifactKinds)) {
+    throw new Error("requiredArtifactKinds must be an array")
+  }
+  const kinds = []
+  for (const kind of requiredArtifactKinds) {
+    if (!nonEmptyString(kind)) {
+      throw new Error("requiredArtifactKinds has invalid kind")
+    }
+    for (const value of kind.split(",")) {
+      const normalized = value.trim()
+      if (normalized) kinds.push(normalized)
+    }
+  }
+  return [...new Set(kinds)].sort()
+}
+
+export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceRepos) {
+  if (!Array.isArray(requiredArtifactEvidenceRepos)) {
+    throw new Error("requiredArtifactEvidenceRepos must be an array")
+  }
+  const repos = []
+  for (const repo of requiredArtifactEvidenceRepos) {
+    if (!nonEmptyString(repo)) {
+      throw new Error("requiredArtifactEvidenceRepos has invalid repo")
+    }
+    for (const value of repo.split(",")) {
+      const normalized = value.trim()
+      if (normalized) repos.push(normalized)
+    }
+  }
+  return [...new Set(repos)].sort()
 }
 
 export function normalizeRequiredRuntimeSignals(requiredRuntimeSignals) {

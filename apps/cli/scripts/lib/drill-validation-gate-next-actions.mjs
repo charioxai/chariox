@@ -76,6 +76,22 @@ export function validationGateNextActions(checks) {
         })
       }
     }
+    const missingArtifactKinds = checks.artifacts.missingArtifactKinds ?? []
+    if (missingArtifactKinds.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `produce artifact evidence with kinds: ${missingArtifactKinds.join(", ")}`,
+      })
+    }
+    const missingArtifactEvidenceRepos = checks.artifacts.missingArtifactEvidenceRepos ?? []
+    if (missingArtifactEvidenceRepos.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence from repos: ${missingArtifactEvidenceRepos.join(", ")}`,
+      })
+    }
   }
   if (checks.matrices.status === "failed") {
     if (checks.matrices.error) {

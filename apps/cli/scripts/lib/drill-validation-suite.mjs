@@ -199,6 +199,10 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     tests: manifest.testCount,
     owners: "validation-platform",
     classifications: "validation-suite",
+    artifactKinds: suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1"
+      ? "validation-suite-run"
+      : "validation-suite",
+    evidenceRepos: "oss",
     ...(coverageAreas.length > 0 ? { coverageAreas: coverageAreas.join(",") } : {}),
     ...(validationPresets.length > 0 ? { validationPresets: validationPresets.join(",") } : {}),
     ...(runtimeSignals.length > 0
@@ -281,6 +285,8 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredPlatformCoverageAreas: sortedStringArray(preset.requiredPlatformCoverageAreas, `${preset.name}.requiredPlatformCoverageAreas`),
     requiredArtifactCoverageAreas: sortedStringArray(preset.requiredArtifactCoverageAreas, `${preset.name}.requiredArtifactCoverageAreas`),
     requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
+    requiredArtifactKinds: sortedStringArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
+    requiredArtifactEvidenceRepos: sortedStringArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredRuntimeSignals: sortedStringArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
     requiredFailureClassifications: sortedStringArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),

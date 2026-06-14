@@ -23,6 +23,8 @@ import {
   expandValidationGatePresetRequirements,
   normalizeRequiredDeploymentPresets,
   normalizeRequiredArtifactCoverageAreas,
+  normalizeRequiredArtifactEvidenceRepos,
+  normalizeRequiredArtifactKinds,
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredMatrices,
@@ -82,6 +84,8 @@ export async function runDrillValidationGate({
   requiredPlatformCoverageAreas = [],
   requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
+  requiredArtifactKinds = [],
+  requiredArtifactEvidenceRepos = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -97,6 +101,8 @@ export async function runDrillValidationGate({
     requiredPlatformCoverageAreas,
     requiredArtifactCoverageAreas,
     requiredArtifactSchemas,
+    requiredArtifactKinds,
+    requiredArtifactEvidenceRepos,
     requiredRuntimeSignals,
     requiredFailureClassifications,
     requiredMatrices,
@@ -109,6 +115,8 @@ export async function runDrillValidationGate({
   const normalizedRequiredPlatformCoverageAreas = normalizeRequiredPlatformCoverageAreas(expandedRequirements.requiredPlatformCoverageAreas)
   const normalizedRequiredArtifactCoverageAreas = normalizeRequiredArtifactCoverageAreas(expandedRequirements.requiredArtifactCoverageAreas)
   const normalizedRequiredArtifactSchemas = normalizeRequiredArtifactSchemas(expandedRequirements.requiredArtifactSchemas)
+  const normalizedRequiredArtifactKinds = normalizeRequiredArtifactKinds(expandedRequirements.requiredArtifactKinds)
+  const normalizedRequiredArtifactEvidenceRepos = normalizeRequiredArtifactEvidenceRepos(expandedRequirements.requiredArtifactEvidenceRepos)
   const normalizedRequiredRuntimeSignals = normalizeRequiredRuntimeSignals(expandedRequirements.requiredRuntimeSignals)
   const normalizedRequiredFailureClassifications = normalizeRequiredFailureClassifications(expandedRequirements.requiredFailureClassifications)
   const normalizedRequiredMatrices = normalizeRequiredMatrices(expandedRequirements.requiredMatrices)
@@ -129,6 +137,8 @@ export async function runDrillValidationGate({
       requiredPlatformCoverageAreas: normalizedRequiredPlatformCoverageAreas,
       requiredArtifactCoverageAreas: normalizedRequiredArtifactCoverageAreas,
       requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
+      requiredArtifactKinds: normalizedRequiredArtifactKinds,
+      requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
       requiredRuntimeSignals: normalizedRequiredRuntimeSignals,
       requiredFailureClassifications: normalizedRequiredFailureClassifications,
       requiredMatrices: normalizedRequiredMatrices,
@@ -147,6 +157,8 @@ export async function runDrillValidationGate({
       maxDepth,
       requiredArtifactCoverageAreas: normalizedRequiredArtifactCoverageAreas,
       requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
+      requiredArtifactKinds: normalizedRequiredArtifactKinds,
+      requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
     }),
     matrices: await matrixValidationGateCheck({
       matrixReports,
@@ -185,6 +197,8 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredPlatformCoverageAreas: normalizeRequiredPlatformCoverageAreas(options.requiredPlatformCoverageAreas ?? []),
     requiredArtifactCoverageAreas: normalizeRequiredArtifactCoverageAreas(options.requiredArtifactCoverageAreas ?? []),
     requiredArtifactSchemas: normalizeRequiredArtifactSchemas(options.requiredArtifactSchemas ?? []),
+    requiredArtifactKinds: normalizeRequiredArtifactKinds(options.requiredArtifactKinds ?? []),
+    requiredArtifactEvidenceRepos: normalizeRequiredArtifactEvidenceRepos(options.requiredArtifactEvidenceRepos ?? []),
     requiredRuntimeSignals: normalizeRequiredRuntimeSignals(options.requiredRuntimeSignals ?? []),
     requiredFailureClassifications: normalizeRequiredFailureClassifications(options.requiredFailureClassifications ?? []),
     requiredMatrices: normalizeRequiredMatrices(options.requiredMatrices ?? []),

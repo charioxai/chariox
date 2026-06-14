@@ -106,6 +106,10 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactCoverageAreas ?? [], `${source}.missingArtifactCoverageAreas`)
   validateStringArray(check.requiredArtifactSchemas ?? [], `${source}.requiredArtifactSchemas`)
   validateStringArray(check.missingArtifactSchemas ?? [], `${source}.missingArtifactSchemas`)
+  validateStringArray(check.requiredArtifactKinds ?? [], `${source}.requiredArtifactKinds`)
+  validateStringArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
+  validateStringArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
+  validateStringArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
     throw new Error(`${source} is missing error`)
   }

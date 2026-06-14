@@ -9,6 +9,8 @@ export function configurationValidationGateCheck({
   requiredPlatformCoverageAreas = [],
   requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
+  requiredArtifactKinds = [],
+  requiredArtifactEvidenceRepos = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -26,6 +28,8 @@ export function configurationValidationGateCheck({
     || requiredPlatformCoverageAreas.length > 0
     || requiredArtifactCoverageAreas.length > 0
     || requiredArtifactSchemas.length > 0
+    || requiredArtifactKinds.length > 0
+    || requiredArtifactEvidenceRepos.length > 0
     || requiredRuntimeSignals.length > 0
     || requiredFailureClassifications.length > 0
     || failureRoots.length > 0

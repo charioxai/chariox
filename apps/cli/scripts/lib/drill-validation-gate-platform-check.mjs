@@ -112,6 +112,8 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
       name: preset.name,
       requiredArtifactCoverageAreas: [...(preset.requiredArtifactCoverageAreas ?? [])],
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
+      requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
+      requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],

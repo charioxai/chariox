@@ -1022,6 +1022,10 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       requiredArtifactSchemas: {},
       missingArtifactSchemas: {},
+      requiredArtifactKinds: {},
+      missingArtifactKinds: {},
+      requiredArtifactEvidenceRepos: {},
+      missingArtifactEvidenceRepos: {},
       artifactSchemas: {},
       artifactCoverageAreas: {},
       artifactRuntimeSignals: {},
@@ -1070,8 +1074,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
@@ -1227,6 +1231,8 @@ function platformValidationPresetSummaries() {
     name: preset.name,
     requiredArtifactCoverageAreas: preset.requiredArtifactCoverageAreas,
     requiredArtifactSchemas: preset.requiredArtifactSchemas,
+    requiredArtifactKinds: preset.requiredArtifactKinds,
+    requiredArtifactEvidenceRepos: preset.requiredArtifactEvidenceRepos,
     requiredMatrices: preset.requiredMatrices,
     requiredRuntimeSignals: preset.requiredRuntimeSignals,
     requiredFailureClassifications: preset.requiredFailureClassifications,

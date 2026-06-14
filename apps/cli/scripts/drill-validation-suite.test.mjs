@@ -61,6 +61,14 @@ test("drill validation suite prints coverage manifest", async () => {
     ["arroba.drill.validation_suite_run.v1"],
   )
   assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactKinds,
+    ["validation-suite-run"],
+  )
+  assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactEvidenceRepos,
+    ["cloud", "oss"],
+  )
+  assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactCoverageAreas,
     ["distributed-observability"],
   )
@@ -106,6 +114,8 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(artifactIndex.metadata.tests, SHARED_DRILL_TEST_PATHS.length)
     assert.equal(artifactIndex.metadata.owners, "validation-platform")
     assert.equal(artifactIndex.metadata.classifications, "validation-suite")
+    assert.equal(artifactIndex.metadata.artifactKinds, "validation-suite")
+    assert.equal(artifactIndex.metadata.evidenceRepos, "oss")
     assert.equal(artifactIndex.metadata.coverageAreas, "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract")
     assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync")
     assert.equal(artifactIndex.metadata.runtimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))

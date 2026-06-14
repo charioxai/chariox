@@ -22,6 +22,10 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactCoverageAreas: [],
     requiredArtifactSchemas: [],
     missingArtifactSchemas: [],
+    requiredArtifactKinds: [],
+    missingArtifactKinds: [],
+    requiredArtifactEvidenceRepos: [],
+    missingArtifactEvidenceRepos: [],
   })
 })
 
@@ -76,6 +80,56 @@ test("gates required artifact coverage areas from artifact index metadata", asyn
     assert.equal(fail.status, "failed")
     assert.deepEqual(fail.missingArtifactCoverageAreas, ["runtime-fixtures"])
     assert.match(fail.error, /missing required artifact coverage areas: runtime-fixtures/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("gates required artifact kinds and evidence repos from artifact index metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  try {
+    await writeReportArtifact(rootDir, "reports/gate.json")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+      metadata: {
+        artifactKinds: "validation-gate,artifact-index",
+        evidenceRepos: "oss",
+      },
+    })
+
+    const pass = await artifactValidationGateCheck({
+      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactKinds: ["validation-gate"],
+      requiredArtifactEvidenceRepos: ["oss"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.requiredArtifactKinds, ["validation-gate"])
+    assert.deepEqual(pass.missingArtifactKinds, [])
+    assert.deepEqual(pass.requiredArtifactEvidenceRepos, ["oss"])
+    assert.deepEqual(pass.missingArtifactEvidenceRepos, [])
+    assert.deepEqual(pass.aggregate.artifactKinds, {
+      "artifact-index": 1,
+      "validation-gate": 1,
+    })
+    assert.deepEqual(pass.aggregate.evidenceRepos, { oss: 1 })
+
+    const fail = await artifactValidationGateCheck({
+      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactKinds: ["validation-suite-run"],
+      requiredArtifactEvidenceRepos: ["cloud"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.missingArtifactKinds, ["validation-suite-run"])
+    assert.deepEqual(fail.missingArtifactEvidenceRepos, ["cloud"])
+    assert.match(fail.error, /missing required artifact kinds: validation-suite-run/)
+    assert.match(fail.error, /missing required artifact evidence repos: cloud/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

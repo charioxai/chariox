@@ -15,6 +15,8 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     normalizedAggregateRequirements: {
       requiredPlatformCoverageAreas: ["runtime-fixtures"],
       requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+      requiredArtifactKinds: ["validation-suite-run"],
+      requiredArtifactEvidenceRepos: ["oss"],
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -77,8 +79,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.missingPresets, [])
   assert.deepEqual(aggregate.missingProviders, [])
   assert.deepEqual(aggregate.missingArtifactSchemas, [])
+  assert.deepEqual(aggregate.missingArtifactKinds, [])
+  assert.deepEqual(aggregate.missingArtifactEvidenceRepos, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactKinds, ["validation-suite-run"])
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactEvidenceRepos, ["oss"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeSignals, {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
@@ -115,6 +121,8 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   const text = formatDrillValidationGateAggregateSummary(aggregate)
   assert.match(text, /required_providers=codex missing=none/)
   assert.match(text, /required_artifact_schemas=arroba\.drill\.validation_suite_run\.v1 missing=none/)
+  assert.match(text, /required_artifact_kinds=validation-suite-run missing=none/)
+  assert.match(text, /required_artifact_evidence_repos=oss missing=none/)
   assert.match(text, /- artifact_schemas: arroba.drill.validation_suite_run.v1=1/)
   assert.match(text, /- artifact_runtime_signals: session-authority=2 workspace-live-sync-state=1/)
   assert.match(text, /- artifact_runtime_signal_owners: kernel-authority=1 runtime-state=1/)
@@ -136,6 +144,8 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
     normalizedAggregateRequirements: {
       requiredPlatformCoverageAreas: ["hosted-cloud-drills"],
       requiredArtifactSchemas: ["arroba.drill.matrix.v1"],
+      requiredArtifactKinds: ["matrix-report"],
+      requiredArtifactEvidenceRepos: ["cloud"],
       requiredFailureClassifications: ["remote-extension-sync"],
       requiredMatrices: ["remote-home-extension-matrix"],
       requiredMatrixClassifications: ["remote-extension-sync"],
@@ -151,12 +161,22 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.equal(drillValidationGateAggregateExitCode(aggregate), 1)
   assert.deepEqual(aggregate.missingPresets, ["remote-home-extension"])
   assert.deepEqual(aggregate.missingArtifactSchemas, ["arroba.drill.matrix.v1"])
+  assert.deepEqual(aggregate.missingArtifactKinds, ["matrix-report"])
+  assert.deepEqual(aggregate.missingArtifactEvidenceRepos, ["cloud"])
   assert.deepEqual(aggregate.missingMatrixRuntimeSignals, ["home-extension-manifest-sync"])
   assert.deepEqual(aggregate.missingProviders, ["claude"])
   assert.deepEqual(aggregate.missingScenarios, ["hetzner-collab"])
   assert.deepEqual(
     aggregate.nextActions.map(({ classification, nextAction }) => ({ classification, nextAction })),
     [
+      {
+        classification: "artifact-coverage",
+        nextAction: "provide validation gate reports with artifact evidence repos: cloud",
+      },
+      {
+        classification: "artifact-coverage",
+        nextAction: "provide validation gate reports with artifact kinds: matrix-report",
+      },
       {
         classification: "artifact-coverage",
         nextAction: "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
@@ -396,6 +416,10 @@ function reportFixture(overrides = {}) {
         status: "passed",
         requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
         missingArtifactSchemas: [],
+        requiredArtifactKinds: ["validation-suite-run"],
+        missingArtifactKinds: [],
+        requiredArtifactEvidenceRepos: ["oss"],
+        missingArtifactEvidenceRepos: [],
         aggregate: {
           schemas: {
             "arroba.drill.validation_suite_run.v1": 1,
