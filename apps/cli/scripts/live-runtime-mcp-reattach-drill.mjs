@@ -9,6 +9,7 @@ import {
   providerProfileMetadata,
   resolveProviderModel,
 } from './lib/drill-provider-profiles.mjs'
+import { waitForCondition } from './lib/drill-runtime-helpers.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -169,24 +170,37 @@ async function waitForFile({ client, sessionId, attachmentId, filePath, expected
 }
 
 async function waitForAgentsIdle({ client, sessionId, attachmentId, agentIds, getSessionStateRequest, timeoutMs, pollMs }) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
-    const state = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
-    const session = state.session ?? state
-    const promptStates = session.prompt_states ?? {}
-    const agents = session.agents ?? []
-    const allIdle = agentIds.every((agentId) => {
-      const agent = agents.find((candidate) => candidate.id === agentId)
-      const promptState = promptStates[agentId] ?? {}
-      return agent && !agent.is_processing && agent.state !== 'Working' &&
-        promptState.active_prompt == null &&
-        ((promptState.queued_prompts ?? []).length === 0)
-    })
-    if (allIdle) return
-    await sleep(pollMs)
-  }
-  throw new Error(`timed out waiting for agents to become idle: ${agentIds.join(', ')}`)
+  await waitForCondition({
+    label: `agents to become idle: ${agentIds.join(', ')}`,
+    timeoutMs,
+    pollMs,
+    observe: async () => {
+      await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+      const state = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+      const session = state.session ?? state
+      const promptStates = session.prompt_states ?? {}
+      const agents = session.agents ?? []
+      return agentIds.map((agentId) => {
+        const agent = agents.find((candidate) => candidate.id === agentId) ?? null
+        const promptState = promptStates[agentId] ?? {}
+        return {
+          agentId,
+          found: Boolean(agent),
+          agentState: agent?.state ?? null,
+          isProcessing: agent?.is_processing ?? null,
+          activePrompt: promptState.active_prompt ?? null,
+          queuedPromptCount: (promptState.queued_prompts ?? []).length,
+        }
+      })
+    },
+    isReady: (observations) => observations.every((entry) =>
+      entry.found &&
+      !entry.isProcessing &&
+      entry.agentState !== 'Working' &&
+      entry.activePrompt == null &&
+      entry.queuedPromptCount === 0
+    ),
+  })
 }
 
 async function countCompletedRuntimeToolCalls({ historyDir, agentId, toolNeedles }) {

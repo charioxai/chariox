@@ -165,6 +165,40 @@ export async function waitForLogOccurrences(logFile, needle, count, timeoutMs = 
   throw new Error(`timed out waiting for ${count} occurrences of ${needle} in ${logFile}\n${text.slice(-4000)}`)
 }
 
+export async function waitForCondition({
+  label,
+  timeoutMs,
+  pollMs = 250,
+  observe,
+  isReady = Boolean,
+  describe = stringifyDiagnostic,
+}) {
+  const deadline = Date.now() + timeoutMs
+  let lastObservation
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      lastObservation = await observe()
+      if (await isReady(lastObservation)) return lastObservation
+      lastError = null
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(pollMs)
+  }
+  const details = [
+    `timed out waiting for ${label}`,
+    lastObservation !== undefined ? `last_observation=${describe(lastObservation)}` : null,
+    lastError ? `last_error=${lastError.stack ?? lastError.message ?? String(lastError)}` : null,
+  ].filter(Boolean)
+  throw new Error(details.join("\n"))
+}
+
+function stringifyDiagnostic(value) {
+  if (typeof value === "string") return value
+  return JSON.stringify(value, null, 2)
+}
+
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`
 }
