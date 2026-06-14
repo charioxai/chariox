@@ -310,6 +310,52 @@ test("rejects validation suite preset artifact provenance drift", async () => {
   }
 })
 
+test("rejects validation suite preset environment drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const suitePath = path.join(rootDir, "validation-suite.json")
+    const suite = JSON.parse(await readFile(suitePath, "utf8"))
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
+        ? { ...preset, requiredFailureClassifications: ["kernel-autohority"] }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredFailureClassifications\[0\] has unknown failure classification "kernel-autohority"/,
+    )
+
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
+        ? { ...preset, requiredMatrixClassifications: ["kernel-autohority"] }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredMatrixClassifications\[0\] has unknown failure classification "kernel-autohority"/,
+    )
+
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
+        ? { ...preset, requiredDeploymentPresets: ["self-hotsed-relay"] }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredDeploymentPresets\[0\] has unknown deployment preset "self-hotsed-relay"/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("rejects failure taxonomy target drift", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
   try {

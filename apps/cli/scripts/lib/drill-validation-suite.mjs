@@ -8,7 +8,9 @@ import {
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
@@ -310,11 +312,11 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
     requiredArtifactClassifications: sortedStringArray(preset.requiredArtifactClassifications, `${preset.name}.requiredArtifactClassifications`),
     requiredRuntimeSignals: sortedRuntimeSignalArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
-    requiredFailureClassifications: sortedStringArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
+    requiredFailureClassifications: sortedFailureClassificationArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
-    requiredMatrixClassifications: sortedStringArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),
+    requiredMatrixClassifications: sortedFailureClassificationArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),
     requiredMatrixRuntimeSignals: sortedRuntimeSignalArray(preset.requiredMatrixRuntimeSignals, `${preset.name}.requiredMatrixRuntimeSignals`),
-    requiredDeploymentPresets: sortedStringArray(preset.requiredDeploymentPresets, `${preset.name}.requiredDeploymentPresets`),
+    requiredDeploymentPresets: sortedDeploymentPresetArray(preset.requiredDeploymentPresets, `${preset.name}.requiredDeploymentPresets`),
     requiredProviders: sortedStringArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
     requiredScenarios: sortedStringArray(preset.requiredScenarios, `${preset.name}.requiredScenarios`),
   }
@@ -371,6 +373,26 @@ function sortedArtifactEvidenceRepoArray(value, source) {
     }
   }
   return repos
+}
+
+function sortedFailureClassificationArray(value, source) {
+  const classifications = sortedStringArray(value, source)
+  for (const [index, classification] of classifications.entries()) {
+    if (!isKnownDrillFailureClassification(classification)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown failure classification ${JSON.stringify(classification)}`)
+    }
+  }
+  return classifications
+}
+
+function sortedDeploymentPresetArray(value, source) {
+  const presets = sortedStringArray(value, source)
+  for (const [index, preset] of presets.entries()) {
+    if (!DRILL_DEPLOYMENT_PRESETS.includes(preset)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
+    }
+  }
+  return presets
 }
 
 function sortedRuntimeSignalOwnerArray(value, source) {

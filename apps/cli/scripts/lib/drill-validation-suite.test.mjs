@@ -193,6 +193,9 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-suite"],
     requiredMatrices: ["workspace-live-sync-matrix"],
+    requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority"],
+    requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+    requiredDeploymentPresets: ["local", "hetzner", "local"],
   }]), [{
     name: "workspace-live-sync",
     description: "Workspace Live Sync",
@@ -207,11 +210,11 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-suite"],
     requiredRuntimeSignals: [],
-    requiredFailureClassifications: [],
+    requiredFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
     requiredMatrices: ["workspace-live-sync-matrix"],
-    requiredMatrixClassifications: [],
+    requiredMatrixClassifications: ["workspace-live-sync-conflict"],
     requiredMatrixRuntimeSignals: [],
-    requiredDeploymentPresets: [],
+    requiredDeploymentPresets: ["hetzner", "local"],
     requiredProviders: [],
     requiredScenarios: [],
   }])
@@ -255,6 +258,21 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad artifact evidence repo",
     requiredArtifactEvidenceRepos: ["clodu"],
   }]), /requiredArtifactEvidenceRepos\[0\] has unknown artifact evidence repo "clodu"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-failure-classification",
+    description: "bad failure classification",
+    requiredFailureClassifications: ["kernel-autohority"],
+  }]), /requiredFailureClassifications\[0\] has unknown failure classification "kernel-autohority"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-matrix-classification",
+    description: "bad matrix classification",
+    requiredMatrixClassifications: ["kernel-autohority"],
+  }]), /requiredMatrixClassifications\[0\] has unknown failure classification "kernel-autohority"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-deployment-preset",
+    description: "bad deployment preset",
+    requiredDeploymentPresets: ["self-hotsed-relay"],
+  }]), /requiredDeploymentPresets\[0\] has unknown deployment preset "self-hotsed-relay"/)
 })
 
 test("finds missing shared drill validation suite paths", async () => {
