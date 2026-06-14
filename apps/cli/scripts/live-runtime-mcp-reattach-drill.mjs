@@ -156,17 +156,24 @@ async function fileExists(filePath) {
 }
 
 async function waitForFile({ client, sessionId, attachmentId, filePath, expected, timeoutMs, pollMs }) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
-    if (await fileExists(filePath)) {
-      const actual = await readFile(filePath, 'utf8')
-      if (actual === expected) return actual
-      throw new Error(`unexpected content for ${filePath}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`)
-    }
-    await sleep(pollMs)
-  }
-  throw new Error(`timed out waiting for ${filePath}`)
+  await waitForCondition({
+    label: filePath,
+    timeoutMs,
+    pollMs,
+    observe: async () => {
+      await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+      if (!(await fileExists(filePath))) return { filePath, exists: false }
+      return { filePath, exists: true, actual: await readFile(filePath, 'utf8') }
+    },
+    isReady: (observation) => {
+      if (!observation.exists) return false
+      if (observation.actual !== expected) {
+        throw new Error(`unexpected content for ${filePath}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(observation.actual)}`)
+      }
+      return true
+    },
+    retryOnError: false,
+  })
 }
 
 async function waitForAgentsIdle({ client, sessionId, attachmentId, agentIds, getSessionStateRequest, timeoutMs, pollMs }) {

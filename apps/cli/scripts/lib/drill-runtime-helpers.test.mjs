@@ -42,3 +42,22 @@ test("waitForCondition reports transient observer errors", async () => {
     /last_error=Error: relay unavailable/,
   )
 })
+
+test("waitForCondition can fail immediately on definitive errors", async () => {
+  let count = 0
+  await assert.rejects(
+    () => waitForCondition({
+      label: "file content",
+      timeoutMs: 100,
+      pollMs: 1,
+      retryOnError: false,
+      observe: async () => ({ actual: "wrong" }),
+      isReady: () => {
+        count += 1
+        throw new Error("unexpected content")
+      },
+    }),
+    /unexpected content/,
+  )
+  assert.equal(count, 1)
+})

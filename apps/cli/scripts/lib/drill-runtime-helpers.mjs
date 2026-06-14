@@ -172,6 +172,7 @@ export async function waitForCondition({
   observe,
   isReady = Boolean,
   describe = stringifyDiagnostic,
+  retryOnError = true,
 }) {
   const deadline = Date.now() + timeoutMs
   let lastObservation
@@ -182,6 +183,7 @@ export async function waitForCondition({
       if (await isReady(lastObservation)) return lastObservation
       lastError = null
     } catch (error) {
+      if (!retryOnError) throw error
       lastError = error
     }
     await sleep(pollMs)
