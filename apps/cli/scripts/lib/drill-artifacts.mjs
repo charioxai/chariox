@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
-import { mkdir, opendir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import {
   redactDrillSecretText,
   sanitizeDrillMetadata,
@@ -87,11 +88,11 @@ export async function writeDrillJsonArtifactOutput({
 }
 
 export async function findDrillArtifactIndexPaths(roots, { maxDepth = 8 } = {}) {
-  const discovered = new Set()
-  for (const root of roots) {
-    await collectDrillArtifactIndexPaths(discovered, root, { depth: 0, maxDepth })
-  }
-  return [...discovered].sort()
+  return await findDrillJsonArtifactPaths(roots, {
+    fileName: DRILL_ARTIFACT_INDEX_FILE,
+    maxDepth,
+    schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+  })
 }
 
 export async function readDrillArtifactIndex(indexPath) {
@@ -258,49 +259,6 @@ async function artifactRecord(rootDir, artifact) {
     sha256: sha256(contents),
     sizeBytes: contents.byteLength,
   }
-}
-
-async function collectDrillArtifactIndexPaths(discovered, entryPath, { depth, maxDepth }) {
-  const entry = await stat(entryPath).catch(() => null)
-  if (!entry) return
-  if (entry.isFile()) {
-    await maybeCollectDrillArtifactIndexPath(discovered, entryPath)
-    return
-  }
-  if (!entry.isDirectory() || depth > maxDepth) return
-  let dir = null
-  try {
-    dir = await opendir(entryPath)
-    for await (const child of dir) {
-      const childPath = path.join(entryPath, child.name)
-      if (child.isFile()) {
-        await maybeCollectDrillArtifactIndexPath(discovered, childPath)
-        continue
-      }
-      if (!child.isDirectory() || shouldPruneArtifactIndexDirectory(child.name)) continue
-      await collectDrillArtifactIndexPaths(discovered, childPath, { depth: depth + 1, maxDepth })
-    }
-  } catch {
-    // Ignore unreadable directories in broad artifact roots.
-  }
-}
-
-async function maybeCollectDrillArtifactIndexPath(discovered, entryPath) {
-  if (path.basename(entryPath) !== DRILL_ARTIFACT_INDEX_FILE) return
-  try {
-    const parsed = JSON.parse(await readFile(entryPath, "utf8"))
-    if (parsed?.schema === DRILL_ARTIFACT_INDEX_SCHEMA) discovered.add(entryPath)
-  } catch {
-    // Ignore unrelated or partial files in broad artifact roots.
-  }
-}
-
-function shouldPruneArtifactIndexDirectory(name) {
-  return name === ".git"
-    || name === "node_modules"
-    || name === ".pnpm-store"
-    || name === "debug"
-    || name === "release"
 }
 
 function validateArtifactIndexRecord(artifact, source) {

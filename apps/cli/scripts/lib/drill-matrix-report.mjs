@@ -1,5 +1,4 @@
-import { opendir, readFile, stat } from "node:fs/promises"
-import path from "node:path"
+import { readFile } from "node:fs/promises"
 import {
   countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
@@ -15,10 +14,13 @@ import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
 } from "./drill-secrets.mjs"
+import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import {
   validateDrillDurationMatchesTimestamps,
   validateDrillTimestampOrder,
 } from "./drill-time.mjs"
+
+const DRILL_MATRIX_REPORT_SCHEMA = "arroba.drill.matrix.v1"
 
 export async function readDrillMatrixReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))
@@ -27,18 +29,17 @@ export async function readDrillMatrixReport(reportPath) {
 }
 
 export async function findDrillMatrixReportPaths(roots, { maxDepth = 8 } = {}) {
-  const discovered = new Set()
-  for (const root of roots) {
-    await collectDrillMatrixReportPaths(discovered, root, { depth: 0, maxDepth })
-  }
-  return [...discovered].sort()
+  return await findDrillJsonArtifactPaths(roots, {
+    maxDepth,
+    schema: DRILL_MATRIX_REPORT_SCHEMA,
+  })
 }
 
 export function validateDrillMatrixReport(report, source = "report") {
   if (!report || typeof report !== "object") {
     throw new Error(`${source} is not an object`)
   }
-  if (report.schema !== "arroba.drill.matrix.v1") {
+  if (report.schema !== DRILL_MATRIX_REPORT_SCHEMA) {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(report.schema)}`)
   }
   if (!nonEmptyString(report.matrix)) {
@@ -336,49 +337,6 @@ export function drillMatrixReportCompletionExitCode(reports) {
   const aggregate = summarizeDrillMatrixReports(reports)
   if (aggregate.status === "failed") return 1
   return aggregate.incompleteScenarios.length > 0 ? 2 : 0
-}
-
-async function collectDrillMatrixReportPaths(discovered, entryPath, { depth, maxDepth }) {
-  const entry = await stat(entryPath).catch(() => null)
-  if (!entry) return
-  if (entry.isFile()) {
-    await maybeCollectDrillMatrixReportPath(discovered, entryPath)
-    return
-  }
-  if (!entry.isDirectory() || depth > maxDepth) return
-  let dir = null
-  try {
-    dir = await opendir(entryPath)
-    for await (const child of dir) {
-      const childPath = path.join(entryPath, child.name)
-      if (child.isFile()) {
-        await maybeCollectDrillMatrixReportPath(discovered, childPath)
-        continue
-      }
-      if (!child.isDirectory() || shouldPruneMatrixReportDirectory(child.name)) continue
-      await collectDrillMatrixReportPaths(discovered, childPath, { depth: depth + 1, maxDepth })
-    }
-  } catch {
-    // Ignore unreadable directories in broad artifact roots.
-  }
-}
-
-async function maybeCollectDrillMatrixReportPath(discovered, entryPath) {
-  if (!entryPath.endsWith(".json")) return
-  try {
-    const parsed = JSON.parse(await readFile(entryPath, "utf8"))
-    if (parsed?.schema === "arroba.drill.matrix.v1") discovered.add(entryPath)
-  } catch {
-    // Ignore unrelated JSON files in broad artifact roots.
-  }
-}
-
-function shouldPruneMatrixReportDirectory(name) {
-  return name === ".git"
-    || name === "node_modules"
-    || name === ".pnpm-store"
-    || name === "debug"
-    || name === "release"
 }
 
 function nextActionForScenario(scenario) {

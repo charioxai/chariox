@@ -1,4 +1,4 @@
-import { opendir, readFile, stat } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import {
   countDrillAggregateEntriesBy,
@@ -18,6 +18,7 @@ import {
   looksLikeDrillSecretValue,
   redactDrillSecretText,
 } from "./drill-secrets.mjs"
+import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
 const FAILURE_MANIFEST_FILE = "arroba-drill-failure.json"
@@ -31,12 +32,10 @@ export async function readDrillFailureManifest(inputPath) {
 }
 
 export async function findDrillFailureManifestPaths(rootPaths, { maxDepth = 8 } = {}) {
-  const roots = Array.isArray(rootPaths) ? rootPaths : [rootPaths]
-  const manifests = new Set()
-  for (const root of roots) {
-    await collectFailureManifestPaths(manifests, root, { depth: 0, maxDepth })
-  }
-  return [...manifests].sort()
+  return await findDrillJsonArtifactPaths(rootPaths, {
+    fileName: FAILURE_MANIFEST_FILE,
+    maxDepth,
+  })
 }
 
 export async function resolveFailureManifestPath(inputPath) {
@@ -338,46 +337,4 @@ function summarizeMetadataValue(key, value) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
-}
-
-async function collectFailureManifestPaths(manifests, currentPath, { depth, maxDepth }) {
-  let currentStat = null
-  try {
-    currentStat = await stat(currentPath)
-  } catch {
-    return
-  }
-  if (currentStat.isFile()) {
-    if (path.basename(currentPath) === FAILURE_MANIFEST_FILE) manifests.add(currentPath)
-    return
-  }
-  if (!currentStat.isDirectory() || depth > maxDepth) return
-  const directManifest = path.join(currentPath, FAILURE_MANIFEST_FILE)
-  try {
-    const directStat = await stat(directManifest)
-    if (directStat.isFile()) manifests.add(directManifest)
-  } catch {}
-
-  let dir = null
-  try {
-    dir = await opendir(currentPath)
-    for await (const entry of dir) {
-      if (!entry.isDirectory()) {
-        if (entry.isFile() && entry.name === FAILURE_MANIFEST_FILE) {
-          manifests.add(path.join(currentPath, entry.name))
-        }
-        continue
-      }
-      if (shouldPruneDirectory(entry.name)) continue
-      await collectFailureManifestPaths(manifests, path.join(currentPath, entry.name), { depth: depth + 1, maxDepth })
-    }
-  } catch {}
-}
-
-function shouldPruneDirectory(name) {
-  return name === ".git"
-    || name === "node_modules"
-    || name === ".pnpm-store"
-    || name === "debug"
-    || name === "release"
 }
