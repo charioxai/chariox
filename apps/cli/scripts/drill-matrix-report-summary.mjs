@@ -50,7 +50,7 @@ async function main() {
       console.log(formatDrillMatrixReportSummary(report, { source: reportPath }))
     }
   }
-  const aggregate = summarizeDrillMatrixReports(reports)
+  const aggregate = summarizeDrillMatrixReports(reports, { sources: reportPaths })
   if (options.outputPath) {
     await mkdir(path.dirname(options.outputPath), { recursive: true })
     await writeFile(options.outputPath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8")

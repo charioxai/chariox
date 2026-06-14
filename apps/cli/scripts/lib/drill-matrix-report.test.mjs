@@ -96,7 +96,9 @@ test("aggregates multiple matrix reports for CI", () => {
     scenarios: [scenario("tracked", "dry-run")],
   })
 
-  const aggregate = summarizeDrillMatrixReports([failed, dryRun])
+  const aggregate = summarizeDrillMatrixReports([failed, dryRun], {
+    sources: ["/tmp/remote-matrix.json", "/tmp/workspace-matrix.json"],
+  })
 
   assert.equal(aggregate.schema, "arroba.drill.matrix.aggregate.v1")
   assert.equal(aggregate.status, "failed")
@@ -111,29 +113,51 @@ test("aggregates multiple matrix reports for CI", () => {
   })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1 })
   assert.deepEqual(aggregate.owners, { "provider-account": 1 })
+  assert.deepEqual(aggregate.reports.map((report) => ({ matrix: report.matrix, source: report.source })), [
+    { matrix: "remote", source: "/tmp/remote-matrix.json" },
+    { matrix: "workspace", source: "/tmp/workspace-matrix.json" },
+  ])
   assert.deepEqual(aggregate.failedScenarios, [{
     matrix: "remote",
+    source: "/tmp/remote-matrix.json",
     id: "remote",
     classification: "provider-auth",
     owner: "provider-account",
     reason: "expired token",
     nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
   }])
-  assert.deepEqual(aggregate.skippedScenarios, [{ matrix: "remote", id: "hetzner", reason: "skipped after previous failure" }])
+  assert.deepEqual(aggregate.skippedScenarios, [{
+    matrix: "remote",
+    source: "/tmp/remote-matrix.json",
+    id: "hetzner",
+    reason: "skipped after previous failure",
+  }])
   assert.deepEqual(aggregate.incompleteScenarios, [
-    { matrix: "remote", id: "hetzner", status: "skipped", reason: "skipped after previous failure" },
-    { matrix: "workspace", id: "tracked", status: "dry-run", reason: null },
+    {
+      matrix: "remote",
+      source: "/tmp/remote-matrix.json",
+      id: "hetzner",
+      status: "skipped",
+      reason: "skipped after previous failure",
+    },
+    {
+      matrix: "workspace",
+      source: "/tmp/workspace-matrix.json",
+      id: "tracked",
+      status: "dry-run",
+      reason: null,
+    },
   ])
 
   const text = formatDrillMatrixAggregateSummary(aggregate)
   assert.match(text, /matrix aggregate:/)
   assert.match(text, /status=failed reports=2 scenarios=4 passed=1 failed=1 skipped=1 dry_run=1/)
-  assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token/)
+  assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token source=\/tmp\/remote-matrix.json/)
   assert.match(text, /owners: provider-account=1/)
   assert.match(text, /next: refresh provider login/)
   assert.match(text, /incomplete scenarios:/)
-  assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure/)
-  assert.match(text, /- workspace\/tracked status=dry-run/)
+  assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure source=\/tmp\/remote-matrix.json/)
+  assert.match(text, /- workspace\/tracked status=dry-run source=\/tmp\/workspace-matrix.json/)
 })
 
 test("reads and validates report files", async () => {

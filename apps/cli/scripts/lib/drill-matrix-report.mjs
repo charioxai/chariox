@@ -47,7 +47,7 @@ export function validateDrillMatrixReport(report, source = "report") {
   }
 }
 
-export function summarizeDrillMatrixReport(report) {
+export function summarizeDrillMatrixReport(report, { source = null } = {}) {
   validateDrillMatrixReport(report)
   const counts = {
     passed: 0,
@@ -68,6 +68,7 @@ export function summarizeDrillMatrixReport(report) {
   }
   return {
     matrix: report.matrix,
+    source,
     status: report.status,
     durationMs: report.durationMs,
     scenarioCount: report.scenarios.length,
@@ -79,8 +80,10 @@ export function summarizeDrillMatrixReport(report) {
   }
 }
 
-export function summarizeDrillMatrixReports(reports) {
-  const summaries = reports.map((report) => summarizeDrillMatrixReport(report))
+export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
+  const summaries = reports.map((report, index) => summarizeDrillMatrixReport(report, {
+    source: sources[index] ?? null,
+  }))
   const totals = {
     reports: summaries.length,
     scenarios: 0,
@@ -108,6 +111,7 @@ export function summarizeDrillMatrixReports(reports) {
     for (const scenario of summary.failedScenarios) {
       failedScenarios.push({
         matrix: summary.matrix,
+        source: summary.source,
         id: scenario.id,
         classification: scenario.classification ?? null,
         owner: ownerForScenario(scenario),
@@ -118,11 +122,11 @@ export function summarizeDrillMatrixReports(reports) {
       owners.set(owner, (owners.get(owner) ?? 0) + 1)
     }
     for (const scenario of summary.skippedScenarios) {
-      skippedScenarios.push({ matrix: summary.matrix, id: scenario.id, reason: scenario.reason ?? null })
-      incompleteScenarios.push({ matrix: summary.matrix, id: scenario.id, status: "skipped", reason: scenario.reason ?? null })
+      skippedScenarios.push({ matrix: summary.matrix, source: summary.source, id: scenario.id, reason: scenario.reason ?? null })
+      incompleteScenarios.push({ matrix: summary.matrix, source: summary.source, id: scenario.id, status: "skipped", reason: scenario.reason ?? null })
     }
     for (const scenario of summary.dryRunScenarios) {
-      incompleteScenarios.push({ matrix: summary.matrix, id: scenario.id, status: "dry-run", reason: scenario.reason ?? null })
+      incompleteScenarios.push({ matrix: summary.matrix, source: summary.source, id: scenario.id, status: "dry-run", reason: scenario.reason ?? null })
     }
   }
   return {
@@ -137,6 +141,7 @@ export function summarizeDrillMatrixReports(reports) {
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     reports: summaries.map((summary) => ({
       matrix: summary.matrix,
+      source: summary.source,
       status: summary.status,
       scenarioCount: summary.scenarioCount,
       counts: summary.counts,
@@ -215,7 +220,8 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     for (const scenario of aggregate.failedScenarios) {
       const classification = scenario.classification ? ` classification=${scenario.classification}` : ""
       const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
-      lines.push(`- ${scenario.matrix}/${scenario.id}${classification} owner=${scenario.owner}${reason}`)
+      const source = scenario.source ? ` source=${scenario.source}` : ""
+      lines.push(`- ${scenario.matrix}/${scenario.id}${classification} owner=${scenario.owner}${reason}${source}`)
       lines.push(`  next: ${scenario.nextAction}`)
     }
   }
@@ -224,7 +230,8 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     lines.push("incomplete scenarios:")
     for (const scenario of aggregate.incompleteScenarios) {
       const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
-      lines.push(`- ${scenario.matrix}/${scenario.id} status=${scenario.status}${reason}`)
+      const source = scenario.source ? ` source=${scenario.source}` : ""
+      lines.push(`- ${scenario.matrix}/${scenario.id} status=${scenario.status}${reason}${source}`)
     }
   }
 
@@ -354,11 +361,56 @@ function validateDrillMatrixAggregate(aggregate) {
   if (!Array.isArray(aggregate.failedScenarios)) {
     throw new Error("aggregate is missing failedScenarios")
   }
+  for (const [index, scenario] of aggregate.failedScenarios.entries()) {
+    validateMatrixAggregateScenario(scenario, `aggregate.failedScenarios[${index}]`)
+  }
   if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {
     throw new Error("aggregate is missing owners")
   }
+  if (!Array.isArray(aggregate.skippedScenarios)) {
+    throw new Error("aggregate is missing skippedScenarios")
+  }
+  for (const [index, scenario] of aggregate.skippedScenarios.entries()) {
+    validateMatrixAggregateScenario(scenario, `aggregate.skippedScenarios[${index}]`)
+  }
   if (!Array.isArray(aggregate.incompleteScenarios)) {
     throw new Error("aggregate is missing incompleteScenarios")
+  }
+  for (const [index, scenario] of aggregate.incompleteScenarios.entries()) {
+    validateMatrixAggregateScenario(scenario, `aggregate.incompleteScenarios[${index}]`)
+  }
+  if (!Array.isArray(aggregate.reports)) {
+    throw new Error("aggregate is missing reports")
+  }
+  for (const [index, report] of aggregate.reports.entries()) {
+    validateMatrixAggregateReport(report, `aggregate.reports[${index}]`)
+  }
+}
+
+function validateMatrixAggregateReport(report, source) {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!nonEmptyString(report.matrix)) {
+    throw new Error(`${source} is missing matrix`)
+  }
+  if (report.source !== null && report.source !== undefined && !nonEmptyString(report.source)) {
+    throw new Error(`${source} has invalid source`)
+  }
+}
+
+function validateMatrixAggregateScenario(scenario, source) {
+  if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!nonEmptyString(scenario.matrix)) {
+    throw new Error(`${source} is missing matrix`)
+  }
+  if (!nonEmptyString(scenario.id)) {
+    throw new Error(`${source} is missing id`)
+  }
+  if (scenario.source !== null && scenario.source !== undefined && !nonEmptyString(scenario.source)) {
+    throw new Error(`${source} has invalid source`)
   }
 }
 
