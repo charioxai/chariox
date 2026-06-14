@@ -276,6 +276,36 @@ test("rejects inconsistent failure aggregates", () => {
     ...aggregate,
     nextActions: [],
   }), /nextActions do not match failures/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    classifications: { "typo-runtime": 1 },
+    owners: { "drill-or-runtime": 1 },
+    failures: [{
+      ...aggregate.failures[0],
+      owner: "drill-or-runtime",
+      classification: "typo-runtime",
+    }],
+    nextActions: [{
+      owner: "drill-or-runtime",
+      classification: "typo-runtime",
+      nextAction: aggregate.failures[0].nextAction,
+      count: 1,
+    }],
+  }), /failures\[0\] has unknown classification "typo-runtime"/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    owners: { "runtime-state": 1 },
+    failures: [{
+      ...aggregate.failures[0],
+      owner: "runtime-state",
+    }],
+    nextActions: [{
+      owner: "runtime-state",
+      classification: aggregate.failures[0].classification,
+      nextAction: aggregate.failures[0].nextAction,
+      count: 1,
+    }],
+  }), /owner "runtime-state" does not match classification "provider-auth"/)
 })
 
 function validManifest(overrides = {}) {
