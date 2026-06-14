@@ -5,6 +5,7 @@ import {
 import {
   findDrillFailureManifestPaths,
   readDrillFailureManifest,
+  resolveFailureManifestPath,
   summarizeDrillFailureManifests,
 } from "./drill-failure-manifest.mjs"
 import {
@@ -234,7 +235,8 @@ async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {
     const discovered = failureRoots.length > 0
       ? await findDrillFailureManifestPaths(failureRoots, { maxDepth })
       : []
-    const manifestPaths = [...new Set([...failureInputs, ...discovered])].sort()
+    const inputManifestPaths = await Promise.all(failureInputs.map((input) => resolveFailureManifestPath(input)))
+    const manifestPaths = [...new Set([...inputManifestPaths, ...discovered])].sort()
     const manifests = await Promise.all(manifestPaths.map((manifestPath) => readDrillFailureManifest(manifestPath)))
     const aggregate = summarizeDrillFailureManifests(manifests, { sources: manifestPaths })
     return {

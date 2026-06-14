@@ -146,6 +146,23 @@ test("fails with explicit failure manifest paths", async () => {
   }
 })
 
+test("resolves explicit failure root inputs to manifest paths", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const failureRoot = path.join(rootDir, "failed")
+    const manifestPath = path.join(failureRoot, "arroba-drill-failure.json")
+    await writeFailureManifest(manifestPath)
+
+    const report = await runDrillValidationGate({ failureInputs: [failureRoot] })
+
+    assert.equal(report.status, "failed")
+    assert.deepEqual(report.checks.failures.inputs, [failureRoot])
+    assert.deepEqual(report.checks.failures.manifestPaths, [manifestPath])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 async function writeMatrixReport(file, report) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify(report, null, 2)}\n`, "utf8")

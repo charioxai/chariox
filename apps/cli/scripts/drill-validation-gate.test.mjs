@@ -76,15 +76,18 @@ test("drill validation gate rejects empty configuration", async () => {
 test("drill validation gate exits non-zero for preserved failures", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {
-    await writeFailureManifest(path.join(rootDir, "failed", "arroba-drill-failure.json"))
+    const failureRoot = path.join(rootDir, "failed")
+    await writeFailureManifest(path.join(failureRoot, "arroba-drill-failure.json"))
 
     await assert.rejects(
-      execFile(process.execPath, [scriptPath, "--failure-manifest", path.join(rootDir, "failed", "arroba-drill-failure.json"), "--json"]),
+      execFile(process.execPath, [scriptPath, "--failure-manifest", failureRoot, "--json"]),
       (error) => {
         const report = JSON.parse(error.stdout)
         assert.equal(error.code, 1)
         assert.equal(report.status, "failed")
         assert.equal(report.checks.failures.aggregate.total, 1)
+        assert.deepEqual(report.checks.failures.inputs, [failureRoot])
+        assert.deepEqual(report.checks.failures.manifestPaths, [path.join(failureRoot, "arroba-drill-failure.json")])
         assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
           { owner: "provider-account", classification: "provider-auth" },
         ])
