@@ -20,6 +20,9 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
 }
 
 export function diagnosticMetadataForValidationGateReport(report) {
+  const coverageAreas = new Set([
+    ...Object.keys(report.checks?.artifacts?.aggregate?.coverageAreas ?? {}),
+  ])
   const owners = new Set([
     ...Object.keys(report.checks?.artifacts?.aggregate?.owners ?? {}),
     ...Object.keys(report.checks?.failures?.aggregate?.owners ?? {}),
@@ -34,6 +37,7 @@ export function diagnosticMetadataForValidationGateReport(report) {
   ])
   return {
     ...runtimeSignalMetadataForValidationGateReport(report),
+    ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
   }
@@ -61,6 +65,9 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
 }
 
 export function diagnosticMetadataForValidationGateAggregate(aggregate) {
+  const coverageAreas = new Set([
+    ...Object.keys(aggregate.coverage?.artifactCoverageAreas ?? {}),
+  ])
   const owners = new Set([
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.failureRuntimeSignalOwners ?? {}),
@@ -82,6 +89,7 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
+    ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
   }
