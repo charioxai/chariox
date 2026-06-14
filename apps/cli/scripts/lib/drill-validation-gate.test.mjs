@@ -129,6 +129,39 @@ test("fails when matrix reports miss required deployment presets", async () => {
   }
 })
 
+test("gates matrix reports by required provider coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      metadata: { providers: "codex,opencode" },
+    }))
+
+    const pass = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredProviders: ["codex,opencode"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.matrices.requiredProviders, ["codex", "opencode"])
+    assert.deepEqual(pass.checks.matrices.missingProviders, [])
+    assert.match(formatDrillValidationGateSummary(pass), /matrix_required_providers=codex,opencode missing=none/)
+
+    const fail = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredProviders: ["claude", "codex"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.matrices.missingProviders, ["claude"])
+    assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports for missing providers: claude",
+    }])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("rejects unknown required deployment presets", async () => {
   await assert.rejects(
     () => runDrillValidationGate({

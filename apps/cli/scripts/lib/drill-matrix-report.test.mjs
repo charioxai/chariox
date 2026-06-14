@@ -84,6 +84,7 @@ test("aggregates multiple matrix reports for CI", () => {
     matrix: "remote",
     metadata: {
       deploymentPresets: "local,self-hosted-relay,hetzner",
+      providers: "codex,opencode",
     },
     scenarios: [
       scenario("local", "passed"),
@@ -102,6 +103,7 @@ test("aggregates multiple matrix reports for CI", () => {
     durationMs: 25,
     metadata: {
       deploymentPresets: "hosted-cloud",
+      providers: "claude",
     },
     scenarios: [scenario("tracked", "dry-run")],
   })
@@ -128,6 +130,11 @@ test("aggregates multiple matrix reports for CI", () => {
     local: 1,
     "self-hosted-relay": 1,
   })
+  assert.deepEqual(aggregate.providers, {
+    claude: 1,
+    codex: 1,
+    opencode: 1,
+  })
   assert.deepEqual(aggregate.owners, { "provider-account": 1 })
   assert.deepEqual(aggregate.nextActions.map((action) => ({
     owner: action.owner,
@@ -140,9 +147,13 @@ test("aggregates multiple matrix reports for CI", () => {
     { matrix: "remote", source: "/tmp/remote-matrix.json" },
     { matrix: "workspace", source: "/tmp/workspace-matrix.json" },
   ])
-  assert.deepEqual(aggregate.reports.map((report) => ({ matrix: report.matrix, deploymentPresets: report.deploymentPresets })), [
-    { matrix: "remote", deploymentPresets: ["hetzner", "local", "self-hosted-relay"] },
-    { matrix: "workspace", deploymentPresets: ["hosted-cloud"] },
+  assert.deepEqual(aggregate.reports.map((report) => ({
+    matrix: report.matrix,
+    deploymentPresets: report.deploymentPresets,
+    providers: report.providers,
+  })), [
+    { matrix: "remote", deploymentPresets: ["hetzner", "local", "self-hosted-relay"], providers: ["codex", "opencode"] },
+    { matrix: "workspace", deploymentPresets: ["hosted-cloud"], providers: ["claude"] },
   ])
   assert.deepEqual(aggregate.failedScenarios, [{
     matrix: "remote",
@@ -184,6 +195,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
   assert.match(text, /owners: provider-account=1/)
   assert.match(text, /deployment_presets: hetzner=1 hosted-cloud=1 local=1 self-hosted-relay=1/)
+  assert.match(text, /providers: claude=1 codex=1 opencode=1/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
   assert.match(text, /next: refresh provider login/)
@@ -239,6 +251,10 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     deploymentPresets: { local: 1 },
   }), /deploymentPresets do not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    providers: { codex: 2 },
+  }), /providers do not match reports/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     nextActions: [],

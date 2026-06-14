@@ -26,6 +26,8 @@ function printHelp() {
     "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
     "  --require-deployment-preset NAME[,NAME]",
     "                         Fail when matrix reports do not cover each deployment preset; repeatable",
+    "  --require-provider NAME[,NAME]",
+    "                         Fail when matrix reports do not cover each provider; repeatable",
     "  --json                 Print gate report JSON",
     "  --output PATH          Write gate report JSON to PATH",
     "  --output-artifact-index PATH",
@@ -75,6 +77,7 @@ function parseArgs(argv) {
     platformBundleDir: null,
     requireComplete: false,
     requiredDeploymentPresets: [],
+    requiredProviders: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -88,6 +91,14 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--require-deployment-preset=")) {
       options.requiredDeploymentPresets.push(arg.slice("--require-deployment-preset=".length))
+    }
+    else if (arg === "--require-provider") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-provider requires a value")
+      options.requiredProviders.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-provider=")) {
+      options.requiredProviders.push(arg.slice("--require-provider=".length))
     }
     else if (arg === "--artifact-index") {
       const value = argv[index + 1]

@@ -122,8 +122,10 @@ export async function runDrillValidationGate({
   platformBundleDir = null,
   requireComplete = false,
   requiredDeploymentPresets = [],
+  requiredProviders = [],
 } = {}) {
   const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(requiredDeploymentPresets)
+  const normalizedRequiredProviders = normalizeRequiredProviders(requiredProviders)
   const checks = {
     configuration: configurationCheck({
       artifactIndexes,
@@ -134,6 +136,7 @@ export async function runDrillValidationGate({
       matrixRoots,
       platformBundleDir,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
+      requiredProviders: normalizedRequiredProviders,
     }),
     platformBundle: await platformBundleCheck(platformBundleDir),
     artifacts: await artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
@@ -144,6 +147,7 @@ export async function runDrillValidationGate({
       maxDepth,
       requireComplete,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
+      requiredProviders: normalizedRequiredProviders,
     }),
     failures: await failureCheck({ failureInputs, failureRoots }, { maxDepth }),
   }
@@ -191,6 +195,11 @@ export function formatDrillValidationGateSummary(report) {
   const missingDeploymentPresets = matrices.missingDeploymentPresets ?? []
   if (requiredDeploymentPresets.length > 0) {
     lines.push(`matrix_required_deployment_presets=${requiredDeploymentPresets.join(",")} missing=${missingDeploymentPresets.join(",") || "none"}`)
+  }
+  const requiredProviders = matrices.requiredProviders ?? []
+  const missingProviders = matrices.missingProviders ?? []
+  if (requiredProviders.length > 0) {
+    lines.push(`matrix_required_providers=${requiredProviders.join(",")} missing=${missingProviders.join(",") || "none"}`)
   }
   if (matrices.error) lines.push(`matrix_error=${matrices.error}`)
   if (matrices.aggregate) {
@@ -347,6 +356,8 @@ function validateMatrixCheck(check, source) {
   validateStringArray(check.reportPaths, `${source}.reportPaths`)
   validateStringArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
+  validateStringArray(check.requiredProviders ?? [], `${source}.requiredProviders`)
+  validateStringArray(check.missingProviders ?? [], `${source}.missingProviders`)
   if (typeof check.requireComplete !== "boolean") {
     throw new Error(`${source} has invalid requireComplete`)
   }
@@ -520,6 +531,14 @@ function validationGateNextActions(checks) {
         nextAction: `run matrix reports for missing deployment presets: ${missingDeploymentPresets.join(", ")}`,
       })
     }
+    const missingProviders = checks.matrices.missingProviders ?? []
+    if (missingProviders.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "matrix-coverage",
+        nextAction: `run matrix reports for missing providers: ${missingProviders.join(", ")}`,
+      })
+    }
   }
   if (checks.failures.status === "failed") {
     if (checks.failures.error) {
@@ -545,6 +564,7 @@ function configurationCheck({
   matrixRoots,
   platformBundleDir,
   requiredDeploymentPresets,
+  requiredProviders,
 }) {
   const configured = Boolean(platformBundleDir)
     || artifactRoots.length > 0
@@ -554,6 +574,7 @@ function configurationCheck({
     || failureRoots.length > 0
     || failureInputs.length > 0
     || requiredDeploymentPresets.length > 0
+    || requiredProviders.length > 0
   return configured
     ? { status: "passed" }
     : {
@@ -641,8 +662,8 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
   }
 }
 
-async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete, requiredDeploymentPresets }) {
-  if (matrixRoots.length === 0 && matrixReports.length === 0 && requiredDeploymentPresets.length === 0) {
+async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete, requiredDeploymentPresets, requiredProviders }) {
+  if (matrixRoots.length === 0 && matrixReports.length === 0 && requiredDeploymentPresets.length === 0 && requiredProviders.length === 0) {
     return {
       status: "skipped",
       roots: [],
@@ -651,6 +672,8 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
       requireComplete,
       requiredDeploymentPresets: [],
       missingDeploymentPresets: [],
+      requiredProviders: [],
+      missingProviders: [],
     }
   }
   try {
@@ -667,6 +690,8 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
         requireComplete,
         requiredDeploymentPresets: [...requiredDeploymentPresets],
         missingDeploymentPresets: [...requiredDeploymentPresets],
+        requiredProviders: [...requiredProviders],
+        missingProviders: [...requiredProviders],
         error: "no matrix reports found",
       }
     }
@@ -676,14 +701,17 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
       ? drillMatrixReportCompletionExitCode(reports)
       : drillMatrixReportExitCode(reports)
     const missingDeploymentPresets = missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets)
+    const missingProviders = missingRequiredProviders(aggregate, requiredProviders)
     return {
-      status: exitCode === 0 && missingDeploymentPresets.length === 0 ? "passed" : "failed",
+      status: exitCode === 0 && missingDeploymentPresets.length === 0 && missingProviders.length === 0 ? "passed" : "failed",
       roots: [...matrixRoots],
       inputs: [...matrixReports],
       reportPaths,
       requireComplete,
       requiredDeploymentPresets: [...requiredDeploymentPresets],
       missingDeploymentPresets,
+      requiredProviders: [...requiredProviders],
+      missingProviders,
       aggregate,
     }
   } catch (error) {
@@ -695,6 +723,8 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
       requireComplete,
       requiredDeploymentPresets: [...requiredDeploymentPresets],
       missingDeploymentPresets: [...requiredDeploymentPresets],
+      requiredProviders: [...requiredProviders],
+      missingProviders: [...requiredProviders],
       error: error instanceof Error ? error.message : String(error),
     }
   }
@@ -703,6 +733,11 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
 function missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets) {
   const present = new Set(Object.keys(aggregate.deploymentPresets ?? {}))
   return requiredDeploymentPresets.filter((preset) => !present.has(preset))
+}
+
+function missingRequiredProviders(aggregate, requiredProviders) {
+  const present = new Set(Object.keys(aggregate.providers ?? {}))
+  return requiredProviders.filter((provider) => !present.has(provider))
 }
 
 function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {
@@ -726,6 +761,23 @@ function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {
     }
   }
   return normalizedPresets
+}
+
+function normalizeRequiredProviders(requiredProviders) {
+  if (!Array.isArray(requiredProviders)) {
+    throw new Error("requiredProviders must be an array")
+  }
+  const providers = []
+  for (const provider of requiredProviders) {
+    if (!nonEmptyString(provider)) {
+      throw new Error("requiredProviders has invalid provider")
+    }
+    for (const value of provider.split(",")) {
+      const normalized = value.trim()
+      if (normalized) providers.push(normalized)
+    }
+  }
+  return [...new Set(providers)].sort()
 }
 
 async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {

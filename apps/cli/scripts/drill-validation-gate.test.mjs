@@ -121,6 +121,39 @@ test("drill validation gate requires deployment preset coverage", async () => {
   }
 })
 
+test("drill validation gate requires provider coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, { providers: "codex,opencode" })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--matrix-report",
+        reportPath,
+        "--require-provider",
+        "codex,claude",
+        "--require-provider=opencode",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.deepEqual(report.checks.matrices.requiredProviders, ["claude", "codex", "opencode"])
+        assert.deepEqual(report.checks.matrices.missingProviders, ["claude"])
+        assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+          { owner: "validation-harness", classification: "matrix-coverage" },
+        ])
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill validation gate rejects unknown deployment preset requirements", async () => {
   await assert.rejects(
     execFile(process.execPath, [
