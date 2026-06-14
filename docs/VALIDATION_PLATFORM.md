@@ -24,11 +24,13 @@ node apps/cli/scripts/drill-validation-suite.mjs
 node apps/cli/scripts/drill-validation-suite.mjs --check
 node apps/cli/scripts/drill-validation-suite.mjs --json
 node apps/cli/scripts/drill-validation-suite.mjs --json --output .artifacts/drill-validation-suite.json
+node apps/cli/scripts/drill-validation-suite.mjs --run-json --output .artifacts/drill-validation-suite-run.json
 node apps/cli/scripts/drill-validation-suite.mjs --list
 node apps/cli/scripts/drill-validation-suite.mjs --command
 ```
 
 The `--json` output uses schema `arroba.drill.validation_suite.v1` and lists the exact test paths and command covered by the suite. Use `--output PATH` with `--json` when CI or staging jobs should collect the coverage manifest as an artifact.
+The `--run-json` output uses schema `arroba.drill.validation_suite_run.v1`, runs the suite, records pass/fail status, duration, exit code, command, and embeds the manifest. Use `--run-json --output PATH --output-artifact-index PATH` when a staging or release gate needs evidence that the suite actually executed.
 
 Export the shared failure taxonomy with:
 

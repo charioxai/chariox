@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile as execFileWithCallback } from "node:child_process"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -102,6 +102,93 @@ test("drill validation suite writes coverage manifest", async () => {
       path: "suite.json",
       schema: "arroba.drill.validation_suite.v1",
     }])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation suite writes passing run report artifact output", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-suite-"))
+  const testPath = path.join(rootDir, "passing.test.mjs")
+  const outputPath = path.join(rootDir, "suite-run.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    await writeFile(testPath, [
+      'import test from "node:test"',
+      'import assert from "node:assert/strict"',
+      'test("passes", () => assert.equal(1, 1))',
+      "",
+    ].join("\n"), "utf8")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--run-json",
+      "--test-path",
+      testPath,
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const stdoutReport = JSON.parse(stdout)
+    const fileReport = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(fileReport, stdoutReport)
+    assert.equal(fileReport.schema, "arroba.drill.validation_suite_run.v1")
+    assert.equal(fileReport.status, "passed")
+    assert.equal(fileReport.ok, true)
+    assert.equal(fileReport.testCount, 1)
+    assert.deepEqual(fileReport.testPaths, [testPath])
+    assert.equal(fileReport.manifest.schema, "arroba.drill.validation_suite.v1")
+    assert.equal(artifactIndex.metadata.drill, "validation-suite")
+    assert.equal(artifactIndex.metadata.status, "passed")
+    assert.equal(artifactIndex.metadata.tests, 1)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation suite writes failing run report before exiting nonzero", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-suite-"))
+  const testPath = path.join(rootDir, "failing.test.mjs")
+  const outputPath = path.join(rootDir, "suite-run.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    await writeFile(testPath, [
+      'import test from "node:test"',
+      'import assert from "node:assert/strict"',
+      'test("fails", () => assert.equal(1, 2))',
+      "",
+    ].join("\n"), "utf8")
+
+    let rejected = null
+    try {
+      await execFile(process.execPath, [
+        scriptPath,
+        "--run-json",
+        "--test-path",
+        testPath,
+        "--output",
+        outputPath,
+        "--output-artifact-index",
+        artifactIndexPath,
+      ])
+    } catch (error) {
+      rejected = error
+    }
+    assert(rejected)
+    assert.equal(rejected.code, 1)
+    const stdoutReport = JSON.parse(rejected.stdout)
+    const fileReport = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(fileReport, stdoutReport)
+    assert.equal(fileReport.schema, "arroba.drill.validation_suite_run.v1")
+    assert.equal(fileReport.status, "failed")
+    assert.equal(fileReport.ok, false)
+    assert.equal(fileReport.exitCode, 1)
+    assert.equal(artifactIndex.metadata.status, "failed")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
