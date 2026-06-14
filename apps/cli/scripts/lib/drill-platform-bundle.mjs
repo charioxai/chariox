@@ -6,6 +6,7 @@ import {
   DRILL_FAILURE_CLASSIFICATION_KINDS,
   drillFailureTaxonomyManifest,
 } from "./drill-failure-taxonomy.mjs"
+import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import { drillValidationSuiteManifest } from "./drill-validation-suite.mjs"
 
 export const DRILL_PLATFORM_BUNDLE_SCHEMA = "arroba.drill.platform_bundle.v1"
@@ -59,6 +60,14 @@ export async function writeDrillPlatformBundle(outputDir) {
     artifacts: artifactRecords,
   }
   await writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(bundle, null, 2)}\n`, "utf8")
+  await writeDrillArtifactIndex({
+    rootDir: outputDir,
+    artifacts: ["index.json", ...artifactRecords.map((artifact) => artifact.path)],
+    metadata: {
+      drill: "platform-bundle",
+      artifacts: artifactRecords.length,
+    },
+  })
   return bundle
 }
 

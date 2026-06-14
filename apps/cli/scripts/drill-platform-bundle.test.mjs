@@ -8,6 +8,8 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-platform-bundle.mjs", import.meta.url))
 
@@ -21,6 +23,7 @@ test("drill platform bundle writes shared contract artifacts", async () => {
     const validationSuite = JSON.parse(await readFile(path.join(outputDir, "validation-suite.json"), "utf8"))
     const scenarioTaxonomy = JSON.parse(await readFile(path.join(outputDir, "failure-taxonomy-scenario.json"), "utf8"))
     const drillTaxonomy = JSON.parse(await readFile(path.join(outputDir, "failure-taxonomy-drill.json"), "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(path.join(outputDir, "arroba-drill-artifacts.json"))
 
     assert.deepEqual(indexBundle, stdoutBundle)
     assert.equal(indexBundle.schema, "arroba.drill.platform_bundle.v1")
@@ -48,6 +51,13 @@ test("drill platform bundle writes shared contract artifacts", async () => {
     assert.equal(validationSuite.schema, "arroba.drill.validation_suite.v1")
     assert.equal(scenarioTaxonomy.target, "scenario")
     assert.equal(drillTaxonomy.target, "drill")
+    assert.equal(artifactIndex.metadata.drill, "platform-bundle")
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => artifact.path), [
+      "failure-taxonomy-drill.json",
+      "failure-taxonomy-scenario.json",
+      "index.json",
+      "validation-suite.json",
+    ])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

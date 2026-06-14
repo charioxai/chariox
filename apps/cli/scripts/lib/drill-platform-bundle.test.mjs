@@ -5,6 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
+import { verifyDrillArtifactIndex } from "./drill-artifacts.mjs"
 import {
   DRILL_PLATFORM_BUNDLE_ARTIFACTS,
   DRILL_PLATFORM_BUNDLE_SCHEMA,
@@ -34,10 +35,33 @@ test("writes and verifies drill platform bundle artifacts", async () => {
   try {
     const bundle = await writeDrillPlatformBundle(rootDir)
     const verified = await verifyDrillPlatformBundle(rootDir)
+    const artifactIndex = await verifyDrillArtifactIndex(path.join(rootDir, "arroba-drill-artifacts.json"))
     const validationSuite = JSON.parse(await readFile(path.join(rootDir, "validation-suite.json"), "utf8"))
 
     assert.equal(bundle.schema, DRILL_PLATFORM_BUNDLE_SCHEMA)
     assert.deepEqual(verified, bundle)
+    assert.equal(artifactIndex.metadata.drill, "platform-bundle")
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
+      path: artifact.path,
+      schema: artifact.schema,
+    })), [
+      {
+        path: "failure-taxonomy-drill.json",
+        schema: "arroba.drill.failure_taxonomy.v1",
+      },
+      {
+        path: "failure-taxonomy-scenario.json",
+        schema: "arroba.drill.failure_taxonomy.v1",
+      },
+      {
+        path: "index.json",
+        schema: "arroba.drill.platform_bundle.v1",
+      },
+      {
+        path: "validation-suite.json",
+        schema: "arroba.drill.validation_suite.v1",
+      },
+    ])
     assert.equal(validationSuite.schema, "arroba.drill.validation_suite.v1")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
