@@ -130,6 +130,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_owners=validation-platform:1/)
   assert.match(text, /artifact_classifications=cloud-validation-suite:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
+  assert.match(text, /matrix_runtime_signals=session-authority:1,workspace-live-sync-state:1/)
+  assert.match(text, /matrix_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
   assert.match(text, /matrix_exit_criteria=dry-run:1,satisfied:1/)
   assert.match(text, /matrix_incomplete_exit_criteria:/)
   assert.match(text, /workspace-live-sync-matrix\/managed\/managed:exit-02\(dry-run\) reason=scenario command was selected but not executed source=\/tmp\/matrix\.json: remote worker acknowledged projection/)
@@ -138,6 +140,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/matrix\.json/)
   assert.match(text, /failure_total=1/)
   assert.match(text, /failure_runtime_signals=lease-health:1,relay-target-freshness:1/)
+  assert.match(text, /failure_runtime_signal_owners=kernel-authority:1,runtime-network:1/)
 })
 
 test("validates reports before formatting", () => {

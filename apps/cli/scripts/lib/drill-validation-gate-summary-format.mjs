@@ -1,4 +1,5 @@
 import { validateDrillValidationGateReport } from "./drill-validation-gate-report.mjs"
+import { drillRuntimeSignalOwnerCounts } from "./drill-runtime-signals.mjs"
 
 export function formatDrillValidationGateSummary(report) {
   validateDrillValidationGateReport(report)
@@ -107,6 +108,11 @@ export function formatDrillValidationGateSummary(report) {
   if (matrices.error) lines.push(`matrix_error=${matrices.error}`)
   if (matrices.aggregate) {
     lines.push(`matrix_status=${matrices.aggregate.status} failed=${matrices.aggregate.totals.failed} skipped=${matrices.aggregate.totals.skipped} dry_run=${matrices.aggregate.totals.dryRun}`)
+    const runtimeSignals = Object.entries(matrices.aggregate.runtimeSignals ?? {})
+    if (runtimeSignals.length > 0) {
+      lines.push(`matrix_runtime_signals=${runtimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)
+      lines.push(`matrix_runtime_signal_owners=${formatCountObject(drillRuntimeSignalOwnerCounts(matrices.aggregate.runtimeSignals))}`)
+    }
     const exitCriteria = Object.entries(matrices.aggregate.exitCriteria ?? {})
     if (exitCriteria.length > 0) {
       lines.push(`matrix_exit_criteria=${exitCriteria.map(([status, count]) => `${status}:${count}`).join(",")}`)
@@ -128,6 +134,7 @@ export function formatDrillValidationGateSummary(report) {
     const runtimeSignals = Object.entries(failures.aggregate.runtimeSignals ?? {})
     if (runtimeSignals.length > 0) {
       lines.push(`failure_runtime_signals=${runtimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)
+      lines.push(`failure_runtime_signal_owners=${formatCountObject(drillRuntimeSignalOwnerCounts(failures.aggregate.runtimeSignals))}`)
     }
   }
 
@@ -142,6 +149,10 @@ export function formatDrillValidationGateSummary(report) {
     ? "next: validation artifacts passed configured gates"
     : "next: inspect failed gate checks and rerun the relevant drills")
   return lines.join("\n")
+}
+
+function formatCountObject(counts) {
+  return Object.entries(counts).map(([key, count]) => `${key}:${count}`).join(",")
 }
 
 function appendMatrixRuntimeSignalSources(lines, runtimeSignalScenarios, requiredMatrixRuntimeSignals) {
