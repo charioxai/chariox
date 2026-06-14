@@ -8,6 +8,7 @@ import {
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
+export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
 const DRILL_ARTIFACT_INDEX_FILE = "arroba-drill-artifacts.json"
 
 export async function prepareDrillArtifacts(rootDir) {
@@ -100,6 +101,60 @@ export async function verifyDrillArtifactIndex(indexPath) {
   return index
 }
 
+export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
+  const totals = {
+    indexes: indexes.length,
+    artifacts: 0,
+    sizeBytes: 0,
+  }
+  const schemas = new Map()
+  const summaries = indexes.map((index, indexPosition) => {
+    validateDrillArtifactIndex(index, sources[indexPosition] ?? "drill artifact index")
+    const indexTotals = {
+      artifacts: index.artifacts.length,
+      sizeBytes: 0,
+    }
+    const indexSchemas = new Map()
+    for (const artifact of index.artifacts) {
+      totals.artifacts += 1
+      totals.sizeBytes += artifact.sizeBytes
+      indexTotals.sizeBytes += artifact.sizeBytes
+      const schema = artifact.schema ?? "none"
+      schemas.set(schema, (schemas.get(schema) ?? 0) + 1)
+      indexSchemas.set(schema, (indexSchemas.get(schema) ?? 0) + 1)
+    }
+    return {
+      source: sources[indexPosition] ?? null,
+      rootDir: index.rootDir,
+      artifacts: indexTotals.artifacts,
+      sizeBytes: indexTotals.sizeBytes,
+      schemas: sortedCountObject(indexSchemas),
+    }
+  })
+  const aggregate = {
+    schema: DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA,
+    totals,
+    schemas: sortedCountObject(schemas),
+    indexes: summaries,
+  }
+  validateDrillArtifactIndexAggregate(aggregate)
+  return aggregate
+}
+
+export function formatDrillArtifactIndexAggregateSummary(aggregate) {
+  validateDrillArtifactIndexAggregate(aggregate)
+  const lines = [
+    "drill artifact index aggregate:",
+    `indexes=${aggregate.totals.indexes} artifacts=${aggregate.totals.artifacts} size_bytes=${aggregate.totals.sizeBytes}`,
+  ]
+  const schemas = Object.entries(aggregate.schemas)
+  if (schemas.length > 0) {
+    lines.push(`schemas: ${schemas.map(([schema, count]) => `${schema}=${count}`).join(" ")}`)
+  }
+  lines.push("next: verify indexed artifacts before using them as validation evidence")
+  return lines.join("\n")
+}
+
 export function validateDrillArtifactIndex(index, source = "drill artifact index") {
   if (!index || typeof index !== "object" || Array.isArray(index)) {
     throw new Error(`${source} is not an object`)
@@ -122,6 +177,38 @@ export function validateDrillArtifactIndex(index, source = "drill artifact index
   }
   for (const [artifactIndex, artifact] of index.artifacts.entries()) {
     validateArtifactIndexRecord(artifact, `${source}.artifacts[${artifactIndex}]`)
+  }
+}
+
+export function validateDrillArtifactIndexAggregate(aggregate, source = "drill artifact index aggregate") {
+  if (!aggregate || typeof aggregate !== "object" || Array.isArray(aggregate)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (aggregate.schema !== DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA) {
+    throw new Error(`${source} has unsupported schema ${JSON.stringify(aggregate.schema)}`)
+  }
+  if (!aggregate.totals || typeof aggregate.totals !== "object" || Array.isArray(aggregate.totals)) {
+    throw new Error(`${source} has invalid totals`)
+  }
+  for (const key of ["indexes", "artifacts", "sizeBytes"]) {
+    if (!Number.isSafeInteger(aggregate.totals[key]) || aggregate.totals[key] < 0) {
+      throw new Error(`${source}.totals has invalid ${key}`)
+    }
+  }
+  validateCountObject(aggregate.schemas, `${source}.schemas`)
+  if (!Array.isArray(aggregate.indexes)) {
+    throw new Error(`${source} has invalid indexes`)
+  }
+  for (const [index, summary] of aggregate.indexes.entries()) {
+    validateArtifactIndexSummary(summary, `${source}.indexes[${index}]`)
+  }
+  if (aggregate.totals.indexes !== aggregate.indexes.length) {
+    throw new Error(`${source} totals.indexes does not match indexes`)
+  }
+  const expectedArtifacts = aggregate.indexes.reduce((sum, index) => sum + index.artifacts, 0)
+  const expectedSizeBytes = aggregate.indexes.reduce((sum, index) => sum + index.sizeBytes, 0)
+  if (aggregate.totals.artifacts !== expectedArtifacts || aggregate.totals.sizeBytes !== expectedSizeBytes) {
+    throw new Error(`${source} totals do not match indexes`)
   }
 }
 
@@ -217,6 +304,35 @@ function validateArtifactIndexRecord(artifact, source) {
   }
 }
 
+function validateArtifactIndexSummary(summary, source) {
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (summary.source !== null && typeof summary.source !== "string") {
+    throw new Error(`${source} has invalid source`)
+  }
+  if (!nonEmptyString(summary.rootDir)) {
+    throw new Error(`${source} is missing rootDir`)
+  }
+  for (const key of ["artifacts", "sizeBytes"]) {
+    if (!Number.isSafeInteger(summary[key]) || summary[key] < 0) {
+      throw new Error(`${source} has invalid ${key}`)
+    }
+  }
+  validateCountObject(summary.schemas, `${source}.schemas`)
+}
+
+function validateCountObject(value, source) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const [key, count] of Object.entries(value)) {
+    if (!nonEmptyString(key) || !Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`${source} has invalid count`)
+    }
+  }
+}
+
 function relativeArtifactPath(rootDir, artifactPath) {
   if (!nonEmptyString(rootDir)) throw new Error("drill artifact rootDir is required")
   if (!nonEmptyString(artifactPath)) throw new Error("drill artifact path is required")
@@ -247,6 +363,10 @@ function schemaForArtifact(contents) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex")
+}
+
+function sortedCountObject(counts) {
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
 }
 
 function nonEmptyString(value) {

@@ -5,11 +5,15 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA,
   DRILL_ARTIFACT_INDEX_SCHEMA,
   findDrillArtifactIndexPaths,
+  formatDrillArtifactIndexAggregateSummary,
   finalizeDrillArtifacts,
   prepareDrillArtifacts,
   readDrillArtifactIndex,
+  summarizeDrillArtifactIndexes,
+  validateDrillArtifactIndexAggregate,
   validateDrillArtifactIndex,
   verifyDrillArtifactIndex,
   writeDrillArtifactIndex,
@@ -124,6 +128,76 @@ test("discovers drill artifact indexes", async () => {
       firstIndexPath,
       secondIndexPath,
     ])
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("summarizes drill artifact indexes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  try {
+    await mkdir(path.join(root, "one", "reports"), { recursive: true })
+    await mkdir(path.join(root, "two", "reports"), { recursive: true })
+    await writeFile(path.join(root, "one", "reports", "gate.json"), `${JSON.stringify({
+      schema: "arroba.drill.validation_gate.v1",
+    })}\n`, "utf8")
+    await writeFile(path.join(root, "one", "reports", "notes.log"), "plain log\n", "utf8")
+    await writeFile(path.join(root, "two", "reports", "matrix.json"), `${JSON.stringify({
+      schema: "arroba.drill.matrix.v1",
+    })}\n`, "utf8")
+    const first = await writeDrillArtifactIndex({
+      rootDir: path.join(root, "one"),
+      artifacts: ["reports/gate.json", "reports/notes.log"],
+    })
+    const second = await writeDrillArtifactIndex({
+      rootDir: path.join(root, "two"),
+      artifacts: ["reports/matrix.json"],
+    })
+
+    const aggregate = summarizeDrillArtifactIndexes([first, second], {
+      sources: ["one/arroba-drill-artifacts.json", "two/arroba-drill-artifacts.json"],
+    })
+
+    assert.equal(aggregate.schema, DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA)
+    assert.equal(aggregate.totals.indexes, 2)
+    assert.equal(aggregate.totals.artifacts, 3)
+    assert.deepEqual(aggregate.schemas, {
+      "arroba.drill.matrix.v1": 1,
+      "arroba.drill.validation_gate.v1": 1,
+      none: 1,
+    })
+    assert.deepEqual(aggregate.indexes.map((index) => index.source), [
+      "one/arroba-drill-artifacts.json",
+      "two/arroba-drill-artifacts.json",
+    ])
+    assert.doesNotThrow(() => validateDrillArtifactIndexAggregate(aggregate))
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /indexes=2 artifacts=3/)
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects inconsistent drill artifact index aggregates", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    const index = await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/gate.json"],
+    })
+    const aggregate = summarizeDrillArtifactIndexes([index])
+
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        totals: {
+          ...aggregate.totals,
+          artifacts: aggregate.totals.artifacts + 1,
+        },
+      }),
+      /totals do not match indexes/,
+    )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
