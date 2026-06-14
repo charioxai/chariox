@@ -163,6 +163,40 @@ test("rejects failure taxonomy classification drift", async () => {
   }
 })
 
+test("rejects failure taxonomy owner and next action drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const taxonomyPath = path.join(rootDir, "failure-taxonomy-scenario.json")
+    const taxonomy = JSON.parse(await readFile(taxonomyPath, "utf8"))
+    await replaceBundleArtifact(rootDir, "failure-taxonomy-scenario.json", {
+      ...taxonomy,
+      classifications: taxonomy.classifications.map((entry) => entry.kind === "provider-auth"
+        ? { ...entry, owner: "runtime-network" }
+        : entry),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /invalid owner/,
+    )
+
+    await replaceBundleArtifact(rootDir, "failure-taxonomy-scenario.json", {
+      ...taxonomy,
+      classifications: taxonomy.classifications.map((entry) => entry.kind === "provider-auth"
+        ? { ...entry, nextAction: "try something else" }
+        : entry),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /invalid nextAction/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 async function replaceBundleArtifact(rootDir, artifactPath, contents) {
   const serialized = `${JSON.stringify(contents, null, 2)}\n`
   await writeFile(path.join(rootDir, artifactPath), serialized, "utf8")

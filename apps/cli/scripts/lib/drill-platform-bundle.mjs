@@ -4,6 +4,8 @@ import path from "node:path"
 
 import {
   DRILL_FAILURE_CLASSIFICATION_KINDS,
+  drillFailureNextActionForClassification,
+  drillFailureOwnerForClassification,
   drillFailureTaxonomyManifest,
 } from "./drill-failure-taxonomy.mjs"
 import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
@@ -154,10 +156,15 @@ function validateFailureTaxonomyArtifact(contents, expectedTarget) {
     throw new Error(`failure taxonomy ${expectedTarget} artifact classifications do not match taxonomy`)
   }
   for (const entry of contents.classifications) {
-    if (typeof entry.owner !== "string" || entry.owner.length === 0) {
+    if (typeof entry.kind !== "string" || entry.kind.length === 0) {
+      throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid kind`)
+    }
+    const expectedOwner = drillFailureOwnerForClassification(entry.kind)
+    if (entry.owner !== expectedOwner) {
       throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid owner`)
     }
-    if (typeof entry.nextAction !== "string" || entry.nextAction.length === 0) {
+    const expectedNextAction = drillFailureNextActionForClassification(entry.kind, { target: expectedTarget })
+    if (entry.nextAction !== expectedNextAction) {
       throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid nextAction`)
     }
   }
