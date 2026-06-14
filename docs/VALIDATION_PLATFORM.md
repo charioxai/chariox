@@ -30,6 +30,13 @@ node apps/cli/scripts/drill-validation-suite.mjs --command
 
 The `--json` output uses schema `arroba.drill.validation_suite.v1` and lists the exact test paths and command covered by the suite. Use `--output PATH` with `--json` when CI or staging jobs should collect the coverage manifest as an artifact.
 
+Export the shared failure taxonomy with:
+
+```bash
+node apps/cli/scripts/drill-failure-taxonomy.mjs
+node apps/cli/scripts/drill-failure-taxonomy.mjs --target drill --output .artifacts/drill-failure-taxonomy.json
+```
+
 ## Matrix Reports
 
 Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.
