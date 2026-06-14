@@ -285,6 +285,63 @@ test("applies validation gate requirement presets", async () => {
   }
 })
 
+test("slice runtime preset accepts hosted Cloud evidence from a separate matrix report", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    const sliceRuntimeReport = path.join(rootDir, "slice-runtime.json")
+    const hostedSliceReport = path.join(rootDir, "cloud-slice-runtime.json")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeMatrixReport(sliceRuntimeReport, matrixReport({
+      matrix: "slice-runtime-matrix",
+      metadata: {
+        deploymentPresets: "local,self-hosted-relay",
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("slice-lifecycle", "passed", { classification: "slice-runtime" }),
+        scenario("provider-auth", "passed", { classification: "slice-auth" }),
+        scenario("session-start", "passed", { classification: "kernel-authority" }),
+        scenario("agent-reuse", "passed", { classification: "worker-execution" }),
+        scenario("ui-projection", "passed", { classification: "ui-client-projection" }),
+        scenario("docker-browser-state", "passed", { classification: "docker-runtime" }),
+      ],
+    }))
+    await writeMatrixReport(hostedSliceReport, matrixReport({
+      matrix: "cloud-slice-runtime-matrix",
+      metadata: {
+        deploymentPresets: "hosted-cloud",
+        providers: "claude,codex,opencode",
+      },
+      scenarios: [
+        scenario("hosted-slice-browser-e2e", "passed", { classification: "ui-client-projection" }),
+        scenario("hosted-vault-view-slice", "passed", { classification: "kernel-authority" }),
+      ],
+    }))
+
+    const report = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      matrixReports: [sliceRuntimeReport, hostedSliceReport],
+      presets: ["slice-runtime"],
+      requireComplete: true,
+    })
+
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.matrices.requiredMatrices, ["slice-runtime-matrix"])
+    assert.deepEqual(report.checks.matrices.missingMatrices, [])
+    assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["hosted-cloud", "local", "self-hosted-relay"])
+    assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
+    assert.deepEqual(report.checks.matrices.requiredProviders, ["claude", "codex", "opencode"])
+    assert.deepEqual(report.checks.matrices.missingProviders, [])
+    assert.deepEqual(report.checks.matrices.requiredScenarios, ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"])
+    assert.deepEqual(report.checks.matrices.missingScenarios, [])
+    assert.match(formatDrillValidationGateSummary(report), /presets=slice-runtime/)
+    assert.match(formatDrillValidationGateSummary(report), /matrix_required_deployment_presets=hosted-cloud,local,self-hosted-relay missing=none/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("rejects unknown validation gate presets", async () => {
   await assert.rejects(
     () => runDrillValidationGate({
