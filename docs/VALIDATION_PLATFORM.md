@@ -75,6 +75,7 @@ Summarize one or more preserved roots or manifest files with:
 node apps/cli/scripts/drill-failure-summary.mjs path/to/preserved-root
 node apps/cli/scripts/drill-failure-summary.mjs path/to/arroba-drill-failure.json
 node apps/cli/scripts/drill-failure-summary.mjs --find apps/cli/target .artifacts
+node apps/cli/scripts/drill-failure-summary.mjs --find --max-depth 4 .artifacts
 node apps/cli/scripts/drill-failure-summary.mjs --json --output path/to/failure-aggregate.json --find apps/cli/target .artifacts
 ```
 
@@ -88,6 +89,7 @@ Required top-level fields:
 
 Failure manifests redact sensitive metadata keys, token-shaped metadata values, and token-shaped error text before writing. The validator rejects token-shaped metadata values, including nested values, so externally supplied manifests cannot pass with credentials embedded. Failure summaries also redact sensitive metadata keys, token-shaped error messages, and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
 When more than one failure manifest is selected, the summary command prints an aggregate owner/classification section so preserved failure batches can be routed quickly.
+Failure manifest discovery is bounded by default, prunes heavy irrelevant directories, and accepts `--max-depth N` for CI layouts that need a tighter or wider traversal bound.
 The `--json`/`--output` aggregate schema is `arroba.drill.failure.aggregate.v1`.
 Its `nextActions` entries group repeated owner/classification/action pairs so CI and humans can route a failure batch without scanning every manifest.
 Each failure entry includes the drill name, preserved artifact root, optional manifest `source` path, owner, classification, and next action.

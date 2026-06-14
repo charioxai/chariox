@@ -11,15 +11,16 @@ import {
 
 function printHelp() {
   console.log([
-    "Usage: node apps/cli/scripts/drill-failure-summary.mjs [--find] [--json] [--output PATH] FAILURE_ROOT_OR_MANIFEST...",
+    "Usage: node apps/cli/scripts/drill-failure-summary.mjs [--find] [--max-depth N] [--json] [--output PATH] FAILURE_ROOT_OR_MANIFEST...",
     "",
     "Summarizes arroba.drill.failure.v1 manifests from preserved drill artifact roots.",
     "Pass either a preserved drill root directory or an arroba-drill-failure.json path.",
     "",
     "Options:",
-    "  --find         Recursively discover arroba-drill-failure.json files below each input directory",
-    "  --json         Print aggregate JSON instead of human-readable summaries",
-    "  --output PATH  Write aggregate JSON to PATH",
+    "  --find          Recursively discover arroba-drill-failure.json files below each input directory",
+    "  --max-depth N   Limit --find traversal depth; defaults to 8",
+    "  --json          Print aggregate JSON instead of human-readable summaries",
+    "  --output PATH   Write aggregate JSON to PATH",
   ].join("\n"))
 }
 
@@ -35,7 +36,9 @@ async function main() {
     return
   }
 
-  const inputs = options.find ? await findDrillFailureManifestPaths(options.inputs) : options.inputs
+  const inputs = options.find
+    ? await findDrillFailureManifestPaths(options.inputs, { maxDepth: options.maxDepth })
+    : options.inputs
   if (inputs.length === 0) {
     if (options.json) {
       console.log(JSON.stringify(emptyAggregate(), null, 2))
@@ -73,6 +76,7 @@ function parseArgs(argv) {
     find: false,
     help: false,
     json: false,
+    maxDepth: 8,
     outputPath: null,
     inputs: [],
   }
@@ -81,6 +85,14 @@ function parseArgs(argv) {
     if (!arg) continue
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--find") options.find = true
+    else if (arg === "--max-depth") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--max-depth requires a value")
+      options.maxDepth = parseMaxDepth(value)
+      index += 1
+    } else if (arg.startsWith("--max-depth=")) {
+      options.maxDepth = parseMaxDepth(arg.slice("--max-depth=".length))
+    }
     else if (arg === "--json") options.json = true
     else if (arg === "--output") {
       const value = argv[index + 1]
@@ -94,6 +106,14 @@ function parseArgs(argv) {
     else options.inputs.push(arg)
   }
   return options
+}
+
+function parseMaxDepth(value) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error("--max-depth must be a non-negative integer")
+  }
+  return parsed
 }
 
 function emptyAggregate() {
