@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
 import { execFile as execFileWithCallback } from "node:child_process"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
@@ -30,6 +33,21 @@ test("drill validation suite prints coverage manifest", async () => {
   assert.equal(manifest.testCount, SHARED_DRILL_TEST_PATHS.length)
   assert.deepEqual(manifest.testPaths, SHARED_DRILL_TEST_PATHS)
   assert.match(manifest.command, /^node --test /)
+})
+
+test("drill validation suite writes coverage manifest", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-suite-"))
+  const outputPath = path.join(rootDir, "suite.json")
+  try {
+    const { stdout } = await execFile(process.execPath, [scriptPath, "--json", "--output", outputPath])
+    const stdoutManifest = JSON.parse(stdout)
+    const fileManifest = JSON.parse(await readFile(outputPath, "utf8"))
+
+    assert.deepEqual(fileManifest, stdoutManifest)
+    assert.equal(fileManifest.schema, "arroba.drill.validation_suite.v1")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
 })
 
 test("drill validation suite checks configured paths", async () => {

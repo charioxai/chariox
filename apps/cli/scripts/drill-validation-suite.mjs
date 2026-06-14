@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
+import { mkdir, writeFile } from "node:fs/promises"
+import path from "node:path"
 import {
   SHARED_DRILL_TEST_PATHS,
   drillValidationSuiteArgs,
@@ -10,13 +12,15 @@ import {
 
 function printHelp() {
   console.log([
-    "Usage: node apps/cli/scripts/drill-validation-suite.mjs [--list|--command|--check|--json]",
+    "Usage: node apps/cli/scripts/drill-validation-suite.mjs [--list|--command|--check|--json] [--output PATH]",
     "",
     "Runs the shared non-live drill validation suite.",
     "",
     "Options:",
     "  --check    Validate that every suite test path exists without running tests",
     "  --json     Print a machine-readable manifest of suite coverage",
+    "  --output PATH",
+    "             Write the --json manifest to PATH",
     "  --list     Print test files included in the suite",
     "  --command  Print the node --test command without running it",
   ].join("\n"))
@@ -37,9 +41,15 @@ async function main() {
     return
   }
   if (options.json) {
-    console.log(JSON.stringify(drillValidationSuiteManifest(), null, 2))
+    const manifest = drillValidationSuiteManifest()
+    if (options.outputPath) {
+      await mkdir(path.dirname(options.outputPath), { recursive: true })
+      await writeFile(options.outputPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+    }
+    console.log(JSON.stringify(manifest, null, 2))
     return
   }
+  if (options.outputPath) throw new Error("--output requires --json")
   const missing = await findMissingDrillValidationSuitePaths()
   if (missing.length > 0) {
     throw new Error(`validation suite references missing test paths:\n${missing.map((item) => `- ${item}`).join("\n")}`)
@@ -73,13 +83,23 @@ function parseArgs(argv) {
     help: false,
     json: false,
     list: false,
+    outputPath: null,
   }
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--check") options.check = true
     else if (arg === "--json") options.json = true
     else if (arg === "--list") options.list = true
     else if (arg === "--command") options.command = true
+    else if (arg === "--output") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--output requires a value")
+      options.outputPath = value
+      index += 1
+    } else if (arg.startsWith("--output=")) {
+      options.outputPath = arg.slice("--output=".length)
+    }
     else throw new Error(`unknown argument: ${arg}`)
   }
   return options
