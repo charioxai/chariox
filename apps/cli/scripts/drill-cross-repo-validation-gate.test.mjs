@@ -119,6 +119,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.equal(artifactIndex.metadata.drill, "cross-repo-validation-gate")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.runtimeSignals, "agent-lifecycle,client-projection-health,provider-run-lifecycle,session-authority,slice-auth-state,slice-runtime-state")
+    assert.equal(artifactIndex.metadata.classifications, "docker-runtime,kernel-authority,slice-auth,slice-runtime,ui-client-projection,worker-execution")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

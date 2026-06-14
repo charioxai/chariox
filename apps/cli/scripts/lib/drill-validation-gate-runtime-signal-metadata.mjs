@@ -10,6 +10,24 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
     : {}
 }
 
+export function diagnosticMetadataForValidationGateReport(report) {
+  const owners = new Set([
+    ...Object.keys(report.checks?.failures?.aggregate?.owners ?? {}),
+    ...Object.keys(report.checks?.matrices?.aggregate?.owners ?? {}),
+    ...(report.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
+  ])
+  const classifications = new Set([
+    ...Object.keys(report.checks?.failures?.aggregate?.classifications ?? {}),
+    ...Object.keys(report.checks?.matrices?.aggregate?.classifications ?? {}),
+    ...(report.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
+  ])
+  return {
+    ...runtimeSignalMetadataForValidationGateReport(report),
+    ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
+    ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+  }
+}
+
 export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
   const signals = new Set([
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignals ?? {}),
@@ -19,4 +37,8 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
   return signals.size > 0
     ? { runtimeSignals: [...signals].sort().join(",") }
     : {}
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0
 }

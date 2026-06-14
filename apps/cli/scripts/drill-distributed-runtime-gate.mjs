@@ -15,7 +15,7 @@ import {
   formatDrillValidationGateSummary,
   runDrillValidationGate,
 } from "./lib/drill-validation-gate.mjs"
-import { runtimeSignalMetadataForValidationGateReport } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
+import { diagnosticMetadataForValidationGateReport } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -101,7 +101,7 @@ async function main() {
           preset: "distributed-runtime",
           ossRoot: options.ossRoot,
           cloudRoot: options.cloudRoot,
-          ...runtimeSignalMetadataForValidationGateReport(report),
+          ...diagnosticMetadataForValidationGateReport(report),
         },
       })
     }
