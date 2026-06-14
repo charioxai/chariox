@@ -5,6 +5,7 @@ import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import {
   drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
+  isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
@@ -95,7 +96,8 @@ export async function runDrillMatrix({
   if (dryRun) {
     const results = []
     for (const { scenario, command, args } of preparedScenarios) {
-      console.log(`[${matrixName}] dry-run ${scenario.id}: ${quoteDrillCommand(command, args)}`)
+      const classification = scenario.classification ? ` classification=${scenario.classification}` : ""
+      console.log(`[${matrixName}] dry-run ${scenario.id}${classification}: ${quoteDrillCommand(command, args)}`)
       results.push({
         scenario,
         ok: true,
@@ -175,7 +177,7 @@ async function runMatrixScenario({ matrixName, scenario, command, args, cwd }) {
       return { scenario, ok: false, durationMs, reason, command, args }
     }
     console.log(`[${matrixName}] pass ${scenario.id} duration_ms=${durationMs}`)
-    return { scenario, ok: true, durationMs, command, args }
+    return { scenario, ok: true, durationMs, classification: scenario.classification ?? null, command, args }
   }
 
   if (scenario.expectedFailure) {
@@ -242,6 +244,14 @@ export function validateDrillMatrixScenarioDefinitions(scenarios, { requireDescr
     }
     if (scenario.expectedOutputIncludes !== undefined && !nonEmptyString(scenario.expectedOutputIncludes)) {
       throw new Error(`${source} has invalid expectedOutputIncludes`)
+    }
+    if (scenario.classification !== undefined && scenario.classification !== null) {
+      if (!nonEmptyString(scenario.classification)) {
+        throw new Error(`${source} has invalid classification`)
+      }
+      if (!isKnownDrillFailureClassification(scenario.classification)) {
+        throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
+      }
     }
   }
 }

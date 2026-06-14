@@ -55,6 +55,7 @@ test("validates matrix scenario definitions", () => {
     requires: ["remote"],
     exitCriteria: ["runtime path is exercised"],
     expectedFailure: false,
+    classification: "kernel-authority",
   }])
 
   assert.throws(() => validateDrillMatrixScenarioDefinitions([]), /must not be empty/)
@@ -65,6 +66,8 @@ test("validates matrix scenario definitions", () => {
   assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad criteria", exitCriteria: [""] }]), /invalid exitCriteria/)
   assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad expected failure", expectedFailure: "yes" }]), /invalid expectedFailure/)
   assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad expected output", expectedOutputIncludes: "" }]), /invalid expectedOutputIncludes/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad classification", classification: "" }]), /invalid classification/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "unknown classification", classification: "not-real" }]), /unknown classification "not-real"/)
 
   assert.doesNotThrow(() => validateDrillMatrixScenarioDefinitions([{ id: "selection-only" }], { requireDescription: false }))
 })
@@ -216,6 +219,34 @@ test("runs a passing matrix scenario", async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+test("preserves diagnostic classification for passing matrix scenarios", async () => {
+  const dir = await fixtureDir()
+  const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
+  const reportPath = path.join(dir, "classified.json")
+
+  const results = await runDrillMatrix({
+    matrixName: "test-matrix",
+    scenarios: [{
+      id: "classified",
+      description: "passing classified scenario",
+      script,
+      classification: "remote-extension-sync",
+    }],
+    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+    cwd: dir,
+    reportPath,
+  })
+
+  assert.equal(results[0].ok, true)
+  assert.equal(results[0].classification, "remote-extension-sync")
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.equal(report.status, "passed")
+  assert.equal(report.scenarios[0].classification, "remote-extension-sync")
+  assert.equal(report.scenarios[0].owner, "kernel-authority")
+  assert.match(report.scenarios[0].nextAction, /remote extension manifest sync status/)
+  await rm(dir, { recursive: true, force: true })
+})
+
 test("writes artifact index for matrix reports", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
@@ -250,20 +281,30 @@ test("writes dry-run report without executing scenarios", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "fail-if-executed.mjs", "process.exit(9)")
   const reportPath = path.join(dir, "dry-run.json")
+  const logs = []
+  const originalLog = console.log
+  console.log = (...args) => logs.push(args.join(" "))
 
-  const results = await runDrillMatrix({
-    matrixName: "test-matrix",
-    scenarios: [{ id: "dry", description: "dry-run scenario", script }],
-    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
-    cwd: dir,
-    dryRun: true,
-    reportPath,
-  })
+  let results
+  try {
+    results = await runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{ id: "dry", description: "dry-run scenario", script, classification: "kernel-authority" }],
+      commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+      cwd: dir,
+      dryRun: true,
+      reportPath,
+    })
+  } finally {
+    console.log = originalLog
+  }
 
   assert.equal(results[0].dryRun, true)
+  assert(logs.some((line) => line.includes("dry-run dry classification=kernel-authority")))
   const report = JSON.parse(await readFile(reportPath, "utf8"))
   assert.equal(report.status, "dry-run")
   assert.equal(report.scenarios[0].status, "dry-run")
+  assert.equal(report.scenarios[0].classification, null)
   await rm(dir, { recursive: true, force: true })
 })
 

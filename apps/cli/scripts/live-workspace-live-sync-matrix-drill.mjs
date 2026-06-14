@@ -64,7 +64,25 @@ function scenario(id, description, script, args, flags = {}) {
   if (flags.remote) requires.push('remote')
   if (flags.hetzner) requires.push('hetzner')
   if (flags.opencode) requires.push('opencode')
-  return { id, description, script, args, ...flags, requires, exitCriteria: workspaceLiveSyncExitCriteria({ id, args, flags }) }
+  return {
+    id,
+    description,
+    script,
+    args,
+    ...flags,
+    classification: flags.classification ?? workspaceLiveSyncClassification({ id, args, flags }),
+    requires,
+    exitCriteria: workspaceLiveSyncExitCriteria({ id, args, flags }),
+  }
+}
+
+function workspaceLiveSyncClassification({ id, args, flags }) {
+  if (flags.expectedFailure) return null
+  if (id.includes('permission')) return 'kernel-authority'
+  if (id.includes('restart')) return 'relay-target-freshness'
+  const mode = valueAfter(args, '--mode') ?? null
+  if (mode === 'managed' || mode === 'tracked') return 'workspace-live-sync-conflict'
+  return null
 }
 
 function workspaceLiveSyncExitCriteria({ id, args, flags }) {
