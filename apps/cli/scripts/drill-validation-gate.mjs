@@ -32,7 +32,7 @@ function printHelp() {
     "                         Read a specific failure manifest or preserved root; repeatable",
     "  --failure-root ROOT    Discover failure manifests below ROOT; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
-    "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
+    "  --require-complete     Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
     "  --require-platform-coverage-area ID[,ID]",
     "                         Fail when platform bundle validation suite lacks each coverage area; repeatable",
     "  --require-runtime-signal ID[,ID]",

@@ -65,7 +65,7 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
   --require-complete
 ```
 
-The gate discovers matrix reports under `./.artifacts/drill-matrices` and `../arroba-cloud/.artifacts/drill-matrices`, validates the distributed-runtime preset, verifies artifact indexes when `--include-default-artifacts` is present, and fails on preserved failure manifests when `--include-default-failures` is present. Cloud staging can run the same evidence pipeline from `scripts/staging-retail-smoke.mjs --validation-platform`, which produces Cloud validation-suite and matrix artifacts before invoking this gate.
+The gate discovers matrix reports under `./.artifacts/drill-matrices` and `../arroba-cloud/.artifacts/drill-matrices`, validates the distributed-runtime preset, verifies artifact indexes when `--include-default-artifacts` is present, and fails on incomplete scenarios, unresolved exit criteria, or preserved failure manifests when `--require-complete` / `--include-default-failures` are present. Cloud staging can run the same evidence pipeline from `scripts/staging-retail-smoke.mjs --validation-platform`, which produces Cloud validation-suite and matrix artifacts before invoking this gate.
 
 ## Cleanup
 

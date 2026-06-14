@@ -25,7 +25,7 @@ function printHelp() {
     "  --output-artifact-index PATH",
     "                 Write an artifact index for --output",
     "  --require-complete",
-    "                 Exit non-zero when selected reports contain skipped or dry-run scenarios",
+    "                 Exit non-zero when selected reports contain skipped/dry-run scenarios or unresolved exit criteria",
   ].join("\n"))
 }
 

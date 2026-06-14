@@ -41,7 +41,7 @@ function printHelp() {
     "  --failure-root ROOT     Discover failure manifests below ROOT; repeatable",
     "  --platform-bundle DIR   Use an existing drill platform bundle instead of generating one",
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
-    "  --require-complete      Fail when matrix reports include skipped or dry-run scenarios",
+    "  --require-complete      Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
     "  --require-platform-coverage-area ID[,ID]",
     "  --require-runtime-signal ID[,ID]",
     "  --require-failure-classification KIND[,KIND]",

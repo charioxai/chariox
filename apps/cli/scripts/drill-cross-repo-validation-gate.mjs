@@ -40,7 +40,7 @@ function printHelp() {
     "  --artifact-root ROOT   Discover artifact indexes below ROOT; repeatable",
     "  --failure-root ROOT    Discover failure manifests below ROOT; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
-    "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
+    "  --require-complete     Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
     "  --preset NAME[,NAME]   Apply named requirement preset; repeatable",
     `                         Known: ${Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort().join(", ")}`,
     "  --require-platform-coverage-area ID[,ID]",
