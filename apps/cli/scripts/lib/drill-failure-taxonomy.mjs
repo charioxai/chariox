@@ -102,3 +102,15 @@ export function drillFailureClassificationForKind(kind, options = {}) {
     nextAction: drillFailureNextActionForClassification(kind, options),
   }
 }
+
+export function drillFailureTaxonomyManifest({ target = "scenario" } = {}) {
+  return {
+    schema: "arroba.drill.failure_taxonomy.v1",
+    target,
+    classifications: Object.keys(FAILURE_CLASSIFICATIONS).sort().map((kind) => ({
+      kind,
+      owner: drillFailureOwnerForClassification(kind),
+      nextAction: drillFailureNextActionForClassification(kind, { target }),
+    })),
+  }
+}

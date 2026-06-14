@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   drillFailureClassificationForKind,
   drillFailureNextActionForClassification,
+  drillFailureTaxonomyManifest,
   drillFailureOwnerForClassification,
 } from "./drill-failure-taxonomy.mjs"
 
@@ -55,4 +56,30 @@ test("builds manifest classification records from taxonomy", () => {
     owner: "local-machine",
     nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
   })
+})
+
+test("builds stable failure taxonomy manifest", () => {
+  const manifest = drillFailureTaxonomyManifest({ target: "scenario" })
+
+  assert.equal(manifest.schema, "arroba.drill.failure_taxonomy.v1")
+  assert.equal(manifest.target, "scenario")
+  assert.deepEqual(
+    manifest.classifications.map((entry) => entry.kind),
+    [...manifest.classifications.map((entry) => entry.kind)].sort(),
+  )
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "kernel-authority"
+      && entry.owner === "kernel-authority"
+      && entry.nextAction.includes("session, agent, lease")
+  )))
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "remote-extension-sync"
+      && entry.owner === "kernel-authority"
+      && entry.nextAction.includes("manifest sync")
+  )))
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "workspace-live-sync-conflict"
+      && entry.owner === "runtime-state"
+      && entry.nextAction.includes("workspace live sync")
+  )))
 })
