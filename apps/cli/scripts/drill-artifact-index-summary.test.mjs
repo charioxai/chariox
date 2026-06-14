@@ -42,6 +42,11 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(stdoutAggregate.totals.indexes, 2)
     assert.equal(stdoutAggregate.totals.artifacts, 2)
     assert(stdoutAggregate.totals.sizeBytes > 0)
+    assert.deepEqual(stdoutAggregate.runtimeSignals, {
+      "lease-health": 1,
+      "session-authority": 2,
+      "workspace-live-sync-state": 1,
+    })
     assert.deepEqual(stdoutAggregate.indexes.map((index) => index.source), [
       firstIndexPath,
       secondIndexPath,
@@ -128,6 +133,11 @@ async function writeIndexedReport(rootDir, name, schema) {
   await writeDrillArtifactIndex({
     rootDir: drillRoot,
     artifacts: ["reports/report.json"],
+    metadata: {
+      runtimeSignals: name === "one"
+        ? "session-authority,lease-health"
+        : "session-authority,workspace-live-sync-state",
+    },
   })
   return path.join(drillRoot, "arroba-drill-artifacts.json")
 }

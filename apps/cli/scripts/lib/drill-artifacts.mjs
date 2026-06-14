@@ -126,6 +126,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     sizeBytes: 0,
   }
   const schemas = new Map()
+  const runtimeSignals = new Map()
   const summaries = indexes.map((index, indexPosition) => {
     validateDrillArtifactIndex(index, sources[indexPosition] ?? "drill artifact index")
     const indexTotals = {
@@ -133,6 +134,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       sizeBytes: 0,
     }
     const indexSchemas = new Map()
+    const indexRuntimeSignals = runtimeSignalsFromMetadata(index.metadata)
+    countValues(indexRuntimeSignals, runtimeSignals)
     for (const artifact of index.artifacts) {
       totals.artifacts += 1
       totals.sizeBytes += artifact.sizeBytes
@@ -147,12 +150,14 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       artifacts: indexTotals.artifacts,
       sizeBytes: indexTotals.sizeBytes,
       schemas: sortedCountObject(indexSchemas),
+      runtimeSignals: countValues(indexRuntimeSignals),
     }
   })
   const aggregate = {
     schema: DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA,
     totals,
     schemas: sortedCountObject(schemas),
+    runtimeSignals: sortedCountObject(runtimeSignals),
     indexes: summaries,
   }
   validateDrillArtifactIndexAggregate(aggregate)
@@ -168,6 +173,10 @@ export function formatDrillArtifactIndexAggregateSummary(aggregate) {
   const schemas = Object.entries(aggregate.schemas)
   if (schemas.length > 0) {
     lines.push(`schemas: ${schemas.map(([schema, count]) => `${schema}=${count}`).join(" ")}`)
+  }
+  const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
+  if (runtimeSignals.length > 0) {
+    lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
   }
   lines.push("next: verify indexed artifacts before using them as validation evidence")
   return lines.join("\n")
@@ -214,6 +223,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
     }
   }
   validateCountObject(aggregate.schemas, `${source}.schemas`)
+  validateCountObject(aggregate.runtimeSignals ?? {}, `${source}.runtimeSignals`)
   if (!Array.isArray(aggregate.indexes)) {
     throw new Error(`${source} has invalid indexes`)
   }
@@ -225,8 +235,17 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   }
   const expectedArtifacts = aggregate.indexes.reduce((sum, index) => sum + index.artifacts, 0)
   const expectedSizeBytes = aggregate.indexes.reduce((sum, index) => sum + index.sizeBytes, 0)
+  const expectedRuntimeSignals = new Map()
+  for (const index of aggregate.indexes) {
+    for (const [signal, count] of Object.entries(index.runtimeSignals ?? {})) {
+      expectedRuntimeSignals.set(signal, (expectedRuntimeSignals.get(signal) ?? 0) + count)
+    }
+  }
   if (aggregate.totals.artifacts !== expectedArtifacts || aggregate.totals.sizeBytes !== expectedSizeBytes) {
     throw new Error(`${source} totals do not match indexes`)
+  }
+  if (JSON.stringify(aggregate.runtimeSignals ?? {}) !== JSON.stringify(sortedCountObject(expectedRuntimeSignals))) {
+    throw new Error(`${source} runtimeSignals do not match indexes`)
   }
 }
 
@@ -295,6 +314,7 @@ function validateArtifactIndexSummary(summary, source) {
     }
   }
   validateCountObject(summary.schemas, `${source}.schemas`)
+  validateCountObject(summary.runtimeSignals ?? {}, `${source}.runtimeSignals`)
 }
 
 function validateCountObject(value, source) {
@@ -342,6 +362,19 @@ function sha256(value) {
 
 function sortedCountObject(counts) {
   return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function runtimeSignalsFromMetadata(metadata) {
+  const value = metadata?.runtimeSignals
+  if (typeof value !== "string") return []
+  return [...new Set(value.split(",").map((signal) => signal.trim()).filter(nonEmptyString))].sort()
+}
+
+function countValues(values, target = new Map()) {
+  for (const value of values) {
+    target.set(value, (target.get(value) ?? 0) + 1)
+  }
+  return sortedCountObject(target)
 }
 
 function nonEmptyString(value) {

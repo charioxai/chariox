@@ -185,10 +185,16 @@ test("summarizes drill artifact indexes", async () => {
     const first = await writeDrillArtifactIndex({
       rootDir: path.join(root, "one"),
       artifacts: ["reports/gate.json", "reports/notes.log"],
+      metadata: {
+        runtimeSignals: "session-authority,provider-run-lifecycle",
+      },
     })
     const second = await writeDrillArtifactIndex({
       rootDir: path.join(root, "two"),
       artifacts: ["reports/matrix.json"],
+      metadata: {
+        runtimeSignals: "session-authority,lease-health",
+      },
     })
 
     const aggregate = summarizeDrillArtifactIndexes([first, second], {
@@ -203,12 +209,28 @@ test("summarizes drill artifact indexes", async () => {
       "arroba.drill.validation_gate.v1": 1,
       none: 1,
     })
+    assert.deepEqual(aggregate.runtimeSignals, {
+      "lease-health": 1,
+      "provider-run-lifecycle": 1,
+      "session-authority": 2,
+    })
     assert.deepEqual(aggregate.indexes.map((index) => index.source), [
       "one/arroba-drill-artifacts.json",
       "two/arroba-drill-artifacts.json",
     ])
+    assert.deepEqual(aggregate.indexes.map((index) => index.runtimeSignals), [
+      {
+        "provider-run-lifecycle": 1,
+        "session-authority": 1,
+      },
+      {
+        "lease-health": 1,
+        "session-authority": 1,
+      },
+    ])
     assert.doesNotThrow(() => validateDrillArtifactIndexAggregate(aggregate))
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /indexes=2 artifacts=3/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=2/)
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
