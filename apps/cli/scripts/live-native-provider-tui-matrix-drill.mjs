@@ -13,6 +13,7 @@ import {
   drillDeploymentPresetMetadata,
   parseHetznerPassthroughArg,
 } from "./lib/drill-environment-presets.mjs"
+import { providerProfileMetadata } from "./lib/drill-provider-profiles.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -228,7 +229,7 @@ function metadataFor(selected, options) {
   ]
   return {
     includeHetzner: options.includeHetzner,
-    providers: providers.join(","),
+    ...providerProfileMetadata({ providers, defaultModel: "provider-default" }),
     ...drillDeploymentPresetMetadata(deploymentPresets, { hetznerPassthrough: options.passthrough }),
   }
 }

@@ -43,7 +43,10 @@ test("native provider TUI matrix dry-run covers authority placement and provider
     ])
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-native-tui").requires, ["hetzner"])
     assert.equal(report.metadata.deploymentPresets, "hetzner,local,same-host-remote,self-hosted-relay")
+    assert.equal(report.metadata.providerCount, 3)
     assert.equal(report.metadata.providers, "claude,codex,opencode")
+    assert.equal(report.metadata.defaultModel, "provider-default")
+    assert.equal(report.metadata.providerModelOverrides, "")
     assert.equal(report.metadata.includeHetzner, true)
     assert.match(stdout, /dry-run local-native-tui classification=provider-error/)
     assert.match(stdout, /dry-run permission-visibility classification=kernel-authority/)
@@ -66,4 +69,3 @@ test("native provider TUI matrix rejects Hetzner scenario without opt-in", async
     },
   )
 })
-
