@@ -1,5 +1,9 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
+import {
+  drillFailureNextActionForClassification,
+  drillFailureOwnerForClassification,
+} from "./drill-failure-taxonomy.mjs"
 
 export async function readDrillMatrixReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))
@@ -202,50 +206,11 @@ async function collectDrillMatrixReportPaths(discovered, entryPath) {
 }
 
 function nextActionForScenario(scenario) {
-  if (scenario.classification === "provider-auth") {
-    return "refresh provider login for the profile used by this drill, then rerun the scenario"
-  }
-  if (scenario.classification === "provider-account") {
-    return "check provider quota or billing for the account used by this drill, then rerun the scenario"
-  }
-  if (scenario.classification === "docker-runtime") {
-    return "start Docker or Colima, confirm `docker info` succeeds, then rerun the scenario"
-  }
-  if (scenario.classification === "cloud-runtime") {
-    return "inspect Cloud deployment/control-plane status and preserved logs, then rerun the scenario"
-  }
-  if (scenario.classification === "relay-runtime") {
-    return "inspect relay and kernel logs in the preserved artifacts, then rerun the scenario"
-  }
-  if (scenario.classification === "test-harness") {
-    return "install or build the missing local drill prerequisite, then rerun the scenario"
-  }
-  if (scenario.classification === "expected-failure") {
-    return "inspect the expected-failure assertion; the scenario failed differently than planned"
-  }
-  return "inspect preserved drill artifacts and rerun the command recorded in this report"
+  return drillFailureNextActionForClassification(scenario.classification, { target: "scenario" })
 }
 
 function ownerForScenario(scenario) {
-  if (scenario.classification === "provider-auth" || scenario.classification === "provider-account") {
-    return "provider-account"
-  }
-  if (scenario.classification === "provider-error") {
-    return "provider-runtime"
-  }
-  if (scenario.classification === "docker-runtime") {
-    return "local-machine"
-  }
-  if (scenario.classification === "cloud-runtime") {
-    return "cloud-deployment"
-  }
-  if (scenario.classification === "relay-runtime") {
-    return "runtime-network"
-  }
-  if (scenario.classification === "test-harness" || scenario.classification === "expected-failure") {
-    return "validation-harness"
-  }
-  return "drill-or-runtime"
+  return drillFailureOwnerForClassification(scenario.classification)
 }
 
 function appendDryRunCriteria(lines, scenarios) {

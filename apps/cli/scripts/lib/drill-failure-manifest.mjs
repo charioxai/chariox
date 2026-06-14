@@ -1,6 +1,7 @@
 import { opendir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
+import { drillFailureClassificationForKind } from "./drill-failure-taxonomy.mjs"
 
 const FAILURE_MANIFEST_FILE = "arroba-drill-failure.json"
 const FAILURE_MANIFEST_SCHEMA = "arroba.drill.failure.v1"
@@ -98,72 +99,17 @@ export function classifyDrillFailureManifest(manifest) {
     manifest.error?.message,
     manifest.error?.stack,
   ].filter(Boolean).join("\n")
-  const metadataText = Object.entries(manifest.metadata ?? {})
-    .map(([key, value]) => `${key}=${String(value)}`)
-    .join("\n")
-  const text = [errorText, metadataText].filter(Boolean).join("\n")
   const childClassification = classifyDrillChildFailure(errorText)
-  if (childClassification === "provider-auth") {
-    return {
-      kind: "provider-auth",
-      owner: "provider-account",
-      nextAction: "refresh provider login for the profile used by this drill, then rerun the drill",
-    }
-  }
-  if (childClassification === "provider-account") {
-    return {
-      kind: "provider-account",
-      owner: "provider-account",
-      nextAction: "check provider quota or billing for the account used by this drill, then rerun the drill",
-    }
-  }
-  if (childClassification === "docker-runtime") {
-    return {
-      kind: "docker-runtime",
-      owner: "local-machine",
-      nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
-    }
-  }
-  if (childClassification === "cloud-runtime") {
-    return {
-      kind: "cloud-runtime",
-      owner: "cloud-deployment",
-      nextAction: "inspect Cloud deployment/control-plane status and preserved logs, then rerun the drill",
-    }
-  }
-  if (childClassification === "relay-runtime") {
-    return {
-      kind: "relay-runtime",
-      owner: "runtime-network",
-      nextAction: "inspect relay and kernel logs in the preserved artifact root, then rerun the drill",
-    }
-  }
-  if (childClassification === "test-harness") {
-    return {
-      kind: "test-harness",
-      owner: "validation-harness",
-      nextAction: "install or build the missing local drill prerequisite, then rerun the drill",
-    }
+  if (childClassification !== "child-process") {
+    return drillFailureClassificationForKind(childClassification, { target: "drill", rootDir: manifest.rootDir })
   }
   if (/docker|colima/i.test(errorText)) {
-    return {
-      kind: "docker-runtime",
-      owner: "local-machine",
-      nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
-    }
+    return drillFailureClassificationForKind("docker-runtime", { target: "drill", rootDir: manifest.rootDir })
   }
   if (/relay|websocket|connection reset|target.*stale|target.*offline/i.test(errorText)) {
-    return {
-      kind: "relay-runtime",
-      owner: "runtime-network",
-      nextAction: "inspect relay and kernel logs in the preserved artifact root, then rerun the drill",
-    }
+    return drillFailureClassificationForKind("relay-runtime", { target: "drill", rootDir: manifest.rootDir })
   }
-  return {
-    kind: childClassification,
-    owner: "drill-or-runtime",
-    nextAction: `inspect preserved artifacts under ${manifest.rootDir}; rerun the drill after addressing the failure`,
-  }
+  return drillFailureClassificationForKind(childClassification, { target: "drill", rootDir: manifest.rootDir })
 }
 
 function validateFailureError(error, source) {
