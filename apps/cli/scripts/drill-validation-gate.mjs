@@ -24,6 +24,8 @@ function printHelp() {
     "  --failure-root ROOT    Discover failure manifests below ROOT; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
     "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
+    "  --require-deployment-preset NAME[,NAME]",
+    "                         Fail when matrix reports do not cover each deployment preset; repeatable",
     "  --json                 Print gate report JSON",
     "  --output PATH          Write gate report JSON to PATH",
     "  --output-artifact-index PATH",
@@ -72,12 +74,21 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    requiredDeploymentPresets: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
     else if (arg === "--require-complete") options.requireComplete = true
+    else if (arg === "--require-deployment-preset") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-deployment-preset requires a value")
+      options.requiredDeploymentPresets.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-deployment-preset=")) {
+      options.requiredDeploymentPresets.push(arg.slice("--require-deployment-preset=".length))
+    }
     else if (arg === "--artifact-index") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--artifact-index requires a value")

@@ -84,6 +84,11 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect the expected-failure assertion; the drill failed differently than planned",
     scenarioNextAction: "inspect the expected-failure assertion; the scenario failed differently than planned",
   },
+  "matrix-coverage": {
+    owner: "validation-harness",
+    drillNextAction: "run matrix reports for the missing deployment presets, then rerun the validation gate",
+    scenarioNextAction: "run the missing deployment preset scenario, then rerun the matrix",
+  },
   "child-process": {
     owner: "drill-or-runtime",
     drillNextAction: null,

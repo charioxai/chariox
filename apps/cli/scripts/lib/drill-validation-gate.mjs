@@ -120,7 +120,9 @@ export async function runDrillValidationGate({
   maxDepth = 8,
   platformBundleDir = null,
   requireComplete = false,
+  requiredDeploymentPresets = [],
 } = {}) {
+  const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(requiredDeploymentPresets)
   const checks = {
     configuration: configurationCheck({
       artifactIndexes,
@@ -130,10 +132,18 @@ export async function runDrillValidationGate({
       matrixReports,
       matrixRoots,
       platformBundleDir,
+      requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
     }),
     platformBundle: await platformBundleCheck(platformBundleDir),
     artifacts: await artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
-    matrices: await matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete }),
+    matrices: await matrixCheck({
+      matrixReports,
+      matrixRoots,
+    }, {
+      maxDepth,
+      requireComplete,
+      requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
+    }),
     failures: await failureCheck({ failureInputs, failureRoots }, { maxDepth }),
   }
   const nextActions = validationGateNextActions(checks)
@@ -176,6 +186,11 @@ export function formatDrillValidationGateSummary(report) {
 
   const matrices = report.checks.matrices
   lines.push(`matrices=${matrices.status} roots=${matrices.roots.length} inputs=${matrices.inputs.length} reports=${matrices.reportPaths.length} require_complete=${matrices.requireComplete}`)
+  const requiredDeploymentPresets = matrices.requiredDeploymentPresets ?? []
+  const missingDeploymentPresets = matrices.missingDeploymentPresets ?? []
+  if (requiredDeploymentPresets.length > 0) {
+    lines.push(`matrix_required_deployment_presets=${requiredDeploymentPresets.join(",")} missing=${missingDeploymentPresets.join(",") || "none"}`)
+  }
   if (matrices.error) lines.push(`matrix_error=${matrices.error}`)
   if (matrices.aggregate) {
     lines.push(`matrix_status=${matrices.aggregate.status} failed=${matrices.aggregate.totals.failed} skipped=${matrices.aggregate.totals.skipped} dry_run=${matrices.aggregate.totals.dryRun}`)
@@ -329,6 +344,8 @@ function validateMatrixCheck(check, source) {
   validateStringArray(check.roots, `${source}.roots`)
   validateStringArray(check.inputs, `${source}.inputs`)
   validateStringArray(check.reportPaths, `${source}.reportPaths`)
+  validateStringArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
+  validateStringArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   if (typeof check.requireComplete !== "boolean") {
     throw new Error(`${source} has invalid requireComplete`)
   }
@@ -494,6 +511,14 @@ function validationGateNextActions(checks) {
         nextAction: "run skipped or dry-run matrix scenarios before treating this validation set as complete",
       })
     }
+    const missingDeploymentPresets = checks.matrices.missingDeploymentPresets ?? []
+    if (missingDeploymentPresets.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "matrix-coverage",
+        nextAction: `run matrix reports for missing deployment presets: ${missingDeploymentPresets.join(", ")}`,
+      })
+    }
   }
   if (checks.failures.status === "failed") {
     if (checks.failures.error) {
@@ -518,6 +543,7 @@ function configurationCheck({
   matrixReports,
   matrixRoots,
   platformBundleDir,
+  requiredDeploymentPresets,
 }) {
   const configured = Boolean(platformBundleDir)
     || artifactRoots.length > 0
@@ -526,6 +552,7 @@ function configurationCheck({
     || matrixReports.length > 0
     || failureRoots.length > 0
     || failureInputs.length > 0
+    || requiredDeploymentPresets.length > 0
   return configured
     ? { status: "passed" }
     : {
@@ -613,14 +640,16 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
   }
 }
 
-async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete }) {
-  if (matrixRoots.length === 0 && matrixReports.length === 0) {
+async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete, requiredDeploymentPresets }) {
+  if (matrixRoots.length === 0 && matrixReports.length === 0 && requiredDeploymentPresets.length === 0) {
     return {
       status: "skipped",
       roots: [],
       inputs: [],
       reportPaths: [],
       requireComplete,
+      requiredDeploymentPresets: [],
+      missingDeploymentPresets: [],
     }
   }
   try {
@@ -635,6 +664,8 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
         inputs: [...matrixReports],
         reportPaths,
         requireComplete,
+        requiredDeploymentPresets: [...requiredDeploymentPresets],
+        missingDeploymentPresets: [...requiredDeploymentPresets],
         error: "no matrix reports found",
       }
     }
@@ -643,12 +674,15 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
     const exitCode = requireComplete
       ? drillMatrixReportCompletionExitCode(reports)
       : drillMatrixReportExitCode(reports)
+    const missingDeploymentPresets = missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets)
     return {
-      status: exitCode === 0 ? "passed" : "failed",
+      status: exitCode === 0 && missingDeploymentPresets.length === 0 ? "passed" : "failed",
       roots: [...matrixRoots],
       inputs: [...matrixReports],
       reportPaths,
       requireComplete,
+      requiredDeploymentPresets: [...requiredDeploymentPresets],
+      missingDeploymentPresets,
       aggregate,
     }
   } catch (error) {
@@ -658,9 +692,33 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
       inputs: [...matrixReports],
       reportPaths: [],
       requireComplete,
+      requiredDeploymentPresets: [...requiredDeploymentPresets],
+      missingDeploymentPresets: [...requiredDeploymentPresets],
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+function missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets) {
+  const present = new Set(Object.keys(aggregate.deploymentPresets ?? {}))
+  return requiredDeploymentPresets.filter((preset) => !present.has(preset))
+}
+
+function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {
+  if (!Array.isArray(requiredDeploymentPresets)) {
+    throw new Error("requiredDeploymentPresets must be an array")
+  }
+  const presets = []
+  for (const preset of requiredDeploymentPresets) {
+    if (!nonEmptyString(preset)) {
+      throw new Error("requiredDeploymentPresets has invalid preset")
+    }
+    for (const value of preset.split(",")) {
+      const normalized = value.trim()
+      if (normalized) presets.push(normalized)
+    }
+  }
+  return [...new Set(presets)].sort()
 }
 
 async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {

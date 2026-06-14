@@ -80,6 +80,55 @@ test("passes with explicit matrix report paths", async () => {
   }
 })
 
+test("passes when matrix reports cover required deployment presets", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      metadata: { deploymentPresets: "hosted-cloud,local,self-hosted-relay" },
+    }))
+
+    const report = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredDeploymentPresets: ["self-hosted-relay,local", "hosted-cloud"],
+    })
+
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["hosted-cloud", "local", "self-hosted-relay"])
+    assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
+    assert.match(formatDrillValidationGateSummary(report), /matrix_required_deployment_presets=hosted-cloud,local,self-hosted-relay missing=none/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("fails when matrix reports miss required deployment presets", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      metadata: { deploymentPresets: "local,self-hosted-relay" },
+    }))
+
+    const report = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredDeploymentPresets: ["local", "hosted-cloud", "hetzner"],
+    })
+
+    assert.equal(report.status, "failed")
+    assert.equal(report.checks.matrices.status, "failed")
+    assert.deepEqual(report.checks.matrices.missingDeploymentPresets, ["hetzner", "hosted-cloud"])
+    assert.deepEqual(report.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports for missing deployment presets: hetzner, hosted-cloud",
+    }])
+    assert.match(formatDrillValidationGateSummary(report), /missing=hetzner,hosted-cloud/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("fails when no validation checks are configured", async () => {
   const report = await runDrillValidationGate()
 
@@ -416,6 +465,7 @@ function matrixReport(overrides = {}) {
     durationMs: 1000,
     metadata: {},
     scenarios,
+    ...overrides,
   }
 }
 

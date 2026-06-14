@@ -88,6 +88,39 @@ test("drill validation gate accepts explicit matrix report paths", async () => {
   }
 })
 
+test("drill validation gate requires deployment preset coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, { deploymentPresets: "local,self-hosted-relay" })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--matrix-report",
+        reportPath,
+        "--require-deployment-preset",
+        "local,hosted-cloud",
+        "--require-deployment-preset=self-hosted-relay",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["hosted-cloud", "local", "self-hosted-relay"])
+        assert.deepEqual(report.checks.matrices.missingDeploymentPresets, ["hosted-cloud"])
+        assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+          { owner: "validation-harness", classification: "matrix-coverage" },
+        ])
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill validation gate accepts artifact roots", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {
@@ -154,7 +187,7 @@ test("drill validation gate exits non-zero for preserved failures", async () => 
   }
 })
 
-async function writeMatrixReport(file) {
+async function writeMatrixReport(file, metadata = {}) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
     schema: "arroba.drill.matrix.v1",
@@ -164,7 +197,7 @@ async function writeMatrixReport(file) {
     startedAt: "2026-06-13T00:00:00.000Z",
     completedAt: "2026-06-13T00:00:01.000Z",
     durationMs: 1000,
-    metadata: {},
+    metadata,
     scenarios: [{
       id: "local",
       description: "local scenario",
