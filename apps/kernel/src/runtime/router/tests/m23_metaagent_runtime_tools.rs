@@ -90,19 +90,34 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
     assert!(
         meta_specs
             .iter()
-            .all(|spec| spec.name.starts_with("arroba.meta.")),
-        "metaagents should only see metaagent runtime MCP tools: {meta_specs:?}"
+            .any(|spec| spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL),
+        "metaagents should see read-only workspace context tools"
+    );
+    assert!(
+        meta_specs
+            .iter()
+            .any(|spec| spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL),
+        "metaagents should see recall tools"
+    );
+    assert!(
+        meta_specs
+            .iter()
+            .all(|spec| spec.name.starts_with("arroba.meta.")
+                || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+                || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
+                || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
+        "metaagents should only see meta, read-only workspace, and recall tools: {meta_specs:?}"
     );
 
     let denied_direct_tool = router
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &meta_auth_token,
-            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
-            serde_json::json!({ "path": "README.md" }),
+            crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL,
+            serde_json::json!({ "path": "README.md", "content_text": "nope" }),
         )
         .await
-        .expect("metaagent direct runtime tools should return structured denials");
+        .expect("metaagent direct mutation tools should return structured denials");
     assert!(
         !denied_direct_tool.ok
             && denied_direct_tool
@@ -200,8 +215,17 @@ async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
     assert!(
         specs
             .iter()
-            .all(|spec| spec.name.starts_with("arroba.meta.")),
-        "shared token with a metaagent run should stay meta-only: {specs:?}"
+            .any(|spec| spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL),
+        "shared token with a metaagent run should expose read-only context tools"
+    );
+    assert!(
+        specs
+            .iter()
+            .all(|spec| spec.name.starts_with("arroba.meta.")
+                || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+                || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
+                || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
+        "shared token with a metaagent run should expose only meta, read-only workspace, and recall tools: {specs:?}"
     );
 
     let overview = router
@@ -227,11 +251,11 @@ async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &shared_auth_token,
-            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
-            serde_json::json!({ "path": "README.md" }),
+            crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL,
+            serde_json::json!({ "path": "README.md", "content_text": "nope" }),
         )
         .await
-        .expect("shared meta token direct tools should return structured denials");
+        .expect("shared meta token mutation tools should return structured denials");
     assert!(!denied_direct_tool.ok, "{:?}", denied_direct_tool.payload);
 }
 

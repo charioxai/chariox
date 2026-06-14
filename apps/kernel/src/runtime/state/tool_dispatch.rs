@@ -46,7 +46,19 @@ impl KernelRuntimeState {
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = Vec::new();
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
-            return crate::transport::runtime_tools::meta_runtime_tool_specs();
+            specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
+            specs.extend(
+                crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
+                    .into_iter()
+                    .filter(|spec| {
+                        spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+                    }),
+            );
+            specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            if self.slice_kernel_id().is_some() {
+                specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
+            }
+            return specs;
         }
         if matches!(provider_runs.as_slice(), [_]) {
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
@@ -109,13 +121,15 @@ impl KernelRuntimeState {
                 self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
             let is_meta_tool =
                 crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some();
-            if is_metaagent_auth_token && !is_meta_tool {
+            let is_metaagent_allowed_direct_tool = is_metaagent_direct_runtime_tool_allowed(
+                canonical_tool_name,
+                self.slice_kernel_id().is_some(),
+            );
+            if is_metaagent_auth_token && !is_meta_tool && !is_metaagent_allowed_direct_tool {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: false,
                     payload: serde_json::json!({
-                        "error": format!(
-                            "runtime tool `{canonical_tool_name}` is not available to metaagents; use arroba.meta.* delegation tools"
-                        ),
+                        "error": format!("runtime tool `{canonical_tool_name}` is not available to metaagents"),
                         "tool": canonical_tool_name,
                     }),
                 });
@@ -375,4 +389,14 @@ fn unambiguous_runtime_tool_provider_run<'a>(
             })
         }
     }
+}
+
+fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bool) -> bool {
+    matches!(
+        tool_name,
+        crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+            | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
+            | crate::transport::runtime_tools::QUERY_RECALL_TOOL
+    ) || (slice_available
+        && crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some())
 }
