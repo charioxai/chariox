@@ -13,6 +13,7 @@ import {
   readDrillMatrixReport,
   summarizeDrillMatrixReport,
   summarizeDrillMatrixReports,
+  validateDrillMatrixAggregate,
   validateDrillMatrixReport,
 } from "./drill-matrix-report.mjs"
 
@@ -730,6 +731,11 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
+    metadata: { providers: "codex,cdoex", providerCount: 2 },
+  }), /metadata\.providers\[\d+\] has unknown provider "cdoex"/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
     metadata: { providers: "codex", providerModelOverrides: "opencode" },
   }), /metadata\.providerModelOverrides includes provider not in providers/)
 
@@ -757,10 +763,26 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
+      metadata: { providers: "codex", providerCount: 1 },
+      scenarios: [scenario("local", "passed", { providers: ["codex", "cdoex"] })],
+    }),
+  }), /scenarios\[0\]\.providers\[1\] has unknown provider "cdoex"/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
       metadata: { providers: "codex,opencode", providerCount: 2 },
       scenarios: [scenario("local", "passed", { providers: ["codex"] })],
     }),
   }), /metadata\.providers do not match scenario providers/)
+
+  const aggregate = summarizeDrillMatrixReports([matrixReport({
+    metadata: { providers: "codex", providerCount: 1 },
+    scenarios: [scenario("local", "passed", { providers: ["codex"] })],
+  })])
+  assert.throws(() => validateDrillMatrixAggregate({
+    ...aggregate,
+    providers: { cdoex: 1 },
+  }), /aggregate\.providers\[0\] has unknown provider "cdoex"/)
 })
 
 function matrixReport(overrides = {}) {

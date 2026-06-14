@@ -5,6 +5,7 @@ import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
+import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
 
@@ -147,8 +148,8 @@ function validateMatrixCheck(check, source) {
   validateStringArray(check.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   validateStringArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
-  validateStringArray(check.requiredProviders ?? [], `${source}.requiredProviders`)
-  validateStringArray(check.missingProviders ?? [], `${source}.missingProviders`)
+  validateProviderArray(check.requiredProviders ?? [], `${source}.requiredProviders`)
+  validateProviderArray(check.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(check.requiredScenarios ?? [], `${source}.requiredScenarios`)
   validateStringArray(check.missingScenarios ?? [], `${source}.missingScenarios`)
   if (typeof check.requireComplete !== "boolean") {
@@ -376,6 +377,15 @@ function validateGeneratedEvidenceKindArray(value, source) {
   for (const [index, kind] of value.entries()) {
     if (!isKnownDrillGeneratedEvidenceKind(kind)) {
       throw new Error(`${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
+    }
+  }
+}
+
+function validateProviderArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, provider] of value.entries()) {
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
     }
   }
 }

@@ -1,11 +1,26 @@
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
+export const DRILL_PROVIDER_IDS = Object.freeze([
+  "claude",
+  "claude-headless",
+  "claude-p",
+  "codex",
+  "dev-stub",
+  "opencode",
+  "opencode-zen",
+])
+
+export function isKnownDrillProvider(provider) {
+  return DRILL_PROVIDER_IDS.includes(provider)
+}
+
 export function parseProviderList(value) {
   const providers = String(value ?? "")
     .split(",")
     .map((provider) => provider.trim())
     .filter(Boolean)
   if (providers.length === 0) throw new Error("provider list must contain at least one provider")
+  validateDrillProviders(providers, "provider list")
   return providers
 }
 
@@ -52,9 +67,14 @@ export function codexCliModel(model) {
 }
 
 export function providerProfileMetadata({ providers, defaultModel, providerModels = {}, providerAccounts = {} }) {
+  validateDrillProviders(providers, "provider profile providers")
   const accountProviders = Object.keys(providerAccounts).sort()
   for (const provider of accountProviders) {
+    validateKnownDrillProvider(provider, "provider account alias provider")
     validateProviderAccountAlias(providerAccounts[provider])
+  }
+  for (const provider of Object.keys(providerModels)) {
+    validateKnownDrillProvider(provider, "provider model override provider")
   }
   return {
     providerCount: providers.length,
@@ -62,6 +82,21 @@ export function providerProfileMetadata({ providers, defaultModel, providerModel
     defaultModel,
     providerModelOverrides: Object.keys(providerModels).sort().join(","),
     providerAccountAliases: accountProviders.map((provider) => `${provider}=${providerAccounts[provider]}`).join(","),
+  }
+}
+
+export function validateDrillProviders(providers, source) {
+  if (!Array.isArray(providers) || !providers.every((provider) => typeof provider === "string" && provider.length > 0)) {
+    throw new Error(`${source} has invalid providers`)
+  }
+  for (const [index, provider] of providers.entries()) {
+    validateKnownDrillProvider(provider, `${source}[${index}]`)
+  }
+}
+
+function validateKnownDrillProvider(provider, source) {
+  if (!isKnownDrillProvider(provider)) {
+    throw new Error(`${source} has unknown provider ${JSON.stringify(provider)}`)
   }
 }
 

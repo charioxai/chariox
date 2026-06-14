@@ -2,9 +2,11 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  DRILL_PROVIDER_IDS,
   applyProviderAccountAlias,
   applyProviderModelOverride,
   codexCliModel,
+  isKnownDrillProvider,
   parseProviderAccountAlias,
   parseProviderList,
   parseProviderModelOverride,
@@ -12,9 +14,17 @@ import {
   resolveProviderModel,
 } from "./drill-provider-profiles.mjs"
 
+test("defines known drill provider ids", () => {
+  assert.deepEqual(DRILL_PROVIDER_IDS, ["claude", "claude-headless", "claude-p", "codex", "dev-stub", "opencode", "opencode-zen"])
+  assert.equal(isKnownDrillProvider("codex"), true)
+  assert.equal(isKnownDrillProvider("cdoex"), false)
+})
+
 test("parses provider lists", () => {
   assert.deepEqual(parseProviderList("codex, opencode,,claude"), ["codex", "opencode", "claude"])
+  assert.deepEqual(parseProviderList("dev-stub, claude-headless, opencode-zen"), ["dev-stub", "claude-headless", "opencode-zen"])
   assert.throws(() => parseProviderList(" , "), /at least one provider/)
+  assert.throws(() => parseProviderList("codex,cdoex"), /provider list\[1\] has unknown provider "cdoex"/)
 })
 
 test("parses provider model overrides", () => {
@@ -56,4 +66,14 @@ test("summarizes provider profile metadata without account secrets", () => {
     providerModelOverrides: "codex,opencode",
     providerAccountAliases: "codex=work,opencode=zen",
   })
+  assert.throws(() => providerProfileMetadata({
+    providers: ["codex", "opencode"],
+    defaultModel: "gpt-5.2",
+    providerModels: { cdoex: "gpt-5.5" },
+  }), /provider model override provider has unknown provider "cdoex"/)
+  assert.throws(() => providerProfileMetadata({
+    providers: ["codex", "opencode"],
+    defaultModel: "gpt-5.2",
+    providerAccounts: { cdoex: "work" },
+  }), /provider account alias provider has unknown provider "cdoex"/)
 })

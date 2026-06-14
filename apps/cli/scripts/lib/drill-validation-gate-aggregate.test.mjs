@@ -260,6 +260,41 @@ test("rejects unknown artifact kind labels in aggregate reports", () => {
   )
 })
 
+test("rejects unknown provider labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredProviders: ["cdoex"],
+    }),
+    /requiredProviders\[0\] has unknown provider "cdoex"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        requiredProviders: { cdoex: 1 },
+      },
+    }),
+    /coverage\.requiredProviders has unknown provider "cdoex"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        matrixCoverage: {
+          ...aggregate.reports[0].matrixCoverage,
+          requiredProviders: ["cdoex"],
+        },
+      }],
+    }),
+    /reports\[0\]\.matrixCoverage\.requiredProviders\[0\] has unknown provider "cdoex"/,
+  )
+})
+
 test("fails aggregate requirements missing from otherwise passing reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["remote-home-extension"],

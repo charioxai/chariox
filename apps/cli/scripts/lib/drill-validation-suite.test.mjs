@@ -196,6 +196,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
     requiredDeploymentPresets: ["local", "hetzner", "local"],
+    requiredProviders: ["opencode", "codex", "codex"],
   }]), [{
     name: "workspace-live-sync",
     description: "Workspace Live Sync",
@@ -215,7 +216,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
     requiredMatrixRuntimeSignals: [],
     requiredDeploymentPresets: ["hetzner", "local"],
-    requiredProviders: [],
+    requiredProviders: ["codex", "opencode"],
     requiredScenarios: [],
   }])
   assert.throws(() => normalizeValidationSuitePresetContracts([{
@@ -273,6 +274,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad deployment preset",
     requiredDeploymentPresets: ["self-hotsed-relay"],
   }]), /requiredDeploymentPresets\[0\] has unknown deployment preset "self-hotsed-relay"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-provider",
+    description: "bad provider",
+    requiredProviders: ["cdoex"],
+  }]), /requiredProviders\[0\] has unknown provider "cdoex"/)
 })
 
 test("finds missing shared drill validation suite paths", async () => {

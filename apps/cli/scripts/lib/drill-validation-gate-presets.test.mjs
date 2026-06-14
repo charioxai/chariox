@@ -389,6 +389,10 @@ test("rejects unknown validation gate requirements", () => {
     /unknown required deployment preset: not-a-preset/,
   )
   assert.throws(
+    () => normalizeRequiredProviders(["cdoex"]),
+    /unknown required provider: cdoex/,
+  )
+  assert.throws(
     () => normalizeRequiredGeneratedEvidenceKinds(["not-generated"]),
     /unknown required generated evidence kind: not-generated/,
   )

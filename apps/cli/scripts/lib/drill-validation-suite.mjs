@@ -12,6 +12,7 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -317,7 +318,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredMatrixClassifications: sortedFailureClassificationArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),
     requiredMatrixRuntimeSignals: sortedRuntimeSignalArray(preset.requiredMatrixRuntimeSignals, `${preset.name}.requiredMatrixRuntimeSignals`),
     requiredDeploymentPresets: sortedDeploymentPresetArray(preset.requiredDeploymentPresets, `${preset.name}.requiredDeploymentPresets`),
-    requiredProviders: sortedStringArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
+    requiredProviders: sortedProviderArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
     requiredScenarios: sortedStringArray(preset.requiredScenarios, `${preset.name}.requiredScenarios`),
   }
 }
@@ -393,6 +394,16 @@ function sortedDeploymentPresetArray(value, source) {
     }
   }
   return presets
+}
+
+function sortedProviderArray(value, source) {
+  const providers = sortedStringArray(value, source)
+  for (const [index, provider] of providers.entries()) {
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+  return providers
 }
 
 function sortedRuntimeSignalOwnerArray(value, source) {

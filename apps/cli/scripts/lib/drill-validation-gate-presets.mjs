@@ -3,6 +3,7 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   isKnownDrillRuntimeSignal,
@@ -596,20 +597,16 @@ export function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {
 }
 
 export function normalizeRequiredProviders(requiredProviders) {
-  if (!Array.isArray(requiredProviders)) {
-    throw new Error("requiredProviders must be an array")
-  }
-  const providers = []
-  for (const provider of requiredProviders) {
-    if (!nonEmptyString(provider)) {
-      throw new Error("requiredProviders has invalid provider")
-    }
-    for (const value of provider.split(",")) {
-      const normalized = value.trim()
-      if (normalized) providers.push(normalized)
+  const providers = normalizeCommaSeparatedStrings(requiredProviders, {
+    fieldName: "requiredProviders",
+    itemName: "provider",
+  })
+  for (const provider of providers) {
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`unknown required provider: ${provider}`)
     }
   }
-  return [...new Set(providers)].sort()
+  return providers
 }
 
 export function normalizeRequiredScenarios(requiredScenarios) {

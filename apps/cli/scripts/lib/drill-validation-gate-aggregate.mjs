@@ -6,6 +6,7 @@ import {
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnerCounts,
@@ -357,8 +358,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   }
   validateStringArray(aggregate.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(aggregate.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
-  validateStringArray(aggregate.requiredProviders ?? [], `${source}.requiredProviders`)
-  validateStringArray(aggregate.missingProviders ?? [], `${source}.missingProviders`)
+  validateProviderArray(aggregate.requiredProviders ?? [], `${source}.requiredProviders`)
+  validateProviderArray(aggregate.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(aggregate.requiredScenarios ?? [], `${source}.requiredScenarios`)
   validateStringArray(aggregate.missingScenarios ?? [], `${source}.missingScenarios`)
   validateGeneratedEvidenceKindArray(aggregate.requiredGeneratedEvidenceKinds ?? [], `${source}.requiredGeneratedEvidenceKinds`)
@@ -834,8 +835,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateRuntimeSignalCountObject(coverage.missingMatrixRuntimeSignals ?? {}, `${source}.missingMatrixRuntimeSignals`)
   validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
   validateCountObject(coverage.missingDeploymentPresets ?? {}, `${source}.missingDeploymentPresets`)
-  validateCountObject(coverage.requiredProviders ?? {}, `${source}.requiredProviders`)
-  validateCountObject(coverage.missingProviders ?? {}, `${source}.missingProviders`)
+  validateProviderCountObject(coverage.requiredProviders ?? {}, `${source}.requiredProviders`)
+  validateProviderCountObject(coverage.missingProviders ?? {}, `${source}.missingProviders`)
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
@@ -859,8 +860,8 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   validateRuntimeSignalArray(coverage.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   validateStringArray(coverage.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(coverage.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
-  validateStringArray(coverage.requiredProviders ?? [], `${source}.requiredProviders`)
-  validateStringArray(coverage.missingProviders ?? [], `${source}.missingProviders`)
+  validateProviderArray(coverage.requiredProviders ?? [], `${source}.requiredProviders`)
+  validateProviderArray(coverage.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(coverage.requiredScenarios ?? [], `${source}.requiredScenarios`)
   validateStringArray(coverage.missingScenarios ?? [], `${source}.missingScenarios`)
   if (coverage.runtimeSignalScenarios !== undefined) {
@@ -1336,6 +1337,15 @@ function validateArtifactKindArray(value, source) {
   }
 }
 
+function validateProviderArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, provider] of value.entries()) {
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+}
+
 function validateGeneratedEvidenceKindArray(value, source) {
   validateStringArray(value, source)
   for (const [index, kind] of value.entries()) {
@@ -1388,6 +1398,15 @@ function validateArtifactKindCountObject(value, source) {
   for (const kind of Object.keys(value)) {
     if (!isKnownDrillArtifactKind(kind)) {
       throw new Error(`${source} has unknown artifact kind ${JSON.stringify(kind)}`)
+    }
+  }
+}
+
+function validateProviderCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const provider of Object.keys(value)) {
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`${source} has unknown provider ${JSON.stringify(provider)}`)
     }
   }
 }

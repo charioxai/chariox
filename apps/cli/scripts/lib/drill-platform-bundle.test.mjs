@@ -351,6 +351,18 @@ test("rejects validation suite preset environment drift", async () => {
       verifyDrillPlatformBundle(rootDir),
       /requiredDeploymentPresets\[0\] has unknown deployment preset "self-hotsed-relay"/,
     )
+
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
+        ? { ...preset, requiredProviders: ["cdoex"] }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredProviders\[0\] has unknown provider "cdoex"/,
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

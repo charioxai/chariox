@@ -359,6 +359,20 @@ test("rejects unknown artifact kind labels in report checks", () => {
   )
 })
 
+test("rejects unknown provider labels in report checks", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: {
+          ...matrixCheck(),
+          requiredProviders: ["cdoex"],
+        },
+      },
+    })),
+    /checks\.matrices\.requiredProviders\[0\] has unknown provider "cdoex"/,
+  )
+})
+
 function report(overrides = {}) {
   const checks = {
     configuration: { status: "passed" },

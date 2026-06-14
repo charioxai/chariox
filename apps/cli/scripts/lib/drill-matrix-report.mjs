@@ -16,6 +16,7 @@ import {
   looksLikeDrillSecretValue,
 } from "./drill-secrets.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
+import { validateDrillProviders } from "./drill-provider-profiles.mjs"
 import {
   validateDrillDurationMatchesTimestamps,
   validateDrillTimestampOrder,
@@ -602,7 +603,7 @@ export function validateDrillMatrixAggregate(aggregate) {
   }
   validateCountObject(aggregate.matrixNames ?? {}, "aggregate.matrixNames")
   validateCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
-  validateCountObject(aggregate.providers ?? {}, "aggregate.providers")
+  validateProviderCountObject(aggregate.providers ?? {}, "aggregate.providers")
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
   validateExitCriteriaCountObject(aggregate.exitCriteria ?? {}, "aggregate.exitCriteria")
   validateRuntimeSignalCountObject(aggregate.runtimeSignals ?? {}, "aggregate.runtimeSignals")
@@ -832,9 +833,7 @@ function validateMatrixAggregateReport(report, source) {
   if (!Array.isArray(report.deploymentPresets) || !report.deploymentPresets.every(nonEmptyString)) {
     throw new Error(`${source} has invalid deploymentPresets`)
   }
-  if (!Array.isArray(report.providers ?? []) || !(report.providers ?? []).every(nonEmptyString)) {
-    throw new Error(`${source} has invalid providers`)
-  }
+  validateProviderList(report.providers ?? [], `${source}.providers`)
   if (!Array.isArray(report.scenarioIds ?? []) || !(report.scenarioIds ?? []).every(nonEmptyString)) {
     throw new Error(`${source} has invalid scenarioIds`)
   }
@@ -936,6 +935,7 @@ function validateReportMetadata(value, source) {
 
 function validateProviderMetadata(metadata, source) {
   const providers = metadataListValue(metadata.providers)
+  if (providers.length > 0) validateProviderList(providers, `${source}.providers`)
   if (metadata.providerCount !== undefined) {
     if (!Number.isInteger(metadata.providerCount) || metadata.providerCount < 0) {
       throw new Error(`${source}.providerCount is invalid`)
@@ -1147,9 +1147,12 @@ function validateRuntimeSignals(value, source) {
 }
 
 function validateProviderList(value, source) {
-  if (!Array.isArray(value) || !value.every(nonEmptyString)) {
-    throw new Error(`${source} has invalid providers`)
-  }
+  validateDrillProviders(value, source)
+}
+
+function validateProviderCountObject(value, source) {
+  validateCountObject(value, source)
+  validateDrillProviders(Object.keys(value), source)
 }
 
 function validateExitCriteriaEvidence(scenario, source) {
