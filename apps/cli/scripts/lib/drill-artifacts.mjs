@@ -129,6 +129,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const schemas = new Map()
   const runtimeSignals = new Map()
   const runtimeSignalOwners = new Map()
+  const coverageAreas = new Map()
   const owners = new Map()
   const classifications = new Map()
   const summaries = indexes.map((index, indexPosition) => {
@@ -140,10 +141,12 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexSchemas = new Map()
     const indexRuntimeSignals = runtimeSignalsFromMetadata(index.metadata)
     const indexRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRuntimeSignals)
+    const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
+    countValues(indexCoverageAreas, coverageAreas)
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
     for (const artifact of index.artifacts) {
@@ -162,6 +165,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       schemas: sortedCountObject(indexSchemas),
       runtimeSignals: countValues(indexRuntimeSignals),
       runtimeSignalOwners: countValues(indexRuntimeSignalOwners),
+      coverageAreas: countValues(indexCoverageAreas),
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
     }
@@ -172,6 +176,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     schemas: sortedCountObject(schemas),
     runtimeSignals: sortedCountObject(runtimeSignals),
     runtimeSignalOwners: sortedCountObject(runtimeSignalOwners),
+    coverageAreas: sortedCountObject(coverageAreas),
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
     indexes: summaries,
@@ -187,6 +192,9 @@ export function diagnosticMetadataForDrillArtifactIndexAggregate(aggregate) {
       : {}),
     ...(Object.keys(aggregate.runtimeSignalOwners ?? {}).length > 0
       ? { runtimeSignalOwners: Object.keys(aggregate.runtimeSignalOwners).sort().join(",") }
+      : {}),
+    ...(Object.keys(aggregate.coverageAreas ?? {}).length > 0
+      ? { coverageAreas: Object.keys(aggregate.coverageAreas).sort().join(",") }
       : {}),
     ...(Object.keys(aggregate.owners ?? {}).length > 0
       ? { owners: Object.keys(aggregate.owners).sort().join(",") }
@@ -214,6 +222,10 @@ export function formatDrillArtifactIndexAggregateSummary(aggregate) {
   const runtimeSignalOwners = Object.entries(aggregate.runtimeSignalOwners ?? {})
   if (runtimeSignalOwners.length > 0) {
     lines.push(`runtime_signal_owners: ${runtimeSignalOwners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
+  }
+  const coverageAreas = Object.entries(aggregate.coverageAreas ?? {})
+  if (coverageAreas.length > 0) {
+    lines.push(`coverage_areas: ${coverageAreas.map(([area, count]) => `${area}=${count}`).join(" ")}`)
   }
   const owners = Object.entries(aggregate.owners ?? {})
   if (owners.length > 0) {
@@ -270,6 +282,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   validateCountObject(aggregate.schemas, `${source}.schemas`)
   validateCountObject(aggregate.runtimeSignals ?? {}, `${source}.runtimeSignals`)
   validateCountObject(aggregate.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
+  validateCountObject(aggregate.coverageAreas ?? {}, `${source}.coverageAreas`)
   validateCountObject(aggregate.owners ?? {}, `${source}.owners`)
   validateCountObject(aggregate.classifications ?? {}, `${source}.classifications`)
   if (!Array.isArray(aggregate.indexes)) {
@@ -285,6 +298,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   const expectedSizeBytes = aggregate.indexes.reduce((sum, index) => sum + index.sizeBytes, 0)
   const expectedRuntimeSignals = new Map()
   const expectedRuntimeSignalOwners = new Map()
+  const expectedCoverageAreas = new Map()
   const expectedOwners = new Map()
   const expectedClassifications = new Map()
   for (const index of aggregate.indexes) {
@@ -293,6 +307,9 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
     }
     for (const [owner, count] of Object.entries(index.runtimeSignalOwners ?? {})) {
       expectedRuntimeSignalOwners.set(owner, (expectedRuntimeSignalOwners.get(owner) ?? 0) + count)
+    }
+    for (const [area, count] of Object.entries(index.coverageAreas ?? {})) {
+      expectedCoverageAreas.set(area, (expectedCoverageAreas.get(area) ?? 0) + count)
     }
     for (const [owner, count] of Object.entries(index.owners ?? {})) {
       expectedOwners.set(owner, (expectedOwners.get(owner) ?? 0) + count)
@@ -309,6 +326,9 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   }
   if (JSON.stringify(aggregate.runtimeSignalOwners ?? {}) !== JSON.stringify(sortedCountObject(expectedRuntimeSignalOwners))) {
     throw new Error(`${source} runtimeSignalOwners do not match indexes`)
+  }
+  if (JSON.stringify(aggregate.coverageAreas ?? {}) !== JSON.stringify(sortedCountObject(expectedCoverageAreas))) {
+    throw new Error(`${source} coverageAreas do not match indexes`)
   }
   if (JSON.stringify(aggregate.owners ?? {}) !== JSON.stringify(sortedCountObject(expectedOwners))) {
     throw new Error(`${source} owners do not match indexes`)
@@ -385,6 +405,7 @@ function validateArtifactIndexSummary(summary, source) {
   validateCountObject(summary.schemas, `${source}.schemas`)
   validateCountObject(summary.runtimeSignals ?? {}, `${source}.runtimeSignals`)
   validateCountObject(summary.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
+  validateCountObject(summary.coverageAreas ?? {}, `${source}.coverageAreas`)
   validateCountObject(summary.owners ?? {}, `${source}.owners`)
   validateCountObject(summary.classifications ?? {}, `${source}.classifications`)
 }

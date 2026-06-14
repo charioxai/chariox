@@ -42,6 +42,11 @@ export function formatDrillValidationGateSummary(report) {
 
   const artifacts = report.checks.artifacts
   lines.push(`artifacts=${artifacts.status} roots=${artifacts.roots.length} inputs=${artifacts.inputs.length} indexes=${artifacts.indexPaths.length}`)
+  const requiredArtifactCoverageAreas = artifacts.requiredArtifactCoverageAreas ?? []
+  const missingArtifactCoverageAreas = artifacts.missingArtifactCoverageAreas ?? []
+  if (requiredArtifactCoverageAreas.length > 0) {
+    lines.push(`artifact_required_coverage_areas=${requiredArtifactCoverageAreas.join(",")} missing=${missingArtifactCoverageAreas.join(",") || "none"}`)
+  }
   const requiredArtifactSchemas = artifacts.requiredArtifactSchemas ?? []
   const missingArtifactSchemas = artifacts.missingArtifactSchemas ?? []
   if (requiredArtifactSchemas.length > 0) {
@@ -53,6 +58,10 @@ export function formatDrillValidationGateSummary(report) {
     const artifactSchemas = Object.entries(artifacts.aggregate.schemas ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (artifactSchemas.length > 0) {
       lines.push(`artifact_schemas=${artifactSchemas.map(([schema, count]) => `${schema}:${count}`).join(",")}`)
+    }
+    const artifactCoverageAreas = Object.entries(artifacts.aggregate.coverageAreas ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (artifactCoverageAreas.length > 0) {
+      lines.push(`artifact_coverage_areas=${artifactCoverageAreas.map(([area, count]) => `${area}:${count}`).join(",")}`)
     }
     const runtimeSignals = Object.entries(artifacts.aggregate.runtimeSignals ?? {})
     if (runtimeSignals.length > 0) {

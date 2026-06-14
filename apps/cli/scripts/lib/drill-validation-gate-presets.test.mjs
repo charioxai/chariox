@@ -6,6 +6,7 @@ import {
   describeDrillValidationGatePresets,
   expandValidationGatePresetRequirements,
   normalizeRequiredDeploymentPresets,
+  normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredMatrices,
@@ -42,6 +43,7 @@ test("describes stable validation gate presets", () => {
       name: "distributed-runtime",
       description: "End-to-end distributed runtime authority evidence across native TUI, remote agents, home extensions, slices, and Workspace Live Sync.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredArtifactCoverageAreas: ["distributed-observability"],
       requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
       requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredFailureClassifications: ["cloud-runtime", "docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
@@ -59,6 +61,7 @@ test("describes stable validation gate presets", () => {
       name: "workspace-live-sync",
       description: "Workspace Live Sync local/remote matrix evidence and distributed sync diagnostics.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredArtifactCoverageAreas: [],
       requiredArtifactSchemas: [],
       requiredRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
       requiredFailureClassifications: ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
@@ -76,6 +79,7 @@ test("describes stable validation gate presets", () => {
       name: "slice-runtime",
       description: "Slice lifecycle, provider-auth isolation, worker discovery, and UI projection evidence.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredArtifactCoverageAreas: [],
       requiredArtifactSchemas: [],
       requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"],
       requiredFailureClassifications: ["cloud-runtime", "docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
@@ -93,6 +97,7 @@ test("describes stable validation gate presets", () => {
       name: "native-provider-tui",
       description: "Native provider TUI parity across local, remote, slice, permissions, and UI projection paths.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredArtifactCoverageAreas: [],
       requiredArtifactSchemas: [],
       requiredRuntimeSignals: ["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"],
       requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
@@ -110,6 +115,7 @@ test("describes stable validation gate presets", () => {
       name: "remote-agent-runtime",
       description: "Leased remote-agent lifecycle, worker provider-run binding, relay freshness, and collab projection evidence.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredArtifactCoverageAreas: [],
       requiredArtifactSchemas: [],
       requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"],
       requiredFailureClassifications: ["cloud-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"],
@@ -127,6 +133,7 @@ test("expands validation gate preset requirements", () => {
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["remote-home-extension"],
     requiredPlatformCoverageAreas: ["runtime-fixtures"],
+    requiredArtifactCoverageAreas: [],
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredFailureClassifications: ["workspace-live-sync-conflict"],
     requiredMatrices: ["custom-matrix"],
@@ -137,6 +144,7 @@ test("expands validation gate preset requirements", () => {
     requiredScenarios: ["local"],
   }), {
     requiredPlatformCoverageAreas: ["runtime-fixtures", "failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+    requiredArtifactCoverageAreas: [],
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredRuntimeSignals: ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
@@ -150,6 +158,21 @@ test("expands validation gate preset requirements", () => {
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["distributed-runtime"],
     requiredPlatformCoverageAreas: [],
+    requiredArtifactCoverageAreas: [],
+    requiredArtifactSchemas: [],
+    requiredRuntimeSignals: [],
+    requiredFailureClassifications: [],
+    requiredMatrices: [],
+    requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    requiredDeploymentPresets: [],
+    requiredProviders: [],
+    requiredScenarios: [],
+  }).requiredArtifactCoverageAreas, ["distributed-observability"])
+  assert.deepEqual(expandValidationGatePresetRequirements({
+    presets: ["distributed-runtime"],
+    requiredPlatformCoverageAreas: [],
+    requiredArtifactCoverageAreas: [],
     requiredArtifactSchemas: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: [],
@@ -174,6 +197,10 @@ test("normalizes validation gate requirements", () => {
   assert.deepEqual(normalizeRequiredPlatformCoverageAreas(["runtime-fixtures,matrix-validation"]), [
     "matrix-validation",
     "runtime-fixtures",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactCoverageAreas(["distributed-observability,matrix-validation", "distributed-observability"]), [
+    "distributed-observability",
+    "matrix-validation",
   ])
   assert.deepEqual(normalizeRequiredArtifactSchemas(["arroba.drill.matrix.v1,arroba.drill.validation_suite_run.v1", "arroba.drill.matrix.v1"]), [
     "arroba.drill.matrix.v1",

@@ -61,6 +61,10 @@ test("drill validation suite prints coverage manifest", async () => {
     ["arroba.drill.validation_suite_run.v1"],
   )
   assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactCoverageAreas,
+    ["distributed-observability"],
+  )
+  assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,
     ["workspace-live-sync-matrix"],
   )

@@ -110,6 +110,7 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
     })),
     validationPresets: (suite.validationPresets ?? []).map((preset) => ({
       name: preset.name,
+      requiredArtifactCoverageAreas: [...(preset.requiredArtifactCoverageAreas ?? [])],
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],

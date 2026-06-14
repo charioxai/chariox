@@ -18,6 +18,8 @@ test("skips artifact validation when no roots or indexes are configured", async 
     roots: [],
     inputs: [],
     indexPaths: [],
+    requiredArtifactCoverageAreas: [],
+    missingArtifactCoverageAreas: [],
     requiredArtifactSchemas: [],
     missingArtifactSchemas: [],
   })
@@ -29,6 +31,7 @@ test("fails when required artifact schemas have no evidence", async () => {
     artifactRoots: [],
   }, {
     maxDepth: 8,
+    requiredArtifactCoverageAreas: [],
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
   })
 
@@ -36,6 +39,46 @@ test("fails when required artifact schemas have no evidence", async () => {
   assert.deepEqual(check.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
   assert.deepEqual(check.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
   assert.match(check.error, /missing required artifact schemas/)
+})
+
+test("gates required artifact coverage areas from artifact index metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  try {
+    await writeReportArtifact(rootDir, "reports/gate.json")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+      metadata: { coverageAreas: "distributed-observability,matrix-validation" },
+    })
+
+    const pass = await artifactValidationGateCheck({
+      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactCoverageAreas: ["distributed-observability"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.requiredArtifactCoverageAreas, ["distributed-observability"])
+    assert.deepEqual(pass.missingArtifactCoverageAreas, [])
+    assert.deepEqual(pass.aggregate.coverageAreas, {
+      "distributed-observability": 1,
+      "matrix-validation": 1,
+    })
+
+    const fail = await artifactValidationGateCheck({
+      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactCoverageAreas: ["runtime-fixtures"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.missingArtifactCoverageAreas, ["runtime-fixtures"])
+    assert.match(fail.error, /missing required artifact coverage areas: runtime-fixtures/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
 })
 
 test("fails when artifact roots contain no indexes", async () => {

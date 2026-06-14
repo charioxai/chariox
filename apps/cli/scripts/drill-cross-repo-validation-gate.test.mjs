@@ -356,7 +356,7 @@ async function writeValidationSuiteArtifact(rootDir) {
   await writeDrillArtifactIndex({
     rootDir,
     artifacts: ["cloud-validation-suite.json"],
-    metadata: { drill: "cloud-validation-suite", tests: 1 },
+    metadata: { drill: "cloud-validation-suite", tests: 1, coverageAreas: "distributed-observability,suite-contract" },
   })
 }
 

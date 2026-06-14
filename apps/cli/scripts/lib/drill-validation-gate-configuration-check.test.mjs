@@ -41,6 +41,7 @@ test("passes when platform evidence or aggregate requirements are configured", (
   const cases = [
     { platformBundleDir: "/tmp/platform" },
     { requiredPlatformCoverageAreas: ["matrix-validation"] },
+    { requiredArtifactCoverageAreas: ["distributed-observability"] },
     { requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"] },
     { requiredRuntimeSignals: ["lease-health"] },
     { requiredFailureClassifications: ["kernel-authority"] },
@@ -67,6 +68,7 @@ function configuration(overrides = {}) {
     matrixRoots: [],
     platformBundleDir: null,
     requiredPlatformCoverageAreas: [],
+    requiredArtifactCoverageAreas: [],
     requiredArtifactSchemas: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: [],

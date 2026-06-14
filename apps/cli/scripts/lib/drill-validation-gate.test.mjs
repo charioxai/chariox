@@ -1014,6 +1014,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       presets: {},
       requiredPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
       missingPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
+      requiredArtifactCoverageAreas: {},
+      missingArtifactCoverageAreas: {},
       requiredRuntimeSignals: {},
       missingRuntimeSignals: {},
       requiredFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
@@ -1021,6 +1023,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       requiredArtifactSchemas: {},
       missingArtifactSchemas: {},
       artifactSchemas: {},
+      artifactCoverageAreas: {},
       artifactRuntimeSignals: {},
       artifactRuntimeSignalOwners: {},
       artifactOwners: {},
@@ -1061,8 +1064,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
-      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {}, runtimeSignalOwners: {} },
@@ -1212,6 +1215,7 @@ function workspaceLiveSyncRequiredScenarios() {
 function platformValidationPresetSummaries() {
   return describeDrillValidationGatePresets().map((preset) => ({
     name: preset.name,
+    requiredArtifactCoverageAreas: preset.requiredArtifactCoverageAreas,
     requiredArtifactSchemas: preset.requiredArtifactSchemas,
     requiredMatrices: preset.requiredMatrices,
     requiredRuntimeSignals: preset.requiredRuntimeSignals,

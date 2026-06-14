@@ -7,6 +7,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "distributed-runtime": Object.freeze({
     description: "End-to-end distributed runtime authority evidence across native TUI, remote agents, home extensions, slices, and Workspace Live Sync.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredArtifactCoverageAreas: Object.freeze(["distributed-observability"]),
     requiredArtifactSchemas: Object.freeze(["arroba.drill.validation_suite_run.v1"]),
     requiredRuntimeSignals: Object.freeze([
       "agent-lifecycle",
@@ -170,6 +171,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       name,
       description: preset.description,
       requiredPlatformCoverageAreas: [...(preset.requiredPlatformCoverageAreas ?? [])],
+      requiredArtifactCoverageAreas: [...(preset.requiredArtifactCoverageAreas ?? [])],
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
@@ -186,6 +188,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
 export function expandValidationGatePresetRequirements({
   presets,
   requiredPlatformCoverageAreas,
+  requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications,
@@ -198,6 +201,7 @@ export function expandValidationGatePresetRequirements({
 }) {
   const expanded = {
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
+    requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
     requiredArtifactSchemas: [...requiredArtifactSchemas],
     requiredRuntimeSignals: [...requiredRuntimeSignals],
     requiredFailureClassifications: [...requiredFailureClassifications],
@@ -211,6 +215,7 @@ export function expandValidationGatePresetRequirements({
   for (const presetName of presets) {
     const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
     expanded.requiredPlatformCoverageAreas.push(...(preset.requiredPlatformCoverageAreas ?? []))
+    expanded.requiredArtifactCoverageAreas.push(...(preset.requiredArtifactCoverageAreas ?? []))
     expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
@@ -222,6 +227,23 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
   }
   return expanded
+}
+
+export function normalizeRequiredArtifactCoverageAreas(requiredArtifactCoverageAreas) {
+  if (!Array.isArray(requiredArtifactCoverageAreas)) {
+    throw new Error("requiredArtifactCoverageAreas must be an array")
+  }
+  const areas = []
+  for (const area of requiredArtifactCoverageAreas) {
+    if (!nonEmptyString(area)) {
+      throw new Error("requiredArtifactCoverageAreas has invalid area")
+    }
+    for (const value of area.split(",")) {
+      const normalized = value.trim()
+      if (normalized) areas.push(normalized)
+    }
+  }
+  return [...new Set(areas)].sort()
 }
 
 export function normalizeRequiredArtifactSchemas(requiredArtifactSchemas) {

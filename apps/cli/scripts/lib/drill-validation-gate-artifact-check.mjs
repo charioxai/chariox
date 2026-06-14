@@ -6,18 +6,24 @@ import {
 
 export async function artifactValidationGateCheck({ artifactIndexes, artifactRoots }, {
   maxDepth,
+  requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
 }) {
   if (artifactRoots.length === 0 && artifactIndexes.length === 0) {
-    if (requiredArtifactSchemas.length > 0) {
+    if (requiredArtifactSchemas.length > 0 || requiredArtifactCoverageAreas.length > 0) {
       return {
         status: "failed",
         roots: [],
         inputs: [],
         indexPaths: [],
+        requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
+        missingArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
         requiredArtifactSchemas: [...requiredArtifactSchemas],
         missingArtifactSchemas: [...requiredArtifactSchemas],
-        error: `missing required artifact schemas: ${requiredArtifactSchemas.join(", ")}`,
+        error: artifactRequirementError({
+          missingArtifactCoverageAreas: requiredArtifactCoverageAreas,
+          missingArtifactSchemas: requiredArtifactSchemas,
+        }),
       }
     }
     return {
@@ -25,6 +31,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       roots: [],
       inputs: [],
       indexPaths: [],
+      requiredArtifactCoverageAreas: [],
+      missingArtifactCoverageAreas: [],
       requiredArtifactSchemas: [],
       missingArtifactSchemas: [],
     }
@@ -40,6 +48,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         roots: [...artifactRoots],
         inputs: [...artifactIndexes],
         indexPaths,
+        requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
+        missingArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
         requiredArtifactSchemas: [...requiredArtifactSchemas],
         missingArtifactSchemas: [...requiredArtifactSchemas],
         error: "no artifact indexes found",
@@ -47,17 +57,21 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     }
     const indexes = await Promise.all(indexPaths.map((indexPath) => verifyDrillArtifactIndex(indexPath)))
     const aggregate = summarizeDrillArtifactIndexes(indexes, { sources: indexPaths })
+    const missingArtifactCoverageAreas = requiredArtifactCoverageAreas.filter((area) => !Object.prototype.hasOwnProperty.call(aggregate.coverageAreas ?? {}, area))
     const missingArtifactSchemas = requiredArtifactSchemas.filter((schema) => !Object.prototype.hasOwnProperty.call(aggregate.schemas, schema))
+    const missingRequirements = missingArtifactCoverageAreas.length + missingArtifactSchemas.length
     return {
-      status: missingArtifactSchemas.length > 0 ? "failed" : "passed",
+      status: missingRequirements > 0 ? "failed" : "passed",
       roots: [...artifactRoots],
       inputs: [...artifactIndexes],
       indexPaths,
+      requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
+      missingArtifactCoverageAreas,
       requiredArtifactSchemas: [...requiredArtifactSchemas],
       missingArtifactSchemas,
       aggregate,
-      ...(missingArtifactSchemas.length > 0
-        ? { error: `missing required artifact schemas: ${missingArtifactSchemas.join(", ")}` }
+      ...(missingRequirements > 0
+        ? { error: artifactRequirementError({ missingArtifactCoverageAreas, missingArtifactSchemas }) }
         : {}),
     }
   } catch (error) {
@@ -66,9 +80,22 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       roots: [...artifactRoots],
       inputs: [...artifactIndexes],
       indexPaths: [],
+      requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
+      missingArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
       requiredArtifactSchemas: [...requiredArtifactSchemas],
       missingArtifactSchemas: [...requiredArtifactSchemas],
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+function artifactRequirementError({ missingArtifactCoverageAreas, missingArtifactSchemas }) {
+  const messages = []
+  if (missingArtifactCoverageAreas.length > 0) {
+    messages.push(`missing required artifact coverage areas: ${missingArtifactCoverageAreas.join(", ")}`)
+  }
+  if (missingArtifactSchemas.length > 0) {
+    messages.push(`missing required artifact schemas: ${missingArtifactSchemas.join(", ")}`)
+  }
+  return messages.join("; ")
 }

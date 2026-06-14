@@ -56,6 +56,7 @@ Gate collected artifacts before treating a drill run as release/staging evidence
 node apps/cli/scripts/drill-validation-gate.mjs \
   --platform-bundle .artifacts/drill-platform \
   --artifact-root .artifacts \
+  --require-artifact-coverage-area distributed-observability \
   --require-artifact-schema arroba.drill.validation_suite_run.v1 \
   --matrix-root .artifacts/drill-matrices \
   --failure-root .artifacts \
@@ -63,9 +64,9 @@ node apps/cli/scripts/drill-validation-gate.mjs \
   --json --output .artifacts/drill-validation-gate.json
 ```
 
-The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, verifies indexed artifacts, can require artifact schema coverage with `--require-artifact-schema`, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first. Text summaries include discovered artifact schema counts, runtime signal counts, and runtime signal owner counts for artifact, matrix, and failure evidence so operators can see which evidence types and runtime subsystems were present without opening raw JSON.
+The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, verifies indexed artifacts, can require artifact metadata coverage with `--require-artifact-coverage-area`, can require artifact schema coverage with `--require-artifact-schema`, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first. Text summaries include discovered artifact coverage areas, artifact schema counts, runtime signal counts, and runtime signal owner counts for artifact, matrix, and failure evidence so operators can see which evidence types and runtime subsystems were present without opening raw JSON.
 Use `--matrix-report PATH` and `--failure-manifest PATH` when CI already knows the exact artifact paths and should avoid broad discovery.
-The distributed-runtime preset requires `arroba.drill.validation_suite_run.v1`, so release/staging evidence must include an executed validation-suite report rather than only publishing a coverage manifest. Pass `--include-default-artifacts` or explicit artifact indexes so the gate can verify that schema. When this schema is missing, the gate's next action points operators to rerun the suite with `--run-json --output PATH --output-artifact-index PATH`.
+The distributed-runtime preset requires artifact coverage area `distributed-observability` and schema `arroba.drill.validation_suite_run.v1`, so release/staging evidence must include an executed validation-suite report whose artifact index metadata proves the distributed-observability checks ran rather than only publishing a coverage manifest or a generic suite run. Pass `--include-default-artifacts` or explicit artifact indexes so the gate can verify that schema and coverage metadata. When the executable suite evidence is missing, the gate's next action points operators to rerun the suite with `--run-json --output PATH --output-artifact-index PATH`; when the coverage area is missing, the next action points operators to run validation-suite artifacts covering `distributed-observability`.
 
 ## Matrix Reports
 

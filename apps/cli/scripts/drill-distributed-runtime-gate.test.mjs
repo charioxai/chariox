@@ -47,6 +47,9 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
     assert.equal(report.checks.artifacts.status, "passed")
+    assert.deepEqual(report.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactCoverageAreas, [])
+    assert.equal(report.checks.artifacts.aggregate.coverageAreas["distributed-observability"], 1)
     assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
     assert.deepEqual(report.presets, ["distributed-runtime"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
@@ -127,6 +130,8 @@ test("distributed runtime gate requires default artifact indexes", async () => {
     assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
     assert.deepEqual(discovered.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
     assert.deepEqual(discovered.checks.artifacts.missingArtifactSchemas, [])
+    assert.deepEqual(discovered.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
+    assert.deepEqual(discovered.checks.artifacts.missingArtifactCoverageAreas, [])
     assert.deepEqual(discovered.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
       path.join(".artifacts", "validation-suite"),
     ])
@@ -160,6 +165,43 @@ test("distributed runtime gate requires executed Cloud validation suite artifact
         assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
         assert.deepEqual(report.checks.artifacts.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
         assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite.v1"], 1)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate requires Cloud validation suite distributed observability coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
+      coverageAreas: ["suite-contract"],
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--include-default-artifacts",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.equal(report.checks.artifacts.status, "failed")
+        assert.deepEqual(report.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
+        assert.deepEqual(report.checks.artifacts.missingArtifactCoverageAreas, ["distributed-observability"])
+        assert.match(report.checks.artifacts.error, /missing required artifact coverage areas: distributed-observability/)
+        assert.equal(report.checks.artifacts.aggregate.coverageAreas["suite-contract"], 1)
         return true
       },
     )
@@ -386,7 +428,9 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   }, null, 2)}\n`, "utf8")
 }
 
-async function writeValidationSuiteArtifact(rootDir) {
+async function writeValidationSuiteArtifact(rootDir, {
+  coverageAreas = ["distributed-observability", "suite-contract"],
+} = {}) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
   await mkdir(rootDir, { recursive: true })
   await writeFile(artifactPath, `${JSON.stringify({
@@ -418,7 +462,7 @@ async function writeValidationSuiteArtifact(rootDir) {
   await writeDrillArtifactIndex({
     rootDir,
     artifacts: ["cloud-validation-suite.json"],
-    metadata: { drill: "cloud-validation-suite", tests: 1 },
+    metadata: { drill: "cloud-validation-suite", tests: 1, coverageAreas: coverageAreas.join(",") },
   })
 }
 

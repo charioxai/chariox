@@ -49,6 +49,14 @@ export function validationGateNextActions(checks) {
       classification: "artifact-index",
       nextAction: "fix missing, unreadable, or tampered artifact indexes before using collected drill evidence",
     })
+    const missingArtifactCoverageAreas = checks.artifacts.missingArtifactCoverageAreas ?? []
+    if (missingArtifactCoverageAreas.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `run validation-suite artifacts covering: ${missingArtifactCoverageAreas.join(", ")}`,
+      })
+    }
     const missingArtifactSchemas = checks.artifacts.missingArtifactSchemas ?? []
     if (missingArtifactSchemas.length > 0) {
       const validationSuiteRunMissing = missingArtifactSchemas.includes("arroba.drill.validation_suite_run.v1")
