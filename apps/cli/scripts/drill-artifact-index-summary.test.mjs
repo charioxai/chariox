@@ -7,7 +7,10 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import {
+  verifyDrillArtifactIndex,
+  writeDrillArtifactIndex,
+} from "./lib/drill-artifacts.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-artifact-index-summary.mjs", import.meta.url))
@@ -15,6 +18,7 @@ const scriptPath = fileURLToPath(new URL("./drill-artifact-index-summary.mjs", i
 test("drill artifact index summary aggregates discovered indexes", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
   try {
     const firstIndexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
     const secondIndexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
@@ -26,9 +30,12 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       "--json",
       "--output",
       outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
     ])
     const stdoutAggregate = JSON.parse(stdout)
     const fileAggregate = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileAggregate, stdoutAggregate)
     assert.equal(stdoutAggregate.schema, "arroba.drill.artifact_index.aggregate.v1")
@@ -39,9 +46,29 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       firstIndexPath,
       secondIndexPath,
     ])
+    assert.equal(artifactIndex.metadata.drill, "artifact-index-summary")
+    assert.equal(artifactIndex.metadata.indexes, 2)
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
+      path: artifact.path,
+      schema: artifact.schema,
+    })), [{
+      path: "aggregate.json",
+      schema: "arroba.drill.artifact_index.aggregate.v1",
+    }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("drill artifact index summary rejects output artifact index without output", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /requires --output/)
+      return true
+    },
+  )
 })
 
 test("drill artifact index summary accepts explicit index paths", async () => {
