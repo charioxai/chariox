@@ -7,7 +7,10 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import {
+  verifyDrillArtifactIndex,
+  writeDrillArtifactIndex,
+} from "./lib/drill-artifacts.mjs"
 import { runDrillValidationGate } from "./lib/drill-validation-gate.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 import { workspaceLiveSyncRequiredScenarioDescriptors } from "./lib/workspace-live-sync-fixtures.mjs"
@@ -249,6 +252,52 @@ test("drill validation gate summary gates aggregate artifact coverage areas", as
         return true
       },
     )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate summary indexes aggregate artifact coverage metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  try {
+    const evidenceRoot = path.join(rootDir, "evidence")
+    const evidencePath = path.join(evidenceRoot, "validation-suite.json")
+    const evidenceIndexPath = path.join(evidenceRoot, "arroba-drill-artifacts.json")
+    await mkdir(evidenceRoot, { recursive: true })
+    await writeFile(evidencePath, `${JSON.stringify({ schema: "arroba.drill.validation_suite_run.v1" })}\n`, "utf8")
+    await writeDrillArtifactIndex({
+      rootDir: evidenceRoot,
+      artifacts: ["validation-suite.json"],
+      metadata: { coverageAreas: "distributed-observability" },
+    })
+
+    const reportPath = path.join(rootDir, "gate.json")
+    await writeGateReport(reportPath, await runDrillValidationGate({
+      artifactIndexes: [evidenceIndexPath],
+      requiredArtifactCoverageAreas: ["distributed-observability"],
+    }))
+
+    const outputPath = path.join(rootDir, "aggregate.json")
+    const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    await execFile(process.execPath, [
+      scriptPath,
+      "--gate-report",
+      reportPath,
+      "--require-artifact-coverage-area",
+      "distributed-observability",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+
+    const aggregate = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+    assert.equal(aggregate.status, "passed")
+    assert.deepEqual(aggregate.requiredArtifactCoverageAreas, ["distributed-observability"])
+    assert.deepEqual(aggregate.missingArtifactCoverageAreas, [])
+    assert.equal(artifactIndex.metadata.coverageAreas, "distributed-observability")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
