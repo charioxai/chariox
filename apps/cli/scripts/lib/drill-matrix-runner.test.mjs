@@ -208,14 +208,28 @@ test("runs a passing matrix scenario", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
   const reportPath = path.join(dir, "reports", "matrix.json")
+  const logs = []
+  const originalLog = console.log
+  console.log = (...args) => logs.push(args.join(" "))
 
-  const results = await runDrillMatrix({
-    matrixName: "test-matrix",
-    scenarios: [{ id: "pass", description: "passing scenario", script, exitCriteria: ["child command exits zero"] }],
-    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
-    cwd: dir,
-    reportPath,
-  })
+  let results
+  try {
+    results = await runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{
+        id: "pass",
+        description: "passing scenario",
+        script,
+        exitCriteria: ["child command exits zero"],
+        runtimeSignals: ["session-authority", "provider-run-lifecycle"],
+      }],
+      commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+      cwd: dir,
+      reportPath,
+    })
+  } finally {
+    console.log = originalLog
+  }
 
   assert.equal(results.length, 1)
   assert.equal(results[0].ok, true)
@@ -224,7 +238,10 @@ test("runs a passing matrix scenario", async () => {
   assert.equal(report.status, "passed")
   assert.equal(report.scenarios[0].id, "pass")
   assert.deepEqual(report.scenarios[0].exitCriteria, ["child command exits zero"])
+  assert.deepEqual(report.scenarios[0].runtimeSignals, ["provider-run-lifecycle", "session-authority"])
+  assert.equal(report.metadata.runtimeSignals, "provider-run-lifecycle,session-authority")
   assert.equal(report.scenarios[0].command, process.execPath)
+  assert(logs.some((line) => line.includes("runtime_signals provider-run-lifecycle=1 session-authority=1")))
   await rm(dir, { recursive: true, force: true })
 })
 

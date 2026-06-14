@@ -333,6 +333,7 @@ function runtimeSignalsForScenario(scenario) {
 async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixName, startedAt, results, dryRun, metadata }) {
   if (!reportPath) return
   const completedAt = new Date()
+  const runtimeSignals = runtimeSignalCountsForResults(results)
   const report = {
     schema: "arroba.drill.matrix.v1",
     matrix: matrixName,
@@ -341,7 +342,10 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     durationMs: completedAt.getTime() - startedAt.getTime(),
-    metadata,
+    metadata: {
+      ...metadata,
+      ...(Object.keys(runtimeSignals).length > 0 ? { runtimeSignals: Object.keys(runtimeSignals).join(",") } : {}),
+    },
     scenarios: results.map((result) => ({
       id: result.scenario.id,
       description: result.scenario.description,
@@ -373,6 +377,9 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     },
   })
   console.log(`[${matrixName}] report ${reportPath}`)
+  if (Object.keys(runtimeSignals).length > 0) {
+    console.log(`[${matrixName}] runtime_signals ${formatRuntimeSignalCounts(runtimeSignals)}`)
+  }
 }
 
 function ownerForResult(result) {
@@ -383,6 +390,22 @@ function nextActionForResult(result) {
   return result.classification
     ? drillFailureNextActionForClassification(result.classification, { target: "scenario" })
     : null
+}
+
+function runtimeSignalCountsForResults(results) {
+  const counts = new Map()
+  for (const result of results) {
+    for (const signal of runtimeSignalsForScenario(result.scenario)) {
+      counts.set(signal, (counts.get(signal) ?? 0) + 1)
+    }
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function formatRuntimeSignalCounts(runtimeSignals) {
+  return Object.entries(runtimeSignals)
+    .map(([signal, count]) => `${signal}=${count}`)
+    .join(" ")
 }
 
 function collectArtifactHintsFromJsonLine(hints, line) {
