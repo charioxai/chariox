@@ -38,6 +38,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
       "workspace-live-sync-conflict",
     ]),
     requiredMatrices: Object.freeze([
+      "cloud-slice-runtime-matrix",
       "native-provider-tui-matrix",
       "remote-agent-runtime-matrix",
       "remote-home-extension-matrix",
@@ -149,7 +150,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
     requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"]),
     requiredFailureClassifications: Object.freeze(["cloud-runtime", "docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),
-    requiredMatrices: Object.freeze(["slice-runtime-matrix"]),
+    requiredMatrices: Object.freeze(["cloud-slice-runtime-matrix", "slice-runtime-matrix"]),
     requiredMatrixClassifications: Object.freeze(["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),
     requiredMatrixRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"]),
     requiredDeploymentPresets: Object.freeze(["hosted-cloud", "local", "self-hosted-relay"]),

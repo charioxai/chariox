@@ -188,6 +188,7 @@ test("distributed runtime gate reports missing hosted Cloud evidence", async () 
         assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
           { owner: "validation-harness", classification: "matrix-coverage" },
           { owner: "validation-harness", classification: "matrix-coverage" },
+          { owner: "validation-harness", classification: "matrix-coverage" },
         ])
         return true
       },

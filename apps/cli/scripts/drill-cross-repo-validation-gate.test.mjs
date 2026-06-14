@@ -84,7 +84,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.deepEqual(report.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
       path.join(".artifacts", "validation-suite"),
     ])
-    assert.deepEqual(report.checks.matrices.requiredMatrices, ["slice-runtime-matrix"])
+    assert.deepEqual(report.checks.matrices.requiredMatrices, ["cloud-slice-runtime-matrix", "slice-runtime-matrix"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
     assert.deepEqual(report.checks.matrices.missingMatrixClassifications, [])

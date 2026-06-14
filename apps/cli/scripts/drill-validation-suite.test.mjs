@@ -53,7 +53,7 @@ test("drill validation suite prints coverage manifest", async () => {
   ])
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredMatrices,
-    ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+    ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
   )
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,

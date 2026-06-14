@@ -30,7 +30,7 @@ test("describes validation gate presets", () => {
   assert.deepEqual(presets.map((preset) => preset.name), ["distributed-runtime", "native-provider-tui", "remote-agent-runtime", "remote-home-extension", "slice-runtime", "workspace-live-sync"])
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["distributed-runtime"] })[0].requiredMatrices,
-    ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+    ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
@@ -364,7 +364,7 @@ test("slice runtime preset accepts hosted Cloud evidence from a separate matrix 
     })
 
     assert.equal(report.status, "passed")
-    assert.deepEqual(report.checks.matrices.requiredMatrices, ["slice-runtime-matrix"])
+    assert.deepEqual(report.checks.matrices.requiredMatrices, ["cloud-slice-runtime-matrix", "slice-runtime-matrix"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["hosted-cloud", "local", "self-hosted-relay"])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
