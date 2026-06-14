@@ -121,6 +121,22 @@ test("drill validation gate requires deployment preset coverage", async () => {
   }
 })
 
+test("drill validation gate rejects unknown deployment preset requirements", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [
+      scriptPath,
+      "--require-deployment-preset",
+      "hosted-clouds",
+      "--json",
+    ]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /unknown required deployment preset: hosted-clouds/)
+      return true
+    },
+  )
+})
+
 test("drill validation gate accepts artifact roots", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {

@@ -129,6 +129,15 @@ test("fails when matrix reports miss required deployment presets", async () => {
   }
 })
 
+test("rejects unknown required deployment presets", async () => {
+  await assert.rejects(
+    () => runDrillValidationGate({
+      requiredDeploymentPresets: ["local", "hosted-clouds"],
+    }),
+    /unknown required deployment preset: hosted-clouds/,
+  )
+})
+
 test("fails when no validation checks are configured", async () => {
   const report = await runDrillValidationGate()
 

@@ -17,6 +17,7 @@ import {
   resolveFailureManifestPath,
   summarizeDrillFailureManifests,
 } from "./drill-failure-manifest.mjs"
+import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import {
   drillMatrixReportCompletionExitCode,
   drillMatrixReportExitCode,
@@ -718,7 +719,13 @@ function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {
       if (normalized) presets.push(normalized)
     }
   }
-  return [...new Set(presets)].sort()
+  const normalizedPresets = [...new Set(presets)].sort()
+  for (const preset of normalizedPresets) {
+    if (!DRILL_DEPLOYMENT_PRESETS.includes(preset)) {
+      throw new Error(`unknown required deployment preset: ${preset}`)
+    }
+  }
+  return normalizedPresets
 }
 
 async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {
