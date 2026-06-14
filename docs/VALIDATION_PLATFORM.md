@@ -68,6 +68,20 @@ The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no ch
 Use `--matrix-report PATH` and `--failure-manifest PATH` when CI already knows the exact artifact paths and should avoid broad discovery.
 The distributed-runtime preset requires artifact coverage area `distributed-observability` and schema `arroba.drill.validation_suite_run.v1`, so release/staging evidence must include an executed validation-suite report whose artifact index metadata proves the distributed-observability checks ran rather than only publishing a coverage manifest or a generic suite run. Pass `--include-default-artifacts` or explicit artifact indexes so the gate can verify that schema and coverage metadata. When the executable suite evidence is missing, the gate's next action points operators to rerun the suite with `--run-json --output PATH --output-artifact-index PATH`; when the coverage area is missing, the next action points operators to run validation-suite artifacts covering `distributed-observability`.
 
+For one-command distributed-runtime evidence generation, use:
+
+```bash
+node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
+  --run-validation-suites \
+  --run-matrix-reports \
+  --include-default-failures \
+  --require-complete \
+  --json --output .artifacts/drill-validation-gate/distributed-runtime.json \
+  --output-artifact-index .artifacts/drill-validation-gate/arroba-drill-artifacts.json
+```
+
+The wrapper runs the OSS and Cloud validation suites and the distributed matrix scripts, then feeds their generated artifact indexes and matrix roots into the distributed-runtime preset. JSON/file reports include `generatedEvidence`, which records whether suites/matrices were generated, the generated roots, validation-suite artifact indexes, matrix report paths, artifact-index paths, and command arguments. Output artifact metadata also records generated evidence kinds and generated roots, so downstream staging jobs can distinguish gate-generated evidence from discovered or explicitly supplied evidence.
+
 ## Matrix Reports
 
 Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.

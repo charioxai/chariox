@@ -67,6 +67,18 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
 
 The gate discovers matrix reports under `./.artifacts/drill-matrices` and `../arroba-cloud/.artifacts/drill-matrices`, validates the distributed-runtime preset, requires indexed `arroba.drill.validation_suite_run.v1` evidence and `distributed-observability` artifact coverage metadata from `--include-default-artifacts`, and fails on incomplete scenarios, unresolved exit criteria, or preserved failure manifests when `--require-complete` / `--include-default-failures` are present. Cloud staging can run the same evidence pipeline from `scripts/staging-retail-smoke.mjs --validation-platform`, which produces Cloud validation-suite run and matrix artifacts before invoking this gate.
 
+The gate can also generate its own release evidence:
+
+```bash
+node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
+  --run-validation-suites \
+  --run-matrix-reports \
+  --include-default-failures \
+  --require-complete
+```
+
+Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
+
 ## Cleanup
 
 Live drills should own their daemon/session/port/artifact lifecycle and clean up generated files on success. If a drill supports `--keep-artifacts-on-failure`, only leave artifacts behind on failure for debugging.
