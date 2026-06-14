@@ -54,6 +54,19 @@ node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-openco
 
 Remote wrapper drills must forward `--provider-model PROVIDER=MODEL` to their child drill scripts. This keeps local and remote provider sessions on the same model policy.
 
+## Distributed Runtime Validation Gate
+
+Use the release-level gate after collecting local, remote, hosted Cloud, slice, Workspace Live Sync, native TUI, and home-extension matrix reports:
+
+```bash
+node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
+  --include-default-artifacts \
+  --include-default-failures \
+  --require-complete
+```
+
+The gate discovers matrix reports under `./.artifacts/drill-matrices` and `../arroba-cloud/.artifacts/drill-matrices`, validates the distributed-runtime preset, verifies artifact indexes when `--include-default-artifacts` is present, and fails on preserved failure manifests when `--include-default-failures` is present. Cloud staging can run the same gate from `scripts/staging-retail-smoke.mjs --include-distributed-runtime-gate` after producing Cloud validation-suite and matrix artifacts.
+
 ## Cleanup
 
 Live drills should own their daemon/session/port/artifact lifecycle and clean up generated files on success. If a drill supports `--keep-artifacts-on-failure`, only leave artifacts behind on failure for debugging.
