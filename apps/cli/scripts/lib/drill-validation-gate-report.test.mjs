@@ -373,6 +373,20 @@ test("rejects unknown provider labels in report checks", () => {
   )
 })
 
+test("rejects unknown deployment preset labels in report checks", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: {
+          ...matrixCheck(),
+          requiredDeploymentPresets: ["same-host-remtoe"],
+        },
+      },
+    })),
+    /checks\.matrices\.requiredDeploymentPresets\[0\] has unknown deployment preset "same-host-remtoe"/,
+  )
+})
+
 function report(overrides = {}) {
   const checks = {
     configuration: { status: "passed" },

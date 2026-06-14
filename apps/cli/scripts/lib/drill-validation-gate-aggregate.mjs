@@ -5,6 +5,7 @@ import {
 } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import {
@@ -356,8 +357,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   if (aggregate.matrixRuntimeSignalSources !== undefined) {
     validateMatrixRuntimeSignalSources(aggregate.matrixRuntimeSignalSources, `${source}.matrixRuntimeSignalSources`)
   }
-  validateStringArray(aggregate.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
-  validateStringArray(aggregate.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
+  validateDeploymentPresetArray(aggregate.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
+  validateDeploymentPresetArray(aggregate.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateProviderArray(aggregate.requiredProviders ?? [], `${source}.requiredProviders`)
   validateProviderArray(aggregate.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(aggregate.requiredScenarios ?? [], `${source}.requiredScenarios`)
@@ -833,8 +834,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingMatrixClassifications ?? {}, `${source}.missingMatrixClassifications`)
   validateRuntimeSignalCountObject(coverage.requiredMatrixRuntimeSignals ?? {}, `${source}.requiredMatrixRuntimeSignals`)
   validateRuntimeSignalCountObject(coverage.missingMatrixRuntimeSignals ?? {}, `${source}.missingMatrixRuntimeSignals`)
-  validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
-  validateCountObject(coverage.missingDeploymentPresets ?? {}, `${source}.missingDeploymentPresets`)
+  validateDeploymentPresetCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
+  validateDeploymentPresetCountObject(coverage.missingDeploymentPresets ?? {}, `${source}.missingDeploymentPresets`)
   validateProviderCountObject(coverage.requiredProviders ?? {}, `${source}.requiredProviders`)
   validateProviderCountObject(coverage.missingProviders ?? {}, `${source}.missingProviders`)
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
@@ -858,8 +859,8 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   validateStringArray(coverage.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
   validateRuntimeSignalArray(coverage.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
   validateRuntimeSignalArray(coverage.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
-  validateStringArray(coverage.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
-  validateStringArray(coverage.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
+  validateDeploymentPresetArray(coverage.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
+  validateDeploymentPresetArray(coverage.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateProviderArray(coverage.requiredProviders ?? [], `${source}.requiredProviders`)
   validateProviderArray(coverage.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(coverage.requiredScenarios ?? [], `${source}.requiredScenarios`)
@@ -1346,6 +1347,15 @@ function validateProviderArray(value, source) {
   }
 }
 
+function validateDeploymentPresetArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, preset] of value.entries()) {
+    if (!isKnownDrillDeploymentPreset(preset)) {
+      throw new Error(`${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
+    }
+  }
+}
+
 function validateGeneratedEvidenceKindArray(value, source) {
   validateStringArray(value, source)
   for (const [index, kind] of value.entries()) {
@@ -1407,6 +1417,15 @@ function validateProviderCountObject(value, source) {
   for (const provider of Object.keys(value)) {
     if (!isKnownDrillProvider(provider)) {
       throw new Error(`${source} has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+}
+
+function validateDeploymentPresetCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const preset of Object.keys(value)) {
+    if (!isKnownDrillDeploymentPreset(preset)) {
+      throw new Error(`${source} has unknown deployment preset ${JSON.stringify(preset)}`)
     }
   }
 }

@@ -395,6 +395,10 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     deploymentPresets: { local: 1 },
   }), /deploymentPresets do not match reports/)
+  assert.throws(() => validateDrillMatrixAggregate({
+    ...aggregate,
+    deploymentPresets: { "same-host-remtoe": 1 },
+  }), /aggregate\.deploymentPresets\[0\] has unknown deployment preset "same-host-remtoe"/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     providers: { codex: 2 },
@@ -407,6 +411,13 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     exitCriteria: { "dry-run": 1 },
   }), /exitCriteria do not match incompleteExitCriteria/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      deploymentPresets: ["same-host-remtoe"],
+    }],
+  }), /reports\[0\]\.deploymentPresets\[0\] has unknown deployment preset "same-host-remtoe"/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     reports: [{
@@ -492,6 +503,27 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     status: "passed",
   }), /status does not match totals/)
+})
+
+test("rejects unknown deployment preset labels in report metadata", () => {
+  assert.throws(
+    () => validateDrillMatrixReport(matrixReport({
+      metadata: {
+        deploymentPresets: "local,same-host-remtoe",
+        deploymentPresetCount: 2,
+      },
+    })),
+    /metadata\.deploymentPresets\[1\] has unknown deployment preset "same-host-remtoe"/,
+  )
+  assert.throws(
+    () => validateDrillMatrixReport(matrixReport({
+      metadata: {
+        deploymentPresets: "local,hetzner",
+        deploymentPresetCount: 1,
+      },
+    })),
+    /metadata\.deploymentPresetCount does not match deploymentPresets/,
+  )
 })
 
 test("reads and validates report files", async () => {

@@ -6,7 +6,9 @@ import {
   appendHetznerPassthrough,
   drillDeploymentPresetMetadata,
   hetznerPassthroughMetadata,
+  isKnownDrillDeploymentPreset,
   parseHetznerPassthroughArg,
+  validateDrillDeploymentPresets,
 } from "./drill-environment-presets.mjs"
 
 test("parses Hetzner passthrough flags", () => {
@@ -54,6 +56,13 @@ test("summarizes deployment presets without leaking machine details", () => {
     "same-host-remote",
     "self-hosted-relay",
   ])
+  assert.equal(isKnownDrillDeploymentPreset("local"), true)
+  assert.equal(isKnownDrillDeploymentPreset("same-host-remtoe"), false)
+  assert.doesNotThrow(() => validateDrillDeploymentPresets(["local", "same-host-remote"], "test presets"))
+  assert.throws(
+    () => validateDrillDeploymentPresets(["same-host-remtoe"], "test presets"),
+    /test presets\[0\] has unknown deployment preset "same-host-remtoe"/,
+  )
   assert.deepEqual(
     drillDeploymentPresetMetadata(["local", "self-hosted-relay", "hetzner", "local"], {
       hetznerPassthrough: ["--hetzner-host", "root@example", "--hetzner-repo", "/tmp/private"],
@@ -73,6 +82,6 @@ test("summarizes deployment presets without leaking machine details", () => {
   )
   assert.throws(
     () => drillDeploymentPresetMetadata(["unknown"]),
-    /unknown drill deployment preset/,
+    /drill deployment presets\[0\] has unknown deployment preset "unknown"/,
   )
 })

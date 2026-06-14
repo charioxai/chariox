@@ -2,6 +2,7 @@ import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
@@ -146,8 +147,8 @@ function validateMatrixCheck(check, source) {
   validateStringArray(check.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
   validateStringArray(check.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
   validateStringArray(check.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
-  validateStringArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
-  validateStringArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
+  validateDeploymentPresetArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
+  validateDeploymentPresetArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateProviderArray(check.requiredProviders ?? [], `${source}.requiredProviders`)
   validateProviderArray(check.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(check.requiredScenarios ?? [], `${source}.requiredScenarios`)
@@ -386,6 +387,15 @@ function validateProviderArray(value, source) {
   for (const [index, provider] of value.entries()) {
     if (!isKnownDrillProvider(provider)) {
       throw new Error(`${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+}
+
+function validateDeploymentPresetArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, preset] of value.entries()) {
+    if (!isKnownDrillDeploymentPreset(preset)) {
+      throw new Error(`${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
     }
   }
 }

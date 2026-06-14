@@ -16,6 +16,7 @@ import {
   looksLikeDrillSecretValue,
 } from "./drill-secrets.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
+import { validateDrillDeploymentPresets } from "./drill-environment-presets.mjs"
 import { validateDrillProviders } from "./drill-provider-profiles.mjs"
 import {
   validateDrillDurationMatchesTimestamps,
@@ -602,7 +603,7 @@ export function validateDrillMatrixAggregate(aggregate) {
     throw new Error("aggregate is missing owners")
   }
   validateCountObject(aggregate.matrixNames ?? {}, "aggregate.matrixNames")
-  validateCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
+  validateDeploymentPresetCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
   validateProviderCountObject(aggregate.providers ?? {}, "aggregate.providers")
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
   validateExitCriteriaCountObject(aggregate.exitCriteria ?? {}, "aggregate.exitCriteria")
@@ -830,9 +831,7 @@ function validateMatrixAggregateReport(report, source) {
   if (!["passed", "failed", "dry-run"].includes(report.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
   }
-  if (!Array.isArray(report.deploymentPresets) || !report.deploymentPresets.every(nonEmptyString)) {
-    throw new Error(`${source} has invalid deploymentPresets`)
-  }
+  validateDeploymentPresetList(report.deploymentPresets, `${source}.deploymentPresets`)
   validateProviderList(report.providers ?? [], `${source}.providers`)
   if (!Array.isArray(report.scenarioIds ?? []) || !(report.scenarioIds ?? []).every(nonEmptyString)) {
     throw new Error(`${source} has invalid scenarioIds`)
@@ -930,7 +929,21 @@ function validateReportMetadata(value, source) {
     throw new Error(`${source} must be an object`)
   }
   validateReportMetadataValue(value, source)
+  validateDeploymentPresetMetadata(value, source)
   validateProviderMetadata(value, source)
+}
+
+function validateDeploymentPresetMetadata(metadata, source) {
+  const deploymentPresets = deploymentPresetsForReport({ metadata })
+  if (deploymentPresets.length > 0) validateDeploymentPresetList(deploymentPresets, `${source}.deploymentPresets`)
+  if (metadata.deploymentPresetCount !== undefined) {
+    if (!Number.isInteger(metadata.deploymentPresetCount) || metadata.deploymentPresetCount < 0) {
+      throw new Error(`${source}.deploymentPresetCount is invalid`)
+    }
+    if (metadata.deploymentPresetCount !== deploymentPresets.length) {
+      throw new Error(`${source}.deploymentPresetCount does not match deploymentPresets`)
+    }
+  }
 }
 
 function validateProviderMetadata(metadata, source) {
@@ -1153,6 +1166,15 @@ function validateProviderList(value, source) {
 function validateProviderCountObject(value, source) {
   validateCountObject(value, source)
   validateDrillProviders(Object.keys(value), source)
+}
+
+function validateDeploymentPresetList(value, source) {
+  validateDrillDeploymentPresets(value, source)
+}
+
+function validateDeploymentPresetCountObject(value, source) {
+  validateCountObject(value, source)
+  validateDrillDeploymentPresets(Object.keys(value), source)
 }
 
 function validateExitCriteriaEvidence(scenario, source) {

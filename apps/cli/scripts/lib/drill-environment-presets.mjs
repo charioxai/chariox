@@ -64,11 +64,7 @@ export function hetznerPassthroughMetadata(passthrough) {
 
 export function drillDeploymentPresetMetadata(presets, { hetznerPassthrough = [] } = {}) {
   const normalized = [...new Set((presets ?? []).map((preset) => String(preset).trim()).filter(Boolean))].sort()
-  for (const preset of normalized) {
-    if (!DRILL_DEPLOYMENT_PRESETS.includes(preset)) {
-      throw new Error(`unknown drill deployment preset: ${preset}`)
-    }
-  }
+  validateDrillDeploymentPresets(normalized, "drill deployment presets")
   const metadata = {
     deploymentPresetCount: normalized.length,
     deploymentPresets: normalized.join(","),
@@ -84,5 +80,20 @@ export function drillDeploymentPresetMetadata(presets, { hetznerPassthrough = []
   return {
     ...metadata,
     ...hetznerPassthroughMetadata(hetznerPassthrough),
+  }
+}
+
+export function isKnownDrillDeploymentPreset(preset) {
+  return DRILL_DEPLOYMENT_PRESETS.includes(preset)
+}
+
+export function validateDrillDeploymentPresets(presets, source) {
+  if (!Array.isArray(presets) || !presets.every((preset) => typeof preset === "string" && preset.length > 0)) {
+    throw new Error(`${source} has invalid deployment presets`)
+  }
+  for (const [index, preset] of presets.entries()) {
+    if (!isKnownDrillDeploymentPreset(preset)) {
+      throw new Error(`${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
+    }
   }
 }

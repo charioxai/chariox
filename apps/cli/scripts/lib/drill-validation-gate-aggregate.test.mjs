@@ -295,6 +295,41 @@ test("rejects unknown provider labels in aggregate reports", () => {
   )
 })
 
+test("rejects unknown deployment preset labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredDeploymentPresets: ["same-host-remtoe"],
+    }),
+    /requiredDeploymentPresets\[0\] has unknown deployment preset "same-host-remtoe"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        requiredDeploymentPresets: { "same-host-remtoe": 1 },
+      },
+    }),
+    /coverage\.requiredDeploymentPresets has unknown deployment preset "same-host-remtoe"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        matrixCoverage: {
+          ...aggregate.reports[0].matrixCoverage,
+          requiredDeploymentPresets: ["same-host-remtoe"],
+        },
+      }],
+    }),
+    /reports\[0\]\.matrixCoverage\.requiredDeploymentPresets\[0\] has unknown deployment preset "same-host-remtoe"/,
+  )
+})
+
 test("fails aggregate requirements missing from otherwise passing reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["remote-home-extension"],
