@@ -9,6 +9,7 @@ import {
   selectDrillMatrixScenarios,
 } from "./lib/drill-matrix-runner.mjs"
 import { drillDeploymentPresetMetadata } from "./lib/drill-environment-presets.mjs"
+import { providerProfileMetadata } from "./lib/drill-provider-profiles.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -200,7 +201,7 @@ function metadataFor(selected, options) {
   return {
     includeBrowserState: options.includeBrowserState,
     includeSelfHostedRelay: options.includeSelfHostedRelay,
-    providers: providers.join(","),
+    ...providerProfileMetadata({ providers, defaultModel: "provider-default" }),
     ...drillDeploymentPresetMetadata([
       "local",
       ...(options.includeSelfHostedRelay ? ["self-hosted-relay"] : []),
