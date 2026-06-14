@@ -5,6 +5,7 @@ import {
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
   isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
@@ -201,6 +202,9 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     ]),
     "runtimeSignals",
   )
+  if (runtimeSignals.length > 0) {
+    validateDrillRuntimeSignalsManifest(manifest.runtimeSignalsManifest, "validation suite runtimeSignalsManifest")
+  }
   return {
     drill: "validation-suite",
     ...(suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1" ? { status: suiteArtifact.status } : {}),

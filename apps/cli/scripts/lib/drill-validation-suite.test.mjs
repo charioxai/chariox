@@ -169,6 +169,13 @@ test("builds validation suite artifact metadata from manifest and run report", (
     runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
   })
+  assert.throws(() => drillValidationSuiteArtifactMetadata({
+    ...manifest,
+    runtimeSignalsManifest: {
+      ...drillRuntimeSignalsManifest(),
+      signals: drillRuntimeSignalsManifest().signals.filter((signal) => signal.id !== "lease-health"),
+    },
+  }), /validation suite runtimeSignalsManifest does not match required runtime signals/)
   assert.throws(() => drillValidationSuiteArtifactMetadata(null), /requires a manifest or run report/)
 })
 
