@@ -162,6 +162,7 @@ test("drill validation gate applies requirement presets", async () => {
     ])
     const report = JSON.parse(stdout)
     assert.equal(report.status, "passed")
+    assert.deepEqual(report.presets, ["workspace-live-sync"])
     assert.deepEqual(report.checks.matrices.requiredMatrices, ["workspace-live-sync-matrix"])
     assert.deepEqual(report.checks.matrices.requiredMatrixClassifications, [
       "kernel-authority",

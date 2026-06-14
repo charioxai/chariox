@@ -81,6 +81,7 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
   }
   const nextActions = new Map()
   const coverage = {
+    presets: new Map(),
     requiredPlatformCoverageAreas: new Map(),
     missingPlatformCoverageAreas: new Map(),
     requiredFailureClassifications: new Map(),
@@ -102,6 +103,7 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
     for (const action of report.nextActions) {
       countDrillAggregateNextAction(nextActions, action)
     }
+    countStringValues(coverage.presets, report.presets ?? [])
     const platformCoverage = validationGateReportPlatformCoverage(report)
     countStringValues(coverage.requiredPlatformCoverageAreas, platformCoverage.requiredCoverageAreas)
     countStringValues(coverage.missingPlatformCoverageAreas, platformCoverage.missingCoverageAreas)
@@ -121,6 +123,7 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
     return {
       source: sources[index] ?? null,
       status: report.status,
+      presets: [...(report.presets ?? [])],
       checks: Object.fromEntries(Object.entries(report.checks).map(([name, check]) => [name, check.status])),
       platformCoverage,
       matrixCoverage,
@@ -187,8 +190,9 @@ export async function runDrillValidationGate({
   requiredProviders = [],
   requiredScenarios = [],
 } = {}) {
+  const normalizedPresets = normalizeRequiredPresets(presets)
   const expandedRequirements = expandValidationGatePresetRequirements({
-    presets,
+    presets: normalizedPresets,
     requiredPlatformCoverageAreas,
     requiredFailureClassifications,
     requiredMatrices,
@@ -244,6 +248,7 @@ export async function runDrillValidationGate({
   const report = {
     schema: DRILL_VALIDATION_GATE_SCHEMA,
     status: Object.values(checks).some((check) => check.status === "failed") ? "failed" : "passed",
+    presets: normalizedPresets,
     checks,
     nextActions,
   }
@@ -262,6 +267,9 @@ export function formatDrillValidationGateSummary(report) {
     "drill validation gate:",
     `status=${report.status}`,
   ]
+  if ((report.presets ?? []).length > 0) {
+    lines.push(`presets=${report.presets.join(",")}`)
+  }
   const configuration = report.checks.configuration
   lines.push(`configuration=${configuration.status}${configuration.error ? ` error=${configuration.error}` : ""}`)
 
@@ -353,6 +361,7 @@ export function validateDrillValidationGateReport(report, source = "validation g
   if (!["passed", "failed"].includes(report.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
   }
+  validateStringArray(report.presets ?? [], `${source}.presets`)
   if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
     throw new Error(`${source} is missing checks`)
   }
@@ -638,6 +647,7 @@ function validateGateAggregateReportSummary(report, source) {
   if (!["passed", "failed"].includes(report.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
   }
+  validateStringArray(report.presets ?? [], `${source}.presets`)
   if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
     throw new Error(`${source} has invalid checks`)
   }
@@ -688,6 +698,7 @@ function countStringValues(counts, values) {
 
 function formatValidationGateCoverageCounts(coverage) {
   return {
+    presets: countMapToObject(coverage.presets),
     requiredPlatformCoverageAreas: countMapToObject(coverage.requiredPlatformCoverageAreas),
     missingPlatformCoverageAreas: countMapToObject(coverage.missingPlatformCoverageAreas),
     requiredFailureClassifications: countMapToObject(coverage.requiredFailureClassifications),
@@ -711,6 +722,7 @@ function countMapToObject(counts) {
 
 function formatValidationGateCoverageSummary(coverage) {
   const lines = []
+  appendCoverageLine(lines, "presets", coverage.presets)
   appendCoverageLine(lines, "required_platform_coverage_areas", coverage.requiredPlatformCoverageAreas)
   appendCoverageLine(lines, "missing_platform_coverage_areas", coverage.missingPlatformCoverageAreas)
   appendCoverageLine(lines, "required_failure_classifications", coverage.requiredFailureClassifications)
@@ -739,6 +751,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error(`${source} is not an object`)
   }
+  validateCountObject(coverage.presets ?? {}, `${source}.presets`)
   validateCountObject(coverage.requiredPlatformCoverageAreas ?? {}, `${source}.requiredPlatformCoverageAreas`)
   validateCountObject(coverage.missingPlatformCoverageAreas ?? {}, `${source}.missingPlatformCoverageAreas`)
   validateCountObject(coverage.requiredFailureClassifications ?? {}, `${source}.requiredFailureClassifications`)
@@ -783,6 +796,7 @@ function validateValidationGatePlatformCoverage(coverage, source) {
 
 function assertValidationGateCoverageMatchesReports(aggregate, source) {
   const expected = {
+    presets: new Map(),
     requiredPlatformCoverageAreas: new Map(),
     missingPlatformCoverageAreas: new Map(),
     requiredFailureClassifications: new Map(),
@@ -799,6 +813,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingScenarios: new Map(),
   }
   for (const report of aggregate.reports) {
+    countStringValues(expected.presets, report.presets ?? [])
     const platformCoverage = report.platformCoverage ?? {
       requiredCoverageAreas: [],
       missingCoverageAreas: [],
@@ -1150,7 +1165,6 @@ function expandValidationGatePresetRequirements({
   requiredProviders,
   requiredScenarios,
 }) {
-  const normalizedPresets = normalizeRequiredPresets(presets)
   const expanded = {
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
     requiredFailureClassifications: [...requiredFailureClassifications],
@@ -1160,7 +1174,7 @@ function expandValidationGatePresetRequirements({
     requiredProviders: [...requiredProviders],
     requiredScenarios: [...requiredScenarios],
   }
-  for (const presetName of normalizedPresets) {
+  for (const presetName of presets) {
     const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
     expanded.requiredPlatformCoverageAreas.push(...(preset.requiredPlatformCoverageAreas ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))

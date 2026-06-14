@@ -158,6 +158,7 @@ test("applies validation gate requirement presets", async () => {
     })
 
     assert.equal(report.status, "passed")
+    assert.deepEqual(report.presets, ["workspace-live-sync"])
     assert.deepEqual(report.checks.platformBundle.requiredFailureClassifications, [
       "kernel-authority",
       "relay-target-freshness",
@@ -169,7 +170,12 @@ test("applies validation gate requirement presets", async () => {
       "relay-target-freshness",
       "workspace-live-sync-conflict",
     ])
+    assert.match(formatDrillValidationGateSummary(report), /presets=workspace-live-sync/)
     assert.match(formatDrillValidationGateSummary(report), /matrix_required_classifications=kernel-authority,relay-target-freshness,workspace-live-sync-conflict missing=none/)
+    const aggregate = summarizeDrillValidationGateReports([report], { sources: ["workspace-live-sync.json"] })
+    assert.deepEqual(aggregate.coverage.presets, { "workspace-live-sync": 1 })
+    assert.deepEqual(aggregate.reports[0].presets, ["workspace-live-sync"])
+    assert.match(formatDrillValidationGateAggregateSummary(aggregate), /presets: workspace-live-sync=1/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -762,6 +768,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
 
     assert.equal(aggregate.status, "failed")
     assert.deepEqual(aggregate.coverage, {
+      presets: {},
       requiredPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
       missingPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
       requiredFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
