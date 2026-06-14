@@ -53,6 +53,9 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     ])
     assert.equal(artifactIndex.metadata.drill, "artifact-index-summary")
     assert.equal(artifactIndex.metadata.indexes, 2)
+    assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,session-authority,workspace-live-sync-state")
+    assert.equal(artifactIndex.metadata.owners, "runtime-network,validation-harness")
+    assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -134,6 +137,12 @@ async function writeIndexedReport(rootDir, name, schema) {
     rootDir: drillRoot,
     artifacts: ["reports/report.json"],
     metadata: {
+      classifications: name === "one"
+        ? "validation-gate"
+        : "matrix-coverage",
+      owners: name === "one"
+        ? "validation-harness"
+        : "runtime-network",
       runtimeSignals: name === "one"
         ? "session-authority,lease-health"
         : "session-authority,workspace-live-sync-state",

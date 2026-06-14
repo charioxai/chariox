@@ -7,6 +7,7 @@ import test from "node:test"
 import {
   DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA,
   DRILL_ARTIFACT_INDEX_SCHEMA,
+  diagnosticMetadataForDrillArtifactIndexAggregate,
   findDrillArtifactIndexPaths,
   formatDrillArtifactIndexAggregateSummary,
   finalizeDrillArtifacts,
@@ -186,6 +187,8 @@ test("summarizes drill artifact indexes", async () => {
       rootDir: path.join(root, "one"),
       artifacts: ["reports/gate.json", "reports/notes.log"],
       metadata: {
+        classifications: "validation-gate,artifact-coverage",
+        owners: "validation-harness",
         runtimeSignals: "session-authority,provider-run-lifecycle",
       },
     })
@@ -193,6 +196,8 @@ test("summarizes drill artifact indexes", async () => {
       rootDir: path.join(root, "two"),
       artifacts: ["reports/matrix.json"],
       metadata: {
+        classifications: "matrix-coverage",
+        owners: "validation-harness,runtime-network",
         runtimeSignals: "session-authority,lease-health",
       },
     })
@@ -214,6 +219,15 @@ test("summarizes drill artifact indexes", async () => {
       "provider-run-lifecycle": 1,
       "session-authority": 2,
     })
+    assert.deepEqual(aggregate.owners, {
+      "runtime-network": 1,
+      "validation-harness": 2,
+    })
+    assert.deepEqual(aggregate.classifications, {
+      "artifact-coverage": 1,
+      "matrix-coverage": 1,
+      "validation-gate": 1,
+    })
     assert.deepEqual(aggregate.indexes.map((index) => index.source), [
       "one/arroba-drill-artifacts.json",
       "two/arroba-drill-artifacts.json",
@@ -228,9 +242,25 @@ test("summarizes drill artifact indexes", async () => {
         "session-authority": 1,
       },
     ])
+    assert.deepEqual(aggregate.indexes.map((index) => index.owners), [
+      {
+        "validation-harness": 1,
+      },
+      {
+        "runtime-network": 1,
+        "validation-harness": 1,
+      },
+    ])
+    assert.deepEqual(diagnosticMetadataForDrillArtifactIndexAggregate(aggregate), {
+      classifications: "artifact-coverage,matrix-coverage,validation-gate",
+      owners: "runtime-network,validation-harness",
+      runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
+    })
     assert.doesNotThrow(() => validateDrillArtifactIndexAggregate(aggregate))
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /indexes=2 artifacts=3/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=2/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /owners: runtime-network=1 validation-harness=2/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }

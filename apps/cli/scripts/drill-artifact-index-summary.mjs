@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import {
+  diagnosticMetadataForDrillArtifactIndexAggregate,
   findDrillArtifactIndexPaths,
   formatDrillArtifactIndexAggregateSummary,
   summarizeDrillArtifactIndexes,
@@ -48,6 +49,7 @@ async function main() {
       metadata: {
         drill: "artifact-index-summary",
         indexes: aggregate.totals.indexes,
+        ...diagnosticMetadataForDrillArtifactIndexAggregate(aggregate),
       },
     })
   }
