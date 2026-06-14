@@ -206,6 +206,22 @@ function sliceSlashCommand(...args) {
   return { kind: 'slice', args, raw: `/slice ${args.join(' ')}` }
 }
 
+function parseArgs(argv) {
+  const options = {
+    keepArtifactsOnFailure: false,
+  }
+  for (const arg of argv) {
+    if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--help' || arg === '-h') {
+      console.log('Usage: node apps/cli/scripts/live-slice-lifecycle-drill.mjs [--keep-artifacts-on-failure]')
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument: ${arg}`)
+    }
+  }
+  return options
+}
+
 async function runSliceSlashCommandDrill(client, workspace, sliceRef, sliceName) {
   const notices = []
   const footers = []
@@ -331,6 +347,7 @@ async function runWaitingRoomSliceDeleteDrill(client, workspace, runLabel) {
 }
 
 async function main() {
+  const options = parseArgs(process.argv.slice(2))
   const runLabel = `${process.pid}-${Date.now()}`
   const agentDefaults = {
     provider: 'dev-stub',
@@ -534,6 +551,7 @@ async function main() {
     await finalizeDrillArtifacts({
       rootDir: root,
       passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
       failure,
       metadata: {
         drill: 'slice-lifecycle',
