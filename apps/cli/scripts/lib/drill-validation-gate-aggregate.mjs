@@ -33,6 +33,8 @@ export function summarizeValidationGateReportAggregate(
     missingMatrices: new Map(),
     requiredMatrixClassifications: new Map(),
     missingMatrixClassifications: new Map(),
+    requiredMatrixRuntimeSignals: new Map(),
+    missingMatrixRuntimeSignals: new Map(),
     requiredDeploymentPresets: new Map(),
     missingDeploymentPresets: new Map(),
     requiredProviders: new Map(),
@@ -59,6 +61,8 @@ export function summarizeValidationGateReportAggregate(
     countStringValues(coverage.missingMatrices, matrixCoverage.missingMatrices)
     countStringValues(coverage.requiredMatrixClassifications, matrixCoverage.requiredMatrixClassifications)
     countStringValues(coverage.missingMatrixClassifications, matrixCoverage.missingMatrixClassifications)
+    countStringValues(coverage.requiredMatrixRuntimeSignals, matrixCoverage.requiredMatrixRuntimeSignals)
+    countStringValues(coverage.missingMatrixRuntimeSignals, matrixCoverage.missingMatrixRuntimeSignals)
     countStringValues(coverage.requiredDeploymentPresets, matrixCoverage.requiredDeploymentPresets)
     countStringValues(coverage.missingDeploymentPresets, matrixCoverage.missingDeploymentPresets)
     countStringValues(coverage.requiredProviders, matrixCoverage.requiredProviders)
@@ -104,6 +108,8 @@ export function summarizeValidationGateReportAggregate(
     missingMatrices: missingRequirements.missingMatrices,
     requiredMatrixClassifications: normalizedAggregateRequirements.requiredMatrixClassifications,
     missingMatrixClassifications: missingRequirements.missingMatrixClassifications,
+    requiredMatrixRuntimeSignals: normalizedAggregateRequirements.requiredMatrixRuntimeSignals,
+    missingMatrixRuntimeSignals: missingRequirements.missingMatrixRuntimeSignals,
     requiredDeploymentPresets: normalizedAggregateRequirements.requiredDeploymentPresets,
     missingDeploymentPresets: missingRequirements.missingDeploymentPresets,
     requiredProviders: normalizedAggregateRequirements.requiredProviders,
@@ -145,6 +151,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_failure_classifications", aggregate.requiredFailureClassifications, aggregate.missingFailureClassifications)
   appendAggregateRequirementLine(lines, "required_matrices", aggregate.requiredMatrices, aggregate.missingMatrices)
   appendAggregateRequirementLine(lines, "required_matrix_classifications", aggregate.requiredMatrixClassifications, aggregate.missingMatrixClassifications)
+  appendAggregateRequirementLine(lines, "required_matrix_runtime_signals", aggregate.requiredMatrixRuntimeSignals, aggregate.missingMatrixRuntimeSignals)
   appendAggregateRequirementLine(lines, "required_deployment_presets", aggregate.requiredDeploymentPresets, aggregate.missingDeploymentPresets)
   appendAggregateRequirementLine(lines, "required_providers", aggregate.requiredProviders, aggregate.missingProviders)
   appendAggregateRequirementLine(lines, "required_scenarios", aggregate.requiredScenarios, aggregate.missingScenarios)
@@ -192,6 +199,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingMatrices ?? [], `${source}.missingMatrices`)
   validateStringArray(aggregate.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
   validateStringArray(aggregate.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
+  validateStringArray(aggregate.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
+  validateStringArray(aggregate.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   validateStringArray(aggregate.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(aggregate.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateStringArray(aggregate.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -225,6 +234,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredFailureClassifications: aggregate.requiredFailureClassifications ?? [],
     requiredMatrices: aggregate.requiredMatrices ?? [],
     requiredMatrixClassifications: aggregate.requiredMatrixClassifications ?? [],
+    requiredMatrixRuntimeSignals: aggregate.requiredMatrixRuntimeSignals ?? [],
     requiredDeploymentPresets: aggregate.requiredDeploymentPresets ?? [],
     requiredProviders: aggregate.requiredProviders ?? [],
     requiredScenarios: aggregate.requiredScenarios ?? [],
@@ -259,6 +269,8 @@ function validationGateReportMatrixCoverage(report) {
     missingMatrices: [...(matrices.missingMatrices ?? [])],
     requiredMatrixClassifications: [...(matrices.requiredMatrixClassifications ?? [])],
     missingMatrixClassifications: [...(matrices.missingMatrixClassifications ?? [])],
+    requiredMatrixRuntimeSignals: [...(matrices.requiredMatrixRuntimeSignals ?? [])],
+    missingMatrixRuntimeSignals: [...(matrices.missingMatrixRuntimeSignals ?? [])],
     requiredDeploymentPresets: [...(matrices.requiredDeploymentPresets ?? [])],
     missingDeploymentPresets: [...(matrices.missingDeploymentPresets ?? [])],
     requiredProviders: [...(matrices.requiredProviders ?? [])],
@@ -282,6 +294,7 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingFailureClassifications: missingCoverageRequirements(coverage.requiredFailureClassifications, requirements.requiredFailureClassifications ?? []),
     missingMatrices: missingCoverageRequirements(coverage.requiredMatrices, requirements.requiredMatrices ?? []),
     missingMatrixClassifications: missingCoverageRequirements(coverage.requiredMatrixClassifications, requirements.requiredMatrixClassifications ?? []),
+    missingMatrixRuntimeSignals: missingCoverageRequirements(coverage.requiredMatrixRuntimeSignals, requirements.requiredMatrixRuntimeSignals ?? []),
     missingDeploymentPresets: missingCoverageRequirements(coverage.requiredDeploymentPresets, requirements.requiredDeploymentPresets ?? []),
     missingProviders: missingCoverageRequirements(coverage.requiredProviders, requirements.requiredProviders ?? []),
     missingScenarios: missingCoverageRequirements(coverage.requiredScenarios, requirements.requiredScenarios ?? []),
@@ -300,6 +313,7 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingFailureClassifications", "platform-bundle", "provide validation gate reports requiring failure classifications"],
     ["missingMatrices", "matrix-coverage", "provide validation gate reports requiring matrices"],
     ["missingMatrixClassifications", "matrix-coverage", "provide validation gate reports requiring matrix classifications"],
+    ["missingMatrixRuntimeSignals", "matrix-coverage", "provide validation gate reports requiring matrix runtime signals"],
     ["missingDeploymentPresets", "matrix-coverage", "provide validation gate reports requiring deployment presets"],
     ["missingProviders", "matrix-coverage", "provide validation gate reports requiring providers"],
     ["missingScenarios", "matrix-coverage", "provide validation gate reports requiring scenarios"],
@@ -323,6 +337,7 @@ function assertValidationGateAggregateMissingRequirementsMatch(aggregate, expect
     "missingFailureClassifications",
     "missingMatrices",
     "missingMatrixClassifications",
+    "missingMatrixRuntimeSignals",
     "missingDeploymentPresets",
     "missingProviders",
     "missingScenarios",
@@ -347,6 +362,8 @@ function formatValidationGateCoverageCounts(coverage) {
     missingMatrices: countMapToObject(coverage.missingMatrices),
     requiredMatrixClassifications: countMapToObject(coverage.requiredMatrixClassifications),
     missingMatrixClassifications: countMapToObject(coverage.missingMatrixClassifications),
+    requiredMatrixRuntimeSignals: countMapToObject(coverage.requiredMatrixRuntimeSignals),
+    missingMatrixRuntimeSignals: countMapToObject(coverage.missingMatrixRuntimeSignals),
     requiredDeploymentPresets: countMapToObject(coverage.requiredDeploymentPresets),
     missingDeploymentPresets: countMapToObject(coverage.missingDeploymentPresets),
     requiredProviders: countMapToObject(coverage.requiredProviders),
@@ -373,6 +390,8 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_matrices", coverage.missingMatrices)
   appendCoverageLine(lines, "required_matrix_classifications", coverage.requiredMatrixClassifications)
   appendCoverageLine(lines, "missing_matrix_classifications", coverage.missingMatrixClassifications)
+  appendCoverageLine(lines, "required_matrix_runtime_signals", coverage.requiredMatrixRuntimeSignals)
+  appendCoverageLine(lines, "missing_matrix_runtime_signals", coverage.missingMatrixRuntimeSignals)
   appendCoverageLine(lines, "required_deployment_presets", coverage.requiredDeploymentPresets)
   appendCoverageLine(lines, "missing_deployment_presets", coverage.missingDeploymentPresets)
   appendCoverageLine(lines, "required_providers", coverage.requiredProviders)
@@ -410,6 +429,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingMatrices ?? {}, `${source}.missingMatrices`)
   validateCountObject(coverage.requiredMatrixClassifications ?? {}, `${source}.requiredMatrixClassifications`)
   validateCountObject(coverage.missingMatrixClassifications ?? {}, `${source}.missingMatrixClassifications`)
+  validateCountObject(coverage.requiredMatrixRuntimeSignals ?? {}, `${source}.requiredMatrixRuntimeSignals`)
+  validateCountObject(coverage.missingMatrixRuntimeSignals ?? {}, `${source}.missingMatrixRuntimeSignals`)
   validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
   validateCountObject(coverage.missingDeploymentPresets ?? {}, `${source}.missingDeploymentPresets`)
   validateCountObject(coverage.requiredProviders ?? {}, `${source}.requiredProviders`)
@@ -426,6 +447,8 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   validateStringArray(coverage.missingMatrices ?? [], `${source}.missingMatrices`)
   validateStringArray(coverage.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
   validateStringArray(coverage.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
+  validateStringArray(coverage.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
+  validateStringArray(coverage.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   validateStringArray(coverage.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(coverage.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateStringArray(coverage.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -459,6 +482,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingMatrices: new Map(),
     requiredMatrixClassifications: new Map(),
     missingMatrixClassifications: new Map(),
+    requiredMatrixRuntimeSignals: new Map(),
+    missingMatrixRuntimeSignals: new Map(),
     requiredDeploymentPresets: new Map(),
     missingDeploymentPresets: new Map(),
     requiredProviders: new Map(),
@@ -487,6 +512,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
       missingMatrices: [],
       requiredMatrixClassifications: [],
       missingMatrixClassifications: [],
+      requiredMatrixRuntimeSignals: [],
+      missingMatrixRuntimeSignals: [],
       requiredDeploymentPresets: [],
       missingDeploymentPresets: [],
       requiredProviders: [],
@@ -498,6 +525,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingMatrices, coverage.missingMatrices ?? [])
     countStringValues(expected.requiredMatrixClassifications, coverage.requiredMatrixClassifications ?? [])
     countStringValues(expected.missingMatrixClassifications, coverage.missingMatrixClassifications ?? [])
+    countStringValues(expected.requiredMatrixRuntimeSignals, coverage.requiredMatrixRuntimeSignals ?? [])
+    countStringValues(expected.missingMatrixRuntimeSignals, coverage.missingMatrixRuntimeSignals ?? [])
     countStringValues(expected.requiredDeploymentPresets, coverage.requiredDeploymentPresets ?? [])
     countStringValues(expected.missingDeploymentPresets, coverage.missingDeploymentPresets ?? [])
     countStringValues(expected.requiredProviders, coverage.requiredProviders ?? [])

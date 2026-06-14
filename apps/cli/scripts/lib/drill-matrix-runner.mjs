@@ -8,6 +8,7 @@ import {
   isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
+import { isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
 export function parseDrillScenarioIds(value) {
@@ -255,6 +256,9 @@ export function validateDrillMatrixScenarioDefinitions(scenarios, { requireDescr
         throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
       }
     }
+    if (scenario.runtimeSignals !== undefined) {
+      validateRuntimeSignals(scenario.runtimeSignals, `${source}.runtimeSignals`)
+    }
   }
 }
 
@@ -309,6 +313,23 @@ function exitCriteriaFor(scenario) {
   return []
 }
 
+function validateRuntimeSignals(value, source) {
+  if (!Array.isArray(value) || !value.every(nonEmptyString)) {
+    throw new Error(`${source} has invalid runtimeSignals`)
+  }
+  for (const signal of value) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
+}
+
+function runtimeSignalsForScenario(scenario) {
+  return Array.isArray(scenario.runtimeSignals)
+    ? [...new Set(scenario.runtimeSignals.filter(nonEmptyString))].sort()
+    : []
+}
+
 async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixName, startedAt, results, dryRun, metadata }) {
   if (!reportPath) return
   const completedAt = new Date()
@@ -326,6 +347,7 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
       description: result.scenario.description,
       requires: requirementsFor(result.scenario),
       exitCriteria: exitCriteriaFor(result.scenario),
+      runtimeSignals: runtimeSignalsForScenario(result.scenario),
       status: result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed",
       expectedFailure: Boolean(result.expectedFailure),
       classification: result.classification ?? null,

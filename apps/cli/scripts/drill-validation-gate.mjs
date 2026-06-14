@@ -43,6 +43,8 @@ function printHelp() {
     "                         Fail when matrix reports do not include each matrix name; repeatable",
     "  --require-matrix-classification KIND[,KIND]",
     "                         Fail when matrix reports do not include each failure classification; repeatable",
+    "  --require-matrix-runtime-signal ID[,ID]",
+    "                         Fail when matrix reports do not include each runtime signal; repeatable",
     "  --require-deployment-preset NAME[,NAME]",
     "                         Fail when matrix reports do not cover each deployment preset; repeatable",
     "  --require-provider NAME[,NAME]",
@@ -213,6 +215,7 @@ function formatPresetList(presets) {
     lines.push(`  failure_classifications=${preset.requiredFailureClassifications.join(",") || "none"}`)
     lines.push(`  matrices=${preset.requiredMatrices.join(",") || "none"}`)
     lines.push(`  matrix_classifications=${preset.requiredMatrixClassifications.join(",") || "none"}`)
+    lines.push(`  matrix_runtime_signals=${preset.requiredMatrixRuntimeSignals.join(",") || "none"}`)
   }
   return lines.join("\n")
 }

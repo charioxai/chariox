@@ -42,6 +42,7 @@ const MATRIX = [
     provider: "codex",
     description: "same-host remote Codex agent lease, prompt, cancellation, and placement",
     classification: "relay-runtime",
+    runtimeSignals: ["agent-lifecycle", "lease-health", "session-authority"],
     exitCriteria: [
       "home kernel discovers a same-host remote worker through the relay",
       "remote Codex agent receives a worker lease and completes a prompt from home",
@@ -52,6 +53,7 @@ const MATRIX = [
     provider: "opencode",
     description: "same-host remote OpenCode prompt dispatch and worker execution",
     classification: "worker-execution",
+    runtimeSignals: ["agent-lifecycle", "provider-run-lifecycle"],
     exitCriteria: [
       "home prompt dispatch reaches the worker provider run",
       "prompt completion and cancellation return through the kernel-owned session path",
@@ -63,6 +65,7 @@ const MATRIX = [
     providerFamily: "claude",
     description: "same-host remote Claude provider-run binding and placement",
     classification: "provider-error",
+    runtimeSignals: ["lease-health", "provider-run-lifecycle"],
     exitCriteria: [
       "remote agent provider run is bound to the selected worker kernel",
       "provider output is observed by the home session without a parallel client path",
@@ -73,6 +76,7 @@ const MATRIX = [
     provider: "codex",
     description: "remote Codex provider profile/auth health on worker",
     classification: "provider-auth",
+    runtimeSignals: ["provider-run-lifecycle"],
     exitCriteria: [
       "worker advertises the provider selected by the home kernel",
       "provider authentication is sufficient for a remote prompt turn",
@@ -83,6 +87,7 @@ const MATRIX = [
     provider: "opencode",
     description: "remote worker projection appears in waiting-room/client rows",
     classification: "ui-client-projection",
+    runtimeSignals: ["client-projection-health", "lease-health"],
     exitCriteria: [
       "terminal client projection includes the selected remote worker kernel",
       "client-visible state matches the worker selected for the remote agent",
@@ -94,6 +99,7 @@ const MATRIX = [
     script: remoteRestartDrill,
     args: ["--keep-artifacts-on-failure"],
     classification: "relay-target-freshness",
+    runtimeSignals: ["lease-health", "relay-target-freshness"],
     deployment: "same-host-remote",
     provider: "dev-stub",
     exitCriteria: [
@@ -107,6 +113,7 @@ const MATRIX = [
     script: remoteHomeExtensionDrill,
     args: ["--collab"],
     classification: "kernel-authority",
+    runtimeSignals: ["lease-health", "session-authority"],
     deployment: "same-host-remote",
     provider: "dev-stub",
     exitCriteria: [
@@ -121,6 +128,7 @@ const MATRIX = [
     args: ["--hetzner-worker"],
     requires: ["hetzner"],
     classification: "worker-execution",
+    runtimeSignals: ["agent-lifecycle", "lease-health", "session-authority"],
     deployment: "hetzner",
     provider: "dev-stub",
     exitCriteria: [
@@ -135,6 +143,7 @@ const MATRIX = [
     args: ["--hetzner-worker", "--collab"],
     requires: ["hetzner"],
     classification: "kernel-authority",
+    runtimeSignals: ["lease-health", "session-authority"],
     deployment: "hetzner",
     provider: "dev-stub",
     exitCriteria: [
@@ -153,6 +162,7 @@ const MATRIX = [
     },
     requires: ["hosted-cloud"],
     classification: "relay-runtime",
+    runtimeSignals: ["agent-lifecycle", "lease-health", "provider-run-lifecycle", "relay-target-freshness"],
     deployment: "hosted-cloud",
     provider: "dev-stub",
     exitCriteria: [
@@ -171,6 +181,7 @@ const MATRIX = [
     },
     requires: ["hosted-cloud"],
     classification: "kernel-authority",
+    runtimeSignals: ["lease-health", "session-authority"],
     deployment: "hosted-cloud",
     provider: "dev-stub",
     exitCriteria: [

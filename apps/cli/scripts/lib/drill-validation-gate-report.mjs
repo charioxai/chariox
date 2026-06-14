@@ -116,6 +116,8 @@ function validateMatrixCheck(check, source) {
   validateStringArray(check.missingMatrices ?? [], `${source}.missingMatrices`)
   validateStringArray(check.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
   validateStringArray(check.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
+  validateStringArray(check.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
+  validateStringArray(check.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   validateStringArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateStringArray(check.requiredProviders ?? [], `${source}.requiredProviders`)

@@ -25,6 +25,7 @@ import {
   normalizeRequiredFailureClassifications,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
+  normalizeRequiredMatrixRuntimeSignals,
   normalizeRequiredPlatformCoverageAreas,
   normalizeRequiredPresets,
   normalizeRequiredProviders,
@@ -81,6 +82,7 @@ export async function runDrillValidationGate({
   requiredFailureClassifications = [],
   requiredMatrices = [],
   requiredMatrixClassifications = [],
+  requiredMatrixRuntimeSignals = [],
   requiredDeploymentPresets = [],
   requiredProviders = [],
   requiredScenarios = [],
@@ -93,6 +95,7 @@ export async function runDrillValidationGate({
     requiredFailureClassifications,
     requiredMatrices,
     requiredMatrixClassifications,
+    requiredMatrixRuntimeSignals,
     requiredDeploymentPresets,
     requiredProviders,
     requiredScenarios,
@@ -102,6 +105,7 @@ export async function runDrillValidationGate({
   const normalizedRequiredFailureClassifications = normalizeRequiredFailureClassifications(expandedRequirements.requiredFailureClassifications)
   const normalizedRequiredMatrices = normalizeRequiredMatrices(expandedRequirements.requiredMatrices)
   const normalizedRequiredMatrixClassifications = normalizeRequiredMatrixClassifications(expandedRequirements.requiredMatrixClassifications)
+  const normalizedRequiredMatrixRuntimeSignals = normalizeRequiredMatrixRuntimeSignals(expandedRequirements.requiredMatrixRuntimeSignals)
   const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(expandedRequirements.requiredDeploymentPresets)
   const normalizedRequiredProviders = normalizeRequiredProviders(expandedRequirements.requiredProviders)
   const normalizedRequiredScenarios = normalizeRequiredScenarios(expandedRequirements.requiredScenarios)
@@ -119,6 +123,7 @@ export async function runDrillValidationGate({
       requiredFailureClassifications: normalizedRequiredFailureClassifications,
       requiredMatrices: normalizedRequiredMatrices,
       requiredMatrixClassifications: normalizedRequiredMatrixClassifications,
+      requiredMatrixRuntimeSignals: normalizedRequiredMatrixRuntimeSignals,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
@@ -137,6 +142,7 @@ export async function runDrillValidationGate({
       requireComplete,
       requiredMatrices: normalizedRequiredMatrices,
       requiredMatrixClassifications: normalizedRequiredMatrixClassifications,
+      requiredMatrixRuntimeSignals: normalizedRequiredMatrixRuntimeSignals,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
@@ -167,6 +173,7 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredFailureClassifications: normalizeRequiredFailureClassifications(options.requiredFailureClassifications ?? []),
     requiredMatrices: normalizeRequiredMatrices(options.requiredMatrices ?? []),
     requiredMatrixClassifications: normalizeRequiredMatrixClassifications(options.requiredMatrixClassifications ?? []),
+    requiredMatrixRuntimeSignals: normalizeRequiredMatrixRuntimeSignals(options.requiredMatrixRuntimeSignals ?? []),
     requiredDeploymentPresets: normalizeRequiredDeploymentPresets(options.requiredDeploymentPresets ?? []),
     requiredProviders: normalizeRequiredProviders(options.requiredProviders ?? []),
     requiredScenarios: normalizeRequiredScenarios(options.requiredScenarios ?? []),

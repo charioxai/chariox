@@ -22,6 +22,8 @@ test("skips matrix validation when no matrix evidence or requirements are config
     missingMatrices: [],
     requiredMatrixClassifications: [],
     missingMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    missingMatrixRuntimeSignals: [],
     requiredDeploymentPresets: [],
     missingDeploymentPresets: [],
     requiredProviders: [],
@@ -62,8 +64,8 @@ test("passes with matrix, classification, deployment, provider, and scenario cov
         providers: "codex,opencode",
       },
       scenarios: [
-        scenario("managed", "passed", { classification: "workspace-live-sync-conflict" }),
-        scenario("permission", "passed", { classification: "kernel-authority" }),
+        scenario("managed", "passed", { classification: "workspace-live-sync-conflict", runtimeSignals: ["workspace-live-sync-state"] }),
+        scenario("permission", "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority"] }),
       ],
     }))
 
@@ -73,6 +75,7 @@ test("passes with matrix, classification, deployment, provider, and scenario cov
     }, matrixOptions({
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
       requiredScenarios: ["managed"],
@@ -82,6 +85,7 @@ test("passes with matrix, classification, deployment, provider, and scenario cov
     assert.deepEqual(check.reportPaths, [reportPath])
     assert.deepEqual(check.missingMatrices, [])
     assert.deepEqual(check.missingMatrixClassifications, [])
+    assert.deepEqual(check.missingMatrixRuntimeSignals, [])
     assert.deepEqual(check.missingDeploymentPresets, [])
     assert.deepEqual(check.missingProviders, [])
     assert.deepEqual(check.missingScenarios, [])
@@ -129,7 +133,7 @@ test("reports missing matrix coverage dimensions from otherwise valid evidence",
         deploymentPresets: "local",
         providers: "codex",
       },
-      scenarios: [scenario("managed", "passed", { classification: "kernel-authority" })],
+      scenarios: [scenario("managed", "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority"] })],
     }))
 
     const check = await matrixValidationGateCheck({
@@ -138,6 +142,7 @@ test("reports missing matrix coverage dimensions from otherwise valid evidence",
     }, matrixOptions({
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
       requiredDeploymentPresets: ["hosted-cloud"],
       requiredProviders: ["claude"],
       requiredScenarios: ["tracked"],
@@ -146,6 +151,7 @@ test("reports missing matrix coverage dimensions from otherwise valid evidence",
     assert.equal(check.status, "failed")
     assert.deepEqual(check.missingMatrices, ["workspace-live-sync-matrix"])
     assert.deepEqual(check.missingMatrixClassifications, ["workspace-live-sync-conflict"])
+    assert.deepEqual(check.missingMatrixRuntimeSignals, ["workspace-live-sync-state"])
     assert.deepEqual(check.missingDeploymentPresets, ["hosted-cloud"])
     assert.deepEqual(check.missingProviders, ["claude"])
     assert.deepEqual(check.missingScenarios, ["tracked"])
@@ -160,6 +166,7 @@ function matrixOptions(overrides = {}) {
     requireComplete: false,
     requiredMatrices: [],
     requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
     requiredDeploymentPresets: [],
     requiredProviders: [],
     requiredScenarios: [],

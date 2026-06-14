@@ -16,6 +16,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-runtime-signal", "lease-health"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-matrix-runtime-signal=workspace-live-sync-state"], 0, options)
+  assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--unknown"], 0, options)
   assert.equal(index, null)
 
@@ -26,6 +28,7 @@ test("parses validation gate requirement arguments", () => {
     requiredFailureClassifications: [],
     requiredMatrices: [],
     requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
     requiredDeploymentPresets: [],
     requiredProviders: ["codex"],
     requiredScenarios: [],

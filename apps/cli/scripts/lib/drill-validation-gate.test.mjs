@@ -85,36 +85,42 @@ test("passes with valid platform bundle and complete matrix reports", async () =
           requiredMatrices: ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
           requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
           requiredFailureClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
+          requiredMatrixRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
         },
         {
           name: "native-provider-tui",
           requiredMatrices: ["native-provider-tui-matrix"],
           requiredRuntimeSignals: ["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"],
           requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
+          requiredMatrixRuntimeSignals: ["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"],
         },
         {
           name: "remote-agent-runtime",
           requiredMatrices: ["remote-agent-runtime-matrix"],
           requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"],
           requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"],
+          requiredMatrixRuntimeSignals: ["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"],
         },
         {
           name: "remote-home-extension",
           requiredMatrices: ["remote-home-extension-matrix"],
           requiredRuntimeSignals: ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
           requiredFailureClassifications: ["kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
+          requiredMatrixRuntimeSignals: ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
         },
         {
           name: "slice-runtime",
           requiredMatrices: ["slice-runtime-matrix"],
           requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"],
           requiredFailureClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
+          requiredMatrixRuntimeSignals: ["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"],
         },
         {
           name: "workspace-live-sync",
           requiredMatrices: ["workspace-live-sync-matrix"],
           requiredRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
           requiredFailureClassifications: ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
+          requiredMatrixRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
         },
       ],
     })
@@ -243,11 +249,6 @@ test("gates platform bundle runtime signal coverage", async () => {
         classification: "platform-bundle",
         nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
       },
-      {
-        owner: "validation-harness",
-        classification: "validation-gate",
-        nextAction: "configure at least one platform bundle, artifact root, matrix root, or failure root before using the validation gate",
-      },
     ])
 
     await assert.rejects(
@@ -274,9 +275,9 @@ test("applies validation gate requirement presets", async () => {
         providers: "codex,opencode",
       },
       scenarios: [
-        scenario("managed", "passed", { classification: "workspace-live-sync-conflict" }),
-        scenario("permission", "passed", { classification: "kernel-authority" }),
-        scenario("restart", "passed", { classification: "relay-target-freshness" }),
+        scenario("managed", "passed", { classification: "workspace-live-sync-conflict", runtimeSignals: ["workspace-live-sync-state"] }),
+        scenario("permission", "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority"] }),
+        scenario("restart", "passed", { classification: "relay-target-freshness", runtimeSignals: ["relay-target-freshness"] }),
       ],
     }))
 
@@ -302,6 +303,11 @@ test("applies validation gate requirement presets", async () => {
       "relay-target-freshness",
       "workspace-live-sync-conflict",
     ])
+    assert.deepEqual(report.checks.matrices.requiredMatrixRuntimeSignals, [
+      "relay-target-freshness",
+      "session-authority",
+      "workspace-live-sync-state",
+    ])
     assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["local"])
     assert.deepEqual(report.checks.matrices.requiredProviders, ["codex"])
     assert.deepEqual(report.checks.matrices.requiredScenarios, ["managed"])
@@ -318,6 +324,7 @@ test("applies validation gate requirement presets", async () => {
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
       requiredScenarios: ["managed"],
@@ -329,6 +336,7 @@ test("applies validation gate requirement presets", async () => {
     assert.deepEqual(requiredAggregate.missingFailureClassifications, [])
     assert.deepEqual(requiredAggregate.missingMatrices, [])
     assert.deepEqual(requiredAggregate.missingMatrixClassifications, [])
+    assert.deepEqual(requiredAggregate.missingMatrixRuntimeSignals, [])
     assert.deepEqual(requiredAggregate.missingDeploymentPresets, [])
     assert.deepEqual(requiredAggregate.missingProviders, [])
     assert.deepEqual(requiredAggregate.missingScenarios, [])
@@ -371,12 +379,12 @@ test("slice runtime preset accepts hosted Cloud evidence from a separate matrix 
         providers: "claude,codex,opencode",
       },
       scenarios: [
-        scenario("slice-lifecycle", "passed", { classification: "slice-runtime" }),
-        scenario("provider-auth", "passed", { classification: "slice-auth" }),
-        scenario("session-start", "passed", { classification: "kernel-authority" }),
-        scenario("agent-reuse", "passed", { classification: "worker-execution" }),
-        scenario("ui-projection", "passed", { classification: "ui-client-projection" }),
-        scenario("docker-browser-state", "passed", { classification: "docker-runtime" }),
+        scenario("slice-lifecycle", "passed", { classification: "slice-runtime", runtimeSignals: ["slice-runtime-state"] }),
+        scenario("provider-auth", "passed", { classification: "slice-auth", runtimeSignals: ["slice-auth-state"] }),
+        scenario("session-start", "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority"] }),
+        scenario("agent-reuse", "passed", { classification: "worker-execution", runtimeSignals: ["agent-lifecycle"] }),
+        scenario("ui-projection", "passed", { classification: "ui-client-projection", runtimeSignals: ["client-projection-health"] }),
+        scenario("docker-browser-state", "passed", { classification: "docker-runtime", runtimeSignals: ["slice-runtime-state"] }),
       ],
     }))
     await writeMatrixReport(hostedSliceReport, matrixReport({
@@ -386,8 +394,8 @@ test("slice runtime preset accepts hosted Cloud evidence from a separate matrix 
         providers: "claude,codex,opencode",
       },
       scenarios: [
-        scenario("hosted-slice-browser-e2e", "passed", { classification: "ui-client-projection" }),
-        scenario("hosted-vault-view-slice", "passed", { classification: "kernel-authority" }),
+        scenario("hosted-slice-browser-e2e", "passed", { classification: "ui-client-projection", runtimeSignals: ["client-projection-health"] }),
+        scenario("hosted-vault-view-slice", "passed", { classification: "kernel-authority", runtimeSignals: ["provider-run-lifecycle", "session-authority"] }),
       ],
     }))
 
@@ -405,6 +413,7 @@ test("slice runtime preset accepts hosted Cloud evidence from a separate matrix 
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
     assert.deepEqual(report.checks.matrices.requiredProviders, ["claude", "codex", "opencode"])
     assert.deepEqual(report.checks.matrices.missingProviders, [])
+    assert.deepEqual(report.checks.matrices.missingMatrixRuntimeSignals, [])
     assert.deepEqual(report.checks.matrices.requiredScenarios, ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"])
     assert.deepEqual(report.checks.matrices.missingScenarios, [])
     assert.match(formatDrillValidationGateSummary(report), /presets=slice-runtime/)
@@ -1012,6 +1021,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingMatrices: { "hosted-matrix": 1 },
       requiredMatrixClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       missingMatrixClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
+      requiredMatrixRuntimeSignals: {},
+      missingMatrixRuntimeSignals: {},
       requiredDeploymentPresets: { "hosted-cloud": 1, local: 2 },
       missingDeploymentPresets: { "hosted-cloud": 1 },
       requiredProviders: { claude: 1, codex: 2 },
@@ -1043,6 +1054,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
         missingMatrices: [],
         requiredMatrixClassifications: ["kernel-authority"],
         missingMatrixClassifications: ["kernel-authority"],
+        requiredMatrixRuntimeSignals: [],
+        missingMatrixRuntimeSignals: [],
         requiredDeploymentPresets: ["local"],
         missingDeploymentPresets: [],
         requiredProviders: ["codex"],
@@ -1055,6 +1068,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
         missingMatrices: ["hosted-matrix"],
         requiredMatrixClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
         missingMatrixClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
+        requiredMatrixRuntimeSignals: [],
+        missingMatrixRuntimeSignals: [],
         requiredDeploymentPresets: ["hosted-cloud", "local"],
         missingDeploymentPresets: ["hosted-cloud"],
         requiredProviders: ["claude", "codex"],

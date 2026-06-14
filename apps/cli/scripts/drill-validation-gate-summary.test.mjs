@@ -193,9 +193,9 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
       providers: "codex,opencode",
     },
     scenarios: [
-      passingScenario("managed", "workspace-live-sync-conflict"),
-      passingScenario("permission", "kernel-authority"),
-      passingScenario("restart", "relay-target-freshness"),
+      passingScenario("managed", "workspace-live-sync-conflict", ["workspace-live-sync-state"]),
+      passingScenario("permission", "kernel-authority", ["session-authority"]),
+      passingScenario("restart", "relay-target-freshness", ["relay-target-freshness"]),
     ],
   })
   return runDrillValidationGate({
@@ -208,7 +208,7 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
   })
 }
 
-function passingScenario(id, classification) {
+function passingScenario(id, classification, runtimeSignals = []) {
   return {
     id,
     description: `${id} scenario`,
@@ -222,6 +222,7 @@ function passingScenario(id, classification) {
     command: "node",
     args: [`${id}.mjs`],
     artifactHints: [],
+    runtimeSignals,
   }
 }
 

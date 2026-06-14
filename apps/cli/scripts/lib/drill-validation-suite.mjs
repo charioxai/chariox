@@ -239,6 +239,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredFailureClassifications: sortedStringArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
     requiredMatrixClassifications: sortedStringArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),
+    requiredMatrixRuntimeSignals: sortedStringArray(preset.requiredMatrixRuntimeSignals, `${preset.name}.requiredMatrixRuntimeSignals`),
     requiredDeploymentPresets: sortedStringArray(preset.requiredDeploymentPresets, `${preset.name}.requiredDeploymentPresets`),
     requiredProviders: sortedStringArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
     requiredScenarios: sortedStringArray(preset.requiredScenarios, `${preset.name}.requiredScenarios`),

@@ -9,6 +9,7 @@ import {
   normalizeRequiredFailureClassifications,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
+  normalizeRequiredMatrixRuntimeSignals,
   normalizeRequiredPlatformCoverageAreas,
   normalizeRequiredPresets,
   normalizeRequiredProviders,
@@ -43,6 +44,7 @@ test("describes stable validation gate presets", () => {
       requiredFailureClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
       requiredMatrices: ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredDeploymentPresets: ["hetzner", "hosted-cloud", "local", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["agent-reuse", "collab-remote-agent", "hetzner-collab", "hetzner-single", "lease-reconnect", "local-collab", "local-managed-codex", "local-native-tui", "local-single", "local-tracked-codex", "permission-visibility", "provider-auth", "provider-run-binding", "remote-managed-codex", "remote-native-tui", "remote-prompt-dispatch", "remote-tracked-codex", "session-start", "single-user-remote-agent", "slice-lifecycle", "slice-native-tui", "transcript-parity", "ui-projection"],
@@ -62,6 +64,7 @@ test("describes stable validation gate presets", () => {
       requiredFailureClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["slice-runtime-matrix"],
       requiredMatrixClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
+      requiredMatrixRuntimeSignals: ["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"],
       requiredDeploymentPresets: ["hosted-cloud", "local", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
@@ -77,6 +80,7 @@ test("describes stable validation gate presets", () => {
       requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["native-provider-tui-matrix"],
       requiredMatrixClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
+      requiredMatrixRuntimeSignals: ["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"],
       requiredDeploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
@@ -92,6 +96,7 @@ test("describes stable validation gate presets", () => {
       requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["remote-agent-runtime-matrix"],
       requiredMatrixClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"],
+      requiredMatrixRuntimeSignals: ["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"],
       requiredDeploymentPresets: ["hetzner", "hosted-cloud", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
@@ -106,6 +111,7 @@ test("expands validation gate preset requirements", () => {
     requiredFailureClassifications: ["workspace-live-sync-conflict"],
     requiredMatrices: ["custom-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+    requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
     requiredDeploymentPresets: ["local"],
     requiredProviders: ["codex"],
     requiredScenarios: ["local"],
@@ -115,6 +121,7 @@ test("expands validation gate preset requirements", () => {
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
     requiredMatrices: ["custom-matrix", "remote-home-extension-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "worker-execution"],
+    requiredMatrixRuntimeSignals: ["workspace-live-sync-state", "home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
     requiredDeploymentPresets: ["local"],
     requiredProviders: ["codex"],
     requiredScenarios: ["local"],
@@ -147,6 +154,10 @@ test("normalizes validation gate requirements", () => {
     "kernel-authority",
     "remote-extension-sync",
   ])
+  assert.deepEqual(normalizeRequiredMatrixRuntimeSignals(["workspace-live-sync-state,session-authority"]), [
+    "session-authority",
+    "workspace-live-sync-state",
+  ])
   assert.deepEqual(normalizeRequiredDeploymentPresets(["local,hetzner"]), ["hetzner", "local"])
   assert.deepEqual(normalizeRequiredProviders(["opencode,codex", "codex"]), ["codex", "opencode"])
   assert.deepEqual(normalizeRequiredScenarios(["remote,local", "local"]), ["local", "remote"])
@@ -168,6 +179,10 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredMatrixClassifications(["not-a-classification"]),
     /unknown required matrix classification: not-a-classification/,
+  )
+  assert.throws(
+    () => normalizeRequiredMatrixRuntimeSignals(["not-a-signal"]),
+    /unknown required matrix runtime signal: not-a-signal/,
   )
   assert.throws(
     () => normalizeRequiredDeploymentPresets(["not-a-preset"]),

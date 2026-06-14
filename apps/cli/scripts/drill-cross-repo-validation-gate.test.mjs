@@ -29,11 +29,11 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
         providers: "claude,codex,opencode",
       },
       scenarios: [
-        scenario("slice-lifecycle", "slice-runtime"),
-        scenario("provider-auth", "slice-auth"),
-        scenario("session-start", "kernel-authority"),
-        scenario("agent-reuse", "worker-execution"),
-        scenario("docker-browser-state", "docker-runtime"),
+        scenario("slice-lifecycle", "slice-runtime", ["slice-runtime-state"]),
+        scenario("provider-auth", "slice-auth", ["provider-run-lifecycle", "slice-auth-state"]),
+        scenario("session-start", "kernel-authority", ["session-authority"]),
+        scenario("agent-reuse", "worker-execution", ["agent-lifecycle"]),
+        scenario("docker-browser-state", "docker-runtime", ["slice-runtime-state"]),
       ],
     })
     await writeMatrixReport(path.join(cloudRoot, ".artifacts", "drill-matrices", "cloud-slice-runtime.json"), {
@@ -42,7 +42,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
         deploymentPresets: "hosted-cloud",
       },
       scenarios: [
-        scenario("ui-projection", "ui-client-projection"),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health"]),
       ],
     })
 
@@ -99,12 +99,12 @@ test("cross repo validation gate can disable default roots for focused evidence 
         providers: "claude,codex,opencode",
       },
       scenarios: [
-        scenario("slice-lifecycle", "slice-runtime"),
-        scenario("provider-auth", "slice-auth"),
-        scenario("session-start", "kernel-authority"),
-        scenario("agent-reuse", "worker-execution"),
-        scenario("ui-projection", "ui-client-projection"),
-        scenario("docker-browser-state", "docker-runtime"),
+        scenario("slice-lifecycle", "slice-runtime", ["slice-runtime-state"]),
+        scenario("provider-auth", "slice-auth", ["provider-run-lifecycle", "slice-auth-state"]),
+        scenario("session-start", "kernel-authority", ["session-authority"]),
+        scenario("agent-reuse", "worker-execution", ["agent-lifecycle"]),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health"]),
+        scenario("docker-browser-state", "docker-runtime", ["slice-runtime-state"]),
       ],
     })
     await writeMatrixReport(path.join(cloudMatrixRoot, "cloud-slice-runtime.json"), {
@@ -113,7 +113,7 @@ test("cross repo validation gate can disable default roots for focused evidence 
         deploymentPresets: "hosted-cloud",
       },
       scenarios: [
-        scenario("hosted-slice-browser-e2e", "ui-client-projection"),
+        scenario("hosted-slice-browser-e2e", "ui-client-projection", ["client-projection-health"]),
       ],
     })
 
@@ -185,7 +185,7 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   }, null, 2)}\n`, "utf8")
 }
 
-function scenario(id, classification) {
+function scenario(id, classification, runtimeSignals = []) {
   return {
     id,
     description: `${id} scenario`,
@@ -199,5 +199,6 @@ function scenario(id, classification) {
     command: "node",
     args: [`${id}.mjs`],
     artifactHints: [],
+    runtimeSignals,
   }
 }

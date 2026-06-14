@@ -113,6 +113,7 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
+      requiredMatrixRuntimeSignals: [...(preset.requiredMatrixRuntimeSignals ?? [])],
     })),
   }
 }

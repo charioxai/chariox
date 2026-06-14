@@ -30,6 +30,7 @@ const MATRIX = [
     script: localCommandDrill,
     args: ["--providers", LOCAL_COMMAND_PROVIDERS],
     classification: "provider-error",
+    runtimeSignals: ["provider-run-lifecycle", "session-authority"],
     deployment: "local",
     providers: ["codex", "opencode"],
     exitCriteria: [
@@ -43,6 +44,7 @@ const MATRIX = [
     script: localPermissionDrill,
     args: ["--providers", ALL_PROVIDERS],
     classification: "kernel-authority",
+    runtimeSignals: ["permission-interaction", "session-authority"],
     deployment: "local",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
@@ -56,6 +58,7 @@ const MATRIX = [
     script: localPermissionDrill,
     args: ["--providers", ALL_PROVIDERS],
     classification: "provider-auth",
+    runtimeSignals: ["provider-run-lifecycle"],
     deployment: "local",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
@@ -69,6 +72,7 @@ const MATRIX = [
     script: remoteNativeDrill,
     args: ["--standard-home-worker", "--providers", ALL_PROVIDERS],
     classification: "relay-runtime",
+    runtimeSignals: ["provider-run-lifecycle", "session-authority"],
     deployment: "same-host-remote",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
@@ -82,6 +86,7 @@ const MATRIX = [
     script: remoteNativeDrill,
     args: ["--home-managed-slice-local-docker", "--providers", ALL_PROVIDERS],
     classification: "worker-execution",
+    runtimeSignals: ["provider-run-lifecycle", "session-authority"],
     deployment: "local",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
@@ -95,6 +100,7 @@ const MATRIX = [
     script: remoteNativeDrill,
     args: ["--standard-home-worker", "--providers", ALL_PROVIDERS, "--include-attachments"],
     classification: "ui-client-projection",
+    runtimeSignals: ["client-projection-health", "session-authority"],
     deployment: "same-host-remote",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
@@ -108,6 +114,7 @@ const MATRIX = [
     script: remoteNativeDrill,
     args: ["--hetzner-worker", "--providers", ALL_PROVIDERS],
     classification: "worker-execution",
+    runtimeSignals: ["provider-run-lifecycle", "session-authority"],
     deployment: "hetzner",
     providers: ["claude", "codex", "opencode"],
     requires: ["hetzner"],
@@ -253,4 +260,3 @@ main().catch((error) => {
   console.error(`[native-provider-tui-matrix] ${error.stack ?? error.message}`)
   process.exitCode = 1
 })
-

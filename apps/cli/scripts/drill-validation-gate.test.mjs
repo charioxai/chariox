@@ -547,14 +547,14 @@ async function writeWorkspaceLiveSyncPresetReport(file) {
     durationMs: 1000,
     metadata: {},
     scenarios: [
-      scenario("managed", "workspace-live-sync-conflict"),
-      scenario("permission", "kernel-authority"),
-      scenario("restart", "relay-target-freshness"),
+      scenario("managed", "workspace-live-sync-conflict", ["workspace-live-sync-state"]),
+      scenario("permission", "kernel-authority", ["session-authority"]),
+      scenario("restart", "relay-target-freshness", ["relay-target-freshness"]),
     ],
   }, null, 2)}\n`, "utf8")
 }
 
-function scenario(id, classification) {
+function scenario(id, classification, runtimeSignals = []) {
   return {
     id,
     description: `${id} scenario`,
@@ -568,6 +568,7 @@ function scenario(id, classification) {
     command: "node",
     args: [`${id}.mjs`],
     artifactHints: [],
+    runtimeSignals,
   }
 }
 

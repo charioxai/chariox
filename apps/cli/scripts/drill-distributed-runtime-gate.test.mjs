@@ -108,12 +108,12 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       providers: "claude,codex,opencode",
     },
     scenarios: [
-      scenario("local-native-tui", "kernel-authority"),
-      scenario("permission-visibility", "ui-client-projection"),
-      scenario("remote-native-tui", "relay-runtime"),
-      scenario("slice-native-tui", "worker-execution"),
-      scenario("transcript-parity", "provider-error"),
-      scenario("provider-auth-health", "provider-auth"),
+      scenario("local-native-tui", "kernel-authority", ["provider-run-lifecycle", "session-authority"]),
+      scenario("permission-visibility", "ui-client-projection", ["permission-interaction"]),
+      scenario("remote-native-tui", "relay-runtime", ["provider-run-lifecycle", "session-authority"]),
+      scenario("slice-native-tui", "worker-execution", ["provider-run-lifecycle", "session-authority"]),
+      scenario("transcript-parity", "provider-error", ["client-projection-health"]),
+      scenario("provider-auth-health", "provider-auth", ["provider-run-lifecycle"]),
     ],
   })
   await writeMatrixReport(path.join(ossMatrixRoot, "remote-agent-runtime.json"), {
@@ -123,11 +123,11 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       providers: "claude,codex,opencode",
     },
     scenarios: [
-      scenario("collab-remote-agent", "kernel-authority"),
-      scenario("lease-reconnect", "relay-target-freshness"),
-      scenario("provider-run-binding", "worker-execution"),
-      scenario("remote-prompt-dispatch", "relay-runtime"),
-      scenario("single-user-remote-agent", "ui-client-projection"),
+      scenario("collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+      scenario("lease-reconnect", "relay-target-freshness", ["lease-health", "relay-target-freshness"]),
+      scenario("provider-run-binding", "worker-execution", ["lease-health", "provider-run-lifecycle"]),
+      scenario("remote-prompt-dispatch", "relay-runtime", ["agent-lifecycle", "provider-run-lifecycle"]),
+      scenario("single-user-remote-agent", "ui-client-projection", ["agent-lifecycle", "client-projection-health", "session-authority"]),
     ],
   })
   await writeMatrixReport(path.join(ossMatrixRoot, "remote-home-extension.json"), {
@@ -136,10 +136,10 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       deploymentPresets: "hetzner,local,self-hosted-relay",
     },
     scenarios: [
-      scenario("local-single", "remote-extension-sync"),
-      scenario("local-collab", "kernel-authority"),
-      scenario("hetzner-single", "worker-execution"),
-      scenario("hetzner-collab", "kernel-authority"),
+      scenario("local-single", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+      scenario("local-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+      scenario("hetzner-single", "worker-execution", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+      scenario("hetzner-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
     ],
   })
   await writeMatrixReport(path.join(ossMatrixRoot, "slice-runtime.json"), {
@@ -149,11 +149,11 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       providers: "claude,codex,opencode",
     },
     scenarios: [
-      scenario("agent-reuse", "worker-execution"),
-      scenario("docker-browser-state", "docker-runtime"),
-      scenario("provider-auth", "slice-auth"),
-      scenario("session-start", "kernel-authority"),
-      scenario("slice-lifecycle", "slice-runtime"),
+      scenario("agent-reuse", "worker-execution", ["agent-lifecycle", "slice-runtime-state"]),
+      scenario("docker-browser-state", "docker-runtime", ["slice-runtime-state"]),
+      scenario("provider-auth", "slice-auth", ["provider-run-lifecycle", "slice-auth-state"]),
+      scenario("session-start", "kernel-authority", ["session-authority", "slice-runtime-state"]),
+      scenario("slice-lifecycle", "slice-runtime", ["slice-runtime-state"]),
     ],
   })
   await writeMatrixReport(path.join(ossMatrixRoot, "workspace-live-sync.json"), {
@@ -163,12 +163,12 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       providers: "codex,opencode",
     },
     scenarios: [
-      scenario("local-managed-codex", "workspace-live-sync-conflict"),
-      scenario("local-tracked-codex", "workspace-live-sync-conflict"),
-      scenario("local-permission-codex", "kernel-authority"),
-      scenario("remote-managed-codex", "workspace-live-sync-conflict"),
-      scenario("remote-tracked-codex", "workspace-live-sync-conflict"),
-      scenario("remote-tracked-restart-codex", "relay-target-freshness"),
+      scenario("local-managed-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+      scenario("local-tracked-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+      scenario("local-permission-codex", "kernel-authority", ["session-authority", "workspace-live-sync-state"]),
+      scenario("remote-managed-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+      scenario("remote-tracked-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),
+      scenario("remote-tracked-restart-codex", "relay-target-freshness", ["relay-target-freshness", "session-authority", "workspace-live-sync-state"]),
     ],
   })
 
@@ -179,7 +179,7 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
         deploymentPresets: "hosted-cloud",
       },
       scenarios: [
-        scenario("ui-projection", "ui-client-projection"),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health"]),
       ],
     })
   }
@@ -200,7 +200,7 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   }, null, 2)}\n`, "utf8")
 }
 
-function scenario(id, classification) {
+function scenario(id, classification, runtimeSignals = []) {
   return {
     id,
     description: `${id} scenario`,
@@ -215,5 +215,6 @@ function scenario(id, classification) {
     args: [`${id}.mjs`],
     artifactHints: [],
     exitCriteria: [`${id} exit criteria`],
+    runtimeSignals,
   }
 }

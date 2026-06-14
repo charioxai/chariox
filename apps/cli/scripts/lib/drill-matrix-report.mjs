@@ -10,6 +10,7 @@ import {
   drillFailureOwnerForClassification,
   isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
+import { isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
@@ -88,10 +89,14 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
   validateDrillMatrixReport(report)
   const counts = countScenarioStatuses(report.scenarios)
   const classifications = new Map()
+  const runtimeSignals = new Map()
   for (const scenario of report.scenarios) {
     const classification = scenario.classification
     if (typeof classification === "string" && classification) {
       classifications.set(classification, (classifications.get(classification) ?? 0) + 1)
+    }
+    for (const signal of runtimeSignalsForScenario(scenario)) {
+      runtimeSignals.set(signal, (runtimeSignals.get(signal) ?? 0) + 1)
     }
   }
   return {
@@ -105,6 +110,7 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
     scenarioCount: report.scenarios.length,
     counts,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    runtimeSignals: Object.fromEntries([...runtimeSignals.entries()].sort(([left], [right]) => left.localeCompare(right))),
     failedScenarios: report.scenarios.filter((scenario) => scenario.status === "failed"),
     skippedScenarios: report.scenarios.filter((scenario) => scenario.status === "skipped"),
     dryRunScenarios: report.scenarios.filter((scenario) => scenario.status === "dry-run"),
@@ -125,6 +131,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     durationMs: 0,
   }
   const classifications = new Map()
+  const runtimeSignals = new Map()
   const owners = new Map()
   const nextActions = new Map()
   const matrixNames = new Map()
@@ -153,6 +160,9 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     }
     for (const [classification, count] of Object.entries(summary.classifications)) {
       classifications.set(classification, (classifications.get(classification) ?? 0) + count)
+    }
+    for (const [signal, count] of Object.entries(summary.runtimeSignals)) {
+      runtimeSignals.set(signal, (runtimeSignals.get(signal) ?? 0) + count)
     }
     for (const scenario of summary.failedScenarios) {
       failedScenarios.push({
@@ -190,6 +200,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
         : "passed",
     totals,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    runtimeSignals: Object.fromEntries([...runtimeSignals.entries()].sort(([left], [right]) => left.localeCompare(right))),
     matrixNames: Object.fromEntries([...matrixNames.entries()].sort(([left], [right]) => left.localeCompare(right))),
     deploymentPresets: Object.fromEntries([...deploymentPresets.entries()].sort(([left], [right]) => left.localeCompare(right))),
     providers: Object.fromEntries([...providers.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -203,6 +214,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
       deploymentPresets: summary.deploymentPresets,
       providers: summary.providers,
       scenarioIds: summary.scenarioIds,
+      runtimeSignals: summary.runtimeSignals,
       scenarioCount: summary.scenarioCount,
       counts: summary.counts,
       durationMs: summary.durationMs,
@@ -223,6 +235,10 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
   const classifications = Object.entries(summary.classifications)
   if (classifications.length > 0) {
     lines.push(`classifications: ${classifications.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
+  }
+  const runtimeSignals = Object.entries(summary.runtimeSignals)
+  if (runtimeSignals.length > 0) {
+    lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
   }
 
   if (summary.failedScenarios.length > 0) {
@@ -289,6 +305,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const scenarioIds = Object.entries(aggregate.scenarioIds ?? {})
   if (scenarioIds.length > 0) {
     lines.push(`scenario_ids: ${scenarioIds.map(([id, count]) => `${id}=${count}`).join(" ")}`)
+  }
+  const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
+  if (runtimeSignals.length > 0) {
+    lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
   }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -434,6 +454,9 @@ function validateDrillMatrixScenario(scenario, source) {
   if (scenario.artifactHints?.some((value) => looksLikeDrillSecretValue(value))) {
     throw new Error(`${source} includes secret-looking artifactHints`)
   }
+  if (scenario.runtimeSignals !== undefined) {
+    validateRuntimeSignals(scenario.runtimeSignals, `${source}.runtimeSignals`)
+  }
   validateDrillMatrixScenarioOutcome(scenario, source)
 }
 
@@ -507,6 +530,7 @@ function validateDrillMatrixAggregate(aggregate) {
   validateCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
   validateCountObject(aggregate.providers ?? {}, "aggregate.providers")
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
+  validateCountObject(aggregate.runtimeSignals ?? {}, "aggregate.runtimeSignals")
   if (aggregate.nextActions !== undefined && !Array.isArray(aggregate.nextActions)) {
     throw new Error("aggregate has invalid nextActions")
   }
@@ -567,6 +591,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   assertDeploymentPresetCountsMatchReports(aggregate)
   assertProviderCountsMatchReports(aggregate)
   assertScenarioIdCountsMatchReports(aggregate)
+  assertRuntimeSignalCountsMatchReports(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
 }
 
@@ -645,6 +670,19 @@ function assertScenarioIdCountsMatchReports(aggregate) {
   }
 }
 
+function assertRuntimeSignalCountsMatchReports(aggregate) {
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    for (const [signal, count] of Object.entries(report.runtimeSignals ?? {})) {
+      expected.set(signal, (expected.get(signal) ?? 0) + count)
+    }
+  }
+  const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(aggregate.runtimeSignals ?? {}) !== JSON.stringify(expectedCounts)) {
+    throw new Error("aggregate runtimeSignals do not match reports")
+  }
+}
+
 function validateMatrixAggregateReport(report, source) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     throw new Error(`${source} is not an object`)
@@ -667,6 +705,7 @@ function validateMatrixAggregateReport(report, source) {
   if (!Array.isArray(report.scenarioIds ?? []) || !(report.scenarioIds ?? []).every(nonEmptyString)) {
     throw new Error(`${source} has invalid scenarioIds`)
   }
+  validateCountObject(report.runtimeSignals ?? {}, `${source}.runtimeSignals`)
   if (!Number.isFinite(report.scenarioCount) || report.scenarioCount < 0) {
     throw new Error(`${source} has invalid scenarioCount`)
   }
@@ -826,6 +865,17 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
 }
 
+function validateRuntimeSignals(value, source) {
+  if (!Array.isArray(value) || !value.every(nonEmptyString)) {
+    throw new Error(`${source} has invalid runtimeSignals`)
+  }
+  for (const signal of value) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
+}
+
 function countScenarioStatuses(scenarios) {
   const counts = {
     passed: 0,
@@ -851,5 +901,11 @@ function exitCriteriaForScenario(scenario) {
 function artifactHintsForScenario(scenario) {
   return Array.isArray(scenario.artifactHints)
     ? scenario.artifactHints.filter((hint) => typeof hint === "string" && hint.trim().length > 0)
+    : []
+}
+
+function runtimeSignalsForScenario(scenario) {
+  return Array.isArray(scenario.runtimeSignals)
+    ? [...new Set(scenario.runtimeSignals.filter(nonEmptyString))].sort()
     : []
 }

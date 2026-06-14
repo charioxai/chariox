@@ -71,6 +71,7 @@ function scenario(id, description, script, args, flags = {}) {
     args,
     ...flags,
     classification: flags.classification ?? workspaceLiveSyncClassification({ id, args, flags }),
+    runtimeSignals: workspaceLiveSyncRuntimeSignals({ id, args, flags }),
     requires,
     exitCriteria: workspaceLiveSyncExitCriteria({ id, args, flags }),
   }
@@ -83,6 +84,17 @@ function workspaceLiveSyncClassification({ id, args, flags }) {
   const mode = valueAfter(args, '--mode') ?? null
   if (mode === 'managed' || mode === 'tracked') return 'workspace-live-sync-conflict'
   return null
+}
+
+function workspaceLiveSyncRuntimeSignals({ id, args, flags }) {
+  if (flags.expectedFailure) return []
+  const signals = ['session-authority']
+  if (id.includes('restart')) signals.push('relay-target-freshness')
+  const mode = valueAfter(args, '--mode') ?? null
+  if (mode === 'managed' || mode === 'tracked' || id.includes('permission')) {
+    signals.push('workspace-live-sync-state')
+  }
+  return [...new Set(signals)].sort()
 }
 
 function workspaceLiveSyncExitCriteria({ id, args, flags }) {

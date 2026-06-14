@@ -84,6 +84,14 @@ export function validationGateNextActions(checks) {
         nextAction: `run matrix reports covering failure classifications: ${missingMatrixClassifications.join(", ")}`,
       })
     }
+    const missingMatrixRuntimeSignals = checks.matrices.missingMatrixRuntimeSignals ?? []
+    if (missingMatrixRuntimeSignals.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "matrix-coverage",
+        nextAction: `run matrix reports covering runtime signals: ${missingMatrixRuntimeSignals.join(", ")}`,
+      })
+    }
     const missingDeploymentPresets = checks.matrices.missingDeploymentPresets ?? []
     if (missingDeploymentPresets.length > 0) {
       countDrillAggregateNextAction(counts, {

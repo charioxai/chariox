@@ -22,6 +22,7 @@ const MATRIX = [
     description: "local Docker slice create, start, display, stop, delete, and cleanup",
     script: sliceLifecycleDrill,
     classification: "slice-runtime",
+    runtimeSignals: ["slice-runtime-state"],
     deployment: "local",
     exitCriteria: [
       "kernel-owned slice lifecycle reaches running only after worker discovery",
@@ -33,6 +34,7 @@ const MATRIX = [
     description: "slice provider auth summaries, login, aliases, and removal",
     script: sliceLifecycleDrill,
     classification: "slice-auth",
+    runtimeSignals: ["slice-auth-state"],
     deployment: "local",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
@@ -45,6 +47,7 @@ const MATRIX = [
     description: "session creation accepts only slices scoped to the selected worktree",
     script: sliceLifecycleDrill,
     classification: "kernel-authority",
+    runtimeSignals: ["session-authority", "slice-runtime-state"],
     deployment: "local",
     exitCriteria: [
       "session creation binds the initial agent to a same-worktree slice",
@@ -56,6 +59,7 @@ const MATRIX = [
     description: "multiple agents and sessions reuse a worktree-compatible slice",
     script: sliceLifecycleDrill,
     classification: "worker-execution",
+    runtimeSignals: ["agent-lifecycle", "slice-runtime-state"],
     deployment: "local",
     exitCriteria: [
       "new agents can join an existing slice from the same worktree",
@@ -67,6 +71,7 @@ const MATRIX = [
     description: "TUI slash-command and waiting-room slice projection",
     script: sliceLifecycleDrill,
     classification: "ui-client-projection",
+    runtimeSignals: ["client-projection-health", "slice-auth-state", "slice-runtime-state"],
     deployment: "local",
     exitCriteria: [
       "slash-command status renders provider auth aliases from kernel state",
@@ -78,6 +83,7 @@ const MATRIX = [
     description: "local Docker slice browser and saved-state persistence",
     script: dockerBrowserStateDrill,
     classification: "docker-runtime",
+    runtimeSignals: ["slice-runtime-state"],
     deployment: "local",
     requires: ["browser-state"],
     exitCriteria: [
@@ -90,6 +96,7 @@ const MATRIX = [
     description: "self-hosted relay slice worker with Claude headless provider execution",
     script: claudeHeadlessSliceDrill,
     classification: "worker-execution",
+    runtimeSignals: ["provider-run-lifecycle", "session-authority", "slice-runtime-state"],
     deployment: "self-hosted-relay",
     requires: ["self-hosted-relay"],
     providers: ["claude"],
