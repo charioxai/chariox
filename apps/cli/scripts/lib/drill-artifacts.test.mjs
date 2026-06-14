@@ -585,6 +585,21 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
     }),
     /runtimeSignals has unknown runtime signal "workspace-live-synch-state"/,
   )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: {},
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      evidenceRepos: { cluod: 1 },
+    }),
+    /evidenceRepos has unknown evidence repo "cluod"/,
+  )
 })
 
 test("rejects unsafe drill artifact index paths", async () => {

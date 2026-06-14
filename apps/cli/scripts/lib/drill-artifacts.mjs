@@ -44,6 +44,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   missingGeneratedEvidenceKinds: "missing_generated_evidence_kinds",
   evidenceRepos: "evidence_repos",
 })
+const DRILL_ARTIFACT_EVIDENCE_REPOS = new Set(["cloud", "external", "oss"])
 
 export async function prepareDrillArtifacts(rootDir) {
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
@@ -455,6 +456,13 @@ function validateDiagnosticCountObject(value, source, key) {
     for (const signal of Object.keys(value)) {
       if (!isKnownDrillRuntimeSignal(signal)) {
         throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+      }
+    }
+  }
+  if (key === "evidenceRepos") {
+    for (const repo of Object.keys(value)) {
+      if (!DRILL_ARTIFACT_EVIDENCE_REPOS.has(repo)) {
+        throw new Error(`${source} has unknown evidence repo ${JSON.stringify(repo)}`)
       }
     }
   }
