@@ -110,12 +110,27 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
       reportPath,
       "--require-preset",
       "workspace-live-sync",
+      "--require-platform-coverage-area",
+      "matrix-validation",
+      "--require-failure-classification",
+      "kernel-authority",
+      "--require-matrix",
+      "workspace-live-sync-matrix",
+      "--require-matrix-classification",
+      "workspace-live-sync-conflict",
+      "--require-deployment-preset",
+      "local",
+      "--require-provider",
+      "codex",
+      "--require-scenario",
+      "managed",
       "--json",
     ])
     const passedAggregate = JSON.parse(stdout)
     assert.equal(passedAggregate.status, "passed")
     assert.deepEqual(passedAggregate.requiredPresets, ["workspace-live-sync"])
     assert.deepEqual(passedAggregate.missingPresets, [])
+    assert.deepEqual(passedAggregate.missingProviders, [])
 
     await assert.rejects(
       execFile(process.execPath, [
@@ -124,6 +139,8 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
         reportPath,
         "--require-preset",
         "remote-home-extension",
+        "--require-provider",
+        "claude",
         "--json",
       ]),
       (error) => {
@@ -132,6 +149,8 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
         assert.equal(failedAggregate.status, "failed")
         assert.deepEqual(failedAggregate.requiredPresets, ["remote-home-extension"])
         assert.deepEqual(failedAggregate.missingPresets, ["remote-home-extension"])
+        assert.deepEqual(failedAggregate.requiredProviders, ["claude"])
+        assert.deepEqual(failedAggregate.missingProviders, ["claude"])
         return true
       },
     )
@@ -169,7 +188,10 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
     startedAt: "2026-06-13T00:00:00.000Z",
     completedAt: "2026-06-13T00:00:01.000Z",
     durationMs: 1000,
-    metadata: {},
+    metadata: {
+      deploymentPresets: "local,self-hosted-relay",
+      providers: "codex,opencode",
+    },
     scenarios: [
       passingScenario("managed", "workspace-live-sync-conflict"),
       passingScenario("permission", "kernel-authority"),
@@ -180,6 +202,9 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
     platformBundleDir: bundleDir,
     matrixReports: [matrixPath],
     presets: ["workspace-live-sync"],
+    requiredDeploymentPresets: ["local"],
+    requiredProviders: ["codex"],
+    requiredScenarios: ["managed"],
   })
 }
 

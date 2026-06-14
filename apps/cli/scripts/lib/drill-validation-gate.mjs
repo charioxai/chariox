@@ -95,8 +95,10 @@ export async function findDrillValidationGateAggregatePaths(roots, { maxDepth = 
   return [...discovered].sort()
 }
 
-export function summarizeDrillValidationGateReports(reports, { sources = [], requiredPresets = [] } = {}) {
+export function summarizeDrillValidationGateReports(reports, options = {}) {
+  const { sources = [], requiredPresets = [] } = options
   const normalizedRequiredPresets = normalizeRequiredPresets(requiredPresets)
+  const normalizedAggregateRequirements = normalizeValidationGateAggregateRequirements(options)
   const totals = {
     reports: reports.length,
     passed: 0,
@@ -153,20 +155,39 @@ export function summarizeDrillValidationGateReports(reports, { sources = [], req
     }
   })
   const coverageCounts = formatValidationGateCoverageCounts(coverage)
-  const missingPresets = normalizedRequiredPresets.filter((preset) => !(preset in coverageCounts.presets))
-  if (missingPresets.length > 0) {
+  const missingRequirements = missingValidationGateAggregateRequirements(coverageCounts, {
+    ...normalizedAggregateRequirements,
+    requiredPresets: normalizedRequiredPresets,
+  })
+  appendMissingValidationGateAggregateNextActions(nextActions, missingRequirements)
+  const hasMissingRequirements = Object.values(missingRequirements).some((missing) => missing.length > 0)
+  if (missingRequirements.missingPresets.length > 0) {
     countDrillAggregateNextAction(nextActions, {
       owner: "validation-harness",
       classification: "validation-gate",
-      nextAction: `provide validation gate reports for presets: ${missingPresets.join(", ")}`,
+      nextAction: `provide validation gate reports for presets: ${missingRequirements.missingPresets.join(", ")}`,
     })
   }
   const aggregate = {
     schema: DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA,
-    status: totals.failed > 0 || missingPresets.length > 0 ? "failed" : "passed",
+    status: totals.failed > 0 || hasMissingRequirements ? "failed" : "passed",
     totals,
     requiredPresets: normalizedRequiredPresets,
-    missingPresets,
+    missingPresets: missingRequirements.missingPresets,
+    requiredPlatformCoverageAreas: normalizedAggregateRequirements.requiredPlatformCoverageAreas,
+    missingPlatformCoverageAreas: missingRequirements.missingPlatformCoverageAreas,
+    requiredFailureClassifications: normalizedAggregateRequirements.requiredFailureClassifications,
+    missingFailureClassifications: missingRequirements.missingFailureClassifications,
+    requiredMatrices: normalizedAggregateRequirements.requiredMatrices,
+    missingMatrices: missingRequirements.missingMatrices,
+    requiredMatrixClassifications: normalizedAggregateRequirements.requiredMatrixClassifications,
+    missingMatrixClassifications: missingRequirements.missingMatrixClassifications,
+    requiredDeploymentPresets: normalizedAggregateRequirements.requiredDeploymentPresets,
+    missingDeploymentPresets: missingRequirements.missingDeploymentPresets,
+    requiredProviders: normalizedAggregateRequirements.requiredProviders,
+    missingProviders: missingRequirements.missingProviders,
+    requiredScenarios: normalizedAggregateRequirements.requiredScenarios,
+    missingScenarios: missingRequirements.missingScenarios,
     coverage: coverageCounts,
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries,
@@ -197,6 +218,13 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   if ((aggregate.requiredPresets ?? []).length > 0) {
     lines.push(`required_presets=${aggregate.requiredPresets.join(",")} missing=${(aggregate.missingPresets ?? []).join(",") || "none"}`)
   }
+  appendAggregateRequirementLine(lines, "required_platform_coverage_areas", aggregate.requiredPlatformCoverageAreas, aggregate.missingPlatformCoverageAreas)
+  appendAggregateRequirementLine(lines, "required_failure_classifications", aggregate.requiredFailureClassifications, aggregate.missingFailureClassifications)
+  appendAggregateRequirementLine(lines, "required_matrices", aggregate.requiredMatrices, aggregate.missingMatrices)
+  appendAggregateRequirementLine(lines, "required_matrix_classifications", aggregate.requiredMatrixClassifications, aggregate.missingMatrixClassifications)
+  appendAggregateRequirementLine(lines, "required_deployment_presets", aggregate.requiredDeploymentPresets, aggregate.missingDeploymentPresets)
+  appendAggregateRequirementLine(lines, "required_providers", aggregate.requiredProviders, aggregate.missingProviders)
+  appendAggregateRequirementLine(lines, "required_scenarios", aggregate.requiredScenarios, aggregate.missingScenarios)
   lines.push(aggregate.status === "passed"
     ? "next: all validation gate reports passed"
     : "next: inspect failed validation gate reports and rerun the relevant drills")
@@ -442,6 +470,20 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   }
   validateStringArray(aggregate.requiredPresets ?? [], `${source}.requiredPresets`)
   validateStringArray(aggregate.missingPresets ?? [], `${source}.missingPresets`)
+  validateStringArray(aggregate.requiredPlatformCoverageAreas ?? [], `${source}.requiredPlatformCoverageAreas`)
+  validateStringArray(aggregate.missingPlatformCoverageAreas ?? [], `${source}.missingPlatformCoverageAreas`)
+  validateStringArray(aggregate.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
+  validateStringArray(aggregate.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
+  validateStringArray(aggregate.requiredMatrices ?? [], `${source}.requiredMatrices`)
+  validateStringArray(aggregate.missingMatrices ?? [], `${source}.missingMatrices`)
+  validateStringArray(aggregate.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
+  validateStringArray(aggregate.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
+  validateStringArray(aggregate.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
+  validateStringArray(aggregate.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
+  validateStringArray(aggregate.requiredProviders ?? [], `${source}.requiredProviders`)
+  validateStringArray(aggregate.missingProviders ?? [], `${source}.missingProviders`)
+  validateStringArray(aggregate.requiredScenarios ?? [], `${source}.requiredScenarios`)
+  validateStringArray(aggregate.missingScenarios ?? [], `${source}.missingScenarios`)
   for (const [index, action] of aggregate.nextActions.entries()) {
     validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
   }
@@ -462,11 +504,19 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   if (aggregate.totals.passed !== passed || aggregate.totals.failed !== failed) {
     throw new Error(`${source} totals do not match reports`)
   }
-  const expectedMissingPresets = missingRequiredValidationGatePresets(aggregate, aggregate.requiredPresets ?? [])
-  if (JSON.stringify(aggregate.missingPresets ?? []) !== JSON.stringify(expectedMissingPresets)) {
-    throw new Error(`${source} missingPresets does not match reports`)
-  }
-  const expectedStatus = aggregate.totals.failed > 0 || expectedMissingPresets.length > 0 ? "failed" : "passed"
+  const expectedMissingRequirements = missingValidationGateAggregateRequirements(aggregate.coverage ?? {}, {
+    requiredPresets: aggregate.requiredPresets ?? [],
+    requiredPlatformCoverageAreas: aggregate.requiredPlatformCoverageAreas ?? [],
+    requiredFailureClassifications: aggregate.requiredFailureClassifications ?? [],
+    requiredMatrices: aggregate.requiredMatrices ?? [],
+    requiredMatrixClassifications: aggregate.requiredMatrixClassifications ?? [],
+    requiredDeploymentPresets: aggregate.requiredDeploymentPresets ?? [],
+    requiredProviders: aggregate.requiredProviders ?? [],
+    requiredScenarios: aggregate.requiredScenarios ?? [],
+  })
+  assertValidationGateAggregateMissingRequirementsMatch(aggregate, expectedMissingRequirements, source)
+  const hasMissingRequirements = Object.values(expectedMissingRequirements).some((missing) => missing.length > 0)
+  const expectedStatus = aggregate.totals.failed > 0 || hasMissingRequirements ? "failed" : "passed"
   if (aggregate.status !== expectedStatus) {
     throw new Error(`${source} status does not match totals and requirements`)
   }
@@ -739,6 +789,75 @@ function countStringValues(counts, values) {
   }
 }
 
+function normalizeValidationGateAggregateRequirements(options) {
+  return {
+    requiredPlatformCoverageAreas: normalizeRequiredPlatformCoverageAreas(options.requiredPlatformCoverageAreas ?? []),
+    requiredFailureClassifications: normalizeRequiredFailureClassifications(options.requiredFailureClassifications ?? []),
+    requiredMatrices: normalizeRequiredMatrices(options.requiredMatrices ?? []),
+    requiredMatrixClassifications: normalizeRequiredMatrixClassifications(options.requiredMatrixClassifications ?? []),
+    requiredDeploymentPresets: normalizeRequiredDeploymentPresets(options.requiredDeploymentPresets ?? []),
+    requiredProviders: normalizeRequiredProviders(options.requiredProviders ?? []),
+    requiredScenarios: normalizeRequiredScenarios(options.requiredScenarios ?? []),
+  }
+}
+
+function missingValidationGateAggregateRequirements(coverage, requirements) {
+  return {
+    missingPresets: missingCoverageRequirements(coverage.presets, requirements.requiredPresets ?? []),
+    missingPlatformCoverageAreas: missingCoverageRequirements(coverage.requiredPlatformCoverageAreas, requirements.requiredPlatformCoverageAreas ?? []),
+    missingFailureClassifications: missingCoverageRequirements(coverage.requiredFailureClassifications, requirements.requiredFailureClassifications ?? []),
+    missingMatrices: missingCoverageRequirements(coverage.requiredMatrices, requirements.requiredMatrices ?? []),
+    missingMatrixClassifications: missingCoverageRequirements(coverage.requiredMatrixClassifications, requirements.requiredMatrixClassifications ?? []),
+    missingDeploymentPresets: missingCoverageRequirements(coverage.requiredDeploymentPresets, requirements.requiredDeploymentPresets ?? []),
+    missingProviders: missingCoverageRequirements(coverage.requiredProviders, requirements.requiredProviders ?? []),
+    missingScenarios: missingCoverageRequirements(coverage.requiredScenarios, requirements.requiredScenarios ?? []),
+  }
+}
+
+function missingCoverageRequirements(counts, required) {
+  const present = new Set(Object.keys(counts ?? {}))
+  return required.filter((entry) => !present.has(entry))
+}
+
+function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
+  const specs = [
+    ["missingPlatformCoverageAreas", "platform-bundle", "provide validation gate reports requiring platform coverage areas"],
+    ["missingFailureClassifications", "platform-bundle", "provide validation gate reports requiring failure classifications"],
+    ["missingMatrices", "matrix-coverage", "provide validation gate reports requiring matrices"],
+    ["missingMatrixClassifications", "matrix-coverage", "provide validation gate reports requiring matrix classifications"],
+    ["missingDeploymentPresets", "matrix-coverage", "provide validation gate reports requiring deployment presets"],
+    ["missingProviders", "matrix-coverage", "provide validation gate reports requiring providers"],
+    ["missingScenarios", "matrix-coverage", "provide validation gate reports requiring scenarios"],
+  ]
+  for (const [key, classification, prefix] of specs) {
+    if ((missing[key] ?? []).length > 0) {
+      countDrillAggregateNextAction(nextActions, {
+        owner: "validation-harness",
+        classification,
+        nextAction: `${prefix}: ${missing[key].join(", ")}`,
+      })
+    }
+  }
+}
+
+function assertValidationGateAggregateMissingRequirementsMatch(aggregate, expected, source) {
+  const fields = [
+    "missingPresets",
+    "missingPlatformCoverageAreas",
+    "missingFailureClassifications",
+    "missingMatrices",
+    "missingMatrixClassifications",
+    "missingDeploymentPresets",
+    "missingProviders",
+    "missingScenarios",
+  ]
+  for (const field of fields) {
+    if (JSON.stringify(aggregate[field] ?? []) !== JSON.stringify(expected[field] ?? [])) {
+      throw new Error(`${source} ${field} does not match reports`)
+    }
+  }
+}
+
 function formatValidationGateCoverageCounts(coverage) {
   return {
     presets: countMapToObject(coverage.presets),
@@ -787,6 +906,12 @@ function appendCoverageLine(lines, label, counts) {
   const entries = Object.entries(counts ?? {})
   if (entries.length > 0) {
     lines.push(`- ${label}: ${entries.map(([key, count]) => `${key}=${count}`).join(" ")}`)
+  }
+}
+
+function appendAggregateRequirementLine(lines, label, required, missing) {
+  if ((required ?? []).length > 0) {
+    lines.push(`${label}=${required.join(",")} missing=${(missing ?? []).join(",") || "none"}`)
   }
 }
 
@@ -1359,11 +1484,6 @@ function missingRequiredProviders(aggregate, requiredProviders) {
 function missingRequiredScenarios(aggregate, requiredScenarios) {
   const present = new Set(Object.keys(aggregate.scenarioIds ?? {}))
   return requiredScenarios.filter((scenario) => !present.has(scenario))
-}
-
-function missingRequiredValidationGatePresets(aggregate, requiredPresets) {
-  const present = new Set(Object.keys(aggregate.coverage?.presets ?? {}))
-  return requiredPresets.filter((preset) => !present.has(preset))
 }
 
 function missingRequiredMatrices(aggregate, requiredMatrices) {

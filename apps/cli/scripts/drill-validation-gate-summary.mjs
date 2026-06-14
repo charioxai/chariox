@@ -20,6 +20,18 @@ function printHelp() {
     "  --gate-root ROOT       Discover validation gate reports below ROOT; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
     "  --require-preset NAME  Require aggregate evidence for a validation gate preset; repeatable or comma-separated",
+    "  --require-platform-coverage-area AREA",
+    "                         Require aggregate evidence for platform-bundle coverage areas",
+    "  --require-failure-classification CLASSIFICATION",
+    "                         Require aggregate evidence for failure taxonomy classifications",
+    "  --require-matrix NAME  Require aggregate evidence for matrix names",
+    "  --require-matrix-classification CLASSIFICATION",
+    "                         Require aggregate evidence for matrix scenario classifications",
+    "  --require-deployment-preset PRESET",
+    "                         Require aggregate evidence for deployment presets",
+    "  --require-provider PROVIDER",
+    "                         Require aggregate evidence for provider profiles",
+    "  --require-scenario ID  Require aggregate evidence for scenario ids",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -44,6 +56,13 @@ async function main() {
   const aggregate = summarizeDrillValidationGateReports(reports, {
     sources: reportPaths,
     requiredPresets: options.requiredPresets,
+    requiredPlatformCoverageAreas: options.requiredPlatformCoverageAreas,
+    requiredFailureClassifications: options.requiredFailureClassifications,
+    requiredMatrices: options.requiredMatrices,
+    requiredMatrixClassifications: options.requiredMatrixClassifications,
+    requiredDeploymentPresets: options.requiredDeploymentPresets,
+    requiredProviders: options.requiredProviders,
+    requiredScenarios: options.requiredScenarios,
   })
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
@@ -73,7 +92,14 @@ function parseArgs(argv) {
     maxDepth: 8,
     outputArtifactIndexPath: null,
     outputPath: null,
+    requiredDeploymentPresets: [],
+    requiredFailureClassifications: [],
+    requiredMatrices: [],
+    requiredMatrixClassifications: [],
+    requiredPlatformCoverageAreas: [],
+    requiredProviders: [],
     requiredPresets: [],
+    requiredScenarios: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -107,6 +133,55 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--require-preset=")) {
       options.requiredPresets.push(arg.slice("--require-preset=".length))
+    } else if (arg === "--require-platform-coverage-area") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-platform-coverage-area requires a value")
+      options.requiredPlatformCoverageAreas.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-platform-coverage-area=")) {
+      options.requiredPlatformCoverageAreas.push(arg.slice("--require-platform-coverage-area=".length))
+    } else if (arg === "--require-failure-classification") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-failure-classification requires a value")
+      options.requiredFailureClassifications.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-failure-classification=")) {
+      options.requiredFailureClassifications.push(arg.slice("--require-failure-classification=".length))
+    } else if (arg === "--require-matrix") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-matrix requires a value")
+      options.requiredMatrices.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-matrix=")) {
+      options.requiredMatrices.push(arg.slice("--require-matrix=".length))
+    } else if (arg === "--require-matrix-classification") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-matrix-classification requires a value")
+      options.requiredMatrixClassifications.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-matrix-classification=")) {
+      options.requiredMatrixClassifications.push(arg.slice("--require-matrix-classification=".length))
+    } else if (arg === "--require-deployment-preset") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-deployment-preset requires a value")
+      options.requiredDeploymentPresets.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-deployment-preset=")) {
+      options.requiredDeploymentPresets.push(arg.slice("--require-deployment-preset=".length))
+    } else if (arg === "--require-provider") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-provider requires a value")
+      options.requiredProviders.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-provider=")) {
+      options.requiredProviders.push(arg.slice("--require-provider=".length))
+    } else if (arg === "--require-scenario") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-scenario requires a value")
+      options.requiredScenarios.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-scenario=")) {
+      options.requiredScenarios.push(arg.slice("--require-scenario=".length))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")

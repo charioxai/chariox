@@ -158,6 +158,10 @@ test("applies validation gate requirement presets", async () => {
     await writeDrillPlatformBundle(bundleDir)
     await writeMatrixReport(reportPath, matrixReport({
       matrix: "workspace-live-sync-matrix",
+      metadata: {
+        deploymentPresets: "local,self-hosted-relay",
+        providers: "codex,opencode",
+      },
       scenarios: [
         scenario("managed", "passed", { classification: "workspace-live-sync-conflict" }),
         scenario("permission", "passed", { classification: "kernel-authority" }),
@@ -169,6 +173,9 @@ test("applies validation gate requirement presets", async () => {
       platformBundleDir: bundleDir,
       matrixReports: [reportPath],
       presets: ["workspace-live-sync"],
+      requiredDeploymentPresets: ["local"],
+      requiredProviders: ["codex"],
+      requiredScenarios: ["managed"],
     })
 
     assert.equal(report.status, "passed")
@@ -184,6 +191,9 @@ test("applies validation gate requirement presets", async () => {
       "relay-target-freshness",
       "workspace-live-sync-conflict",
     ])
+    assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["local"])
+    assert.deepEqual(report.checks.matrices.requiredProviders, ["codex"])
+    assert.deepEqual(report.checks.matrices.requiredScenarios, ["managed"])
     assert.match(formatDrillValidationGateSummary(report), /presets=workspace-live-sync/)
     assert.match(formatDrillValidationGateSummary(report), /matrix_required_classifications=kernel-authority,relay-target-freshness,workspace-live-sync-conflict missing=none/)
     const aggregate = summarizeDrillValidationGateReports([report], { sources: ["workspace-live-sync.json"] })
@@ -193,19 +203,40 @@ test("applies validation gate requirement presets", async () => {
     const requiredAggregate = summarizeDrillValidationGateReports([report], {
       sources: ["workspace-live-sync.json"],
       requiredPresets: ["workspace-live-sync"],
+      requiredPlatformCoverageAreas: ["matrix-validation"],
+      requiredFailureClassifications: ["kernel-authority"],
+      requiredMatrices: ["workspace-live-sync-matrix"],
+      requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+      requiredDeploymentPresets: ["local"],
+      requiredProviders: ["codex"],
+      requiredScenarios: ["managed"],
     })
     assert.equal(requiredAggregate.status, "passed")
     assert.deepEqual(requiredAggregate.requiredPresets, ["workspace-live-sync"])
     assert.deepEqual(requiredAggregate.missingPresets, [])
+    assert.deepEqual(requiredAggregate.missingPlatformCoverageAreas, [])
+    assert.deepEqual(requiredAggregate.missingFailureClassifications, [])
+    assert.deepEqual(requiredAggregate.missingMatrices, [])
+    assert.deepEqual(requiredAggregate.missingMatrixClassifications, [])
+    assert.deepEqual(requiredAggregate.missingDeploymentPresets, [])
+    assert.deepEqual(requiredAggregate.missingProviders, [])
+    assert.deepEqual(requiredAggregate.missingScenarios, [])
     assert.match(formatDrillValidationGateAggregateSummary(requiredAggregate), /required_presets=workspace-live-sync missing=none/)
+    assert.match(formatDrillValidationGateAggregateSummary(requiredAggregate), /required_providers=codex missing=none/)
     const missingAggregate = summarizeDrillValidationGateReports([report], {
       sources: ["workspace-live-sync.json"],
       requiredPresets: ["remote-home-extension"],
+      requiredProviders: ["claude"],
     })
     assert.equal(missingAggregate.status, "failed")
     assert.deepEqual(missingAggregate.requiredPresets, ["remote-home-extension"])
     assert.deepEqual(missingAggregate.missingPresets, ["remote-home-extension"])
+    assert.deepEqual(missingAggregate.requiredProviders, ["claude"])
+    assert.deepEqual(missingAggregate.missingProviders, ["claude"])
     assert.deepEqual(missingAggregate.nextActions.map(({ classification, nextAction }) => ({ classification, nextAction })), [{
+      classification: "matrix-coverage",
+      nextAction: "provide validation gate reports requiring providers: claude",
+    }, {
       classification: "validation-gate",
       nextAction: "provide validation gate reports for presets: remote-home-extension",
     }])
