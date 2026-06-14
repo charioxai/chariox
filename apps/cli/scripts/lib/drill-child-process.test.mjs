@@ -88,6 +88,12 @@ test('classifies remote worker protocol version skew', () => {
   )
 })
 
+test('classifies remote worker checkout version skew', () => {
+  const text = 'remote worker checkout `/tmp/arroba-native-remote-validate` is at commit 1111111, but home checkout expects 2222222. Upgrade/rebuild the remote worker checkout and restart the worker kernel, then rerun the drill.'
+
+  assert.equal(classifyDrillChildFailure(text), 'remote-worker-version')
+})
+
 test('classifies remote host disk capacity failures', () => {
   const text = 'fatal: cannot create directory at apps/kernel/target: No space left on device'
 

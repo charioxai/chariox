@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { assertBinary, terminateChild, waitForTcpPort } from './lib/drill-runtime-helpers.mjs'
 import { joinRemoteHomeExtensionCollaborator } from './lib/remote-home-extension-collab-helpers.mjs'
@@ -25,6 +26,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const realHomeDir = os.homedir()
+const execFileAsync = promisify(execFile)
 const RELAY_ISSUER = 'arroba-remote-home-extension-drill'
 const RELAY_SECRET = 'arroba-remote-home-extension-drill-secret'
 const RELAY_REALM = 'remote-home-extension-drill'
@@ -113,6 +115,11 @@ async function resolveExecutable(command) {
     } catch {}
   }
   throw new Error(`executable ${command} not found on PATH`)
+}
+
+async function resolveLocalGitHead() {
+  const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })
+  return stdout.trim()
 }
 
 function daemonEnv({ rootDir, relayUrl, relayToken, daemonId, daemonAlias, machineId, machineAlias, kernelPort, mcpPort, acceptRemoteLeases, capabilityRoot, socketName }) {
@@ -210,7 +217,11 @@ async function main() {
       : await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'arroba-relay')
     const daemonBinary = await resolveBinary(path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'), path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'arroba-kernel')
     if (options.hetznerWorker) {
-      await ensureRemoteHomeExtensionHetznerWorkspace(options, { remoteRoot, workerWorktree })
+      await ensureRemoteHomeExtensionHetznerWorkspace(options, {
+        remoteRoot,
+        workerWorktree,
+        expectedRepoHead: await resolveLocalGitHead(),
+      })
       const hetznerRelay = await startRemoteHomeExtensionHetznerRelay({
         options,
         relayPort,

@@ -69,6 +69,7 @@ const RELAY_TARGET_FRESHNESS_PATTERNS = [
 
 const REMOTE_WORKER_VERSION_PATTERNS = [
   /remote worker [`'"][^`'"]+[`'"] uses relay peer protocol \d+, but this home kernel requires \d+/i,
+  /remote worker checkout [`'"][^`'"]+[`'"] is at commit [0-9a-f]+, but home checkout expects [0-9a-f]+/i,
   /worker .*relay peer protocol .*home kernel requires/i,
   /peer protocol .*version mismatch/i,
 ]

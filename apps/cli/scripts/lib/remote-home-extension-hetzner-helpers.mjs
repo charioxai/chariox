@@ -9,14 +9,64 @@ import {
   sshArgs,
 } from "./native-tui-remote-execution.mjs"
 
+export const DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB = 262144
+
 export async function ensureRemoteHomeExtensionHetznerWorkspace(options, {
   remoteRoot,
   workerWorktree,
+  expectedRepoHead = null,
+  minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB,
 }) {
   await assertHetznerArrobaBinaries(options)
-  await runHetznerCommand(options, [
-    `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)}`,
-  ].join("; "))
+  await runHetznerCommand(options, remoteHomeExtensionHetznerPreflightCommand({
+    hetznerRepo: options.hetznerRepo,
+    remoteRoot,
+    workerWorktree,
+    expectedRepoHead,
+    minFreeKb,
+  }))
+}
+
+export function remoteHomeExtensionHetznerPreflightCommand({
+  hetznerRepo,
+  remoteRoot,
+  workerWorktree,
+  expectedRepoHead = null,
+  minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB,
+}) {
+  const expected = expectedRepoHead == null ? "" : String(expectedRepoHead).trim()
+  return [
+    "set -e",
+    `repo=${shellQuote(hetznerRepo)}`,
+    `remote_root=${shellQuote(remoteRoot)}`,
+    `worker_worktree=${shellQuote(workerWorktree)}`,
+    `expected_head=${shellQuote(expected)}`,
+    `min_free_kb=${Number(minFreeKb)}`,
+    "actual_head=$(git -C \"$repo\" rev-parse HEAD 2>/dev/null || true)",
+    "if test -n \"$expected_head\" && test \"$actual_head\" != \"$expected_head\"; then",
+    "  printf 'remote worker checkout `%s` is at commit %s, but home checkout expects %s. Upgrade/rebuild the remote worker checkout and restart the worker kernel, then rerun the drill.\\n' \"$repo\" \"${actual_head:-unknown}\" \"$expected_head\" >&2",
+    "  exit 18",
+    "fi",
+    "check_free_kb() {",
+    "  label=\"$1\"",
+    "  target=\"$2\"",
+    "  existing=\"$target\"",
+    "  while ! test -e \"$existing\"; do",
+    "    parent=$(dirname \"$existing\")",
+    "    if test \"$parent\" = \"$existing\"; then break; fi",
+    "    existing=\"$parent\"",
+    "  done",
+    "  free_kb=$(df -Pk \"$existing\" | awk 'NR == 2 { print $4 }')",
+    "  if test -z \"$free_kb\" || test \"$free_kb\" -lt \"$min_free_kb\"; then",
+    "    printf 'remote host filesystem for %s at %s has %sKB free; remote worker drills need at least %sKB. Free disk on the remote host or choose a clean worker checkout/artifact root, then rerun the drill.\\n' \"$label\" \"$existing\" \"${free_kb:-unknown}\" \"$min_free_kb\" >&2",
+    "    exit 19",
+    "  fi",
+    "}",
+    "check_free_kb repo \"$repo\"",
+    "check_free_kb remote-root \"$remote_root\"",
+    "check_free_kb worker-worktree \"$worker_worktree\"",
+    "mkdir -p \"$remote_root\" \"$worker_worktree\"",
+  ].join("\n")
 }
 
 async function assertRemoteRelayPortFree(options, port) {

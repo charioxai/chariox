@@ -41,6 +41,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-validation-gate-summary-format.test.mjs",
   "apps/cli/scripts/lib/drill-validation-gate.test.mjs",
   "apps/cli/scripts/lib/drill-validation-suite.test.mjs",
+  "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
   "apps/cli/scripts/live-remote-agent-runtime-matrix-drill.test.mjs",
 ])
 
@@ -101,6 +102,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-environment-presets.test.mjs",
       "apps/cli/scripts/lib/drill-history-outline.test.mjs",
       "apps/cli/scripts/lib/drill-provider-profiles.test.mjs",
+      "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
       "apps/cli/scripts/lib/drill-runtime-helpers.test.mjs",
       "apps/cli/scripts/lib/drill-secrets.test.mjs",
       "apps/cli/scripts/lib/drill-time.test.mjs",
