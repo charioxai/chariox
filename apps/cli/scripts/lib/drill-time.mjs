@@ -16,3 +16,12 @@ export function validateDrillTimestampOrder({ startedAt, completedAt }, source) 
     throw new Error(`${source}.completedAt must not be before startedAt`)
   }
 }
+
+export function validateDrillDurationMatchesTimestamps({ startedAt, completedAt, durationMs }, source) {
+  const startedMs = parseDrillIsoTimestamp(startedAt, `${source}.startedAt`)
+  const completedMs = parseDrillIsoTimestamp(completedAt, `${source}.completedAt`)
+  const expectedDurationMs = completedMs - startedMs
+  if (durationMs !== expectedDurationMs) {
+    throw new Error(`${source}.durationMs must match completedAt - startedAt`)
+  }
+}

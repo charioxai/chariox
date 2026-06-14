@@ -262,6 +262,11 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
+    durationMs: 999,
+  }), /durationMs must match completedAt - startedAt/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
     startedAt: "2026-06-13",
   }), /startedAt must be an ISO timestamp/)
 
@@ -365,14 +370,17 @@ function matrixReport(overrides = {}) {
   const scenarios = overrides.scenarios ?? [scenario("local", "passed")]
   const status = overrides.status ?? matrixStatusForScenarios(scenarios)
   const dryRun = overrides.dryRun ?? status === "dry-run"
+  const startedAt = overrides.startedAt ?? "2026-06-13T00:00:00.000Z"
+  const durationMs = overrides.durationMs ?? 1000
+  const completedAt = overrides.completedAt ?? new Date(Date.parse(startedAt) + durationMs).toISOString()
   return {
     schema: "arroba.drill.matrix.v1",
     matrix: "test-matrix",
     status,
     dryRun,
-    startedAt: "2026-06-13T00:00:00.000Z",
-    completedAt: "2026-06-13T00:00:01.000Z",
-    durationMs: 1000,
+    startedAt,
+    completedAt,
+    durationMs,
     metadata: {},
     scenarios,
     ...overrides,

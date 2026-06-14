@@ -14,7 +14,10 @@ import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
 } from "./drill-secrets.mjs"
-import { validateDrillTimestampOrder } from "./drill-time.mjs"
+import {
+  validateDrillDurationMatchesTimestamps,
+  validateDrillTimestampOrder,
+} from "./drill-time.mjs"
 
 export async function readDrillMatrixReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))
@@ -50,6 +53,7 @@ export function validateDrillMatrixReport(report, source = "report") {
   if (!Number.isFinite(report.durationMs) || report.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }
+  validateDrillDurationMatchesTimestamps(report, source)
   validateReportMetadata(report.metadata, `${source}.metadata`)
   if (!Array.isArray(report.scenarios)) {
     throw new Error(`${source} is missing scenarios`)

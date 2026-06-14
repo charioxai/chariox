@@ -47,6 +47,8 @@ Required top-level fields:
 - `metadata`: feature-specific non-secret context such as enabled scenario groups or provider model ids.
 - `scenarios`: selected scenario results; reports with no selected scenarios are invalid.
 
+Top-level `durationMs` must equal `completedAt - startedAt` exactly. This keeps generated reports comparable across local, remote, hosted, and collab matrices and catches hand-authored report drift.
+
 Required scenario fields:
 
 - `id`, `description`, `requires`.
