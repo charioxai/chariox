@@ -348,6 +348,12 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
+      scenarios: [scenario("broken", "failed", { classification: "typo-runtime", reason: "code=1" })],
+    }),
+  }), /scenarios\[0\] has unknown classification "typo-runtime"/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
       scenarios: [scenario("broken", "skipped", { reason: null })],
     }),
   }), /scenarios\[0\] skipped scenario is missing reason/)

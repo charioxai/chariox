@@ -2,10 +2,12 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  DRILL_FAILURE_CLASSIFICATION_KINDS,
   drillFailureClassificationForKind,
   drillFailureNextActionForClassification,
   drillFailureTaxonomyManifest,
   drillFailureOwnerForClassification,
+  isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 
 test("maps classifications to owners", () => {
@@ -22,6 +24,14 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("slice-runtime"), "worker-kernel")
   assert.equal(drillFailureOwnerForClassification("test-harness"), "validation-harness")
   assert.equal(drillFailureOwnerForClassification("unknown"), "drill-or-runtime")
+})
+
+test("exposes known classifications", () => {
+  assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("kernel-authority"))
+  assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("slice-runtime"))
+  assert.deepEqual(DRILL_FAILURE_CLASSIFICATION_KINDS, [...DRILL_FAILURE_CLASSIFICATION_KINDS].sort())
+  assert.equal(isKnownDrillFailureClassification("slice-runtime"), true)
+  assert.equal(isKnownDrillFailureClassification("not-real"), false)
 })
 
 test("formats target-specific next actions", () => {

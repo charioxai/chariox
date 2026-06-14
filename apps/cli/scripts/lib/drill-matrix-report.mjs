@@ -9,6 +9,7 @@ import {
 import {
   drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
+  isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import {
   isSensitiveDrillKey,
@@ -386,6 +387,9 @@ function validateDrillMatrixScenario(scenario, source) {
   }
   if (scenario.classification !== null && typeof scenario.classification !== "string") {
     throw new Error(`${source} has invalid classification`)
+  }
+  if (nonEmptyString(scenario.classification) && !isKnownDrillFailureClassification(scenario.classification)) {
+    throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
   }
   if (!Number.isFinite(scenario.durationMs) || scenario.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)

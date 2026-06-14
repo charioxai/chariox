@@ -86,6 +86,13 @@ const FAILURE_CLASSIFICATIONS = {
   },
 }
 
+export const DRILL_FAILURE_CLASSIFICATION_KINDS = Object.freeze(Object.keys(FAILURE_CLASSIFICATIONS).sort())
+
+export function isKnownDrillFailureClassification(classification) {
+  return typeof classification === "string"
+    && Object.prototype.hasOwnProperty.call(FAILURE_CLASSIFICATIONS, classification)
+}
+
 export function drillFailureOwnerForClassification(classification) {
   return FAILURE_CLASSIFICATIONS[classification]?.owner ?? "drill-or-runtime"
 }
