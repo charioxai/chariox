@@ -280,6 +280,10 @@ function matrixAggregateFixture() {
       "session-authority": 1,
       "workspace-live-sync-state": 1,
     },
+    runtimeSignalOwners: {
+      "kernel-authority": 1,
+      "runtime-state": 1,
+    },
     runtimeSignalScenarios: {
       "session-authority": [matrixScenarioFixture("permission", "passed")],
       "workspace-live-sync-state": [matrixScenarioFixture("managed", "passed")],

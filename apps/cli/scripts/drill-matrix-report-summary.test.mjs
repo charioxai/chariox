@@ -57,6 +57,7 @@ test("matrix report summary writes artifact index for output", async () => {
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.equal(aggregate.status, "passed")
+    assert.deepEqual(aggregate.runtimeSignalOwners, {})
     assert.deepEqual(fileAggregate, aggregate)
     assert.equal(artifactIndex.metadata.drill, "matrix-report-summary")
     assert.equal(artifactIndex.metadata.status, "passed")
@@ -121,6 +122,10 @@ test("matrix report summary indexes failure owner and classification metadata", 
     const aggregate = JSON.parse(await readFile(outputPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
     assert.equal(aggregate.status, "failed")
+    assert.deepEqual(aggregate.runtimeSignalOwners, {
+      "kernel-authority": 1,
+      "provider-runtime": 1,
+    })
     assert.equal(artifactIndex.metadata.status, "failed")
     assert.equal(artifactIndex.metadata.owners, "provider-account")
     assert.equal(artifactIndex.metadata.classifications, "provider-auth")

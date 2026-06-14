@@ -209,6 +209,11 @@ test("aggregates multiple matrix reports for CI", () => {
     "session-authority": 1,
     "workspace-live-sync-state": 1,
   })
+  assert.deepEqual(aggregate.runtimeSignalOwners, {
+    "kernel-authority": 2,
+    "provider-runtime": 1,
+    "runtime-state": 1,
+  })
   assert.deepEqual(aggregate.runtimeSignalScenarios, {
     "lease-health": [{
       matrix: "remote",
@@ -419,6 +424,10 @@ test("rejects inconsistent matrix aggregates", () => {
       }],
     },
   }), /runtimeSignalScenarios do not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    runtimeSignalOwners: { "kernel-authority": 1 },
+  }), /runtimeSignalOwners do not match runtimeSignals/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     reports: [{

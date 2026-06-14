@@ -231,6 +231,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     totals,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
     runtimeSignals: Object.fromEntries([...runtimeSignals.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    runtimeSignalOwners: drillRuntimeSignalOwnerCounts(Object.fromEntries(runtimeSignals)),
     runtimeSignalScenarios: formatRuntimeSignalEvidence(runtimeSignalScenarios),
     matrixNames: Object.fromEntries([...matrixNames.entries()].sort(([left], [right]) => left.localeCompare(right))),
     deploymentPresets: Object.fromEntries([...deploymentPresets.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -359,7 +360,7 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
-    lines.push(`runtime_signal_owners: ${formatCountObject(drillRuntimeSignalOwnerCounts(aggregate.runtimeSignals))}`)
+    lines.push(`runtime_signal_owners: ${formatCountObject(aggregate.runtimeSignalOwners)}`)
   }
   const runtimeSignalScenarios = Object.entries(aggregate.runtimeSignalScenarios ?? {})
   if (runtimeSignalScenarios.length > 0) {
@@ -605,6 +606,7 @@ export function validateDrillMatrixAggregate(aggregate) {
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
   validateExitCriteriaCountObject(aggregate.exitCriteria ?? {}, "aggregate.exitCriteria")
   validateCountObject(aggregate.runtimeSignals ?? {}, "aggregate.runtimeSignals")
+  validateCountObject(aggregate.runtimeSignalOwners ?? {}, "aggregate.runtimeSignalOwners")
   if (aggregate.runtimeSignalScenarios !== undefined) {
     validateRuntimeSignalEvidenceObject(aggregate.runtimeSignalScenarios, "aggregate.runtimeSignalScenarios", { aggregate: true })
     assertRuntimeSignalEvidenceCounts("aggregate runtimeSignals", aggregate.runtimeSignals ?? {}, aggregate.runtimeSignalScenarios)
@@ -680,6 +682,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   assertScenarioIdCountsMatchReports(aggregate)
   assertExitCriteriaCountsMatchReports(aggregate)
   assertRuntimeSignalCountsMatchReports(aggregate)
+  assertRuntimeSignalOwnerCountsMatchSignals(aggregate)
   assertRuntimeSignalScenariosMatchReports(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
 }
@@ -782,6 +785,13 @@ function assertRuntimeSignalCountsMatchReports(aggregate) {
   const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
   if (JSON.stringify(aggregate.runtimeSignals ?? {}) !== JSON.stringify(expectedCounts)) {
     throw new Error("aggregate runtimeSignals do not match reports")
+  }
+}
+
+function assertRuntimeSignalOwnerCountsMatchSignals(aggregate) {
+  const expectedOwners = drillRuntimeSignalOwnerCounts(aggregate.runtimeSignals ?? {})
+  if (JSON.stringify(aggregate.runtimeSignalOwners ?? {}) !== JSON.stringify(expectedOwners)) {
+    throw new Error("aggregate runtimeSignalOwners do not match runtimeSignals")
   }
 }
 
