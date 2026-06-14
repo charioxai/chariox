@@ -329,11 +329,7 @@ function validateDrillFailureAggregateEntry(failure, source) {
   if (!Array.isArray(failure.runtimeSignals)) {
     throw new Error(`${source} has invalid runtimeSignals`)
   }
-  for (const [index, signal] of failure.runtimeSignals.entries()) {
-    if (!nonEmptyString(signal)) {
-      throw new Error(`${source}.runtimeSignals[${index}] is invalid`)
-    }
-  }
+  validateDrillRuntimeSignals(failure.runtimeSignals, `${source}.runtimeSignals`)
 }
 
 function validateFailureError(error, source) {

@@ -338,6 +338,13 @@ test("rejects inconsistent failure aggregates", () => {
   }), /runtimeSignals do not match failures/)
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
     ...aggregate,
+    failures: [{
+      ...aggregate.failures[0],
+      runtimeSignals: ["workspace-live-synch-state"],
+    }],
+  }), /failures\[0\]\.runtimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
     runtimeSignalOwners: { "runtime-network": 1 },
   }), /runtimeSignalOwners do not match runtimeSignals/)
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
