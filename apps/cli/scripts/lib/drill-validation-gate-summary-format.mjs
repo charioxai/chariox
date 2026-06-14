@@ -44,6 +44,10 @@ export function formatDrillValidationGateSummary(report) {
   if (artifacts.error) lines.push(`artifact_error=${artifacts.error}`)
   if (artifacts.aggregate) {
     lines.push(`artifact_total=${artifacts.aggregate.totals.artifacts} size_bytes=${artifacts.aggregate.totals.sizeBytes}`)
+    const runtimeSignals = Object.entries(artifacts.aggregate.runtimeSignals ?? {})
+    if (runtimeSignals.length > 0) {
+      lines.push(`artifact_runtime_signals=${runtimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)
+    }
   }
 
   const matrices = report.checks.matrices
