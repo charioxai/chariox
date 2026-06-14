@@ -385,6 +385,13 @@ test("rejects inconsistent matrix aggregates", () => {
   }), /reports\[0\]\.counts has invalid failed/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      counts: { ...aggregate.reports[0].counts, failed: 0.5 },
+    }],
+  }), /reports\[0\]\.counts has invalid failed/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
     owners: { "runtime-network": 1 },
   }), /owners do not match failedScenarios/)
   assert.throws(() => formatDrillMatrixAggregateSummary({

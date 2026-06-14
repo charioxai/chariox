@@ -1023,7 +1023,7 @@ function validateMatrixAggregateReportCounts(counts, source) {
     throw new Error(`${source} is missing`)
   }
   for (const key of ["passed", "failed", "skipped", "dryRun"]) {
-    if (!Number.isFinite(counts[key]) || counts[key] < 0) {
+    if (!Number.isSafeInteger(counts[key]) || counts[key] < 0) {
       throw new Error(`${source} has invalid ${key}`)
     }
   }
