@@ -197,6 +197,14 @@ test("classifies common drill failure owners and next actions", () => {
     owner: "ui-client",
     nextAction: "inspect web/TUI terminal projection logs, transcript rendering state, and preserved screenshots or terminal captures, then rerun the drill",
   })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "projection invariant failed: session prompt read-model stale", stack: null },
+  })), {
+    kind: "projection-staleness",
+    owner: "kernel-authority",
+    nextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the drill",
+  })
 })
 
 test("aggregates preserved drill failure summaries", () => {
