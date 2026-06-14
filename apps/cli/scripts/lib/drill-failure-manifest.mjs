@@ -222,7 +222,7 @@ export function validateDrillFailureManifestAggregate(aggregate) {
   if (aggregate.schema !== "arroba.drill.failure.aggregate.v1") {
     throw new Error(`aggregate has unsupported schema ${JSON.stringify(aggregate.schema)}`)
   }
-  if (!Number.isFinite(aggregate.total) || aggregate.total < 0) {
+  if (!Number.isSafeInteger(aggregate.total) || aggregate.total < 0) {
     throw new Error("aggregate has invalid total")
   }
   if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {

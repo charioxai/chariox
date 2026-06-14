@@ -310,6 +310,10 @@ test("rejects inconsistent failure aggregates", () => {
   }), /total does not match failures/)
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
     ...aggregate,
+    total: 1.5,
+  }), /invalid total/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
     owners: { "runtime-network": 1 },
   }), /owners do not match failures/)
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
