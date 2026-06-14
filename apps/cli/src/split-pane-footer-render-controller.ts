@@ -13,6 +13,7 @@ export type SplitPaneFooterRenderControllerDeps = {
   workflowScreenActive: () => boolean
   maxAgentsPerScreen: () => number
   visibleAgents: () => Array<AgentInstance | null | undefined>
+  metaagentTasks: () => SplitPaneFooterRenderOptions["metaagentTasks"]
   focusedAgentId: () => string | null
   providerRun: () => SplitPaneFooterRenderOptions["providerRun"]
   currentProviderSelection: () => SplitPaneFooterRenderOptions["currentProviderSelection"]
@@ -41,6 +42,7 @@ export function createSplitPaneFooterRenderController(
         showAgentFooters: deps.isAttached() && !deps.workflowScreenActive() && visibleAgents.length > 0,
         maxAgentsPerScreen: deps.maxAgentsPerScreen(),
         visibleAgents,
+        metaagentTasks: deps.metaagentTasks(),
         focusedAgentId: deps.focusedAgentId(),
         providerRun: deps.providerRun(),
         currentProviderSelection: deps.currentProviderSelection(),

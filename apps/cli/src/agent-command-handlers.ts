@@ -15,6 +15,10 @@ import {
   type AgentSubstituteCommandHandlerDeps,
 } from "./agent-substitute-command-handlers.js"
 import {
+  handleAgentTaskCommand,
+  type AgentTaskCommandHandlerDeps,
+} from "./agent-task-command-handlers.js"
+import {
   formatAgentInspectSummary,
   formatAgentListSummary,
   handleAgentDeleteCommand,
@@ -28,6 +32,7 @@ export type AgentCommandHandlerDeps =
   & AgentLifecycleCommandHandlerDeps
   & AgentSpawnCommandHandlerDeps
   & AgentSubstituteCommandHandlerDeps
+  & AgentTaskCommandHandlerDeps
 
 export {
   formatAgentInspectSummary,
@@ -136,9 +141,13 @@ export async function handleAgentSlashCommand(
       await handleAgentSubstituteCommand(deps, args)
       return
     }
+    case "task": {
+      await handleAgentTaskCommand(deps, args)
+      return
+    }
     default:
       deps.flashFooter(
-        "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | substitute ...",
+        "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | task [show|edit|plan|pause|resume|abort] | substitute ...",
         "error",
       )
   }

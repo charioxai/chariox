@@ -12,6 +12,9 @@ Metaagents can have one active task at a time. The task is created from the
 original user prompt, is visible and editable in clients, and has a
 kernel-managed plan document the metaagent can update while working.
 
+The intended model is a "CEO" agent: it can observe, plan, provision, approve,
+and supervise, but it should delegate implementation work to regular agents.
+
 ## Key Changes
 
 - Always force metaagents to `execution_mode = plan`.
@@ -22,6 +25,14 @@ kernel-managed plan document the metaagent can update while working.
 - Allow read-only planning access, including workspace reads and recall
   search/query.
 - Allow secure vault secret entry for metaagents by default, configurable off.
+- Keep meta capability management available: MCP install/provisioning,
+  vault-backed secret creation, worker capability grants, and worker permission
+  confirmations remain metaagent capabilities.
+
+Do not add a separate "deny implementation tools" layer for metaagents unless a
+provider exposes direct mutation while in plan mode. Plan mode is the primary
+enforcement mechanism for direct action. Runtime policy should focus on which
+Arroba tools exist for metaagents, not on making metaagents blind.
 
 ## Runtime MCP Task Artifacts
 
@@ -38,11 +49,15 @@ These calls are exposed only to metaagent provider runs and are scoped by
 session id plus metaagent id. The task prompt and plan documents are
 kernel-managed artifacts, not arbitrary workspace files.
 
-Metaagents may read and write these task documents only through the new
-`arroba.meta.*` runtime MCP calls. Regular workspace file access remains normal
-planning context: metaagents may read workspace files, but implementation work
-is delegated to regular agents through plan-mode behavior and metaagent
-supervision.
+Metaagents may read and write these task documents only through the new runtime
+MCP calls. Those calls are exposed only to metaagents and are scoped per session
+and agent, so one metaagent cannot overwrite another metaagent's task state.
+Regular workspace file access remains normal planning context: metaagents may
+read workspace files, but implementation work is delegated to regular agents
+through plan-mode behavior and metaagent supervision.
+
+`arroba.read_artifact` should remain available to metaagents. Reading artifacts
+is observation, not execution.
 
 ## Task Lifecycle
 
@@ -64,7 +79,8 @@ tools.
 
 ## Prompt Guidance
 
-Keep the system prompt short. It should say:
+Keep the system prompt in a markdown template loaded by the prompt assembly
+service, like the other system prompts. Keep it short. It should say:
 
 ```text
 You are an Arroba metaagent. Read workspace context and recall when useful,
@@ -79,7 +95,7 @@ is direct implementation, not observation and planning.
 
 ## UI Updates
 
-Update both the local TUI and web terminal:
+Update both the local TUI and web terminal surfaces:
 
 - Show active metaagent task above the agent pane footer.
 - Make the task area selectable and editable.
@@ -90,12 +106,16 @@ Update both the local TUI and web terminal:
 - When the user edits the task, send the kernel task update and notify the
   metaagent.
 
+The same kernel task model and local daemon requests should back both UIs. Do
+not implement a web-only or TUI-only task state.
+
 ## Test Plan
 
 Update the capabilities drill:
 
 - Assert the metaagent can read workspace files.
 - Assert recall search/query are available.
+- Assert artifact reads are available.
 - Assert the metaagent can read and update only its own task and plan documents
   through `arroba.meta.*` task tools.
 - Assert task artifact calls fail for non-metaagents, other sessions, or other
@@ -103,6 +123,8 @@ Update the capabilities drill:
 - Assert execution mode is plan while permission level is inherited.
 - Assert direct third-party/user MCP tools remain unavailable by default.
 - Assert secure secret entry is available through the configured vault path.
+- Assert capability provisioning paths remain available: MCP install/setup,
+  vault secret creation, grants to workers, and worker confirmation flows.
 
 Add an autonomous one-prompt drill:
 

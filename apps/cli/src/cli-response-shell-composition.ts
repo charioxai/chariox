@@ -139,6 +139,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     workflowScreenActive: () => deps.workflowScreenActive(),
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
     visibleAgents: deps.responseVisibleAgents,
+    metaagentTasks: () => deps.sessionState().metaagent_tasks ?? [],
     focusedAgentId: deps.focusedAgentId,
     providerRun: deps.providerRunState,
     currentProviderSelection: deps.currentProviderSelection,

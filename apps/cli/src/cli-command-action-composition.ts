@@ -118,11 +118,15 @@ import {
 } from "./relay-api.js"
 import {
   aliasSession,
+  abortMetaagentTask,
   createSession,
   deleteSessionByRef,
   getSessionState,
   listSessions,
+  pauseMetaagentTask,
   resolveSession,
+  resumeMetaagentTask,
+  updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "./session-state.js"
 import { formatSessionList } from "./sessions.js"
@@ -566,6 +570,14 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       updateAgentConfig(client, sessionId, agentId, options),
     updateAgentSubstitutes: (sessionId, agentId, action) =>
       updateAgentSubstitutes(client, sessionId, agentId, action),
+    updateMetaagentTask: (sessionId, metaagentId, updates) =>
+      updateMetaagentTask(client, sessionId, metaagentId, updates),
+    pauseMetaagentTask: (sessionId, metaagentId) =>
+      pauseMetaagentTask(client, sessionId, metaagentId),
+    resumeMetaagentTask: (sessionId, metaagentId) =>
+      resumeMetaagentTask(client, sessionId, metaagentId),
+    abortMetaagentTask: (sessionId, metaagentId, reason) =>
+      abortMetaagentTask(client, sessionId, metaagentId, reason),
     applySessionState,
     refreshAgentPanes,
     createWorkspaceLink: (name) => createWorkspaceLink(client, sessionState().id, name),

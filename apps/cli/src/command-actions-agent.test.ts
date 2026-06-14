@@ -22,6 +22,63 @@ test("agent command usage advertises hierarchical spawn placement", async () => 
   assert.doesNotMatch(flashedMessage, /--slice-display/)
 })
 
+test("agent task command updates focused metaagent task", async () => {
+  const metaagent = makeAgent({ role: "meta", alias: "planner" })
+  const nextSession = makeSession({
+    agents: [metaagent],
+    metaagent_tasks: [{
+      task_id: "task-1",
+      metaagent_id: metaagent.id,
+      status: "active",
+      task_markdown: "Fix tests",
+      plan_markdown: "",
+      revision: 1,
+      created_at_ms: 1,
+      updated_at_ms: 2,
+    }],
+  })
+  const calls: string[] = []
+  let appliedSession: RuntimeSession | null = null
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => makeSession({ agents: [metaagent], focused_agent_id: metaagent.id }),
+    resolveSessionAgent: (reference?: string | null) => (
+      !reference || reference === metaagent.id || reference === metaagent.agent_ref
+        ? { agent: metaagent }
+        : { agent: null, error: `agent '${reference}' not found` }
+    ),
+    updateMetaagentTask: async (_sessionId: string, metaagentId: string, updates: Record<string, unknown>) => {
+      calls.push(`${metaagentId}:${updates.taskMarkdown}`)
+      return nextSession
+    },
+    applySessionState: (session: RuntimeSession) => {
+      appliedSession = session
+    },
+    flashFooter: (message: string) => {
+      flashedMessage = message
+    },
+  }))
+
+  await handlers.handleAgentCommand({ kind: "agent", raw: "/agent task edit Fix tests", args: ["task", "edit", "Fix", "tests"] })
+
+  assert.deepEqual(calls, ["agent-1:Fix tests"])
+  assert.equal(appliedSession, nextSession)
+  assert.match(flashedMessage, /updated task for agent-1/)
+})
+
+test("agent task command rejects regular agents", async () => {
+  let flashedMessage = ""
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => {
+      flashedMessage = message
+    },
+  }))
+
+  await handlers.handleAgentCommand({ kind: "agent", raw: "/agent task pause", args: ["task", "pause"] })
+
+  assert.match(flashedMessage, /agent-1 is not a metaagent/)
+})
+
 test("agent spawn refreshes session state after launching the provider run", async () => {
   const firstAgent = makeAgent()
   const secondAgent = makeAgent({

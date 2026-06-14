@@ -127,6 +127,7 @@ export type RuntimeSession = {
   prompt_states?: Record<string, AgentPromptState>
   agent_activity?: Record<string, AgentRuntimeActivity>
   active_interactions?: RuntimeInteraction[]
+  metaagent_tasks?: MetaagentTask[]
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -141,6 +142,23 @@ export type RuntimeSession = {
   workspace_links?: WorkspaceLinkDefinition[]
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   external_provider_imports?: ExternalProviderImportMetadata[]
+}
+
+export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
+
+export type MetaagentTask = {
+  task_id: string
+  metaagent_id: string
+  status: MetaagentTaskStatus
+  task_markdown: string
+  plan_markdown: string
+  revision: number
+  created_at_ms: number
+  updated_at_ms: number
+  completed_at_ms?: number | null
+  blocked_reason?: string | null
+  aborted_reason?: string | null
+  completion_summary?: string | null
 }
 
 export type ExternalProviderImportMode = "observed_history" | "resume_only"
@@ -1232,6 +1250,7 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
     ...session,
     queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
     active_interactions: Array.isArray(session.active_interactions) ? session.active_interactions : [],
+    metaagent_tasks: Array.isArray(session.metaagent_tasks) ? session.metaagent_tasks : [],
   }
   if (promptStates) {
     normalized.prompt_states = promptStates

@@ -12,13 +12,14 @@ test("split-pane footer render controller renders current footer projection", ()
   let visibleAgents: Array<AgentInstance | null | undefined> = [agent("agent-a")]
   const controller = createSplitPaneFooterRenderController({
     renderer: "renderer" as unknown as SplitPaneFooterRenderOptions["renderer"],
-    state: { primary: { parts: {}, badgeTexts: [] }, auxiliaries: [] },
+    state: { primary: { parts: {}, taskParts: {}, badgeTexts: [] }, auxiliaries: [] },
     primaryBox: () => "primary" as unknown as SplitPaneFooterRenderOptions["primaryBox"],
     auxiliaryBoxes: () => ["aux"] as unknown as SplitPaneFooterRenderOptions["auxiliaryBoxes"],
     isAttached: () => attached,
     workflowScreenActive: () => workflowActive,
     maxAgentsPerScreen: () => 2,
     visibleAgents: () => visibleAgents,
+    metaagentTasks: () => [],
     focusedAgentId: () => "agent-a",
     providerRun: () => null,
     currentProviderSelection: () => ({ model: "default", effort: "" }),
@@ -45,6 +46,7 @@ test("split-pane footer render controller renders current footer projection", ()
   const first = rendered[0]!
   assert.equal(first.showAgentFooters, true)
   assert.equal(first.visibleAgents[0]?.id, "agent-a")
+  assert.deepEqual(first.metaagentTasks, [])
   assert.equal(first.focusedAgentId, "agent-a")
   assert.deepEqual(first.currentProviderSelection, { model: "default", effort: "" })
   assert.deepEqual(first.agentActivityLabels, { "agent-a": "working" })

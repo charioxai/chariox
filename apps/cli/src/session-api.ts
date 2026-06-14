@@ -14,7 +14,11 @@ import {
   endSessionRequest,
   getSessionStateRequest,
   listSessionsRequest,
+  pauseMetaagentTaskRequest,
   resolveSessionRequest,
+  resumeMetaagentTaskRequest,
+  abortMetaagentTaskRequest,
+  updateMetaagentTaskRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { resolvePendingWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
@@ -97,5 +101,49 @@ export async function attachToSession(
 export async function getSessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
   const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionState")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function updateMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+  updates: { taskMarkdown?: string | null; planMarkdown?: string | null },
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(
+    updateMetaagentTaskRequest(sessionId, metaagentId, updates),
+  )
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function pauseMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(pauseMetaagentTaskRequest(sessionId, metaagentId))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function resumeMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(resumeMetaagentTaskRequest(sessionId, metaagentId))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function abortMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+  reason?: string | null,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(abortMetaagentTaskRequest(sessionId, metaagentId, reason))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
   return normalizeRuntimeSession(payload.session)
 }

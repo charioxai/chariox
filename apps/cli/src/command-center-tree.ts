@@ -49,6 +49,21 @@ export const COMMAND_TREE: CommandNode[] = [
       },
       { id: "agent-cycle", label: "cycle", description: "Cycle to next agent", value: "/agent cycle" },
       {
+        id: "agent-task",
+        label: "task",
+        description: "View or control a metaagent task",
+        value: "/agent task ",
+        searchAliases: ["metaagent task", "planner task", "pause metaagent", "abort metaagent"],
+        children: [
+          { id: "agent-task-show", label: "show", description: "Show a metaagent task and plan", value: "/agent task show " },
+          { id: "agent-task-edit", label: "edit", description: "Edit a metaagent task prompt", value: "/agent task edit " },
+          { id: "agent-task-plan", label: "plan", description: "Edit a metaagent plan document", value: "/agent task plan " },
+          { id: "agent-task-pause", label: "pause", description: "Pause a metaagent task", value: "/agent task pause " },
+          { id: "agent-task-resume", label: "resume", description: "Resume a paused metaagent task", value: "/agent task resume " },
+          { id: "agent-task-abort", label: "abort", description: "Abort a metaagent task", value: "/agent task abort " },
+        ],
+      },
+      {
         id: "agent-substitute",
         label: "substitute",
         description: "Manage fallback provider profiles for the focused agent",
