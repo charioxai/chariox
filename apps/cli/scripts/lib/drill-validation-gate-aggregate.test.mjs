@@ -47,6 +47,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactClassifications, {
     "cloud-validation-suite": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactKinds, {
+    "validation-suite-run": 1,
+  })
+  assert.deepEqual(aggregate.coverage.artifactEvidenceRepos, {
+    oss: 1,
+  })
   assert.deepEqual(aggregate.coverage.matrixRuntimeSignals, {
     "workspace-live-sync-state": 1,
   })
@@ -87,6 +93,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.reports[0].artifactCoverage.classifications, {
     "cloud-validation-suite": 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.artifactKinds, {
+    "validation-suite-run": 1,
+  })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.evidenceRepos, {
+    oss: 1,
+  })
   assert.deepEqual(aggregate.reports[0].matrixCoverage.runtimeSignals, {
     "workspace-live-sync-state": 1,
   })
@@ -108,6 +120,8 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /- artifact_runtime_signal_owners: kernel-authority=1 runtime-state=1/)
   assert.match(text, /- artifact_owners: validation-platform=1/)
   assert.match(text, /- artifact_classifications: cloud-validation-suite=1/)
+  assert.match(text, /- artifact_kinds: validation-suite-run=1/)
+  assert.match(text, /- artifact_evidence_repos: oss=1/)
   assert.match(text, /- matrix_runtime_signals: workspace-live-sync-state=1/)
   assert.match(text, /- matrix_runtime_signal_owners: runtime-state=1/)
   assert.match(text, /- matrix_owners: runtime-state=1/)
@@ -399,6 +413,12 @@ function reportFixture(overrides = {}) {
           },
           classifications: {
             "cloud-validation-suite": 1,
+          },
+          artifactKinds: {
+            "validation-suite-run": 1,
+          },
+          evidenceRepos: {
+            oss: 1,
           },
         },
       },

@@ -129,6 +129,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
   assert.match(text, /artifact_owners=validation-platform:1/)
   assert.match(text, /artifact_classifications=cloud-validation-suite:1/)
+  assert.match(text, /artifact_kinds=artifact-index:1,matrix-report:1,validation-suite-run:1/)
+  assert.match(text, /artifact_evidence_repos=cloud:1,oss:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
   assert.match(text, /matrix_runtime_signals=session-authority:1,workspace-live-sync-state:1/)
   assert.match(text, /matrix_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
@@ -222,6 +224,15 @@ function artifactAggregateFixture() {
     classifications: {
       "cloud-validation-suite": 1,
     },
+    artifactKinds: {
+      "artifact-index": 1,
+      "matrix-report": 1,
+      "validation-suite-run": 1,
+    },
+    evidenceRepos: {
+      cloud: 1,
+      oss: 1,
+    },
     indexes: [{
       source: "/tmp/artifacts.json",
       rootDir: "/tmp/artifacts",
@@ -244,6 +255,15 @@ function artifactAggregateFixture() {
       },
       classifications: {
         "cloud-validation-suite": 1,
+      },
+      artifactKinds: {
+        "artifact-index": 1,
+        "matrix-report": 1,
+        "validation-suite-run": 1,
+      },
+      evidenceRepos: {
+        cloud: 1,
+        oss: 1,
       },
     }],
   }

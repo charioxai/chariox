@@ -79,6 +79,14 @@ export function formatDrillValidationGateSummary(report) {
     if (classifications.length > 0) {
       lines.push(`artifact_classifications=${classifications.map(([classification, count]) => `${classification}:${count}`).join(",")}`)
     }
+    const artifactKinds = Object.entries(artifacts.aggregate.artifactKinds ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (artifactKinds.length > 0) {
+      lines.push(`artifact_kinds=${artifactKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
+    const evidenceRepos = Object.entries(artifacts.aggregate.evidenceRepos ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (evidenceRepos.length > 0) {
+      lines.push(`artifact_evidence_repos=${evidenceRepos.map(([repo, count]) => `${repo}:${count}`).join(",")}`)
+    }
   }
 
   const matrices = report.checks.matrices
