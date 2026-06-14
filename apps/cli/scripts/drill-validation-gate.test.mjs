@@ -28,6 +28,8 @@ test("drill validation gate writes passing JSON report", async () => {
       scriptPath,
       "--platform-bundle",
       bundleDir,
+      "--require-failure-classification",
+      "kernel-authority,remote-extension-sync",
       "--json",
       "--output",
       outputPath,
@@ -41,6 +43,8 @@ test("drill validation gate writes passing JSON report", async () => {
     assert.deepEqual(fileReport, stdoutReport)
     assert.equal(fileReport.status, "passed")
     assert.equal(fileReport.checks.platformBundle.status, "passed")
+    assert.deepEqual(fileReport.checks.platformBundle.requiredFailureClassifications, ["kernel-authority", "remote-extension-sync"])
+    assert.deepEqual(fileReport.checks.platformBundle.missingFailureClassifications, [])
     assert.equal(artifactIndex.metadata.drill, "validation-gate")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
@@ -53,6 +57,22 @@ test("drill validation gate writes passing JSON report", async () => {
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("drill validation gate rejects unknown required failure classifications", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [
+      scriptPath,
+      "--require-failure-classification",
+      "kernel-authority,remote-extension-synch",
+      "--json",
+    ]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /unknown required failure classification: remote-extension-synch/)
+      return true
+    },
+  )
 })
 
 test("drill validation gate rejects output artifact index without output", async () => {

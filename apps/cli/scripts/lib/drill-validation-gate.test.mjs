@@ -49,6 +49,8 @@ test("passes with valid platform bundle and complete matrix reports", async () =
         { id: "suite-contract", testCount: 2 },
       ],
     })
+    assert.equal(report.checks.platformBundle.failureTaxonomy.drill.includes("kernel-authority"), true)
+    assert.equal(report.checks.platformBundle.failureTaxonomy.scenario.includes("remote-extension-sync"), true)
     assert.equal(report.checks.matrices.status, "passed")
     assert.equal(report.checks.failures.status, "skipped")
     assert.deepEqual(report.nextActions, [])
@@ -99,6 +101,41 @@ test("gates platform bundle validation suite coverage areas", async () => {
   }
 })
 
+test("gates platform bundle failure taxonomy classifications", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+
+    const pass = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      requiredFailureClassifications: ["kernel-authority,remote-extension-sync", "workspace-live-sync-conflict"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.platformBundle.requiredFailureClassifications, [
+      "kernel-authority",
+      "remote-extension-sync",
+      "workspace-live-sync-conflict",
+    ])
+    assert.deepEqual(pass.checks.platformBundle.missingFailureClassifications, [])
+    assert.match(
+      formatDrillValidationGateSummary(pass),
+      /platform_required_failure_classifications=kernel-authority,remote-extension-sync,workspace-live-sync-conflict missing=none/,
+    )
+    assert.match(formatDrillValidationGateSummary(pass), /platform_failure_taxonomy=drill:\d+ scenario:\d+/)
+
+    await assert.rejects(
+      () => runDrillValidationGate({
+        platformBundleDir: bundleDir,
+        requiredFailureClassifications: ["kernel-authority", "kernel-authorities"],
+      }),
+      /unknown required failure classification: kernel-authorities/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("fails platform coverage requirements without a platform bundle", async () => {
   const report = await runDrillValidationGate({
     requiredPlatformCoverageAreas: ["runtime-fixtures"],
@@ -109,6 +146,39 @@ test("fails platform coverage requirements without a platform bundle", async () 
   assert.equal(report.checks.platformBundle.error, "no platform bundle provided")
   assert.deepEqual(report.checks.platformBundle.missingCoverageAreas, ["runtime-fixtures"])
 })
+
+test("fails platform failure classification requirements without a platform bundle", async () => {
+  const report = await runDrillValidationGate({
+    requiredFailureClassifications: ["kernel-authority", "remote-extension-sync"],
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.checks.platformBundle.status, "failed")
+  assert.equal(report.checks.platformBundle.error, "no platform bundle provided")
+  assert.deepEqual(report.checks.platformBundle.missingFailureClassifications, ["kernel-authority", "remote-extension-sync"])
+  assert.deepEqual(report.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [
+    {
+      owner: "validation-harness",
+      classification: "platform-bundle",
+      nextAction: "provide a drill platform bundle covering failure classifications: kernel-authority, remote-extension-sync",
+    },
+    {
+      owner: "validation-harness",
+      classification: "platform-bundle",
+      nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
+    },
+  ])
+})
+
+test("rejects unknown required failure classifications", async () => {
+  await assert.rejects(
+    () => runDrillValidationGate({
+      requiredFailureClassifications: ["kernel-authority", "remote-extension-synch"],
+    }),
+    /unknown required failure classification: remote-extension-synch/,
+  )
+})
+
 
 test("passes with explicit matrix report paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
@@ -576,6 +646,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     const passed = await runDrillValidationGate({
       matrixReports: [reportPath],
       requiredPlatformCoverageAreas: ["runtime-fixtures"],
+      requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["test-matrix"],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
@@ -584,6 +655,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     const failed = await runDrillValidationGate({
       matrixReports: [reportPath],
       requiredPlatformCoverageAreas: ["hosted-cloud-drills"],
+      requiredFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
       requiredMatrices: ["hosted-matrix", "test-matrix"],
       requiredDeploymentPresets: ["hosted-cloud", "local"],
       requiredProviders: ["claude", "codex"],
@@ -597,6 +669,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     assert.deepEqual(aggregate.coverage, {
       requiredPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
       missingPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
+      requiredFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
+      missingFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
       missingMatrices: { "hosted-matrix": 1 },
       requiredDeploymentPresets: { "hosted-cloud": 1, local: 2 },
@@ -610,10 +684,14 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       {
         requiredCoverageAreas: ["runtime-fixtures"],
         missingCoverageAreas: ["runtime-fixtures"],
+        requiredFailureClassifications: ["kernel-authority"],
+        missingFailureClassifications: ["kernel-authority"],
       },
       {
         requiredCoverageAreas: ["hosted-cloud-drills"],
         missingCoverageAreas: ["hosted-cloud-drills"],
+        requiredFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
+        missingFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
@@ -641,6 +719,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     const text = formatDrillValidationGateAggregateSummary(aggregate)
     assert.match(text, /coverage:/)
     assert.match(text, /missing_platform_coverage_areas: hosted-cloud-drills=1 runtime-fixtures=1/)
+    assert.match(text, /required_failure_classifications: kernel-authority=1 remote-extension-sync=1 workspace-live-sync-conflict=1/)
+    assert.match(text, /missing_failure_classifications: kernel-authority=1 remote-extension-sync=1 workspace-live-sync-conflict=1/)
     assert.match(text, /missing_matrices: hosted-matrix=1/)
     assert.match(text, /required_deployment_presets: hosted-cloud=1 local=2/)
     assert.match(text, /missing_providers: claude=1/)

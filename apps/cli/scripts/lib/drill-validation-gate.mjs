@@ -17,6 +17,7 @@ import {
   resolveFailureManifestPath,
   summarizeDrillFailureManifests,
 } from "./drill-failure-manifest.mjs"
+import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import {
   drillMatrixReportCompletionExitCode,
@@ -68,6 +69,8 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
   const coverage = {
     requiredPlatformCoverageAreas: new Map(),
     missingPlatformCoverageAreas: new Map(),
+    requiredFailureClassifications: new Map(),
+    missingFailureClassifications: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredDeploymentPresets: new Map(),
@@ -86,6 +89,8 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
     const platformCoverage = validationGateReportPlatformCoverage(report)
     countStringValues(coverage.requiredPlatformCoverageAreas, platformCoverage.requiredCoverageAreas)
     countStringValues(coverage.missingPlatformCoverageAreas, platformCoverage.missingCoverageAreas)
+    countStringValues(coverage.requiredFailureClassifications, platformCoverage.requiredFailureClassifications)
+    countStringValues(coverage.missingFailureClassifications, platformCoverage.missingFailureClassifications)
     const matrixCoverage = validationGateReportMatrixCoverage(report)
     countStringValues(coverage.requiredMatrices, matrixCoverage.requiredMatrices)
     countStringValues(coverage.missingMatrices, matrixCoverage.missingMatrices)
@@ -156,12 +161,14 @@ export async function runDrillValidationGate({
   platformBundleDir = null,
   requireComplete = false,
   requiredPlatformCoverageAreas = [],
+  requiredFailureClassifications = [],
   requiredMatrices = [],
   requiredDeploymentPresets = [],
   requiredProviders = [],
   requiredScenarios = [],
 } = {}) {
   const normalizedRequiredPlatformCoverageAreas = normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas)
+  const normalizedRequiredFailureClassifications = normalizeRequiredFailureClassifications(requiredFailureClassifications)
   const normalizedRequiredMatrices = normalizeRequiredMatrices(requiredMatrices)
   const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(requiredDeploymentPresets)
   const normalizedRequiredProviders = normalizeRequiredProviders(requiredProviders)
@@ -176,6 +183,7 @@ export async function runDrillValidationGate({
       matrixRoots,
       platformBundleDir,
       requiredPlatformCoverageAreas: normalizedRequiredPlatformCoverageAreas,
+      requiredFailureClassifications: normalizedRequiredFailureClassifications,
       requiredMatrices: normalizedRequiredMatrices,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
@@ -183,6 +191,7 @@ export async function runDrillValidationGate({
     }),
     platformBundle: await platformBundleCheck(platformBundleDir, {
       requiredCoverageAreas: normalizedRequiredPlatformCoverageAreas,
+      requiredFailureClassifications: normalizedRequiredFailureClassifications,
     }),
     artifacts: await artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
     matrices: await matrixCheck({
@@ -230,8 +239,16 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredPlatformCoverageAreas.length > 0) {
     lines.push(`platform_required_coverage_areas=${requiredPlatformCoverageAreas.join(",")} missing=${missingPlatformCoverageAreas.join(",") || "none"}`)
   }
+  const requiredFailureClassifications = platform.requiredFailureClassifications ?? []
+  const missingFailureClassifications = platform.missingFailureClassifications ?? []
+  if (requiredFailureClassifications.length > 0) {
+    lines.push(`platform_required_failure_classifications=${requiredFailureClassifications.join(",")} missing=${missingFailureClassifications.join(",") || "none"}`)
+  }
   if (platform.validationSuite) {
     lines.push(`platform_validation_suite_tests=${platform.validationSuite.testCount} coverage=${platform.validationSuite.coverageAreas.map((area) => `${area.id}:${area.testCount}`).join(",")}`)
+  }
+  if (platform.failureTaxonomy) {
+    lines.push(`platform_failure_taxonomy=drill:${platform.failureTaxonomy.drill.length} scenario:${platform.failureTaxonomy.scenario.length}`)
   }
 
   const artifacts = report.checks.artifacts
@@ -382,11 +399,16 @@ function validatePlatformBundleCheck(check, source) {
   validateCheckObject(check, source)
   validateStringArray(check.requiredCoverageAreas ?? [], `${source}.requiredCoverageAreas`)
   validateStringArray(check.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
+  validateStringArray(check.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
+  validateStringArray(check.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
   if (check.status === "skipped") {
     if (check.dir !== null) {
       throw new Error(`${source} skipped check has invalid dir`)
     }
-    if ((check.requiredCoverageAreas ?? []).length > 0 || (check.missingCoverageAreas ?? []).length > 0) {
+    if ((check.requiredCoverageAreas ?? []).length > 0
+      || (check.missingCoverageAreas ?? []).length > 0
+      || (check.requiredFailureClassifications ?? []).length > 0
+      || (check.missingFailureClassifications ?? []).length > 0) {
       throw new Error(`${source} skipped check has invalid coverage requirements`)
     }
     return
@@ -412,6 +434,9 @@ function validatePlatformBundleCheck(check, source) {
     validatePlatformBundleArtifact(artifact, `${source}.artifacts[${index}]`)
   }
   validatePlatformValidationSuiteSummary(check.validationSuite, `${source}.validationSuite`)
+  if (check.failureTaxonomy !== undefined) {
+    validatePlatformFailureTaxonomySummary(check.failureTaxonomy, `${source}.failureTaxonomy`)
+  }
 }
 
 function validateArtifactIndexCheck(check, source) {
@@ -524,6 +549,14 @@ function validatePlatformValidationSuiteSummary(summary, source) {
   }
 }
 
+function validatePlatformFailureTaxonomySummary(summary, source) {
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateStringArray(summary.drill, `${source}.drill`)
+  validateStringArray(summary.scenario, `${source}.scenario`)
+}
+
 function validateAggregateSchema(aggregate, schema, source) {
   if (!aggregate || typeof aggregate !== "object" || Array.isArray(aggregate)) {
     throw new Error(`${source} is not an object`)
@@ -586,6 +619,8 @@ function validationGateReportPlatformCoverage(report) {
   return {
     requiredCoverageAreas: [...(platform.requiredCoverageAreas ?? [])],
     missingCoverageAreas: [...(platform.missingCoverageAreas ?? [])],
+    requiredFailureClassifications: [...(platform.requiredFailureClassifications ?? [])],
+    missingFailureClassifications: [...(platform.missingFailureClassifications ?? [])],
   }
 }
 
@@ -613,6 +648,8 @@ function formatValidationGateCoverageCounts(coverage) {
   return {
     requiredPlatformCoverageAreas: countMapToObject(coverage.requiredPlatformCoverageAreas),
     missingPlatformCoverageAreas: countMapToObject(coverage.missingPlatformCoverageAreas),
+    requiredFailureClassifications: countMapToObject(coverage.requiredFailureClassifications),
+    missingFailureClassifications: countMapToObject(coverage.missingFailureClassifications),
     requiredMatrices: countMapToObject(coverage.requiredMatrices),
     missingMatrices: countMapToObject(coverage.missingMatrices),
     requiredDeploymentPresets: countMapToObject(coverage.requiredDeploymentPresets),
@@ -632,6 +669,8 @@ function formatValidationGateCoverageSummary(coverage) {
   const lines = []
   appendCoverageLine(lines, "required_platform_coverage_areas", coverage.requiredPlatformCoverageAreas)
   appendCoverageLine(lines, "missing_platform_coverage_areas", coverage.missingPlatformCoverageAreas)
+  appendCoverageLine(lines, "required_failure_classifications", coverage.requiredFailureClassifications)
+  appendCoverageLine(lines, "missing_failure_classifications", coverage.missingFailureClassifications)
   appendCoverageLine(lines, "required_matrices", coverage.requiredMatrices)
   appendCoverageLine(lines, "missing_matrices", coverage.missingMatrices)
   appendCoverageLine(lines, "required_deployment_presets", coverage.requiredDeploymentPresets)
@@ -656,6 +695,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   }
   validateCountObject(coverage.requiredPlatformCoverageAreas ?? {}, `${source}.requiredPlatformCoverageAreas`)
   validateCountObject(coverage.missingPlatformCoverageAreas ?? {}, `${source}.missingPlatformCoverageAreas`)
+  validateCountObject(coverage.requiredFailureClassifications ?? {}, `${source}.requiredFailureClassifications`)
+  validateCountObject(coverage.missingFailureClassifications ?? {}, `${source}.missingFailureClassifications`)
   validateCountObject(coverage.requiredMatrices ?? {}, `${source}.requiredMatrices`)
   validateCountObject(coverage.missingMatrices ?? {}, `${source}.missingMatrices`)
   validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
@@ -686,12 +727,16 @@ function validateValidationGatePlatformCoverage(coverage, source) {
   }
   validateStringArray(coverage.requiredCoverageAreas ?? [], `${source}.requiredCoverageAreas`)
   validateStringArray(coverage.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
+  validateStringArray(coverage.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
+  validateStringArray(coverage.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
 }
 
 function assertValidationGateCoverageMatchesReports(aggregate, source) {
   const expected = {
     requiredPlatformCoverageAreas: new Map(),
     missingPlatformCoverageAreas: new Map(),
+    requiredFailureClassifications: new Map(),
+    missingFailureClassifications: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredDeploymentPresets: new Map(),
@@ -705,9 +750,13 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     const platformCoverage = report.platformCoverage ?? {
       requiredCoverageAreas: [],
       missingCoverageAreas: [],
+      requiredFailureClassifications: [],
+      missingFailureClassifications: [],
     }
     countStringValues(expected.requiredPlatformCoverageAreas, platformCoverage.requiredCoverageAreas ?? [])
     countStringValues(expected.missingPlatformCoverageAreas, platformCoverage.missingCoverageAreas ?? [])
+    countStringValues(expected.requiredFailureClassifications, platformCoverage.requiredFailureClassifications ?? [])
+    countStringValues(expected.missingFailureClassifications, platformCoverage.missingFailureClassifications ?? [])
     const coverage = report.matrixCoverage ?? {
       requiredMatrices: [],
       missingMatrices: [],
@@ -754,6 +803,14 @@ function validationGateNextActions(checks) {
         owner: "validation-harness",
         classification: "platform-bundle",
         nextAction: `provide a drill platform bundle covering: ${missingCoverageAreas.join(", ")}`,
+      })
+    }
+    const missingFailureClassifications = checks.platformBundle.missingFailureClassifications ?? []
+    if (missingFailureClassifications.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: `provide a drill platform bundle covering failure classifications: ${missingFailureClassifications.join(", ")}`,
       })
     }
   }
@@ -839,6 +896,7 @@ function configurationCheck({
   matrixRoots,
   platformBundleDir,
   requiredPlatformCoverageAreas,
+  requiredFailureClassifications,
   requiredMatrices,
   requiredDeploymentPresets,
   requiredProviders,
@@ -850,6 +908,7 @@ function configurationCheck({
     || matrixRoots.length > 0
     || matrixReports.length > 0
     || requiredPlatformCoverageAreas.length > 0
+    || requiredFailureClassifications.length > 0
     || failureRoots.length > 0
     || failureInputs.length > 0
     || requiredMatrices.length > 0
@@ -907,14 +966,16 @@ async function artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth
   }
 }
 
-async function platformBundleCheck(platformBundleDir, { requiredCoverageAreas = [] } = {}) {
+async function platformBundleCheck(platformBundleDir, { requiredCoverageAreas = [], requiredFailureClassifications = [] } = {}) {
   if (!platformBundleDir) {
-    if (requiredCoverageAreas.length > 0) {
+    if (requiredCoverageAreas.length > 0 || requiredFailureClassifications.length > 0) {
       return {
         status: "failed",
         dir: null,
         requiredCoverageAreas: [...requiredCoverageAreas],
         missingCoverageAreas: [...requiredCoverageAreas],
+        requiredFailureClassifications: [...requiredFailureClassifications],
+        missingFailureClassifications: [...requiredFailureClassifications],
         error: "no platform bundle provided",
       }
     }
@@ -923,18 +984,28 @@ async function platformBundleCheck(platformBundleDir, { requiredCoverageAreas = 
       dir: null,
       requiredCoverageAreas: [],
       missingCoverageAreas: [],
+      requiredFailureClassifications: [],
+      missingFailureClassifications: [],
     }
   }
   try {
     const bundle = await verifyDrillPlatformBundle(platformBundleDir)
     const validationSuite = await readPlatformBundleValidationSuite(platformBundleDir)
+    const failureTaxonomy = await readPlatformBundleFailureTaxonomy(platformBundleDir)
     const missingCoverageAreas = missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageAreas)
+    const missingFailureClassifications = missingRequiredFailureClassifications(failureTaxonomy, requiredFailureClassifications)
+    const errors = [
+      ...(missingCoverageAreas.length > 0 ? [`missing platform coverage areas: ${missingCoverageAreas.join(", ")}`] : []),
+      ...(missingFailureClassifications.length > 0 ? [`missing failure classifications: ${missingFailureClassifications.join(", ")}`] : []),
+    ]
     return {
-      status: missingCoverageAreas.length === 0 ? "passed" : "failed",
+      status: errors.length === 0 ? "passed" : "failed",
       dir: platformBundleDir,
       requiredCoverageAreas: [...requiredCoverageAreas],
       missingCoverageAreas,
-      ...(missingCoverageAreas.length > 0 ? { error: `missing platform coverage areas: ${missingCoverageAreas.join(", ")}` } : {}),
+      requiredFailureClassifications: [...requiredFailureClassifications],
+      missingFailureClassifications,
+      ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
       artifacts: bundle.artifacts.map((artifact) => ({
         path: artifact.path,
         schema: artifact.schema,
@@ -942,6 +1013,7 @@ async function platformBundleCheck(platformBundleDir, { requiredCoverageAreas = 
         sizeBytes: artifact.sizeBytes,
       })),
       validationSuite,
+      failureTaxonomy,
     }
   } catch (error) {
     return {
@@ -949,6 +1021,8 @@ async function platformBundleCheck(platformBundleDir, { requiredCoverageAreas = 
       dir: platformBundleDir,
       requiredCoverageAreas: [...requiredCoverageAreas],
       missingCoverageAreas: [...requiredCoverageAreas],
+      requiredFailureClassifications: [...requiredFailureClassifications],
+      missingFailureClassifications: [...requiredFailureClassifications],
       error: error instanceof Error ? error.message : String(error),
     }
   }
@@ -965,9 +1039,39 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
   }
 }
 
+async function readPlatformBundleFailureTaxonomy(platformBundleDir) {
+  const [drill, scenario] = await Promise.all([
+    readPlatformBundleFailureTaxonomyKinds(platformBundleDir, "drill"),
+    readPlatformBundleFailureTaxonomyKinds(platformBundleDir, "scenario"),
+  ])
+  return { drill, scenario }
+}
+
+async function readPlatformBundleFailureTaxonomyKinds(platformBundleDir, target) {
+  const taxonomy = JSON.parse(await readFile(path.join(platformBundleDir, `failure-taxonomy-${target}.json`), "utf8"))
+  if (taxonomy.schema !== "arroba.drill.failure_taxonomy.v1") {
+    throw new Error(`failure taxonomy ${target} has unsupported schema ${JSON.stringify(taxonomy.schema)}`)
+  }
+  if (taxonomy.target !== target) {
+    throw new Error(`failure taxonomy ${target} has invalid target ${JSON.stringify(taxonomy.target)}`)
+  }
+  if (!Array.isArray(taxonomy.classifications)) {
+    throw new Error(`failure taxonomy ${target} has invalid classifications`)
+  }
+  return [...new Set(taxonomy.classifications
+    .map((entry) => entry?.kind)
+    .filter((kind) => typeof kind === "string"))].sort()
+}
+
 function missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageAreas) {
   const present = new Set((validationSuite.coverageAreas ?? []).map((area) => area.id))
   return requiredCoverageAreas.filter((area) => !present.has(area))
+}
+
+function missingRequiredFailureClassifications(failureTaxonomy, requiredFailureClassifications) {
+  const drill = new Set(failureTaxonomy.drill ?? [])
+  const scenario = new Set(failureTaxonomy.scenario ?? [])
+  return requiredFailureClassifications.filter((classification) => !drill.has(classification) || !scenario.has(classification))
 }
 
 async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete, requiredMatrices, requiredDeploymentPresets, requiredProviders, requiredScenarios }) {
@@ -1091,6 +1195,29 @@ function normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas) {
     }
   }
   return [...new Set(areas)].sort()
+}
+
+function normalizeRequiredFailureClassifications(requiredFailureClassifications) {
+  if (!Array.isArray(requiredFailureClassifications)) {
+    throw new Error("requiredFailureClassifications must be an array")
+  }
+  const classifications = []
+  for (const classification of requiredFailureClassifications) {
+    if (!nonEmptyString(classification)) {
+      throw new Error("requiredFailureClassifications has invalid classification")
+    }
+    for (const value of classification.split(",")) {
+      const normalized = value.trim()
+      if (normalized) classifications.push(normalized)
+    }
+  }
+  const normalizedClassifications = [...new Set(classifications)].sort()
+  for (const classification of normalizedClassifications) {
+    if (!isKnownDrillFailureClassification(classification)) {
+      throw new Error(`unknown required failure classification: ${classification}`)
+    }
+  }
+  return normalizedClassifications
 }
 
 function normalizeRequiredMatrices(requiredMatrices) {

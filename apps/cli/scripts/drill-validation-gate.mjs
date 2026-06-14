@@ -26,6 +26,8 @@ function printHelp() {
     "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
     "  --require-platform-coverage-area ID[,ID]",
     "                         Fail when platform bundle validation suite lacks each coverage area; repeatable",
+    "  --require-failure-classification KIND[,KIND]",
+    "                         Fail when platform bundle failure taxonomy lacks each classification; repeatable",
     "  --require-matrix NAME[,NAME]",
     "                         Fail when matrix reports do not include each matrix name; repeatable",
     "  --require-deployment-preset NAME[,NAME]",
@@ -83,6 +85,7 @@ function parseArgs(argv) {
     platformBundleDir: null,
     requireComplete: false,
     requiredPlatformCoverageAreas: [],
+    requiredFailureClassifications: [],
     requiredMatrices: [],
     requiredDeploymentPresets: [],
     requiredProviders: [],
@@ -100,6 +103,14 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--require-platform-coverage-area=")) {
       options.requiredPlatformCoverageAreas.push(arg.slice("--require-platform-coverage-area=".length))
+    }
+    else if (arg === "--require-failure-classification") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-failure-classification requires a value")
+      options.requiredFailureClassifications.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-failure-classification=")) {
+      options.requiredFailureClassifications.push(arg.slice("--require-failure-classification=".length))
     }
     else if (arg === "--require-matrix") {
       const value = argv[index + 1]
