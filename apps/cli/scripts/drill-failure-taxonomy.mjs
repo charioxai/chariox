@@ -2,6 +2,7 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 
+import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 
 function printHelp() {
@@ -13,6 +14,8 @@ function printHelp() {
     "Options:",
     "  --target VALUE  Next-action target; scenario or drill. Defaults to scenario",
     "  --output PATH   Write the taxonomy JSON to PATH",
+    "  --output-artifact-index PATH",
+    "                 Write an artifact index for --output",
   ].join("\n"))
 }
 
@@ -27,6 +30,17 @@ async function main() {
   if (options.outputPath) {
     await mkdir(path.dirname(options.outputPath), { recursive: true })
     await writeFile(options.outputPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+    if (options.outputArtifactIndexPath) {
+      await writeDrillArtifactIndex({
+        rootDir: path.dirname(options.outputPath),
+        artifacts: [path.basename(options.outputPath)],
+        indexPath: options.outputArtifactIndexPath,
+        metadata: {
+          drill: "failure-taxonomy",
+          target: manifest.target,
+        },
+      })
+    }
   }
   console.log(JSON.stringify(manifest, null, 2))
 }
@@ -34,6 +48,7 @@ async function main() {
 function parseArgs(argv) {
   const options = {
     help: false,
+    outputArtifactIndexPath: null,
     outputPath: null,
     target: "scenario",
   }
@@ -54,11 +69,21 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--output=")) {
       options.outputPath = arg.slice("--output=".length)
+    } else if (arg === "--output-artifact-index") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--output-artifact-index requires a value")
+      options.outputArtifactIndexPath = value
+      index += 1
+    } else if (arg.startsWith("--output-artifact-index=")) {
+      options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
     } else if (arg.startsWith("--")) {
       throw new Error(`unknown argument: ${arg}`)
     } else {
       throw new Error(`unexpected argument: ${arg}`)
     }
+  }
+  if (options.outputArtifactIndexPath && !options.outputPath) {
+    throw new Error("--output-artifact-index requires --output")
   }
   return options
 }

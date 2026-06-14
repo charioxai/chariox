@@ -7,6 +7,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { SHARED_DRILL_TEST_PATHS } from "./lib/drill-validation-suite.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -38,16 +39,45 @@ test("drill validation suite prints coverage manifest", async () => {
 test("drill validation suite writes coverage manifest", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-suite-"))
   const outputPath = path.join(rootDir, "suite.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
   try {
-    const { stdout } = await execFile(process.execPath, [scriptPath, "--json", "--output", outputPath])
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
     const stdoutManifest = JSON.parse(stdout)
     const fileManifest = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileManifest, stdoutManifest)
     assert.equal(fileManifest.schema, "arroba.drill.validation_suite.v1")
+    assert.equal(artifactIndex.metadata.drill, "validation-suite")
+    assert.equal(artifactIndex.metadata.tests, SHARED_DRILL_TEST_PATHS.length)
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
+      path: artifact.path,
+      schema: artifact.schema,
+    })), [{
+      path: "suite.json",
+      schema: "arroba.drill.validation_suite.v1",
+    }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("drill validation suite rejects output artifact index without output", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--json", "--output-artifact-index", "/tmp/arroba-drill-artifacts.json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /requires --output/)
+      return true
+    },
+  )
 })
 
 test("drill validation suite checks configured paths", async () => {

@@ -7,6 +7,8 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-failure-taxonomy.mjs", import.meta.url))
 
@@ -37,13 +39,44 @@ test("drill failure taxonomy prints drill-target next actions", async () => {
 test("drill failure taxonomy writes manifest", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-"))
   const outputPath = path.join(rootDir, "taxonomy.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
   try {
-    const { stdout } = await execFile(process.execPath, [scriptPath, "--output", outputPath])
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--target",
+      "drill",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
     const stdoutManifest = JSON.parse(stdout)
     const fileManifest = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileManifest, stdoutManifest)
+    assert.equal(fileManifest.target, "drill")
+    assert.equal(artifactIndex.metadata.drill, "failure-taxonomy")
+    assert.equal(artifactIndex.metadata.target, "drill")
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
+      path: artifact.path,
+      schema: artifact.schema,
+    })), [{
+      path: "taxonomy.json",
+      schema: "arroba.drill.failure_taxonomy.v1",
+    }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("drill failure taxonomy rejects output artifact index without output", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /requires --output/)
+      return true
+    },
+  )
 })

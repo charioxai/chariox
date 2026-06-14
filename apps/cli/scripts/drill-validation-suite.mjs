@@ -9,6 +9,7 @@ import {
   drillValidationSuiteManifest,
   findMissingDrillValidationSuitePaths,
 } from "./lib/drill-validation-suite.mjs"
+import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 
 function printHelp() {
   console.log([
@@ -21,6 +22,8 @@ function printHelp() {
     "  --json     Print a machine-readable manifest of suite coverage",
     "  --output PATH",
     "             Write the --json manifest to PATH",
+    "  --output-artifact-index PATH",
+    "             Write an artifact index for --output",
     "  --list     Print test files included in the suite",
     "  --command  Print the node --test command without running it",
   ].join("\n"))
@@ -45,11 +48,23 @@ async function main() {
     if (options.outputPath) {
       await mkdir(path.dirname(options.outputPath), { recursive: true })
       await writeFile(options.outputPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+      if (options.outputArtifactIndexPath) {
+        await writeDrillArtifactIndex({
+          rootDir: path.dirname(options.outputPath),
+          artifacts: [path.basename(options.outputPath)],
+          indexPath: options.outputArtifactIndexPath,
+          metadata: {
+            drill: "validation-suite",
+            tests: manifest.testCount,
+          },
+        })
+      }
     }
     console.log(JSON.stringify(manifest, null, 2))
     return
   }
   if (options.outputPath) throw new Error("--output requires --json")
+  if (options.outputArtifactIndexPath) throw new Error("--output-artifact-index requires --json and --output")
   const missing = await findMissingDrillValidationSuitePaths()
   if (missing.length > 0) {
     throw new Error(`validation suite references missing test paths:\n${missing.map((item) => `- ${item}`).join("\n")}`)
@@ -83,6 +98,7 @@ function parseArgs(argv) {
     help: false,
     json: false,
     list: false,
+    outputArtifactIndexPath: null,
     outputPath: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -99,8 +115,18 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--output=")) {
       options.outputPath = arg.slice("--output=".length)
+    } else if (arg === "--output-artifact-index") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--output-artifact-index requires a value")
+      options.outputArtifactIndexPath = value
+      index += 1
+    } else if (arg.startsWith("--output-artifact-index=")) {
+      options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
     }
     else throw new Error(`unknown argument: ${arg}`)
+  }
+  if (options.outputArtifactIndexPath && !options.outputPath) {
+    throw new Error("--output-artifact-index requires --output")
   }
   return options
 }
