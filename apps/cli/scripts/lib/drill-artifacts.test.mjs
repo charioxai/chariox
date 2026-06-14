@@ -296,6 +296,54 @@ test("rejects malformed validation suite manifest artifacts", async () => {
   }
 })
 
+test("rejects validation suite artifacts with mismatched metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-metadata-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite.json"), `${JSON.stringify(validationSuiteManifestArtifact(), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite.json"],
+      metadata: {
+        artifactKinds: "matrix-report",
+      },
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /suite\.json metadata\.artifactKinds must include validation-suite/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects validation suite run artifacts with stale metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-metadata-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact(), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+      metadata: {
+        artifactKinds: "validation-suite-run",
+        status: "failed",
+        tests: 1,
+      },
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /suite-run\.json metadata\.status must match artifact status/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
 test("rejects inconsistent drill runtime signal owner metadata", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
   try {

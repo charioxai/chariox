@@ -549,6 +549,12 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   const requiresRuntimeSignalManifest = runtimeSignalsFromMetadata(metadata).length > 0
   if (parsed?.schema === "arroba.drill.validation_suite.v1") {
     validateValidationSuiteManifestArtifact(parsed, artifactPath)
+    validateValidationSuiteArtifactMetadata({
+      artifactPath,
+      expectedKind: "validation-suite",
+      metadata,
+      testCount: parsed.testCount,
+    })
     if (requiresRuntimeSignalManifest && parsed.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing runtimeSignalsManifest`)
     }
@@ -558,12 +564,38 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   }
   if (parsed?.schema === "arroba.drill.validation_suite_run.v1") {
     validateValidationSuiteRunArtifact(parsed, artifactPath)
+    validateValidationSuiteArtifactMetadata({
+      artifactPath,
+      expectedKind: "validation-suite-run",
+      metadata,
+      status: parsed.status,
+      testCount: parsed.manifest.testCount,
+    })
     if (requiresRuntimeSignalManifest && parsed.manifest?.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeSignalsManifest`)
     }
     if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
     }
+  }
+}
+
+function validateValidationSuiteArtifactMetadata({
+  artifactPath,
+  expectedKind,
+  metadata,
+  status = null,
+  testCount,
+}) {
+  const artifactKinds = metadataListFromMetadata(metadata, "artifactKinds")
+  if (artifactKinds.length > 0 && !artifactKinds.includes(expectedKind)) {
+    throw new Error(`drill artifact ${artifactPath} metadata.artifactKinds must include ${expectedKind}`)
+  }
+  if (metadata?.status !== undefined && metadata.status !== status) {
+    throw new Error(`drill artifact ${artifactPath} metadata.status must match artifact status`)
+  }
+  if (metadata?.tests !== undefined && metadata.tests !== testCount) {
+    throw new Error(`drill artifact ${artifactPath} metadata.tests must match artifact testCount`)
   }
 }
 
