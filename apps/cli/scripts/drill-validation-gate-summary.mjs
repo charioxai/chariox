@@ -12,7 +12,7 @@ import {
   readDrillValidationGateReport,
   summarizeDrillValidationGateReports,
 } from "./lib/drill-validation-gate.mjs"
-import { runtimeSignalMetadataForValidationGateAggregate } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
+import { diagnosticMetadataForValidationGateAggregate } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
 
 function printHelp() {
   console.log([
@@ -86,7 +86,7 @@ async function main() {
       metadata: {
         drill: "validation-gate-summary",
         status: aggregate.status,
-        ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
+        ...diagnosticMetadataForValidationGateAggregate(aggregate),
       },
     })
   }

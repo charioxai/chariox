@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  diagnosticMetadataForValidationGateAggregate,
   diagnosticMetadataForValidationGateReport,
   runtimeSignalMetadataForValidationGateAggregate,
   runtimeSignalMetadataForValidationGateReport,
@@ -73,6 +74,37 @@ test("builds runtime signal metadata for validation gate aggregates", () => {
 
   assert.deepEqual(metadata, {
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
+  })
+})
+
+test("builds owner and classification metadata for validation gate aggregates", () => {
+  const metadata = diagnosticMetadataForValidationGateAggregate({
+    coverage: {
+      artifactRuntimeSignals: { "session-authority": 1 },
+      failureRuntimeSignals: { "relay-target-freshness": 1 },
+      requiredFailureClassifications: { "kernel-authority": 1 },
+      missingFailureClassifications: { "remote-extension-sync": 1 },
+      requiredMatrixClassifications: { "workspace-live-sync-conflict": 2 },
+      missingMatrixClassifications: { "provider-auth": 1 },
+    },
+    matrixRuntimeSignalSources: {
+      "provider-run-lifecycle": [],
+    },
+    requiredFailureClassifications: ["kernel-authority"],
+    missingFailureClassifications: ["remote-extension-sync"],
+    requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+    missingMatrixClassifications: ["provider-auth"],
+    nextActions: [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports",
+    }],
+  })
+
+  assert.deepEqual(metadata, {
+    classifications: "kernel-authority,matrix-coverage,provider-auth,remote-extension-sync,workspace-live-sync-conflict",
+    owners: "validation-harness",
+    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })
 

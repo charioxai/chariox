@@ -39,6 +39,28 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
     : {}
 }
 
+export function diagnosticMetadataForValidationGateAggregate(aggregate) {
+  const owners = new Set([
+    ...(aggregate.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
+  ])
+  const classifications = new Set([
+    ...Object.keys(aggregate.coverage?.requiredFailureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.missingFailureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.requiredMatrixClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.missingMatrixClassifications ?? {}),
+    ...(aggregate.requiredFailureClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.missingFailureClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.requiredMatrixClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.missingMatrixClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
+  ])
+  return {
+    ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
+    ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
+    ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+  }
+}
+
 function nonEmptyString(value) {
   return typeof value === "string" && value.length > 0
 }
