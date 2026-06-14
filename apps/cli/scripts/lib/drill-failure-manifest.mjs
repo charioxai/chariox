@@ -93,6 +93,57 @@ export function formatDrillFailureManifestSummary(manifest, { source = null } = 
   return lines.join("\n")
 }
 
+export function summarizeDrillFailureManifests(manifests) {
+  const summaries = manifests.map((manifest) => summarizeDrillFailureManifest(manifest))
+  const owners = new Map()
+  const classifications = new Map()
+  const failures = []
+  for (const summary of summaries) {
+    const owner = summary.classification.owner
+    const kind = summary.classification.kind
+    owners.set(owner, (owners.get(owner) ?? 0) + 1)
+    classifications.set(kind, (classifications.get(kind) ?? 0) + 1)
+    failures.push({
+      drill: summary.metadata.drill ?? "unknown",
+      rootDir: summary.rootDir,
+      owner,
+      classification: kind,
+      nextAction: summary.classification.nextAction,
+    })
+  }
+  return {
+    schema: "arroba.drill.failure.aggregate.v1",
+    total: summaries.length,
+    owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    failures,
+  }
+}
+
+export function formatDrillFailureManifestAggregateSummary(aggregate) {
+  validateDrillFailureManifestAggregate(aggregate)
+  const lines = [
+    "drill failure aggregate:",
+    `total=${aggregate.total}`,
+  ]
+  const owners = Object.entries(aggregate.owners)
+  if (owners.length > 0) {
+    lines.push(`owners: ${owners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
+  }
+  const classifications = Object.entries(aggregate.classifications)
+  if (classifications.length > 0) {
+    lines.push(`classifications: ${classifications.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
+  }
+  if (aggregate.failures.length > 0) {
+    lines.push("failures:")
+    for (const failure of aggregate.failures) {
+      lines.push(`- ${failure.drill} owner=${failure.owner} classification=${failure.classification} root=${failure.rootDir}`)
+      lines.push(`  next: ${failure.nextAction}`)
+    }
+  }
+  return lines.join("\n")
+}
+
 export function classifyDrillFailureManifest(manifest) {
   const errorText = [
     manifest.error?.name,
@@ -110,6 +161,27 @@ export function classifyDrillFailureManifest(manifest) {
     return drillFailureClassificationForKind("relay-runtime", { target: "drill", rootDir: manifest.rootDir })
   }
   return drillFailureClassificationForKind(childClassification, { target: "drill", rootDir: manifest.rootDir })
+}
+
+function validateDrillFailureManifestAggregate(aggregate) {
+  if (!aggregate || typeof aggregate !== "object") {
+    throw new Error("aggregate is not an object")
+  }
+  if (aggregate.schema !== "arroba.drill.failure.aggregate.v1") {
+    throw new Error(`aggregate has unsupported schema ${JSON.stringify(aggregate.schema)}`)
+  }
+  if (!Number.isFinite(aggregate.total) || aggregate.total < 0) {
+    throw new Error("aggregate has invalid total")
+  }
+  if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {
+    throw new Error("aggregate has invalid owners")
+  }
+  if (!aggregate.classifications || typeof aggregate.classifications !== "object" || Array.isArray(aggregate.classifications)) {
+    throw new Error("aggregate has invalid classifications")
+  }
+  if (!Array.isArray(aggregate.failures)) {
+    throw new Error("aggregate has invalid failures")
+  }
 }
 
 function validateFailureError(error, source) {

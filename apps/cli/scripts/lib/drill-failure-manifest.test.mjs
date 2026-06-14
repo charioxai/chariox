@@ -11,9 +11,11 @@ import {
 import {
   classifyDrillFailureManifest,
   findDrillFailureManifestPaths,
+  formatDrillFailureManifestAggregateSummary,
   formatDrillFailureManifestSummary,
   readDrillFailureManifest,
   summarizeDrillFailureManifest,
+  summarizeDrillFailureManifests,
   validateDrillFailureManifest,
 } from "./drill-failure-manifest.mjs"
 
@@ -136,6 +138,41 @@ test("classifies common drill failure owners and next actions", () => {
     owner: "cloud-deployment",
     nextAction: "inspect Cloud deployment/control-plane status and preserved logs, then rerun the drill",
   })
+})
+
+test("aggregates preserved drill failure summaries", () => {
+  const relay = validManifest({
+    rootDir: "/tmp/relay",
+    metadata: { drill: "relay-drill" },
+    error: { name: "Error", message: "relay target stale", stack: null },
+  })
+  const provider = validManifest({
+    rootDir: "/tmp/provider",
+    metadata: { drill: "provider-drill" },
+    error: { name: "Error", message: "Token refresh failed: 401", stack: null },
+  })
+
+  const aggregate = summarizeDrillFailureManifests([relay, provider])
+
+  assert.equal(aggregate.schema, "arroba.drill.failure.aggregate.v1")
+  assert.equal(aggregate.total, 2)
+  assert.deepEqual(aggregate.owners, { "provider-account": 1, "runtime-network": 1 })
+  assert.deepEqual(aggregate.classifications, { "provider-auth": 1, "relay-runtime": 1 })
+  assert.deepEqual(aggregate.failures.map((failure) => ({
+    drill: failure.drill,
+    owner: failure.owner,
+    classification: failure.classification,
+  })), [
+    { drill: "relay-drill", owner: "runtime-network", classification: "relay-runtime" },
+    { drill: "provider-drill", owner: "provider-account", classification: "provider-auth" },
+  ])
+
+  const text = formatDrillFailureManifestAggregateSummary(aggregate)
+  assert.match(text, /drill failure aggregate:/)
+  assert.match(text, /owners: provider-account=1 runtime-network=1/)
+  assert.match(text, /classifications: provider-auth=1 relay-runtime=1/)
+  assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime root=\/tmp\/relay/)
+  assert.match(text, /next: inspect relay and kernel logs/)
 })
 
 function validManifest(overrides = {}) {

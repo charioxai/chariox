@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import {
   findDrillFailureManifestPaths,
+  formatDrillFailureManifestAggregateSummary,
   formatDrillFailureManifestSummary,
   readDrillFailureManifest,
+  summarizeDrillFailureManifests,
 } from "./lib/drill-failure-manifest.mjs"
 
 function printHelp() {
@@ -34,10 +36,16 @@ async function main() {
     console.log("no drill failure manifests found")
     return
   }
+  const manifests = []
   for (const [index, input] of inputs.entries()) {
     const manifest = await readDrillFailureManifest(input)
+    manifests.push(manifest)
     if (index > 0) console.log("")
     console.log(formatDrillFailureManifestSummary(manifest, { source: input }))
+  }
+  if (manifests.length > 1) {
+    console.log("")
+    console.log(formatDrillFailureManifestAggregateSummary(summarizeDrillFailureManifests(manifests)))
   }
 }
 

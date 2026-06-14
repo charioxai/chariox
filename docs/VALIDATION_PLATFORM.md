@@ -74,6 +74,7 @@ Required top-level fields:
 - `error`: error name, message, and optional stack.
 
 Failure summaries redact sensitive metadata keys and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
+When more than one failure manifest is selected, the summary command prints an aggregate owner/classification section so preserved failure batches can be routed quickly.
 
 ## Scenario Selection
 
