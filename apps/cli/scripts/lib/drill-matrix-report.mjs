@@ -38,6 +38,7 @@ export function validateDrillMatrixReport(report, source = "report") {
   if (!Number.isFinite(report.durationMs) || report.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }
+  validateReportMetadata(report.metadata, `${source}.metadata`)
   if (!Array.isArray(report.scenarios)) {
     throw new Error(`${source} is missing scenarios`)
   }
@@ -348,6 +349,48 @@ function validateDrillMatrixAggregate(aggregate) {
   if (!Array.isArray(aggregate.incompleteScenarios)) {
     throw new Error("aggregate is missing incompleteScenarios")
   }
+}
+
+function validateReportMetadata(value, source) {
+  if (!value || typeof value !== "object") {
+    throw new Error(`${source} must be an object`)
+  }
+  validateReportMetadataValue(value, source)
+}
+
+function validateReportMetadataValue(value, source, key = "") {
+  if (isSensitiveReportKey(key)) {
+    throw new Error(`${source} includes sensitive metadata key ${JSON.stringify(key)}`)
+  }
+  if (typeof value === "string") {
+    if (looksLikeSecretValue(value)) {
+      throw new Error(`${source} includes secret-looking metadata value`)
+    }
+    return
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") return
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      validateReportMetadataValue(item, `${source}[${index}]`)
+    }
+    return
+  }
+  if (typeof value !== "object") {
+    throw new Error(`${source} has unsupported metadata value`)
+  }
+  for (const [childKey, childValue] of Object.entries(value)) {
+    validateReportMetadataValue(childValue, `${source}.${childKey}`, childKey)
+  }
+}
+
+function isSensitiveReportKey(key) {
+  return /token|secret|password|credential|cookie|authorization|api[-_]?key/i.test(key)
+}
+
+function looksLikeSecretValue(value) {
+  return /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i.test(value)
+    || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(value)
+    || /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/.test(value)
 }
 
 function nonEmptyString(value) {

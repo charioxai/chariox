@@ -191,6 +191,16 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), artifactHints: [1] }],
   }), /scenarios\[0\] has invalid artifactHints/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    metadata: { relayToken: "redacted-or-not-it-should-not-be-here" },
+  }), /sensitive metadata key/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    metadata: { provider: "Bearer abcdefghijklmnopqrstuvwxyz" },
+  }), /secret-looking metadata value/)
 })
 
 function matrixReport(overrides = {}) {

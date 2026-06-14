@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -120,6 +120,26 @@ test("writes dry-run report without executing scenarios", async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+test("refuses to write matrix reports with secret metadata", async () => {
+  const dir = await fixtureDir()
+  const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
+  const reportPath = path.join(dir, "secret.json")
+
+  await assert.rejects(
+    () => runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{ id: "pass", description: "passing scenario", script }],
+      commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+      cwd: dir,
+      reportPath,
+      metadata: { apiKey: "sk-this-should-not-be-written" },
+    }),
+    /sensitive metadata key/,
+  )
+  assert.equal(await exists(reportPath), false)
+  await rm(dir, { recursive: true, force: true })
+})
+
 test("treats matching expected failures as pass", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "expected-failure.mjs", "console.error('managed mode needs selective write fencing'); process.exit(7)")
@@ -221,4 +241,8 @@ async function writeFixtureScript(dir, name, contents) {
   const file = path.join(dir, name)
   await writeFile(file, `${contents}\n`, "utf8")
   return file
+}
+
+async function exists(file) {
+  return Boolean(await stat(file).catch(() => null))
 }

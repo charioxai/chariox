@@ -2,6 +2,7 @@ import { spawn } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
+import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 
 export function parseDrillScenarioIds(value) {
   if (value == null) return null
@@ -220,6 +221,7 @@ async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, resul
       artifactHints: Array.isArray(result.artifactHints) ? result.artifactHints : [],
     })),
   }
+  validateDrillMatrixReport(report, reportPath)
   await mkdir(path.dirname(reportPath), { recursive: true })
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
   console.log(`[${matrixName}] report ${reportPath}`)
