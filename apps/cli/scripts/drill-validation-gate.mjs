@@ -30,6 +30,8 @@ function printHelp() {
     "                         Fail when platform bundle failure taxonomy lacks each classification; repeatable",
     "  --require-matrix NAME[,NAME]",
     "                         Fail when matrix reports do not include each matrix name; repeatable",
+    "  --require-matrix-classification KIND[,KIND]",
+    "                         Fail when matrix reports do not include each failure classification; repeatable",
     "  --require-deployment-preset NAME[,NAME]",
     "                         Fail when matrix reports do not cover each deployment preset; repeatable",
     "  --require-provider NAME[,NAME]",
@@ -87,6 +89,7 @@ function parseArgs(argv) {
     requiredPlatformCoverageAreas: [],
     requiredFailureClassifications: [],
     requiredMatrices: [],
+    requiredMatrixClassifications: [],
     requiredDeploymentPresets: [],
     requiredProviders: [],
     requiredScenarios: [],
@@ -119,6 +122,14 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--require-matrix=")) {
       options.requiredMatrices.push(arg.slice("--require-matrix=".length))
+    }
+    else if (arg === "--require-matrix-classification") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-matrix-classification requires a value")
+      options.requiredMatrixClassifications.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-matrix-classification=")) {
+      options.requiredMatrixClassifications.push(arg.slice("--require-matrix-classification=".length))
     }
     else if (arg === "--require-deployment-preset") {
       const value = argv[index + 1]

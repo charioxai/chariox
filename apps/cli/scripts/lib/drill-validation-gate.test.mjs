@@ -233,6 +233,51 @@ test("gates matrix reports by required matrix name coverage", async () => {
   }
 })
 
+test("gates matrix reports by required classification coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      scenarios: [
+        scenario("kernel-authority", "passed", { classification: "kernel-authority" }),
+        scenario("relay-freshness", "passed", { classification: "relay-target-freshness" }),
+      ],
+    }))
+
+    const pass = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredMatrixClassifications: ["kernel-authority,relay-target-freshness"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.matrices.requiredMatrixClassifications, ["kernel-authority", "relay-target-freshness"])
+    assert.deepEqual(pass.checks.matrices.missingMatrixClassifications, [])
+    assert.match(formatDrillValidationGateSummary(pass), /matrix_required_classifications=kernel-authority,relay-target-freshness missing=none/)
+
+    const fail = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredMatrixClassifications: ["kernel-authority", "remote-extension-sync"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.matrices.missingMatrixClassifications, ["remote-extension-sync"])
+    assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports covering failure classifications: remote-extension-sync",
+    }])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects unknown required matrix classifications", async () => {
+  await assert.rejects(
+    () => runDrillValidationGate({
+      requiredMatrixClassifications: ["kernel-authority", "remote-extension-synch"],
+    }),
+    /unknown required matrix classification: remote-extension-synch/,
+  )
+})
+
 test("passes when matrix reports cover required deployment presets", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -648,6 +693,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       requiredPlatformCoverageAreas: ["runtime-fixtures"],
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["test-matrix"],
+      requiredMatrixClassifications: ["kernel-authority"],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
       requiredScenarios: ["local"],
@@ -657,6 +703,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       requiredPlatformCoverageAreas: ["hosted-cloud-drills"],
       requiredFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
       requiredMatrices: ["hosted-matrix", "test-matrix"],
+      requiredMatrixClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
       requiredDeploymentPresets: ["hosted-cloud", "local"],
       requiredProviders: ["claude", "codex"],
       requiredScenarios: ["remote"],
@@ -673,6 +720,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
       missingMatrices: { "hosted-matrix": 1 },
+      requiredMatrixClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
+      missingMatrixClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       requiredDeploymentPresets: { "hosted-cloud": 1, local: 2 },
       missingDeploymentPresets: { "hosted-cloud": 1 },
       requiredProviders: { claude: 1, codex: 2 },
@@ -698,6 +747,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       {
         requiredMatrices: ["test-matrix"],
         missingMatrices: [],
+        requiredMatrixClassifications: ["kernel-authority"],
+        missingMatrixClassifications: ["kernel-authority"],
         requiredDeploymentPresets: ["local"],
         missingDeploymentPresets: [],
         requiredProviders: ["codex"],
@@ -708,6 +759,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       {
         requiredMatrices: ["hosted-matrix", "test-matrix"],
         missingMatrices: ["hosted-matrix"],
+        requiredMatrixClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
+        missingMatrixClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
         requiredDeploymentPresets: ["hosted-cloud", "local"],
         missingDeploymentPresets: ["hosted-cloud"],
         requiredProviders: ["claude", "codex"],
@@ -722,6 +775,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     assert.match(text, /required_failure_classifications: kernel-authority=1 remote-extension-sync=1 workspace-live-sync-conflict=1/)
     assert.match(text, /missing_failure_classifications: kernel-authority=1 remote-extension-sync=1 workspace-live-sync-conflict=1/)
     assert.match(text, /missing_matrices: hosted-matrix=1/)
+    assert.match(text, /missing_matrix_classifications: kernel-authority=1 remote-extension-sync=1 workspace-live-sync-conflict=1/)
     assert.match(text, /required_deployment_presets: hosted-cloud=1 local=2/)
     assert.match(text, /missing_providers: claude=1/)
     assert.match(text, /missing_scenarios: remote=1/)
@@ -807,7 +861,7 @@ function matrixReport(overrides = {}) {
   }
 }
 
-function scenario(id, status) {
+function scenario(id, status, overrides = {}) {
   return {
     id,
     description: `${id} scenario`,
@@ -821,5 +875,6 @@ function scenario(id, status) {
     command: "node",
     args: [`${id}.mjs`],
     artifactHints: [],
+    ...overrides,
   }
 }

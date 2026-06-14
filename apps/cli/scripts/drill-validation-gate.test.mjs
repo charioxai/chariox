@@ -175,6 +175,59 @@ test("drill validation gate requires matrix name coverage", async () => {
   }
 })
 
+test("drill validation gate requires matrix classification coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeClassifiedMatrixReport(reportPath)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--matrix-report",
+        reportPath,
+        "--require-matrix-classification",
+        "kernel-authority,remote-extension-sync",
+        "--require-matrix-classification=relay-target-freshness",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.deepEqual(report.checks.matrices.requiredMatrixClassifications, [
+          "kernel-authority",
+          "relay-target-freshness",
+          "remote-extension-sync",
+        ])
+        assert.deepEqual(report.checks.matrices.missingMatrixClassifications, ["remote-extension-sync"])
+        assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+          { owner: "validation-harness", classification: "matrix-coverage" },
+        ])
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate rejects unknown matrix classification requirements", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [
+      scriptPath,
+      "--require-matrix-classification",
+      "remote-extension-synch",
+      "--json",
+    ]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /unknown required matrix classification: remote-extension-synch/)
+      return true
+    },
+  )
+})
+
 test("drill validation gate requires deployment preset coverage", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {
@@ -382,6 +435,41 @@ async function writeMatrixReport(file, metadata = {}) {
       artifactHints: [],
     }],
   }, null, 2)}\n`, "utf8")
+}
+
+async function writeClassifiedMatrixReport(file) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify({
+    schema: "arroba.drill.matrix.v1",
+    matrix: "cli-matrix",
+    status: "passed",
+    dryRun: false,
+    startedAt: "2026-06-13T00:00:00.000Z",
+    completedAt: "2026-06-13T00:00:01.000Z",
+    durationMs: 1000,
+    metadata: {},
+    scenarios: [
+      scenario("kernel-authority", "kernel-authority"),
+      scenario("relay-target-freshness", "relay-target-freshness"),
+    ],
+  }, null, 2)}\n`, "utf8")
+}
+
+function scenario(id, classification) {
+  return {
+    id,
+    description: `${id} scenario`,
+    requires: [],
+    exitCriteria: [],
+    status: "passed",
+    expectedFailure: false,
+    classification,
+    durationMs: 10,
+    reason: null,
+    command: "node",
+    args: [`${id}.mjs`],
+    artifactHints: [],
+  }
 }
 
 async function writeFailureManifest(file) {
