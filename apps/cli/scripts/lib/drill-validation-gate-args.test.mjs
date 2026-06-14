@@ -12,6 +12,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-platform-coverage-area=runtime-fixtures"], 0, options)
   assert.equal(index, 0)
+  index = parseValidationGateRequirementArg(["--require-artifact-schema", "arroba.drill.validation_suite_run.v1"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-provider", "codex"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-runtime-signal", "lease-health"], 0, options)
@@ -24,6 +26,7 @@ test("parses validation gate requirement arguments", () => {
   assert.deepEqual(options, {
     presets: ["workspace-live-sync"],
     requiredPlatformCoverageAreas: ["runtime-fixtures"],
+    requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredRuntimeSignals: ["lease-health"],
     requiredFailureClassifications: [],
     requiredMatrices: [],

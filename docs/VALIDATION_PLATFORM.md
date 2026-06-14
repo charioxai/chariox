@@ -54,14 +54,17 @@ Gate collected artifacts before treating a drill run as release/staging evidence
 ```bash
 node apps/cli/scripts/drill-validation-gate.mjs \
   --platform-bundle .artifacts/drill-platform \
+  --artifact-root .artifacts \
+  --require-artifact-schema arroba.drill.validation_suite_run.v1 \
   --matrix-root .artifacts/drill-matrices \
   --failure-root .artifacts \
   --require-complete \
   --json --output .artifacts/drill-validation-gate.json
 ```
 
-The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first.
+The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, verifies indexed artifacts, can require artifact schema coverage with `--require-artifact-schema`, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first.
 Use `--matrix-report PATH` and `--failure-manifest PATH` when CI already knows the exact artifact paths and should avoid broad discovery.
+The distributed-runtime wrapper automatically requires `arroba.drill.validation_suite_run.v1` when `--include-default-artifacts` is set, so staging evidence proves the Cloud validation suite executed rather than only publishing a coverage manifest.
 
 ## Matrix Reports
 

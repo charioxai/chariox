@@ -239,6 +239,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     name: preset.name,
     description: preset.description,
     requiredPlatformCoverageAreas: sortedStringArray(preset.requiredPlatformCoverageAreas, `${preset.name}.requiredPlatformCoverageAreas`),
+    requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
     requiredRuntimeSignals: sortedStringArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
     requiredFailureClassifications: sortedStringArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),

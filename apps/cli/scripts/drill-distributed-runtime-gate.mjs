@@ -43,6 +43,7 @@ function printHelp() {
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
     "  --require-complete      Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
     "  --require-platform-coverage-area ID[,ID]",
+    "  --require-artifact-schema SCHEMA[,SCHEMA]",
     "  --require-runtime-signal ID[,ID]",
     "  --require-failure-classification KIND[,KIND]",
     "  --require-matrix NAME[,NAME]",
@@ -79,6 +80,7 @@ async function main() {
       presets: ["distributed-runtime"],
       requireComplete: options.requireComplete,
       requiredPlatformCoverageAreas: options.requiredPlatformCoverageAreas,
+      requiredArtifactSchemas: distributedRuntimeRequiredArtifactSchemas(options),
       requiredRuntimeSignals: options.requiredRuntimeSignals,
       requiredFailureClassifications: options.requiredFailureClassifications,
       requiredMatrices: options.requiredMatrices,
@@ -235,6 +237,14 @@ function failureRootsFor(options) {
     )
   }
   return [...new Set(roots.map((item) => path.resolve(item)))].sort()
+}
+
+function distributedRuntimeRequiredArtifactSchemas(options) {
+  const required = [...options.requiredArtifactSchemas]
+  if (options.includeDefaultArtifacts) {
+    required.push("arroba.drill.validation_suite_run.v1")
+  }
+  return [...new Set(required)].sort()
 }
 
 main().catch((error) => {

@@ -7,6 +7,7 @@ export function configurationValidationGateCheck({
   matrixRoots,
   platformBundleDir,
   requiredPlatformCoverageAreas = [],
+  requiredArtifactSchemas = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -22,6 +23,7 @@ export function configurationValidationGateCheck({
     || matrixRoots.length > 0
     || matrixReports.length > 0
     || requiredPlatformCoverageAreas.length > 0
+    || requiredArtifactSchemas.length > 0
     || requiredRuntimeSignals.length > 0
     || requiredFailureClassifications.length > 0
     || failureRoots.length > 0

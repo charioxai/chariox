@@ -1,5 +1,6 @@
 const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-platform-coverage-area", "requiredPlatformCoverageAreas"],
+  ["--require-artifact-schema", "requiredArtifactSchemas"],
   ["--require-runtime-signal", "requiredRuntimeSignals"],
   ["--require-failure-classification", "requiredFailureClassifications"],
   ["--require-matrix", "requiredMatrices"],
@@ -14,6 +15,7 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
   return {
     [presetKey]: [],
     requiredPlatformCoverageAreas: [],
+    requiredArtifactSchemas: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: [],
     requiredMatrices: [],

@@ -49,6 +49,14 @@ export function validationGateNextActions(checks) {
       classification: "artifact-index",
       nextAction: "fix missing, unreadable, or tampered artifact indexes before using collected drill evidence",
     })
+    const missingArtifactSchemas = checks.artifacts.missingArtifactSchemas ?? []
+    if (missingArtifactSchemas.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `produce artifact evidence with schemas: ${missingArtifactSchemas.join(", ")}`,
+      })
+    }
   }
   if (checks.matrices.status === "failed") {
     if (checks.matrices.error) {

@@ -41,6 +41,11 @@ export function formatDrillValidationGateSummary(report) {
 
   const artifacts = report.checks.artifacts
   lines.push(`artifacts=${artifacts.status} roots=${artifacts.roots.length} inputs=${artifacts.inputs.length} indexes=${artifacts.indexPaths.length}`)
+  const requiredArtifactSchemas = artifacts.requiredArtifactSchemas ?? []
+  const missingArtifactSchemas = artifacts.missingArtifactSchemas ?? []
+  if (requiredArtifactSchemas.length > 0) {
+    lines.push(`artifact_required_schemas=${requiredArtifactSchemas.join(",")} missing=${missingArtifactSchemas.join(",") || "none"}`)
+  }
   if (artifacts.error) lines.push(`artifact_error=${artifacts.error}`)
   if (artifacts.aggregate) {
     lines.push(`artifact_total=${artifacts.aggregate.totals.artifacts} size_bytes=${artifacts.aggregate.totals.sizeBytes}`)

@@ -22,6 +22,7 @@ import {
   describeDrillValidationGatePresets,
   expandValidationGatePresetRequirements,
   normalizeRequiredDeploymentPresets,
+  normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
@@ -78,6 +79,7 @@ export async function runDrillValidationGate({
   presets = [],
   requireComplete = false,
   requiredPlatformCoverageAreas = [],
+  requiredArtifactSchemas = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -91,6 +93,7 @@ export async function runDrillValidationGate({
   const expandedRequirements = expandValidationGatePresetRequirements({
     presets: normalizedPresets,
     requiredPlatformCoverageAreas,
+    requiredArtifactSchemas,
     requiredRuntimeSignals,
     requiredFailureClassifications,
     requiredMatrices,
@@ -101,6 +104,7 @@ export async function runDrillValidationGate({
     requiredScenarios,
   })
   const normalizedRequiredPlatformCoverageAreas = normalizeRequiredPlatformCoverageAreas(expandedRequirements.requiredPlatformCoverageAreas)
+  const normalizedRequiredArtifactSchemas = normalizeRequiredArtifactSchemas(expandedRequirements.requiredArtifactSchemas)
   const normalizedRequiredRuntimeSignals = normalizeRequiredRuntimeSignals(expandedRequirements.requiredRuntimeSignals)
   const normalizedRequiredFailureClassifications = normalizeRequiredFailureClassifications(expandedRequirements.requiredFailureClassifications)
   const normalizedRequiredMatrices = normalizeRequiredMatrices(expandedRequirements.requiredMatrices)
@@ -119,6 +123,7 @@ export async function runDrillValidationGate({
       matrixRoots,
       platformBundleDir,
       requiredPlatformCoverageAreas: normalizedRequiredPlatformCoverageAreas,
+      requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
       requiredRuntimeSignals: normalizedRequiredRuntimeSignals,
       requiredFailureClassifications: normalizedRequiredFailureClassifications,
       requiredMatrices: normalizedRequiredMatrices,
@@ -133,7 +138,10 @@ export async function runDrillValidationGate({
       requiredRuntimeSignals: normalizedRequiredRuntimeSignals,
       requiredFailureClassifications: normalizedRequiredFailureClassifications,
     }),
-    artifacts: await artifactValidationGateCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
+    artifacts: await artifactValidationGateCheck({ artifactIndexes, artifactRoots }, {
+      maxDepth,
+      requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
+    }),
     matrices: await matrixValidationGateCheck({
       matrixReports,
       matrixRoots,
@@ -169,6 +177,7 @@ export function drillValidationGateExitCode(report) {
 function normalizeValidationGateAggregateRequirements(options) {
   return {
     requiredPlatformCoverageAreas: normalizeRequiredPlatformCoverageAreas(options.requiredPlatformCoverageAreas ?? []),
+    requiredArtifactSchemas: normalizeRequiredArtifactSchemas(options.requiredArtifactSchemas ?? []),
     requiredRuntimeSignals: normalizeRequiredRuntimeSignals(options.requiredRuntimeSignals ?? []),
     requiredFailureClassifications: normalizeRequiredFailureClassifications(options.requiredFailureClassifications ?? []),
     requiredMatrices: normalizeRequiredMatrices(options.requiredMatrices ?? []),

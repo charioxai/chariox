@@ -169,6 +169,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       name,
       description: preset.description,
       requiredPlatformCoverageAreas: [...(preset.requiredPlatformCoverageAreas ?? [])],
+      requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
@@ -184,6 +185,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
 export function expandValidationGatePresetRequirements({
   presets,
   requiredPlatformCoverageAreas,
+  requiredArtifactSchemas = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications,
   requiredMatrices,
@@ -195,6 +197,7 @@ export function expandValidationGatePresetRequirements({
 }) {
   const expanded = {
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
+    requiredArtifactSchemas: [...requiredArtifactSchemas],
     requiredRuntimeSignals: [...requiredRuntimeSignals],
     requiredFailureClassifications: [...requiredFailureClassifications],
     requiredMatrices: [...requiredMatrices],
@@ -207,6 +210,7 @@ export function expandValidationGatePresetRequirements({
   for (const presetName of presets) {
     const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
     expanded.requiredPlatformCoverageAreas.push(...(preset.requiredPlatformCoverageAreas ?? []))
+    expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
     expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
@@ -217,6 +221,23 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
   }
   return expanded
+}
+
+export function normalizeRequiredArtifactSchemas(requiredArtifactSchemas) {
+  if (!Array.isArray(requiredArtifactSchemas)) {
+    throw new Error("requiredArtifactSchemas must be an array")
+  }
+  const schemas = []
+  for (const schema of requiredArtifactSchemas) {
+    if (!nonEmptyString(schema)) {
+      throw new Error("requiredArtifactSchemas has invalid schema")
+    }
+    for (const value of schema.split(",")) {
+      const normalized = value.trim()
+      if (normalized) schemas.push(normalized)
+    }
+  }
+  return [...new Set(schemas)].sort()
 }
 
 export function normalizeRequiredRuntimeSignals(requiredRuntimeSignals) {

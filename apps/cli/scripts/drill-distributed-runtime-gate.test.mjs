@@ -103,10 +103,45 @@ test("distributed runtime gate can include default artifact indexes", async () =
     ])).stdout)
     assert.equal(discovered.status, "passed")
     assert.equal(discovered.checks.artifacts.status, "passed")
-    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite.v1"], 1)
+    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
+    assert.deepEqual(discovered.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+    assert.deepEqual(discovered.checks.artifacts.missingArtifactSchemas, [])
     assert.deepEqual(discovered.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
       path.join(".artifacts", "validation-suite"),
     ])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate requires executed Cloud validation suite artifacts", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteManifestArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--include-default-artifacts",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        assert.deepEqual(report.checks.artifacts.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite.v1"], 1)
+        return true
+      },
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -326,6 +361,42 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
 }
 
 async function writeValidationSuiteArtifact(rootDir) {
+  const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
+  await mkdir(rootDir, { recursive: true })
+  await writeFile(artifactPath, `${JSON.stringify({
+    schema: "arroba.drill.validation_suite_run.v1",
+    status: "passed",
+    ok: true,
+    startedAt: "2026-06-13T00:00:00.000Z",
+    completedAt: "2026-06-13T00:00:01.000Z",
+    durationMs: 1000,
+    exitCode: 0,
+    signal: null,
+    error: null,
+    testCount: 1,
+    command: "node --test scripts/cloud-validation-suite.test.mjs",
+    testPaths: ["scripts/cloud-validation-suite.test.mjs"],
+    manifest: {
+      schema: "arroba.drill.validation_suite.v1",
+      testCount: 1,
+      command: "node --test scripts/cloud-validation-suite.test.mjs",
+      coverage: [{
+        id: "suite-contract",
+        description: "Cloud validation-suite contract",
+        testCount: 1,
+        testPaths: ["scripts/cloud-validation-suite.test.mjs"],
+      }],
+      testPaths: ["scripts/cloud-validation-suite.test.mjs"],
+    },
+  }, null, 2)}\n`, "utf8")
+  await writeDrillArtifactIndex({
+    rootDir,
+    artifacts: ["cloud-validation-suite.json"],
+    metadata: { drill: "cloud-validation-suite", tests: 1 },
+  })
+}
+
+async function writeValidationSuiteManifestArtifact(rootDir) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
   await mkdir(rootDir, { recursive: true })
   await writeFile(artifactPath, `${JSON.stringify({

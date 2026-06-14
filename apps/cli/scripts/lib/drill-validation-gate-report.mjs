@@ -102,6 +102,8 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.roots, `${source}.roots`)
   validateStringArray(check.inputs, `${source}.inputs`)
   validateStringArray(check.indexPaths, `${source}.indexPaths`)
+  validateStringArray(check.requiredArtifactSchemas ?? [], `${source}.requiredArtifactSchemas`)
+  validateStringArray(check.missingArtifactSchemas ?? [], `${source}.missingArtifactSchemas`)
   if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
     throw new Error(`${source} is missing error`)
   }

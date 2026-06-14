@@ -770,6 +770,50 @@ test("passes with explicit artifact index paths", async () => {
   }
 })
 
+test("gates explicit artifact index paths by required schema", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+    })
+    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+
+    const pass = await runDrillValidationGate({
+      artifactIndexes: [indexPath],
+      requiredArtifactSchemas: ["arroba.drill.validation_gate.v1"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.artifacts.missingArtifactSchemas, [])
+
+    const fail = await runDrillValidationGate({
+      artifactIndexes: [indexPath],
+      requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+    assert.deepEqual(fail.checks.artifacts.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+    assert.match(formatDrillValidationGateSummary(fail), /artifact_required_schemas=arroba\.drill\.validation_suite_run\.v1 missing=arroba\.drill\.validation_suite_run\.v1/)
+    assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [
+      {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: "produce artifact evidence with schemas: arroba.drill.validation_suite_run.v1",
+      },
+      {
+        owner: "validation-harness",
+        classification: "artifact-index",
+        nextAction: "fix missing, unreadable, or tampered artifact indexes before using collected drill evidence",
+      },
+    ])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("fails when configured artifact roots contain no indexes", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -974,6 +1018,9 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingRuntimeSignals: {},
       requiredFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       missingFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
+      requiredArtifactSchemas: {},
+      missingArtifactSchemas: {},
+      artifactSchemas: {},
       artifactRuntimeSignals: {},
       failureRuntimeSignals: {},
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
@@ -1008,8 +1055,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { runtimeSignals: {} },
-      { runtimeSignals: {} },
+      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {} },
+      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {} },
@@ -1155,6 +1202,7 @@ function workspaceLiveSyncRequiredScenarios() {
 function platformValidationPresetSummaries() {
   return describeDrillValidationGatePresets().map((preset) => ({
     name: preset.name,
+    requiredArtifactSchemas: preset.requiredArtifactSchemas,
     requiredMatrices: preset.requiredMatrices,
     requiredRuntimeSignals: preset.requiredRuntimeSignals,
     requiredFailureClassifications: preset.requiredFailureClassifications,

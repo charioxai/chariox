@@ -14,6 +14,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     normalizedRequiredPresets: ["workspace-live-sync"],
     normalizedAggregateRequirements: {
       requiredPlatformCoverageAreas: ["runtime-fixtures"],
+      requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -33,6 +34,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactSchemas, {
+    "arroba.drill.validation_suite_run.v1": 1,
+  })
   assert.deepEqual(aggregate.matrixRuntimeSignalSources, {
     "workspace-live-sync-state": [{
       reportSource: "workspace-live-sync.json",
@@ -44,7 +48,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   })
   assert.deepEqual(aggregate.missingPresets, [])
   assert.deepEqual(aggregate.missingProviders, [])
+  assert.deepEqual(aggregate.missingArtifactSchemas, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeSignals, {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
@@ -52,6 +58,8 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
   const text = formatDrillValidationGateAggregateSummary(aggregate)
   assert.match(text, /required_providers=codex missing=none/)
+  assert.match(text, /required_artifact_schemas=arroba\.drill\.validation_suite_run\.v1 missing=none/)
+  assert.match(text, /- artifact_schemas: arroba.drill.validation_suite_run.v1=1/)
   assert.match(text, /- artifact_runtime_signals: session-authority=2 workspace-live-sync-state=1/)
   assert.match(text, /matrix_runtime_signal_sources:/)
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/workspace-live-sync-matrix\.json report=workspace-live-sync\.json/)
@@ -62,6 +70,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
     normalizedRequiredPresets: ["remote-home-extension"],
     normalizedAggregateRequirements: {
       requiredPlatformCoverageAreas: ["hosted-cloud-drills"],
+      requiredArtifactSchemas: ["arroba.drill.matrix.v1"],
       requiredFailureClassifications: ["remote-extension-sync"],
       requiredMatrices: ["remote-home-extension-matrix"],
       requiredMatrixClassifications: ["remote-extension-sync"],
@@ -76,12 +85,17 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.equal(aggregate.status, "failed")
   assert.equal(drillValidationGateAggregateExitCode(aggregate), 1)
   assert.deepEqual(aggregate.missingPresets, ["remote-home-extension"])
+  assert.deepEqual(aggregate.missingArtifactSchemas, ["arroba.drill.matrix.v1"])
   assert.deepEqual(aggregate.missingMatrixRuntimeSignals, ["home-extension-manifest-sync"])
   assert.deepEqual(aggregate.missingProviders, ["claude"])
   assert.deepEqual(aggregate.missingScenarios, ["hetzner-collab"])
   assert.deepEqual(
     aggregate.nextActions.map(({ classification, nextAction }) => ({ classification, nextAction })),
     [
+      {
+        classification: "artifact-coverage",
+        nextAction: "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
+      },
       {
         classification: "matrix-coverage",
         nextAction: "provide validation gate reports requiring deployment presets: hosted-cloud",
@@ -210,7 +224,12 @@ function reportFixture(overrides = {}) {
       },
       artifacts: {
         status: "passed",
+        requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+        missingArtifactSchemas: [],
         aggregate: {
+          schemas: {
+            "arroba.drill.validation_suite_run.v1": 1,
+          },
           runtimeSignals: {
             "session-authority": 2,
             "workspace-live-sync-state": 1,
