@@ -8,7 +8,10 @@ import {
 } from "./drill-aggregate-actions.mjs"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import { drillFailureClassificationForKind } from "./drill-failure-taxonomy.mjs"
-import { isSensitiveDrillKey } from "./drill-secrets.mjs"
+import {
+  isSensitiveDrillKey,
+  redactDrillSecretText,
+} from "./drill-secrets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
 const FAILURE_MANIFEST_FILE = "arroba-drill-failure.json"
@@ -69,7 +72,7 @@ export function summarizeDrillFailureManifest(manifest, { source = null } = {}) 
     error: manifest.error
       ? {
           name: manifest.error.name,
-          message: manifest.error.message,
+          message: redactDrillSecretText(manifest.error.message),
           hasStack: typeof manifest.error.stack === "string" && manifest.error.stack.length > 0,
         }
       : null,

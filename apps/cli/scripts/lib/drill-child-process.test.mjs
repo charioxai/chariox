@@ -26,6 +26,14 @@ test('classifies provider authentication failures', () => {
   )
 })
 
+test('redacts token-shaped values from formatted child output tails', () => {
+  const text = 'Token refresh failed: 401\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz'
+  const formatted = formatDrillChildFailure('remote workspace live sync drill', 1, null, '', text)
+
+  assert.match(formatted, /Authorization: <redacted>/)
+  assert.doesNotMatch(formatted, /abcdefghijklmnopqrstuvwxyz/)
+})
+
 test('keeps generic child process failures distinct from provider failures', () => {
   assert.equal(classifyDrillChildFailure('assertion failed after relay setup'), 'child-process')
 })

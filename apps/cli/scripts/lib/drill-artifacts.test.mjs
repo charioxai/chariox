@@ -24,10 +24,13 @@ test("drill artifacts are preserved with a failure manifest after a failed run",
   const events = []
   await prepareDrillArtifacts(root)
 
+  const failure = new Error("relay target was stale with Bearer abcdefghijklmnopqrstuvwxyz")
+  failure.stack = "Error: relay target was stale with sk-this-should-not-persist\n    at drill"
+
   const result = await finalizeDrillArtifacts({
     rootDir: root,
     passed: false,
-    failure: new Error("relay target was stale"),
+    failure,
     metadata: {
       drill: "hosted-cloud-relay",
       relayToken: "relay-token-should-not-persist",
@@ -45,7 +48,8 @@ test("drill artifacts are preserved with a failure manifest after a failed run",
   assert.equal(manifest.metadata.relayToken, "<redacted>")
   assert.equal(manifest.metadata.provider, "<redacted>")
   assert.equal(manifest.metadata.nested.apiKey, "<redacted>")
-  assert.equal(manifest.error.message, "relay target was stale")
+  assert.equal(manifest.error.message, "relay target was stale with <redacted>")
+  assert.match(manifest.error.stack, /Error: relay target was stale with <redacted>/)
   assert.doesNotMatch(JSON.stringify(manifest), /should-not-persist|abcdefghijklmnopqrstuvwxyz/)
 
   await finalizeDrillArtifacts({ rootDir: root, passed: true })

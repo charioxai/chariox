@@ -1,6 +1,9 @@
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { sanitizeDrillMetadata } from "./drill-secrets.mjs"
+import {
+  redactDrillSecretText,
+  sanitizeDrillMetadata,
+} from "./drill-secrets.mjs"
 
 export async function prepareDrillArtifacts(rootDir) {
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
@@ -43,8 +46,8 @@ function failureManifest({ rootDir, failure, metadata }) {
     error: failure
       ? {
           name: failure.name ?? "Error",
-          message: failure.message ?? String(failure),
-          stack: typeof failure.stack === "string" ? failure.stack : null,
+          message: redactDrillSecretText(failure.message ?? String(failure)),
+          stack: typeof failure.stack === "string" ? redactDrillSecretText(failure.stack) : null,
         }
       : null,
   }

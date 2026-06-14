@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
+  redactDrillSecretText,
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
 
@@ -18,6 +19,14 @@ test("detects token-shaped drill metadata values", () => {
   assert.equal(looksLikeDrillSecretValue("sk-this-should-not-persist"), true)
   assert.equal(looksLikeDrillSecretValue("ghp_abcdefghijklmnopqrstuvwxyz"), true)
   assert.equal(looksLikeDrillSecretValue("/tmp/arroba-drill"), false)
+})
+
+test("redacts token-shaped text without dropping surrounding diagnostics", () => {
+  assert.equal(
+    redactDrillSecretText("request failed with Bearer abcdefghijklmnopqrstuvwxyz in header"),
+    "request failed with <redacted> in header",
+  )
+  assert.equal(redactDrillSecretText("no secret here"), "no secret here")
 })
 
 test("sanitizes nested drill metadata", () => {

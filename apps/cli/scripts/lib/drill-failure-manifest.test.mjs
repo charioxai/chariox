@@ -69,6 +69,18 @@ test("reads a manifest file directly", async () => {
   await rm(root, { recursive: true, force: true })
 })
 
+test("redacts token-shaped values from summarized manifest errors", () => {
+  const summary = summarizeDrillFailureManifest(validManifest({
+    error: {
+      name: "Error",
+      message: "Token refresh failed: 401 with Bearer abcdefghijklmnopqrstuvwxyz",
+      stack: null,
+    },
+  }))
+
+  assert.equal(summary.error.message, "Token refresh failed: 401 with <redacted>")
+})
+
 test("discovers preserved failure manifests below artifact roots", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-failure-find-"))
   const first = path.join(root, "target", "run-one")

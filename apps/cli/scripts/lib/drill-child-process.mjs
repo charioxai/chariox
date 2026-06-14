@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { redactDrillSecretText } from './drill-secrets.mjs'
 
 const PROVIDER_ACCOUNT_PATTERNS = [
   /insufficient balance/i,
@@ -133,7 +134,7 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
   const combined = `${stdout}\n${stderr}`.trim()
   const classification = classifyDrillChildFailure(combined)
   const exit = signal ? `signal ${signal}` : `code ${code}`
-  const tail = combined.split('\n').slice(-40).join('\n').trim()
+  const tail = redactDrillSecretText(combined.split('\n').slice(-40).join('\n').trim())
   return [
     `${label} child failed with ${exit} (${classification})`,
     classification === 'provider-account'

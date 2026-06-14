@@ -14,10 +14,15 @@ export function looksLikeDrillSecretValue(value) {
   return typeof value === "string" && SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
 }
 
+export function redactDrillSecretText(value) {
+  if (typeof value !== "string") return value
+  return SECRET_VALUE_PATTERNS.reduce((text, pattern) => text.replace(pattern, "<redacted>"), value)
+}
+
 export function sanitizeDrillMetadata(value, key = "") {
   if (isSensitiveDrillKey(key)) return "<redacted>"
   if (typeof value === "string") {
-    return looksLikeDrillSecretValue(value) ? "<redacted>" : value
+    return redactDrillSecretText(value)
   }
   if (value === null || typeof value === "number" || typeof value === "boolean") return value
   if (Array.isArray(value)) return value.map((item) => sanitizeDrillMetadata(item, key))

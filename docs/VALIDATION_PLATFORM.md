@@ -57,7 +57,7 @@ Required scenario fields:
 - `artifactHints`: optional paths to preserved artifact roots or failure manifests discovered from child drill output.
 
 Reports must not include credentials, relay tokens, provider tokens, prompt bodies, file contents, or unredacted connector payloads. If a drill needs detailed failure output, preserve the artifact directory and record a pointer in the failure manifest instead of embedding sensitive logs in the matrix report.
-The matrix report validator rejects secret-looking metadata keys, token-shaped metadata values, and token-shaped artifact hints. Matrix runners validate before writing reports and skip token-shaped artifact hints extracted from child output.
+The matrix report validator rejects secret-looking metadata keys, token-shaped metadata values, and token-shaped artifact hints. Matrix runners validate before writing reports and skip token-shaped artifact hints extracted from child output. Child failure summaries redact token-shaped values before preserving output tails.
 
 ## Failure Manifests
 
@@ -80,7 +80,7 @@ Required top-level fields:
 - `metadata`: non-secret drill context such as drill name, provider profile, relay mode, or scenario id.
 - `error`: error name, message, and optional stack.
 
-Failure manifests redact sensitive metadata keys and token-shaped metadata values before writing. Failure summaries also redact sensitive metadata keys and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
+Failure manifests redact sensitive metadata keys, token-shaped metadata values, and token-shaped error text before writing. Failure summaries also redact sensitive metadata keys, token-shaped error messages, and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
 When more than one failure manifest is selected, the summary command prints an aggregate owner/classification section so preserved failure batches can be routed quickly.
 The `--json`/`--output` aggregate schema is `arroba.drill.failure.aggregate.v1`.
 Its `nextActions` entries group repeated owner/classification/action pairs so CI and humans can route a failure batch without scanning every manifest.
