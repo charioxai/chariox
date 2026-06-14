@@ -23,7 +23,11 @@ import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
 test("describes validation gate presets", () => {
   const presets = describeDrillValidationGatePresets()
-  assert.deepEqual(presets.map((preset) => preset.name), ["native-provider-tui", "remote-agent-runtime", "remote-home-extension", "slice-runtime", "workspace-live-sync"])
+  assert.deepEqual(presets.map((preset) => preset.name), ["distributed-runtime", "native-provider-tui", "remote-agent-runtime", "remote-home-extension", "slice-runtime", "workspace-live-sync"])
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["distributed-runtime"] })[0].requiredMatrices,
+    ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+  )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
     ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
@@ -75,6 +79,11 @@ test("passes with valid platform bundle and complete matrix reports", async () =
         { id: "suite-contract", testCount: 2 },
       ],
       validationPresets: [
+        {
+          name: "distributed-runtime",
+          requiredMatrices: ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+          requiredFailureClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
+        },
         {
           name: "native-provider-tui",
           requiredMatrices: ["native-provider-tui-matrix"],

@@ -53,12 +53,17 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
     assert.deepEqual(check.missingFailureClassifications, [])
     assert.equal(check.validationSuite.coverageAreas.some((area) => area.id === "matrix-validation"), true)
     assert.deepEqual(check.validationSuite.validationPresets.map((preset) => preset.name), [
+      "distributed-runtime",
       "native-provider-tui",
       "remote-agent-runtime",
       "remote-home-extension",
       "slice-runtime",
       "workspace-live-sync",
     ])
+    assert.deepEqual(
+      check.validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredMatrices,
+      ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+    )
     assert.deepEqual(
       check.validationSuite.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,
       ["workspace-live-sync-matrix"],

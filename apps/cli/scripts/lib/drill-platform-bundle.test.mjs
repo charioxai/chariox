@@ -50,12 +50,17 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       "suite-contract",
     ])
     assert.deepEqual(validationSuite.validationPresets.map((preset) => preset.name), [
+      "distributed-runtime",
       "native-provider-tui",
       "remote-agent-runtime",
       "remote-home-extension",
       "slice-runtime",
       "workspace-live-sync",
     ])
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredMatrices,
+      ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+    )
     assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "remote-home-extension").requiredMatrices,
       ["remote-home-extension-matrix"],

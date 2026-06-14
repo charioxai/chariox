@@ -17,6 +17,7 @@ import {
 
 test("describes stable validation gate presets", () => {
   assert.deepEqual(Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort(), [
+    "distributed-runtime",
     "native-provider-tui",
     "remote-agent-runtime",
     "remote-home-extension",
@@ -24,12 +25,27 @@ test("describes stable validation gate presets", () => {
     "workspace-live-sync",
   ])
   assert.deepEqual(describeDrillValidationGatePresets().map((preset) => preset.name), [
+    "distributed-runtime",
     "native-provider-tui",
     "remote-agent-runtime",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",
   ])
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["distributed-runtime"] })[0],
+    {
+      name: "distributed-runtime",
+      description: "End-to-end distributed runtime authority evidence across native TUI, remote agents, home extensions, slices, and Workspace Live Sync.",
+      requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredFailureClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
+      requiredMatrices: ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+      requiredMatrixClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
+      requiredDeploymentPresets: ["hetzner", "hosted-cloud", "local", "same-host-remote", "self-hosted-relay"],
+      requiredProviders: ["claude", "codex", "opencode"],
+      requiredScenarios: ["agent-reuse", "collab-remote-agent", "hetzner-collab", "hetzner-single", "lease-reconnect", "local-collab", "local-managed-codex", "local-native-tui", "local-single", "local-tracked-codex", "permission-visibility", "provider-auth", "provider-run-binding", "remote-managed-codex", "remote-native-tui", "remote-prompt-dispatch", "remote-tracked-codex", "session-start", "single-user-remote-agent", "slice-lifecycle", "slice-native-tui", "transcript-parity", "ui-projection"],
+    },
+  )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
     ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
@@ -100,7 +116,8 @@ test("expands validation gate preset requirements", () => {
 })
 
 test("normalizes validation gate requirements", () => {
-  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "slice-runtime,native-provider-tui", "remote-agent-runtime"]), [
+  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "slice-runtime,native-provider-tui", "remote-agent-runtime,distributed-runtime"]), [
+    "distributed-runtime",
     "native-provider-tui",
     "remote-agent-runtime",
     "remote-home-extension",
