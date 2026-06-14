@@ -32,18 +32,40 @@ export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
 export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "workspace-live-sync": Object.freeze({
+    description: "Workspace Live Sync local/remote matrix evidence and distributed sync diagnostics.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
     requiredMatrices: Object.freeze(["workspace-live-sync-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
   }),
   "remote-home-extension": Object.freeze({
+    description: "Home-owned extension execution evidence for remote agents and collab authority checks.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
     requiredMatrices: Object.freeze(["remote-home-extension-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
   }),
 })
+
+export function describeDrillValidationGatePresets({ names = null } = {}) {
+  const presetNames = names == null
+    ? Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort()
+    : normalizeRequiredPresets(Array.isArray(names) ? names : [names])
+  return presetNames.map((name) => {
+    const preset = DRILL_VALIDATION_GATE_PRESETS[name]
+    return {
+      name,
+      description: preset.description,
+      requiredPlatformCoverageAreas: [...(preset.requiredPlatformCoverageAreas ?? [])],
+      requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
+      requiredMatrices: [...(preset.requiredMatrices ?? [])],
+      requiredMatrixClassifications: [...(preset.requiredMatrixClassifications ?? [])],
+      requiredDeploymentPresets: [...(preset.requiredDeploymentPresets ?? [])],
+      requiredProviders: [...(preset.requiredProviders ?? [])],
+      requiredScenarios: [...(preset.requiredScenarios ?? [])],
+    }
+  })
+}
 
 export async function readDrillValidationGateReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))

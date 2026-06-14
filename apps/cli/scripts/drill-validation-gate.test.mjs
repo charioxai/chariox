@@ -86,6 +86,30 @@ test("drill validation gate rejects output artifact index without output", async
   )
 })
 
+test("drill validation gate lists presets", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--list-presets"])
+
+  assert.match(stdout, /validation gate presets:/)
+  assert.match(stdout, /workspace-live-sync/)
+  assert.match(stdout, /remote-home-extension/)
+  assert.match(stdout, /matrix_classifications=kernel-authority,relay-target-freshness,workspace-live-sync-conflict/)
+})
+
+test("drill validation gate lists selected presets as JSON", async () => {
+  const { stdout } = await execFile(process.execPath, [
+    scriptPath,
+    "--list-presets",
+    "--preset",
+    "remote-home-extension",
+    "--json",
+  ])
+  const parsed = JSON.parse(stdout)
+
+  assert.deepEqual(parsed.presets.map((preset) => preset.name), ["remote-home-extension"])
+  assert.deepEqual(parsed.presets[0].requiredMatrices, ["remote-home-extension-matrix"])
+  assert.deepEqual(parsed.presets[0].requiredFailureClassifications, ["kernel-authority", "remote-extension-sync", "worker-execution"])
+})
+
 test("drill validation gate accepts explicit matrix report paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {

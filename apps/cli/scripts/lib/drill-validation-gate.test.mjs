@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  describeDrillValidationGatePresets,
   drillValidationGateExitCode,
   findDrillValidationGateAggregatePaths,
   findDrillValidationGateReportPaths,
@@ -19,6 +20,19 @@ import {
 } from "./drill-validation-gate.mjs"
 import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
+
+test("describes validation gate presets", () => {
+  const presets = describeDrillValidationGatePresets()
+  assert.deepEqual(presets.map((preset) => preset.name), ["remote-home-extension", "workspace-live-sync"])
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
+    ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
+  )
+  assert.throws(
+    () => describeDrillValidationGatePresets({ names: ["workspace-live-synch"] }),
+    /unknown validation gate preset: workspace-live-synch/,
+  )
+})
 
 test("passes with valid platform bundle and complete matrix reports", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))

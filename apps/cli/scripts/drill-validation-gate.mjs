@@ -2,6 +2,7 @@
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
+  describeDrillValidationGatePresets,
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
   runDrillValidationGate,
@@ -14,6 +15,7 @@ function printHelp() {
     "Verifies collected validation platform artifacts for CI or staging gates.",
     "",
     "Options:",
+    "  --list-presets       List validation gate requirement presets and exit",
     "  --preset NAME[,NAME]  Apply named requirement preset; repeatable",
     "                         Known: workspace-live-sync, remote-home-extension",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
@@ -53,6 +55,15 @@ async function main() {
     printHelp()
     return
   }
+  if (options.listPresets) {
+    const presets = describeDrillValidationGatePresets({ names: options.presets.length > 0 ? options.presets : null })
+    if (options.json) {
+      console.log(JSON.stringify({ presets }, null, 2))
+    } else {
+      console.log(formatPresetList(presets))
+    }
+    return
+  }
   const report = await runDrillValidationGate(options)
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
@@ -81,6 +92,7 @@ function parseArgs(argv) {
     failureInputs: [],
     help: false,
     json: false,
+    listPresets: false,
     matrixReports: [],
     matrixRoots: [],
     maxDepth: 8,
@@ -101,6 +113,7 @@ function parseArgs(argv) {
     const arg = argv[index]
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
+    else if (arg === "--list-presets") options.listPresets = true
     else if (arg === "--require-complete") options.requireComplete = true
     else if (arg === "--preset") {
       const value = argv[index + 1]
@@ -246,6 +259,18 @@ function parseArgs(argv) {
     throw new Error("--output-artifact-index requires --output")
   }
   return options
+}
+
+function formatPresetList(presets) {
+  const lines = ["validation gate presets:"]
+  for (const preset of presets) {
+    lines.push(`- ${preset.name}: ${preset.description}`)
+    lines.push(`  platform_coverage=${preset.requiredPlatformCoverageAreas.join(",") || "none"}`)
+    lines.push(`  failure_classifications=${preset.requiredFailureClassifications.join(",") || "none"}`)
+    lines.push(`  matrices=${preset.requiredMatrices.join(",") || "none"}`)
+    lines.push(`  matrix_classifications=${preset.requiredMatrixClassifications.join(",") || "none"}`)
+  }
+  return lines.join("\n")
 }
 
 main().catch((error) => {
