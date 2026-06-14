@@ -41,6 +41,14 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     assert.equal(bundle.schema, DRILL_PLATFORM_BUNDLE_SCHEMA)
     assert.deepEqual(verified, bundle)
     assert.equal(artifactIndex.metadata.drill, "platform-bundle")
+    assert.equal(validationSuite.coverage.length, 5)
+    assert.deepEqual(validationSuite.coverage.map((area) => area.id), [
+      "artifact-contracts",
+      "failure-diagnostics",
+      "matrix-validation",
+      "runtime-fixtures",
+      "suite-contract",
+    ])
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -116,6 +124,50 @@ test("rejects validation suite artifact count drift", async () => {
     const suitePath = path.join(rootDir, "validation-suite.json")
     const suite = JSON.parse(await readFile(suitePath, "utf8"))
     await replaceBundleArtifact(rootDir, "validation-suite.json", { ...suite, testCount: suite.testCount + 1 })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /testCount does not match testPaths/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects validation suite coverage drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const suitePath = path.join(rootDir, "validation-suite.json")
+    const suite = JSON.parse(await readFile(suitePath, "utf8"))
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      coverage: suite.coverage.map((area) => area.id === "runtime-fixtures"
+        ? { ...area, testPaths: area.testPaths.slice(1), testCount: area.testCount - 1 }
+        : area),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /missing coverage areas/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects validation suite coverage count drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const suitePath = path.join(rootDir, "validation-suite.json")
+    const suite = JSON.parse(await readFile(suitePath, "utf8"))
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      coverage: suite.coverage.map((area) => area.id === "suite-contract"
+        ? { ...area, testCount: area.testCount + 1 }
+        : area),
+    })
 
     await assert.rejects(
       verifyDrillPlatformBundle(rootDir),

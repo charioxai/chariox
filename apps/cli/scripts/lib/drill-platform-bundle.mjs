@@ -9,7 +9,10 @@ import {
   drillFailureTaxonomyManifest,
 } from "./drill-failure-taxonomy.mjs"
 import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
-import { drillValidationSuiteManifest } from "./drill-validation-suite.mjs"
+import {
+  drillValidationSuiteManifest,
+  validateValidationSuiteCoverage,
+} from "./drill-validation-suite.mjs"
 
 export const DRILL_PLATFORM_BUNDLE_SCHEMA = "arroba.drill.platform_bundle.v1"
 export const DRILL_PLATFORM_BUNDLE_ARTIFACTS = Object.freeze([
@@ -141,6 +144,22 @@ function validateValidationSuiteArtifact(contents) {
   }
   if (typeof contents.command !== "string" || !contents.command.includes("--test")) {
     throw new Error("validation-suite.json has invalid command")
+  }
+  if (!Array.isArray(contents.coverage) || contents.coverage.length === 0) {
+    throw new Error("validation-suite.json has invalid coverage")
+  }
+  validateValidationSuiteCoverage({
+    coverageAreas: contents.coverage.map((area) => ({
+      id: area?.id,
+      description: area?.description,
+      testPaths: area?.testPaths,
+    })),
+    testPaths: contents.testPaths,
+  })
+  for (const area of contents.coverage) {
+    if (area.testCount !== area.testPaths.length) {
+      throw new Error(`validation-suite.json coverage area ${area.id} testCount does not match testPaths`)
+    }
   }
 }
 

@@ -2,11 +2,14 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  DRILL_VALIDATION_COVERAGE_AREAS,
   SHARED_DRILL_TEST_PATHS,
   drillValidationSuiteArgs,
   drillValidationSuiteCommand,
   drillValidationSuiteManifest,
   findMissingDrillValidationSuitePaths,
+  validateValidationSuiteCoverage,
+  validationSuiteCoverage,
 } from "./drill-validation-suite.mjs"
 
 test("shared drill validation suite lists stable test paths", () => {
@@ -14,6 +17,47 @@ test("shared drill validation suite lists stable test paths", () => {
   assert(SHARED_DRILL_TEST_PATHS.includes("apps/cli/scripts/drill-matrix-report-summary.test.mjs"))
   assert.deepEqual([...SHARED_DRILL_TEST_PATHS].sort(), [...SHARED_DRILL_TEST_PATHS])
   assert.equal(new Set(SHARED_DRILL_TEST_PATHS).size, SHARED_DRILL_TEST_PATHS.length)
+})
+
+test("shared drill validation suite covers every test path exactly once", () => {
+  validateValidationSuiteCoverage()
+  const covered = validationSuiteCoverage().flatMap((area) => area.testPaths)
+  assert.deepEqual([...covered].sort(), [...SHARED_DRILL_TEST_PATHS])
+  assert.equal(new Set(covered).size, SHARED_DRILL_TEST_PATHS.length)
+  assert.deepEqual(
+    DRILL_VALIDATION_COVERAGE_AREAS.map((area) => area.id),
+    ["artifact-contracts", "failure-diagnostics", "matrix-validation", "runtime-fixtures", "suite-contract"],
+  )
+})
+
+test("rejects invalid shared drill validation coverage", () => {
+  assert.throws(() => validateValidationSuiteCoverage({
+    coverageAreas: [{
+      id: "bad",
+      description: "bad coverage",
+      testPaths: ["apps/cli/scripts/lib/missing.test.mjs"],
+    }],
+    testPaths: ["apps/cli/scripts/lib/drill-validation-suite.test.mjs"],
+  }), /references non-suite test/)
+  assert.throws(() => validateValidationSuiteCoverage({
+    coverageAreas: [{
+      id: "bad",
+      description: "bad coverage",
+      testPaths: [],
+    }],
+    testPaths: ["apps/cli/scripts/lib/drill-validation-suite.test.mjs"],
+  }), /invalid testPaths/)
+  assert.throws(() => validateValidationSuiteCoverage({
+    coverageAreas: [{
+      id: "bad",
+      description: "bad coverage",
+      testPaths: ["apps/cli/scripts/lib/drill-validation-suite.test.mjs"],
+    }],
+    testPaths: [
+      "apps/cli/scripts/lib/drill-validation-suite.test.mjs",
+      "apps/cli/scripts/lib/drill-time.test.mjs",
+    ],
+  }), /missing coverage areas/)
 })
 
 test("formats shared drill validation suite command", () => {
@@ -32,10 +76,21 @@ test("builds shared drill validation suite manifest", () => {
   assert.deepEqual(drillValidationSuiteManifest({
     nodeCommand: "node",
     testPaths: ["one.test.mjs", "two words.test.mjs"],
+    coverageAreas: [{
+      id: "sample",
+      description: "sample coverage",
+      testPaths: ["one.test.mjs", "two words.test.mjs"],
+    }],
   }), {
     schema: "arroba.drill.validation_suite.v1",
     testCount: 2,
     command: 'node --test one.test.mjs "two words.test.mjs"',
+    coverage: [{
+      id: "sample",
+      description: "sample coverage",
+      testCount: 2,
+      testPaths: ["one.test.mjs", "two words.test.mjs"],
+    }],
     testPaths: ["one.test.mjs", "two words.test.mjs"],
   })
 })

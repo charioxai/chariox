@@ -29,10 +29,19 @@ test("drill validation suite prints runnable command", async () => {
 test("drill validation suite prints coverage manifest", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--json"])
   const manifest = JSON.parse(stdout)
+  const covered = manifest.coverage.flatMap((area) => area.testPaths)
 
   assert.equal(manifest.schema, "arroba.drill.validation_suite.v1")
   assert.equal(manifest.testCount, SHARED_DRILL_TEST_PATHS.length)
   assert.deepEqual(manifest.testPaths, SHARED_DRILL_TEST_PATHS)
+  assert.deepEqual(covered.sort(), [...SHARED_DRILL_TEST_PATHS])
+  assert.deepEqual(manifest.coverage.map((area) => area.id), [
+    "artifact-contracts",
+    "failure-diagnostics",
+    "matrix-validation",
+    "runtime-fixtures",
+    "suite-contract",
+  ])
   assert.match(manifest.command, /^node --test /)
 })
 
