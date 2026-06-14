@@ -2,6 +2,10 @@ import { spawn } from "node:child_process"
 import path from "node:path"
 import { writeDrillJsonArtifactOutput } from "./drill-artifacts.mjs"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
+import {
+  drillFailureNextActionForClassification,
+  drillFailureOwnerForClassification,
+} from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
@@ -303,6 +307,8 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
       status: result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed",
       expectedFailure: Boolean(result.expectedFailure),
       classification: result.classification ?? null,
+      owner: ownerForResult(result),
+      nextAction: nextActionForResult(result),
       durationMs: result.durationMs,
       reason: result.reason ?? null,
       command: result.command,
@@ -323,6 +329,16 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     },
   })
   console.log(`[${matrixName}] report ${reportPath}`)
+}
+
+function ownerForResult(result) {
+  return result.classification ? drillFailureOwnerForClassification(result.classification) : null
+}
+
+function nextActionForResult(result) {
+  return result.classification
+    ? drillFailureNextActionForClassification(result.classification, { target: "scenario" })
+    : null
 }
 
 function collectArtifactHintsFromJsonLine(hints, line) {

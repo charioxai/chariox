@@ -402,6 +402,30 @@ function validateDrillMatrixScenario(scenario, source) {
   if (nonEmptyString(scenario.classification) && !isKnownDrillFailureClassification(scenario.classification)) {
     throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
   }
+  if (scenario.owner !== undefined && scenario.owner !== null) {
+    if (!nonEmptyString(scenario.owner)) {
+      throw new Error(`${source} has invalid owner`)
+    }
+    if (!nonEmptyString(scenario.classification)) {
+      throw new Error(`${source} owner requires classification`)
+    }
+    const expectedOwner = drillFailureOwnerForClassification(scenario.classification)
+    if (scenario.owner !== expectedOwner) {
+      throw new Error(`${source} owner does not match classification`)
+    }
+  }
+  if (scenario.nextAction !== undefined && scenario.nextAction !== null) {
+    if (!nonEmptyString(scenario.nextAction)) {
+      throw new Error(`${source} has invalid nextAction`)
+    }
+    if (!nonEmptyString(scenario.classification)) {
+      throw new Error(`${source} nextAction requires classification`)
+    }
+    const expectedNextAction = drillFailureNextActionForClassification(scenario.classification, { target: "scenario" })
+    if (scenario.nextAction !== expectedNextAction) {
+      throw new Error(`${source} nextAction does not match classification`)
+    }
+  }
   if (!Number.isFinite(scenario.durationMs) || scenario.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }

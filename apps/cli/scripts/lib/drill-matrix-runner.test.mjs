@@ -334,6 +334,8 @@ test("stops after the first unexpected failure unless configured otherwise", asy
   const report = JSON.parse(await readFile(reportPath, "utf8"))
   assert.equal(report.status, "failed")
   assert.equal(report.scenarios[1].status, "skipped")
+  assert.equal(report.scenarios[0].owner, "provider-account")
+  assert.equal(report.scenarios[0].nextAction, "refresh provider login for the profile used by this drill, then rerun the scenario")
   assert.deepEqual(report.scenarios[0].artifactHints, [])
   await rm(dir, { recursive: true, force: true })
 })

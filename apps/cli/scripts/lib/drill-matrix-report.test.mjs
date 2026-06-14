@@ -403,6 +403,26 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
+      scenarios: [scenario("broken", "failed", {
+        classification: "provider-auth",
+        owner: "runtime-network",
+        reason: "expired token",
+      })],
+    }),
+  }), /scenarios\[0\] owner does not match classification/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("broken", "failed", {
+        classification: "provider-auth",
+        nextAction: "try something else",
+        reason: "expired token",
+      })],
+    }),
+  }), /scenarios\[0\] nextAction does not match classification/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
       scenarios: [scenario("broken", "skipped", { reason: null })],
     }),
   }), /scenarios\[0\] skipped scenario is missing reason/)
