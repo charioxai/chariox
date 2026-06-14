@@ -205,3 +205,50 @@ export function getSessionStateRequest(sessionId: string) {
     },
   }
 }
+
+export function updateMetaagentTaskRequest(
+  sessionId: string,
+  metaagentId: string,
+  updates: { taskMarkdown?: string | null; planMarkdown?: string | null },
+) {
+  return {
+    UpdateMetaagentTask: {
+      session_id: sessionId,
+      metaagent_id: metaagentId,
+      ...(updates.taskMarkdown !== undefined ? { task_markdown: updates.taskMarkdown } : {}),
+      ...(updates.planMarkdown !== undefined ? { plan_markdown: updates.planMarkdown } : {}),
+    },
+  }
+}
+
+export function pauseMetaagentTaskRequest(sessionId: string, metaagentId: string) {
+  return {
+    PauseMetaagentTask: {
+      session_id: sessionId,
+      metaagent_id: metaagentId,
+    },
+  }
+}
+
+export function resumeMetaagentTaskRequest(sessionId: string, metaagentId: string) {
+  return {
+    ResumeMetaagentTask: {
+      session_id: sessionId,
+      metaagent_id: metaagentId,
+    },
+  }
+}
+
+export function abortMetaagentTaskRequest(
+  sessionId: string,
+  metaagentId: string,
+  reason?: string | null,
+) {
+  return {
+    AbortMetaagentTask: {
+      session_id: sessionId,
+      metaagent_id: metaagentId,
+      reason: reason ?? null,
+    },
+  }
+}

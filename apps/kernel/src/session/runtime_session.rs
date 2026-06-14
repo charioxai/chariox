@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
+use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
 use super::prompt_queue::{AgentPromptState, PromptQueueItem};
@@ -83,6 +84,8 @@ pub struct RuntimeSession {
     prompt_runtime: PromptRuntimeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     active_interactions: Vec<RuntimeInteraction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    metaagent_tasks: Vec<MetaagentTask>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
@@ -144,6 +147,7 @@ impl RuntimeSession {
             attachment_ids: BTreeSet::new(),
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
+            metaagent_tasks: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
@@ -456,6 +460,149 @@ impl RuntimeSession {
 
     pub fn active_interactions(&self) -> &[RuntimeInteraction] {
         &self.active_interactions
+    }
+
+    pub fn metaagent_tasks(&self) -> &[MetaagentTask] {
+        &self.metaagent_tasks
+    }
+
+    pub fn metaagent_task(&self, metaagent_id: &str) -> Option<&MetaagentTask> {
+        self.metaagent_tasks
+            .iter()
+            .find(|task| task.metaagent_id() == metaagent_id)
+    }
+
+    pub fn ensure_metaagent_task(
+        &mut self,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> &MetaagentTask {
+        let task_markdown = task_markdown.into();
+        if let Some(index) = self
+            .metaagent_tasks
+            .iter()
+            .position(|task| task.metaagent_id() == metaagent_id)
+        {
+            let task = &mut self.metaagent_tasks[index];
+            if !task_markdown.trim().is_empty() {
+                task.update_task_markdown(task_markdown);
+            } else if task.status().is_terminal() {
+                task.set_status(MetaagentTaskStatus::Active);
+            }
+            return &self.metaagent_tasks[index];
+        }
+        let task_id = format!("metaagent-task-{}-{}", metaagent_id, unix_epoch_ms());
+        self.metaagent_tasks
+            .push(MetaagentTask::new(task_id, metaagent_id, task_markdown));
+        self.metaagent_tasks
+            .last()
+            .expect("pushed metaagent task should be present")
+    }
+
+    pub fn start_metaagent_task_if_needed(
+        &mut self,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> Option<&MetaagentTask> {
+        let task_markdown = task_markdown.into();
+        if let Some(index) = self
+            .metaagent_tasks
+            .iter()
+            .position(|task| task.metaagent_id() == metaagent_id)
+        {
+            let task = &mut self.metaagent_tasks[index];
+            if task.status().is_terminal() {
+                task.update_task_markdown(task_markdown);
+                return Some(&self.metaagent_tasks[index]);
+            }
+            return None;
+        }
+        Some(self.ensure_metaagent_task(metaagent_id, task_markdown))
+    }
+
+    pub fn update_metaagent_task_markdown(
+        &mut self,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> Option<&MetaagentTask> {
+        let task_markdown = task_markdown.into();
+        if self.metaagent_task(metaagent_id).is_none() {
+            return Some(self.ensure_metaagent_task(metaagent_id, task_markdown));
+        }
+        let task = self
+            .metaagent_tasks
+            .iter_mut()
+            .find(|task| task.metaagent_id() == metaagent_id)?;
+        task.update_task_markdown(task_markdown);
+        Some(task)
+    }
+
+    pub fn update_metaagent_plan_markdown(
+        &mut self,
+        metaagent_id: &str,
+        plan_markdown: impl Into<String>,
+    ) -> Option<&MetaagentTask> {
+        if self.metaagent_task(metaagent_id).is_none() {
+            self.ensure_metaagent_task(metaagent_id, "");
+        }
+        let task = self
+            .metaagent_tasks
+            .iter_mut()
+            .find(|task| task.metaagent_id() == metaagent_id)?;
+        task.update_plan_markdown(plan_markdown);
+        Some(task)
+    }
+
+    pub fn set_metaagent_task_status(
+        &mut self,
+        metaagent_id: &str,
+        status: MetaagentTaskStatus,
+    ) -> Option<&MetaagentTask> {
+        let task = self
+            .metaagent_tasks
+            .iter_mut()
+            .find(|task| task.metaagent_id() == metaagent_id)?;
+        task.set_status(status);
+        Some(task)
+    }
+
+    pub fn complete_metaagent_task(
+        &mut self,
+        metaagent_id: &str,
+        summary: Option<String>,
+    ) -> Option<&MetaagentTask> {
+        let task = self
+            .metaagent_tasks
+            .iter_mut()
+            .find(|task| task.metaagent_id() == metaagent_id)?;
+        task.mark_completed(summary);
+        Some(task)
+    }
+
+    pub fn block_metaagent_task(
+        &mut self,
+        metaagent_id: &str,
+        reason: impl Into<String>,
+    ) -> Option<&MetaagentTask> {
+        let task = self
+            .metaagent_tasks
+            .iter_mut()
+            .find(|task| task.metaagent_id() == metaagent_id)?;
+        task.mark_blocked(reason);
+        Some(task)
+    }
+
+    pub fn abort_metaagent_task(
+        &mut self,
+        metaagent_id: &str,
+        reason: Option<String>,
+    ) -> Option<&MetaagentTask> {
+        let task = self
+            .metaagent_tasks
+            .iter_mut()
+            .find(|task| task.metaagent_id() == metaagent_id)?;
+        task.abort(reason);
+        Some(task)
     }
 
     pub fn active_interaction_for_agent(&self, agent_id: &str) -> Option<&RuntimeInteraction> {

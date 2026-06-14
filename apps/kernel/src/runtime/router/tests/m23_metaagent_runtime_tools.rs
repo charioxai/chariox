@@ -147,6 +147,287 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
 }
 
 #[tokio::test]
+async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
+    let env = TestMetaRuntimeEnv::new("task-artifacts");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, standard_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let standard_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        standard_agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let standard_auth_token = standard_run
+        .runtime_mcp_auth_token()
+        .expect("standard run should expose runtime MCP auth token")
+        .to_string();
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let meta_specs = router
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&meta_auth_token);
+    assert!(
+        meta_specs
+            .iter()
+            .any(|spec| spec.name == crate::transport::runtime_tools::META_READ_TASK_TOOL),
+        "metaagents should see task artifact tools"
+    );
+    assert!(
+        !router
+            .runtime_state
+            .runtime_tool_specs_for_auth_token(&standard_auth_token)
+            .iter()
+            .any(|spec| spec.name == crate::transport::runtime_tools::META_READ_TASK_TOOL),
+        "standard agents must not see task artifact tools"
+    );
+
+    let initial = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_READ_TASK_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("metaagent should read empty task state");
+    assert!(initial.ok, "{:?}", initial.payload);
+    assert_eq!(
+        initial
+            .payload
+            .pointer("/status")
+            .and_then(serde_json::Value::as_str),
+        Some("none")
+    );
+
+    let task = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_UPDATE_TASK_TOOL,
+            serde_json::json!({ "markdown": "# Task\nPlan the work." }),
+        )
+        .await
+        .expect("metaagent should update task");
+    assert!(task.ok, "{:?}", task.payload);
+    assert_eq!(
+        task.payload
+            .pointer("/task/status")
+            .and_then(serde_json::Value::as_str),
+        Some("active")
+    );
+    assert_eq!(
+        task.payload
+            .pointer("/task/task_markdown")
+            .and_then(serde_json::Value::as_str),
+        Some("# Task\nPlan the work.")
+    );
+
+    let plan = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_UPDATE_PLAN_TOOL,
+            serde_json::json!({ "markdown": "1. Delegate implementation." }),
+        )
+        .await
+        .expect("metaagent should update plan");
+    assert!(plan.ok, "{:?}", plan.payload);
+    assert_eq!(
+        plan.payload
+            .pointer("/plan_markdown")
+            .and_then(serde_json::Value::as_str),
+        Some("1. Delegate implementation.")
+    );
+
+    let blocked = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_MARK_BLOCKED_TOOL,
+            serde_json::json!({ "reason": "worker unavailable" }),
+        )
+        .await
+        .expect("metaagent should mark task blocked");
+    assert!(blocked.ok, "{:?}", blocked.payload);
+    assert_eq!(
+        blocked
+            .payload
+            .pointer("/task/status")
+            .and_then(serde_json::Value::as_str),
+        Some("blocked")
+    );
+    assert_eq!(
+        blocked
+            .payload
+            .pointer("/task/blocked_reason")
+            .and_then(serde_json::Value::as_str),
+        Some("worker unavailable")
+    );
+
+    let completed = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_COMPLETE_TASK_TOOL,
+            serde_json::json!({ "summary": "done" }),
+        )
+        .await
+        .expect("metaagent should complete task");
+    assert!(completed.ok, "{:?}", completed.payload);
+    assert_eq!(
+        completed
+            .payload
+            .pointer("/task/status")
+            .and_then(serde_json::Value::as_str),
+        Some("completed")
+    );
+    assert_eq!(
+        completed
+            .payload
+            .pointer("/task/completion_summary")
+            .and_then(serde_json::Value::as_str),
+        Some("done")
+    );
+
+    let denied = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &standard_auth_token,
+            crate::transport::runtime_tools::META_UPDATE_TASK_TOOL,
+            serde_json::json!({ "markdown": "not allowed" }),
+        )
+        .await
+        .expect_err("standard agents should not call meta task tools");
+    assert!(
+        denied
+            .to_string()
+            .contains("exactly one active metaagent provider run"),
+        "{denied:?}"
+    );
+}
+
+#[tokio::test]
+async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
+    let env = TestMetaRuntimeEnv::new("prompt-task-create");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let attach = attach_request(session.id(), "client-prompt-task-create");
+    let attachment_id = match router
+        .dispatch(
+            KernelCommand::from_local_request("attach-prompt-task-create", None, None, &attach),
+            attach,
+        )
+        .await
+        .expect("client should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+
+    let first_prompt = "figure out the repo and organize the work";
+    let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(metaagent.id().to_string()),
+        prompt: first_prompt.to_string(),
+        attachments: Vec::new(),
+    });
+    let first = router
+        .dispatch(
+            KernelCommand::from_local_request("submit-meta-task", None, None, &submit),
+            submit,
+        )
+        .await
+        .expect("metaagent prompt should submit");
+    let LocalDaemonResponse::PromptSubmitted { session, .. } = first else {
+        panic!("unexpected submit response: {first:?}");
+    };
+    assert_eq!(
+        session
+            .metaagent_task(metaagent.id())
+            .map(|task| task.task_markdown()),
+        Some(first_prompt)
+    );
+
+    let followup = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id,
+        target_agent_id: Some(metaagent.id().to_string()),
+        prompt: "also keep the report short".to_string(),
+        attachments: Vec::new(),
+    });
+    let second = router
+        .dispatch(
+            KernelCommand::from_local_request("submit-meta-task-followup", None, None, &followup),
+            followup,
+        )
+        .await
+        .expect("metaagent follow-up prompt should submit");
+    let LocalDaemonResponse::PromptSubmitted { session, .. } = second else {
+        panic!("unexpected submit response: {second:?}");
+    };
+    assert_eq!(
+        session
+            .metaagent_task(metaagent.id())
+            .map(|task| task.task_markdown()),
+        Some(first_prompt)
+    );
+}
+
+#[tokio::test]
 async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
     let env = TestMetaRuntimeEnv::new("shared-token-tool-visibility");
     let workspace = env.root.join("workspace");

@@ -170,6 +170,36 @@ pub struct GetSessionStateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateMetaagentTaskRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_markdown: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseMetaagentTaskRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeMetaagentTaskRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbortMetaagentTaskRequest {
+    pub session_id: String,
+    pub metaagent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListSessionsRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

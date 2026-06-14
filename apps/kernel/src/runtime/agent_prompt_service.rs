@@ -89,6 +89,16 @@ impl AgentPromptCommandService {
         self.state.session_snapshot(session_id).await
     }
 
+    pub(crate) fn start_metaagent_task_for_prompt(
+        &self,
+        session_id: &str,
+        metaagent_id: &str,
+        prompt: &str,
+    ) -> Result<Option<crate::session::RuntimeSession>, DaemonError> {
+        self.state
+            .start_metaagent_task_for_prompt(session_id, metaagent_id, prompt)
+    }
+
     pub(crate) fn start_active_turn_with_trace_id(
         &self,
         session_id: &str,

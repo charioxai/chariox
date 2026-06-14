@@ -88,9 +88,17 @@ impl AgentRuntimeCommandExecutor {
                 force_queue: false,
             })
             .await?;
-        self.session_projection.update(prepared.session.clone());
+        let mut response_session = prepared.session.clone();
+        if let Some(updated_session) = self.prompt_commands.start_metaagent_task_for_prompt(
+            &request.session_id,
+            &target_agent_id,
+            &request.prompt,
+        )? {
+            response_session = updated_session;
+        }
+        self.session_projection.update(response_session.clone());
         self.agent_runtime_projection
-            .update_session(&prepared.session);
+            .update_session(&response_session);
 
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&prepared.outcome, prepared.dispatch.as_ref())
@@ -105,7 +113,7 @@ impl AgentRuntimeCommandExecutor {
         }
         let agent_activity = self
             .prompt_commands
-            .agent_activity_for_session(&prepared.session);
+            .agent_activity_for_session(&response_session);
 
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
@@ -116,7 +124,7 @@ impl AgentRuntimeCommandExecutor {
 
         Ok(LocalDaemonResponse::PromptSubmitted {
             outcome: prepared.outcome,
-            session: prepared.session,
+            session: response_session,
             agent_activity,
         })
     }

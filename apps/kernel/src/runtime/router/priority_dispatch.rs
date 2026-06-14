@@ -6,7 +6,7 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_executor::execute_required_capability_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{KernelCommand, command_caller_user_id};
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::debug_bundle_control::execute_export_debug_bundle_request;
 use crate::runtime::external_provider_session_control::execute_external_provider_session_request;
@@ -85,6 +85,14 @@ impl CommandRouter {
             | LocalDaemonRequest::AckMetaagentEvents(_)) => {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_metaagent_event_request(&self.runtime_state, request, &caller_user_id).await
+            }
+            request @ (LocalDaemonRequest::UpdateMetaagentTask(_)
+            | LocalDaemonRequest::PauseMetaagentTask(_)
+            | LocalDaemonRequest::ResumeMetaagentTask(_)
+            | LocalDaemonRequest::AbortMetaagentTask(_)) => {
+                self.runtime_state
+                    .execute_metaagent_task_request(request)
+                    .await
             }
             request @ LocalDaemonRequest::GetDaemonHealth(_) => {
                 execute_daemon_health_request(self.daemon_health_projection_input(0), request).await

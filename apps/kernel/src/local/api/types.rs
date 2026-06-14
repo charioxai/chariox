@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 141;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 142;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -154,6 +154,10 @@ pub enum LocalDaemonRequest {
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
+    UpdateMetaagentTask(UpdateMetaagentTaskRequest),
+    PauseMetaagentTask(PauseMetaagentTaskRequest),
+    ResumeMetaagentTask(ResumeMetaagentTaskRequest),
+    AbortMetaagentTask(AbortMetaagentTaskRequest),
     SearchMetaagentCommands(SearchMetaagentCommandsRequest),
     GetMetaagentTurnOverview(GetMetaagentTurnOverviewRequest),
     GetMetaagentTurnBlob(GetMetaagentTurnBlobRequest),
@@ -453,6 +457,11 @@ pub enum LocalDaemonResponse {
     SessionState {
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+    },
+    MetaagentTaskUpdated {
+        session: RuntimeSession,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<crate::session::MetaagentTask>,
     },
     MetaagentEventsListed {
         events: Vec<serde_json::Value>,

@@ -285,6 +285,26 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.metaagent_id)
         }
+        LocalDaemonRequest::UpdateMetaagentTask(request) => {
+            LocalRequestMetadata::new("metaagent.task.update", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
+        LocalDaemonRequest::PauseMetaagentTask(request) => {
+            LocalRequestMetadata::new("metaagent.task.pause", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
+        LocalDaemonRequest::ResumeMetaagentTask(request) => {
+            LocalRequestMetadata::new("metaagent.task.resume", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
+        LocalDaemonRequest::AbortMetaagentTask(request) => {
+            LocalRequestMetadata::new("metaagent.task.abort", Normal)
+                .session(&request.session_id)
+                .agent(&request.metaagent_id)
+        }
         LocalDaemonRequest::GetDaemonHealth(_) => {
             LocalRequestMetadata::new("daemon.health.get", Normal)
         }
@@ -340,6 +360,10 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListMetaagentEvents(_) => "metaagent.event.list",
         LocalDaemonRequest::ReadMetaagentEvent(_) => "metaagent.event.read",
         LocalDaemonRequest::AckMetaagentEvents(_) => "metaagent.event.ack",
+        LocalDaemonRequest::UpdateMetaagentTask(_) => "metaagent.task.update",
+        LocalDaemonRequest::PauseMetaagentTask(_) => "metaagent.task.pause",
+        LocalDaemonRequest::ResumeMetaagentTask(_) => "metaagent.task.resume",
+        LocalDaemonRequest::AbortMetaagentTask(_) => "metaagent.task.abort",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::InstallMcpServer(_) => "mcp.install",

@@ -30,6 +30,16 @@ pub(crate) fn redact_response_for_user(
                 session,
             }
         }
+        LocalDaemonResponse::MetaagentTaskUpdated { session, task } => {
+            let session = session.redacted_for_user(caller_user_id);
+            let task = task.filter(|task| {
+                session
+                    .metaagent_tasks()
+                    .iter()
+                    .any(|visible| visible.task_id() == task.task_id())
+            });
+            LocalDaemonResponse::MetaagentTaskUpdated { session, task }
+        }
         LocalDaemonResponse::SessionsListed { sessions } => LocalDaemonResponse::SessionsListed {
             sessions: sessions
                 .into_iter()

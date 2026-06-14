@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 pub use super::prompt_queue::{
     AgentPromptState, PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect,
     PromptQueueItem, PromptStatus, PromptSubmissionOutcome,

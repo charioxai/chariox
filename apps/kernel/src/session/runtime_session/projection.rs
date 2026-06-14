@@ -80,6 +80,9 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .prompt_runtime
         .retain_agent_ids(&visible_agent_ids, session.focused_agent_id.as_deref());
+    session
+        .metaagent_tasks
+        .retain(|task| visible_agent_ids.contains(task.metaagent_id()));
     if !collaboration_level.can_view_agent_trace() {
         session.workflows = session
             .workflows

@@ -223,6 +223,7 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::SessionState { session, .. }
         | LocalDaemonResponse::InteractionResponded { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
+        | LocalDaemonResponse::MetaagentTaskUpdated { session, .. }
         | LocalDaemonResponse::AgentAliased { session, .. }
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentProfileUpdated { session, .. }

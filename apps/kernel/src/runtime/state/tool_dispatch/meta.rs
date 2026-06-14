@@ -1,14 +1,17 @@
 use super::*;
 
 use crate::transport::runtime_tools::{
-    MetaAckEventArgs, MetaCommandListArgs, MetaCommandSearchArgs, MetaListEventsArgs,
-    MetaReadEventArgs, MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs,
-    MetaSubscribeEventsArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
-    RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_LIST_COMMANDS_TOOL,
-    META_LIST_EVENTS_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_READ_EVENT_TOOL,
-    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
-    META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL,
-    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
+    MetaAckEventArgs, MetaCommandListArgs, MetaCommandSearchArgs, MetaCompleteTaskArgs,
+    MetaListEventsArgs, MetaMarkBlockedArgs, MetaReadEventArgs, MetaReadPlanArgs, MetaReadTaskArgs,
+    MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
+    MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, MetaUpdatePlanArgs,
+    MetaUpdateTaskArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
+    META_COMPLETE_TASK_TOOL, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
+    META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_READ_EVENT_TOOL,
+    META_READ_PLAN_TOOL, META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL,
+    META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL,
+    META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
+    META_UNSUBSCRIBE_EVENTS_TOOL, META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL,
 };
 
 impl KernelRuntimeState {
@@ -279,6 +282,78 @@ impl KernelRuntimeState {
                     payload: serde_json::json!({
                         "subscriptions": subscriptions,
                     }),
+                })
+            }
+            META_READ_TASK_TOOL => {
+                let _args = serde_json::from_value::<MetaReadTaskArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: metaagent_task_payload(session, agent),
+                })
+            }
+            META_UPDATE_TASK_TOOL => {
+                let args = serde_json::from_value::<MetaUpdateTaskArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                let updated = self
+                    .owned
+                    .session_store
+                    .write()
+                    .update_metaagent_task_markdown(session.id(), agent.id(), args.markdown)?;
+                self.owned.session_projection.update(updated.clone());
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: metaagent_task_payload(&updated, agent),
+                })
+            }
+            META_READ_PLAN_TOOL => {
+                let _args = serde_json::from_value::<MetaReadPlanArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: metaagent_plan_payload(session, agent),
+                })
+            }
+            META_UPDATE_PLAN_TOOL => {
+                let args = serde_json::from_value::<MetaUpdatePlanArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                let updated = self
+                    .owned
+                    .session_store
+                    .write()
+                    .update_metaagent_plan_markdown(session.id(), agent.id(), args.markdown)?;
+                self.owned.session_projection.update(updated.clone());
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: metaagent_plan_payload(&updated, agent),
+                })
+            }
+            META_COMPLETE_TASK_TOOL => {
+                let args = serde_json::from_value::<MetaCompleteTaskArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                let updated = self.owned.session_store.write().complete_metaagent_task(
+                    session.id(),
+                    agent.id(),
+                    args.summary,
+                )?;
+                self.owned.session_projection.update(updated.clone());
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: metaagent_task_payload(&updated, agent),
+                })
+            }
+            META_MARK_BLOCKED_TOOL => {
+                let args = serde_json::from_value::<MetaMarkBlockedArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                let updated = self.owned.session_store.write().block_metaagent_task(
+                    session.id(),
+                    agent.id(),
+                    args.reason,
+                )?;
+                self.owned.session_projection.update(updated.clone());
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: metaagent_task_payload(&updated, agent),
                 })
             }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
@@ -817,6 +892,44 @@ fn invalid_meta_args(error: serde_json::Error) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_meta",
         message: format!("invalid tool arguments: {error}"),
+    }
+}
+
+fn metaagent_task_payload(
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+) -> serde_json::Value {
+    match session.metaagent_task(agent.id()) {
+        Some(task) => serde_json::json!({
+            "status": task.status(),
+            "metaagent_id": agent.id(),
+            "task": task,
+        }),
+        None => serde_json::json!({
+            "status": "none",
+            "metaagent_id": agent.id(),
+            "task": null,
+        }),
+    }
+}
+
+fn metaagent_plan_payload(
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+) -> serde_json::Value {
+    match session.metaagent_task(agent.id()) {
+        Some(task) => serde_json::json!({
+            "status": task.status(),
+            "metaagent_id": agent.id(),
+            "plan_markdown": task.plan_markdown(),
+            "task": task,
+        }),
+        None => serde_json::json!({
+            "status": "none",
+            "metaagent_id": agent.id(),
+            "plan_markdown": "",
+            "task": null,
+        }),
     }
 }
 

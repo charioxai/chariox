@@ -95,6 +95,12 @@ pub const META_SUBSCRIBE_EVENTS_TOOL: &str = "arroba.meta.subscribe_events";
 pub const META_UNSUBSCRIBE_EVENTS_TOOL: &str = "arroba.meta.unsubscribe_events";
 pub const META_LIST_SUBSCRIPTIONS_TOOL: &str = "arroba.meta.list_subscriptions";
 pub const META_RESOLVE_RUNTIME_INTERACTION_TOOL: &str = "arroba.meta.resolve_runtime_interaction";
+pub const META_READ_TASK_TOOL: &str = "arroba.meta.read_task";
+pub const META_UPDATE_TASK_TOOL: &str = "arroba.meta.update_task";
+pub const META_READ_PLAN_TOOL: &str = "arroba.meta.read_plan";
+pub const META_UPDATE_PLAN_TOOL: &str = "arroba.meta.update_plan";
+pub const META_COMPLETE_TASK_TOOL: &str = "arroba.meta.complete_task";
+pub const META_MARK_BLOCKED_TOOL: &str = "arroba.meta.mark_blocked";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
@@ -381,6 +387,33 @@ pub struct MetaResolveRuntimeInteractionArgs {
     pub choice_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaReadTaskArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaUpdateTaskArgs {
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaReadPlanArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaUpdatePlanArgs {
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaCompleteTaskArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaMarkBlockedArgs {
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -992,6 +1025,71 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_READ_TASK_TOOL.to_string(),
+            description: "Read this metaagent's kernel-managed task document and status. Returns status none when no task exists.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_UPDATE_TASK_TOOL.to_string(),
+            description: "Update this metaagent's kernel-managed task markdown. Creates the task if it does not exist.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["markdown"],
+                "properties": {
+                    "markdown": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_READ_PLAN_TOOL.to_string(),
+            description: "Read this metaagent's kernel-managed plan markdown and task status.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_UPDATE_PLAN_TOOL.to_string(),
+            description: "Update this metaagent's kernel-managed plan markdown. Creates an empty active task if needed.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["markdown"],
+                "properties": {
+                    "markdown": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_COMPLETE_TASK_TOOL.to_string(),
+            description: "Mark this metaagent's active task completed with an optional summary.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_MARK_BLOCKED_TOOL.to_string(),
+            description: "Mark this metaagent's task blocked with the concrete reason progress cannot continue.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                    "reason": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
             description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
@@ -1076,6 +1174,30 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_meta_list_subscriptions"
         | "mcp__arroba__meta_list_subscriptions"
         | "mcp__arroba__arroba_meta_list_subscriptions" => Some(META_LIST_SUBSCRIPTIONS_TOOL),
+        META_READ_TASK_TOOL
+        | "arroba_meta_read_task"
+        | "mcp__arroba__meta_read_task"
+        | "mcp__arroba__arroba_meta_read_task" => Some(META_READ_TASK_TOOL),
+        META_UPDATE_TASK_TOOL
+        | "arroba_meta_update_task"
+        | "mcp__arroba__meta_update_task"
+        | "mcp__arroba__arroba_meta_update_task" => Some(META_UPDATE_TASK_TOOL),
+        META_READ_PLAN_TOOL
+        | "arroba_meta_read_plan"
+        | "mcp__arroba__meta_read_plan"
+        | "mcp__arroba__arroba_meta_read_plan" => Some(META_READ_PLAN_TOOL),
+        META_UPDATE_PLAN_TOOL
+        | "arroba_meta_update_plan"
+        | "mcp__arroba__meta_update_plan"
+        | "mcp__arroba__arroba_meta_update_plan" => Some(META_UPDATE_PLAN_TOOL),
+        META_COMPLETE_TASK_TOOL
+        | "arroba_meta_complete_task"
+        | "mcp__arroba__meta_complete_task"
+        | "mcp__arroba__arroba_meta_complete_task" => Some(META_COMPLETE_TASK_TOOL),
+        META_MARK_BLOCKED_TOOL
+        | "arroba_meta_mark_blocked"
+        | "mcp__arroba__meta_mark_blocked"
+        | "mcp__arroba__arroba_meta_mark_blocked" => Some(META_MARK_BLOCKED_TOOL),
         META_RESOLVE_RUNTIME_INTERACTION_TOOL
         | "arroba_meta_resolve_runtime_interaction"
         | "mcp__arroba__meta_resolve_runtime_interaction"

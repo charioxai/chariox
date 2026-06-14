@@ -292,6 +292,131 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub fn ensure_metaagent_task(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "ensure metaagent task")?;
+        session.ensure_metaagent_task(metaagent_id, task_markdown);
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn start_metaagent_task_if_needed(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> Result<Option<RuntimeSession>, DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "start metaagent task if needed")?;
+        if session
+            .start_metaagent_task_if_needed(metaagent_id, task_markdown)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        session.touch();
+        Ok(Some(session.clone()))
+    }
+
+    pub fn update_metaagent_task_markdown(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        task_markdown: impl Into<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "update metaagent task markdown")?;
+        session.update_metaagent_task_markdown(metaagent_id, task_markdown);
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn update_metaagent_plan_markdown(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        plan_markdown: impl Into<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "update metaagent plan markdown")?;
+        session.update_metaagent_plan_markdown(metaagent_id, plan_markdown);
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn set_metaagent_task_status(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        status: crate::session::MetaagentTaskStatus,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "set metaagent task status")?;
+        session
+            .set_metaagent_task_status(metaagent_id, status)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "set_metaagent_task_status",
+                message: format!("metaagent task for `{metaagent_id}` does not exist"),
+            })?;
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn complete_metaagent_task(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        summary: Option<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "complete metaagent task")?;
+        session
+            .complete_metaagent_task(metaagent_id, summary)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "complete_metaagent_task",
+                message: format!("metaagent task for `{metaagent_id}` does not exist"),
+            })?;
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn block_metaagent_task(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        reason: impl Into<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "block metaagent task")?;
+        session
+            .block_metaagent_task(metaagent_id, reason)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "block_metaagent_task",
+                message: format!("metaagent task for `{metaagent_id}` does not exist"),
+            })?;
+        session.touch();
+        Ok(session.clone())
+    }
+
+    pub fn abort_metaagent_task(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        reason: Option<String>,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "abort metaagent task")?;
+        session
+            .abort_metaagent_task(metaagent_id, reason)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "abort_metaagent_task",
+                message: format!("metaagent task for `{metaagent_id}` does not exist"),
+            })?;
+        session.touch();
+        Ok(session.clone())
+    }
+
     #[cfg(test)]
     pub(crate) fn submit_prompt(
         &mut self,
