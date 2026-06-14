@@ -390,10 +390,15 @@ async function main() {
 
     const metaRun = await launchRuntime(client, requests, sessionId, metaagent.id, 'metaagent-drill-meta', options.timeoutMs, options.pollMs)
     const workerRun = await launchRuntime(client, requests, sessionId, worker.id, 'large-output-drill', options.timeoutMs, options.pollMs)
+    assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be forced to plan mode', { metaRun })
+    assert(metaRun.permission_level === 'required', 'metaagent provider run must require permissions', { metaRun })
     const metaTools = await listRuntimeToolNames(metaRun)
     const workerTools = await listRuntimeToolNames(workerRun)
     assert(metaTools.includes('arroba.meta.session_overview'), 'metaagent runtime MCP must expose meta tools', { metaTools })
+    assert(metaTools.every((tool) => tool.startsWith('arroba.meta.')), 'metaagent runtime MCP must expose only meta tools', { metaTools })
     assert(!workerTools.includes('arroba.meta.session_overview'), 'standard agent runtime MCP must not expose meta tools', { workerTools })
+    const directReadDenied = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'README.md' })
+    assert(!directReadDenied.ok, 'metaagent direct workspace read tool must be denied', directReadDenied.payload)
     log('runtime-tool-exposure-passed')
 
     const overview = await callRuntimeTool(metaRun, 'arroba.meta.session_overview')
