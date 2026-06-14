@@ -78,3 +78,57 @@ test("rejects incomplete drill platform bundles", async () => {
     await rm(rootDir, { recursive: true, force: true })
   }
 })
+
+test("rejects validation suite artifact count drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const suitePath = path.join(rootDir, "validation-suite.json")
+    const suite = JSON.parse(await readFile(suitePath, "utf8"))
+    await writeFile(suitePath, `${JSON.stringify({ ...suite, testCount: suite.testCount + 1 })}\n`, "utf8")
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /testCount does not match testPaths/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects failure taxonomy target drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const taxonomyPath = path.join(rootDir, "failure-taxonomy-drill.json")
+    const taxonomy = JSON.parse(await readFile(taxonomyPath, "utf8"))
+    await writeFile(taxonomyPath, `${JSON.stringify({ ...taxonomy, target: "scenario" })}\n`, "utf8")
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /target mismatch/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects failure taxonomy classification drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const taxonomyPath = path.join(rootDir, "failure-taxonomy-scenario.json")
+    const taxonomy = JSON.parse(await readFile(taxonomyPath, "utf8"))
+    await writeFile(taxonomyPath, `${JSON.stringify({
+      ...taxonomy,
+      classifications: taxonomy.classifications.slice(1),
+    })}\n`, "utf8")
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /classifications do not match taxonomy/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})

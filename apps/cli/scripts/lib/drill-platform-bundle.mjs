@@ -1,7 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 
-import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
+import {
+  DRILL_FAILURE_CLASSIFICATION_KINDS,
+  drillFailureTaxonomyManifest,
+} from "./drill-failure-taxonomy.mjs"
 import { drillValidationSuiteManifest } from "./drill-validation-suite.mjs"
 
 export const DRILL_PLATFORM_BUNDLE_SCHEMA = "arroba.drill.platform_bundle.v1"
@@ -84,8 +87,56 @@ export async function verifyDrillPlatformBundle(outputDir) {
           + `expected ${artifact.schema}, got ${JSON.stringify(contents.schema)}`,
       )
     }
+    validateBundleArtifactContents(artifact.path, contents)
   }
   return bundle
+}
+
+function validateBundleArtifactContents(artifactPath, contents) {
+  if (artifactPath === "validation-suite.json") {
+    validateValidationSuiteArtifact(contents)
+    return
+  }
+  if (artifactPath === "failure-taxonomy-scenario.json") {
+    validateFailureTaxonomyArtifact(contents, "scenario")
+    return
+  }
+  if (artifactPath === "failure-taxonomy-drill.json") {
+    validateFailureTaxonomyArtifact(contents, "drill")
+  }
+}
+
+function validateValidationSuiteArtifact(contents) {
+  if (!Array.isArray(contents.testPaths) || contents.testPaths.length === 0) {
+    throw new Error("validation-suite.json has invalid testPaths")
+  }
+  if (contents.testCount !== contents.testPaths.length) {
+    throw new Error("validation-suite.json testCount does not match testPaths")
+  }
+  if (typeof contents.command !== "string" || !contents.command.includes("--test")) {
+    throw new Error("validation-suite.json has invalid command")
+  }
+}
+
+function validateFailureTaxonomyArtifact(contents, expectedTarget) {
+  if (contents.target !== expectedTarget) {
+    throw new Error(`failure taxonomy artifact target mismatch: expected ${expectedTarget}, got ${JSON.stringify(contents.target)}`)
+  }
+  if (!Array.isArray(contents.classifications)) {
+    throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid classifications`)
+  }
+  const kinds = contents.classifications.map((entry) => entry?.kind).sort()
+  if (JSON.stringify(kinds) !== JSON.stringify(DRILL_FAILURE_CLASSIFICATION_KINDS)) {
+    throw new Error(`failure taxonomy ${expectedTarget} artifact classifications do not match taxonomy`)
+  }
+  for (const entry of contents.classifications) {
+    if (typeof entry.owner !== "string" || entry.owner.length === 0) {
+      throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid owner`)
+    }
+    if (typeof entry.nextAction !== "string" || entry.nextAction.length === 0) {
+      throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid nextAction`)
+    }
+  }
 }
 
 function assertRequiredBundleArtifacts(artifacts) {
