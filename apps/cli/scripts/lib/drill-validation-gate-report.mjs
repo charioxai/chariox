@@ -30,6 +30,9 @@ export function validateDrillValidationGateReport(report, source = "validation g
   for (const [index, action] of report.nextActions.entries()) {
     validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
   }
+  if (report.generatedEvidence !== undefined) {
+    validateGeneratedEvidence(report.generatedEvidence, `${source}.generatedEvidence`)
+  }
   const expectedStatus = Object.values(report.checks).some((check) => check.status === "failed") ? "failed" : "passed"
   if (report.status !== expectedStatus) {
     throw new Error(`${source} status does not match check statuses`)
@@ -266,6 +269,65 @@ function validatePlatformRuntimeSignalsSummary(summary, source) {
       throw new Error(`${signalSource} has invalid owner`)
     }
   }
+}
+
+function validateGeneratedEvidence(generatedEvidence, source) {
+  if (!generatedEvidence || typeof generatedEvidence !== "object" || Array.isArray(generatedEvidence)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateGeneratedValidationSuites(generatedEvidence.validationSuites, `${source}.validationSuites`)
+  validateGeneratedMatrixReports(generatedEvidence.matrixReports, `${source}.matrixReports`)
+}
+
+function validateGeneratedValidationSuites(validationSuites, source) {
+  if (!validationSuites || typeof validationSuites !== "object" || Array.isArray(validationSuites)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (typeof validationSuites.enabled !== "boolean") {
+    throw new Error(`${source} has invalid enabled`)
+  }
+  validateStringArray(validationSuites.artifactIndexes, `${source}.artifactIndexes`)
+  validateStringArray(validationSuites.outputRoots, `${source}.outputRoots`)
+  if (!validationSuites.enabled && (validationSuites.artifactIndexes.length > 0 || validationSuites.outputRoots.length > 0)) {
+    throw new Error(`${source} disabled evidence has paths`)
+  }
+}
+
+function validateGeneratedMatrixReports(matrixReports, source) {
+  if (!matrixReports || typeof matrixReports !== "object" || Array.isArray(matrixReports)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (typeof matrixReports.enabled !== "boolean") {
+    throw new Error(`${source} has invalid enabled`)
+  }
+  if (typeof matrixReports.dryRun !== "boolean") {
+    throw new Error(`${source} has invalid dryRun`)
+  }
+  if (typeof matrixReports.continueOnFailure !== "boolean") {
+    throw new Error(`${source} has invalid continueOnFailure`)
+  }
+  validateStringArray(matrixReports.roots, `${source}.roots`)
+  if (!Array.isArray(matrixReports.commands)) {
+    throw new Error(`${source}.commands is not an array`)
+  }
+  for (const [index, command] of matrixReports.commands.entries()) {
+    validateGeneratedMatrixCommand(command, `${source}.commands[${index}]`)
+  }
+  if (!matrixReports.enabled && (matrixReports.roots.length > 0 || matrixReports.commands.length > 0)) {
+    throw new Error(`${source} disabled evidence has paths`)
+  }
+}
+
+function validateGeneratedMatrixCommand(command, source) {
+  if (!command || typeof command !== "object" || Array.isArray(command)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const key of ["artifactIndexPath", "cwd", "reportPath", "scriptPath"]) {
+    if (!nonEmptyString(command[key])) {
+      throw new Error(`${source} has invalid ${key}`)
+    }
+  }
+  validateStringArray(command.args, `${source}.args`)
 }
 
 function validateStringArray(value, source) {

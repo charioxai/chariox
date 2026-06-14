@@ -159,7 +159,22 @@ test("formats generated evidence provenance when present", () => {
       matrixReports: {
         enabled: true,
         roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
-        commands: [{ scriptPath: "/repo/arroba/a.mjs" }, { scriptPath: "/repo/arroba/b.mjs" }],
+        commands: [
+          {
+            args: ["--include-hetzner"],
+            artifactIndexPath: "/tmp/matrices/oss/a-artifacts.json",
+            cwd: "/repo/arroba",
+            reportPath: "/tmp/matrices/oss/a.json",
+            scriptPath: "/repo/arroba/a.mjs",
+          },
+          {
+            args: ["--include-hosted-cloud"],
+            artifactIndexPath: "/tmp/matrices/cloud/b-artifacts.json",
+            cwd: "/repo/arroba-cloud",
+            reportPath: "/tmp/matrices/cloud/b.json",
+            scriptPath: "/repo/arroba-cloud/b.mjs",
+          },
+        ],
         dryRun: false,
         continueOnFailure: true,
       },

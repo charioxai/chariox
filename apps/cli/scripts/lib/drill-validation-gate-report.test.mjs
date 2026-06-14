@@ -39,6 +39,58 @@ test("rejects invalid configuration and next-action records", () => {
   )
 })
 
+test("validates optional generated evidence provenance", () => {
+  assert.doesNotThrow(() => validateDrillValidationGateReport(report({
+    generatedEvidence: generatedEvidence(),
+  })))
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        validationSuites: {
+          enabled: false,
+          artifactIndexes: ["/tmp/artifacts.json"],
+          outputRoots: [],
+        },
+      },
+    })),
+    /generatedEvidence\.validationSuites disabled evidence has paths/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          ...generatedEvidence().matrixReports,
+          commands: [{
+            args: [],
+            artifactIndexPath: "/tmp/matrix-artifacts.json",
+            cwd: "/repo/arroba",
+            reportPath: "",
+            scriptPath: "/repo/arroba/matrix.mjs",
+          }],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.commands\[0\] has invalid reportPath/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          enabled: false,
+          roots: ["/tmp/matrices"],
+          commands: [],
+          dryRun: false,
+          continueOnFailure: false,
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports disabled evidence has paths/,
+  )
+})
+
 test("validates platform bundle summary evidence", () => {
   assert.doesNotThrow(() => validateDrillValidationGateReport(report({
     checks: {
@@ -225,6 +277,32 @@ function report(overrides = {}) {
     nextActions: [],
     ...overrides,
     checks,
+  }
+}
+
+function generatedEvidence() {
+  return {
+    validationSuites: {
+      enabled: true,
+      artifactIndexes: [
+        "/tmp/suites/cloud/arroba-drill-artifacts.json",
+        "/tmp/suites/oss/arroba-drill-artifacts.json",
+      ],
+      outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
+    },
+    matrixReports: {
+      enabled: true,
+      roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
+      commands: [{
+        args: ["--include-hetzner"],
+        artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
+        cwd: "/repo/arroba",
+        reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
+        scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
+      }],
+      dryRun: false,
+      continueOnFailure: true,
+    },
   }
 }
 
