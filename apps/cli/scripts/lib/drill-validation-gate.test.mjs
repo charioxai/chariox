@@ -53,6 +53,7 @@ test("passes with explicit matrix report paths", async () => {
     assert.equal(report.status, "passed")
     assert.deepEqual(report.checks.matrices.inputs, [reportPath])
     assert.deepEqual(report.checks.matrices.reportPaths, [reportPath])
+    assert.match(formatDrillValidationGateSummary(report), /matrices=passed roots=0 inputs=1 reports=1/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -139,6 +140,7 @@ test("fails with explicit failure manifest paths", async () => {
     assert.equal(report.status, "failed")
     assert.deepEqual(report.checks.failures.inputs, [manifestPath])
     assert.deepEqual(report.checks.failures.manifestPaths, [manifestPath])
+    assert.match(formatDrillValidationGateSummary(report), /failures=failed roots=0 inputs=1 manifests=1/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

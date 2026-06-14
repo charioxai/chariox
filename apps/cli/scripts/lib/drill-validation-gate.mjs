@@ -58,14 +58,14 @@ export function formatDrillValidationGateSummary(report) {
   lines.push(`platform_bundle=${platform.status}${platform.dir ? ` dir=${platform.dir}` : ""}${platform.error ? ` error=${platform.error}` : ""}`)
 
   const matrices = report.checks.matrices
-  lines.push(`matrices=${matrices.status} roots=${matrices.roots.length} reports=${matrices.reportPaths.length} require_complete=${matrices.requireComplete}`)
+  lines.push(`matrices=${matrices.status} roots=${matrices.roots.length} inputs=${matrices.inputs.length} reports=${matrices.reportPaths.length} require_complete=${matrices.requireComplete}`)
   if (matrices.error) lines.push(`matrix_error=${matrices.error}`)
   if (matrices.aggregate) {
     lines.push(`matrix_status=${matrices.aggregate.status} failed=${matrices.aggregate.totals.failed} skipped=${matrices.aggregate.totals.skipped} dry_run=${matrices.aggregate.totals.dryRun}`)
   }
 
   const failures = report.checks.failures
-  lines.push(`failures=${failures.status} roots=${failures.roots.length} manifests=${failures.manifestPaths.length}`)
+  lines.push(`failures=${failures.status} roots=${failures.roots.length} inputs=${failures.inputs.length} manifests=${failures.manifestPaths.length}`)
   if (failures.error) lines.push(`failure_error=${failures.error}`)
   if (failures.aggregate) {
     lines.push(`failure_total=${failures.aggregate.total}`)
