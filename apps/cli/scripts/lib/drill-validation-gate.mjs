@@ -14,6 +14,7 @@ import {
   validateDrillValidationGateAggregate,
 } from "./drill-validation-gate-aggregate.mjs"
 import { artifactValidationGateCheck } from "./drill-validation-gate-artifact-check.mjs"
+import { configurationValidationGateCheck } from "./drill-validation-gate-configuration-check.mjs"
 import { failureValidationGateCheck } from "./drill-validation-gate-failure-check.mjs"
 import { matrixValidationGateCheck } from "./drill-validation-gate-matrix-check.mjs"
 import { platformValidationGateCheck } from "./drill-validation-gate-platform-check.mjs"
@@ -119,7 +120,7 @@ export async function runDrillValidationGate({
   const normalizedRequiredProviders = normalizeRequiredProviders(expandedRequirements.requiredProviders)
   const normalizedRequiredScenarios = normalizeRequiredScenarios(expandedRequirements.requiredScenarios)
   const checks = {
-    configuration: configurationCheck({
+    configuration: configurationValidationGateCheck({
       artifactIndexes,
       artifactRoots,
       failureInputs,
@@ -609,44 +610,6 @@ function validationGateNextActions(checks) {
     }
   }
   return formatDrillAggregateNextActionCounts(counts)
-}
-
-function configurationCheck({
-  artifactIndexes,
-  artifactRoots,
-  failureInputs,
-  failureRoots,
-  matrixReports,
-  matrixRoots,
-  platformBundleDir,
-  requiredPlatformCoverageAreas,
-  requiredFailureClassifications,
-  requiredMatrices,
-  requiredMatrixClassifications,
-  requiredDeploymentPresets,
-  requiredProviders,
-  requiredScenarios,
-}) {
-  const configured = Boolean(platformBundleDir)
-    || artifactRoots.length > 0
-    || artifactIndexes.length > 0
-    || matrixRoots.length > 0
-    || matrixReports.length > 0
-    || requiredPlatformCoverageAreas.length > 0
-    || requiredFailureClassifications.length > 0
-    || failureRoots.length > 0
-    || failureInputs.length > 0
-    || requiredMatrices.length > 0
-    || requiredMatrixClassifications.length > 0
-    || requiredDeploymentPresets.length > 0
-    || requiredProviders.length > 0
-    || requiredScenarios.length > 0
-  return configured
-    ? { status: "passed" }
-    : {
-        status: "failed",
-        error: "no validation checks configured",
-      }
 }
 
 async function collectDrillValidationGateReportPaths(discovered, entryPath, { depth, maxDepth }) {
