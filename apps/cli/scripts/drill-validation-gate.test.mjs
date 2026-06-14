@@ -50,6 +50,9 @@ test("drill validation gate exits non-zero for preserved failures", async () => 
         assert.equal(error.code, 1)
         assert.equal(report.status, "failed")
         assert.equal(report.checks.failures.aggregate.total, 1)
+        assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+          { owner: "provider-account", classification: "provider-auth" },
+        ])
         return true
       },
     )

@@ -1,4 +1,8 @@
 import {
+  countDrillAggregateNextAction,
+  formatDrillAggregateNextActionCounts,
+} from "./drill-aggregate-actions.mjs"
+import {
   findDrillFailureManifestPaths,
   readDrillFailureManifest,
   summarizeDrillFailureManifests,
@@ -26,10 +30,12 @@ export async function runDrillValidationGate({
     matrices: await matrixCheck(matrixRoots, { maxDepth, requireComplete }),
     failures: await failureCheck(failureRoots, { maxDepth }),
   }
+  const nextActions = validationGateNextActions(checks)
   return {
     schema: DRILL_VALIDATION_GATE_SCHEMA,
     status: Object.values(checks).some((check) => check.status === "failed") ? "failed" : "passed",
     checks,
+    nextActions,
   }
 }
 
@@ -59,10 +65,60 @@ export function formatDrillValidationGateSummary(report) {
     lines.push(`failure_total=${failures.aggregate.total}`)
   }
 
+  if (report.nextActions.length > 0) {
+    lines.push("next actions:")
+    for (const action of report.nextActions) {
+      lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+    }
+  }
+
   lines.push(report.status === "passed"
     ? "next: validation artifacts passed configured gates"
     : "next: inspect failed gate checks and rerun the relevant drills")
   return lines.join("\n")
+}
+
+function validationGateNextActions(checks) {
+  const counts = new Map()
+  if (checks.platformBundle.status === "failed") {
+    countDrillAggregateNextAction(counts, {
+      owner: "validation-harness",
+      classification: "platform-bundle",
+      nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
+    })
+  }
+  if (checks.matrices.status === "failed") {
+    if (checks.matrices.error) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "matrix-artifacts",
+        nextAction: "produce matrix reports under the configured matrix roots, then rerun the validation gate",
+      })
+    }
+    for (const action of checks.matrices.aggregate?.nextActions ?? []) {
+      countDrillAggregateNextAction(counts, action)
+    }
+    if (checks.matrices.requireComplete && (checks.matrices.aggregate?.incompleteScenarios?.length ?? 0) > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "incomplete-matrix",
+        nextAction: "run skipped or dry-run matrix scenarios before treating this validation set as complete",
+      })
+    }
+  }
+  if (checks.failures.status === "failed") {
+    if (checks.failures.error) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "failure-artifacts",
+        nextAction: "fix unreadable failure artifacts or discovery configuration, then rerun the validation gate",
+      })
+    }
+    for (const action of checks.failures.aggregate?.nextActions ?? []) {
+      countDrillAggregateNextAction(counts, action)
+    }
+  }
+  return formatDrillAggregateNextActionCounts(counts)
 }
 
 async function platformBundleCheck(platformBundleDir) {

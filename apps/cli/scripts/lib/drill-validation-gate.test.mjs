@@ -31,6 +31,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.equal(report.checks.platformBundle.status, "passed")
     assert.equal(report.checks.matrices.status, "passed")
     assert.equal(report.checks.failures.status, "skipped")
+    assert.deepEqual(report.nextActions, [])
     assert.match(formatDrillValidationGateSummary(report), /status=passed/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -44,6 +45,9 @@ test("fails when configured matrix roots contain no reports", async () => {
 
     assert.equal(report.status, "failed")
     assert.equal(report.checks.matrices.error, "no matrix reports found")
+    assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+      { owner: "validation-harness", classification: "matrix-artifacts" },
+    ])
     assert.equal(drillValidationGateExitCode(report), 1)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -66,6 +70,9 @@ test("fails when require-complete sees dry-run matrix scenarios", async () => {
 
     assert.equal(report.status, "failed")
     assert.equal(report.checks.matrices.aggregate.status, "dry-run")
+    assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+      { owner: "validation-harness", classification: "incomplete-matrix" },
+    ])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -80,7 +87,11 @@ test("fails when preserved failure manifests are found", async () => {
 
     assert.equal(report.status, "failed")
     assert.equal(report.checks.failures.aggregate.total, 1)
+    assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+      { owner: "provider-account", classification: "provider-auth" },
+    ])
     assert.match(formatDrillValidationGateSummary(report), /failure_total=1/)
+    assert.match(formatDrillValidationGateSummary(report), /next actions:/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
