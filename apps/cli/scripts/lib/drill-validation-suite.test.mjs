@@ -210,6 +210,26 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad",
     requiredMatrices: "matrix",
   }]), /requiredMatrices must be an array/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-runtime-signal",
+    description: "bad runtime signal",
+    requiredRuntimeSignals: ["workspace-live-synch-state"],
+  }]), /requiredRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-runtime-signal",
+    description: "bad artifact runtime signal",
+    requiredArtifactRuntimeSignals: ["workspace-live-synch-state"],
+  }]), /requiredArtifactRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-matrix-runtime-signal",
+    description: "bad matrix runtime signal",
+    requiredMatrixRuntimeSignals: ["workspace-live-synch-state"],
+  }]), /requiredMatrixRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-runtime-signal-owner",
+    description: "bad runtime signal owner",
+    requiredArtifactRuntimeSignalOwners: ["runtime-stat"],
+  }]), /requiredArtifactRuntimeSignalOwners\[0\] has unknown runtime signal owner "runtime-stat"/)
 })
 
 test("finds missing shared drill validation suite paths", async () => {

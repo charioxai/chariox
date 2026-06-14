@@ -1,8 +1,10 @@
 import { access, readdir } from "node:fs/promises"
 import path from "node:path"
 import {
+  DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
+  isKnownDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
@@ -294,15 +296,15 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactKinds: sortedStringArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
     requiredArtifactGeneratedEvidenceKinds: sortedStringArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
     requiredArtifactEvidenceRepos: sortedStringArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
-    requiredArtifactRuntimeSignals: sortedStringArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
-    requiredArtifactRuntimeSignalOwners: sortedStringArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
+    requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
+    requiredArtifactRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
     requiredArtifactClassifications: sortedStringArray(preset.requiredArtifactClassifications, `${preset.name}.requiredArtifactClassifications`),
-    requiredRuntimeSignals: sortedStringArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
+    requiredRuntimeSignals: sortedRuntimeSignalArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
     requiredFailureClassifications: sortedStringArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
     requiredMatrixClassifications: sortedStringArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),
-    requiredMatrixRuntimeSignals: sortedStringArray(preset.requiredMatrixRuntimeSignals, `${preset.name}.requiredMatrixRuntimeSignals`),
+    requiredMatrixRuntimeSignals: sortedRuntimeSignalArray(preset.requiredMatrixRuntimeSignals, `${preset.name}.requiredMatrixRuntimeSignals`),
     requiredDeploymentPresets: sortedStringArray(preset.requiredDeploymentPresets, `${preset.name}.requiredDeploymentPresets`),
     requiredProviders: sortedStringArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
     requiredScenarios: sortedStringArray(preset.requiredScenarios, `${preset.name}.requiredScenarios`),
@@ -320,6 +322,26 @@ function sortedStringArray(value, source) {
     }
   }
   return [...new Set(value)].sort()
+}
+
+function sortedRuntimeSignalArray(value, source) {
+  const signals = sortedStringArray(value, source)
+  for (const [index, signal] of signals.entries()) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
+  return signals
+}
+
+function sortedRuntimeSignalOwnerArray(value, source) {
+  const owners = sortedStringArray(value, source)
+  for (const [index, owner] of owners.entries()) {
+    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown runtime signal owner ${JSON.stringify(owner)}`)
+    }
+  }
+  return owners
 }
 
 export async function findMissingDrillValidationSuitePaths({
