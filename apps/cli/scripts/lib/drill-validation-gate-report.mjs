@@ -1,5 +1,6 @@
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
+import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
 
@@ -113,8 +114,8 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateStringArray(check.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateStringArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
-  validateStringArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
-  validateStringArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
+  validateArtifactEvidenceRepoArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
+  validateArtifactEvidenceRepoArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateStringArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
   validateStringArray(check.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateStringArray(check.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -345,6 +346,15 @@ function validateStringArray(value, source) {
   for (const [index, entry] of value.entries()) {
     if (typeof entry !== "string") {
       throw new Error(`${source}[${index}] is not a string`)
+    }
+  }
+}
+
+function validateArtifactEvidenceRepoArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, repo] of value.entries()) {
+    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
+      throw new Error(`${source}[${index}] has unknown evidence repo ${JSON.stringify(repo)}`)
     }
   }
 }

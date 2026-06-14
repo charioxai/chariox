@@ -139,6 +139,41 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/workspace-live-sync-matrix\.json report=workspace-live-sync\.json/)
 })
 
+test("rejects unknown artifact evidence repo labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredArtifactEvidenceRepos: ["cluod"],
+    }),
+    /requiredArtifactEvidenceRepos\[0\] has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        artifactEvidenceRepos: { cluod: 1 },
+      },
+    }),
+    /coverage\.artifactEvidenceRepos has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          evidenceRepos: { cluod: 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.evidenceRepos has unknown evidence repo "cluod"/,
+  )
+})
+
 test("fails aggregate requirements missing from otherwise passing reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["remote-home-extension"],

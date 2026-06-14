@@ -281,6 +281,39 @@ test("validates aggregate schemas for artifact, matrix, and failure checks", () 
   )
 })
 
+test("rejects unknown artifact evidence repo labels in report checks", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactEvidenceRepos: ["cluod"],
+          missingArtifactEvidenceRepos: [],
+        },
+      },
+    })),
+    /checks\.artifacts\.requiredArtifactEvidenceRepos\[0\] has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactEvidenceRepos: [],
+          missingArtifactEvidenceRepos: ["cluod"],
+        },
+      },
+    })),
+    /checks\.artifacts\.missingArtifactEvidenceRepos\[0\] has unknown evidence repo "cluod"/,
+  )
+})
+
 function report(overrides = {}) {
   const checks = {
     configuration: { status: "passed" },
