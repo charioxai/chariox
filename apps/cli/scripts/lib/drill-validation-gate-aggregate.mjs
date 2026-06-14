@@ -75,6 +75,7 @@ export function summarizeValidationGateReportAggregate(
     missingProviders: new Map(),
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
+    generatedEvidenceKinds: new Map(),
   }
   const summaries = reports.map((report, index) => {
     validateReport(report, sources[index] ?? "validation gate report")
@@ -141,6 +142,8 @@ export function summarizeValidationGateReportAggregate(
       reportSource: sources[index] ?? null,
       runtimeSignalScenarios: matrixCoverage.runtimeSignalScenarios,
     })
+    const generatedEvidence = validationGateReportGeneratedEvidence(report)
+    countStringValues(coverage.generatedEvidenceKinds, generatedEvidence?.kinds ?? [])
     return {
       source: sources[index] ?? null,
       status: report.status,
@@ -150,6 +153,7 @@ export function summarizeValidationGateReportAggregate(
       artifactCoverage,
       failureCoverage,
       matrixCoverage,
+      ...(generatedEvidence ? { generatedEvidence } : {}),
     }
   })
   const coverageCounts = formatValidationGateCoverageCounts(coverage)
@@ -626,6 +630,7 @@ function formatValidationGateCoverageCounts(coverage) {
     missingProviders: countMapToObject(coverage.missingProviders),
     requiredScenarios: countMapToObject(coverage.requiredScenarios),
     missingScenarios: countMapToObject(coverage.missingScenarios),
+    generatedEvidenceKinds: countMapToObject(coverage.generatedEvidenceKinds),
   }
 }
 
@@ -686,6 +691,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_providers", coverage.missingProviders)
   appendCoverageLine(lines, "required_scenarios", coverage.requiredScenarios)
   appendCoverageLine(lines, "missing_scenarios", coverage.missingScenarios)
+  appendCoverageLine(lines, "generated_evidence_kinds", coverage.generatedEvidenceKinds)
   return lines
 }
 
@@ -775,6 +781,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingProviders ?? {}, `${source}.missingProviders`)
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
+  validateCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
 }
 
 function validateValidationGateMatrixCoverage(coverage, source) {
@@ -867,6 +874,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingProviders: new Map(),
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
+    generatedEvidenceKinds: new Map(),
   }
   for (const report of aggregate.reports) {
     countStringValues(expected.presets, report.presets ?? [])
@@ -946,6 +954,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingProviders, coverage.missingProviders ?? [])
     countStringValues(expected.requiredScenarios, coverage.requiredScenarios ?? [])
     countStringValues(expected.missingScenarios, coverage.missingScenarios ?? [])
+    countStringValues(expected.generatedEvidenceKinds, report.generatedEvidence?.kinds ?? [])
   }
   const expectedCoverage = formatValidationGateCoverageCounts(expected)
   if (JSON.stringify(aggregate.coverage) !== JSON.stringify(expectedCoverage)) {
@@ -998,6 +1007,110 @@ function validateGateAggregateReportSummary(report, source) {
   if (report.failureCoverage !== undefined) {
     validateValidationGateArtifactCoverage(report.failureCoverage, `${source}.failureCoverage`)
   }
+  if (report.generatedEvidence !== undefined) {
+    validateValidationGateGeneratedEvidenceSummary(report.generatedEvidence, `${source}.generatedEvidence`)
+  }
+}
+
+function validationGateReportGeneratedEvidence(report) {
+  const generatedEvidence = report.generatedEvidence
+  if (!generatedEvidence || typeof generatedEvidence !== "object" || Array.isArray(generatedEvidence)) return null
+  const validationSuites = generatedEvidence.validationSuites ?? {}
+  const matrixReports = generatedEvidence.matrixReports ?? {}
+  const stringArray = (value) => Array.isArray(value) ? [...value] : []
+  const kinds = []
+  if (validationSuites.enabled === true) kinds.push("validation-suite-run")
+  if (matrixReports.enabled === true) kinds.push("matrix-report")
+  return {
+    kinds,
+    validationSuites: {
+      enabled: validationSuites.enabled === true,
+      artifactIndexes: stringArray(validationSuites.artifactIndexes),
+      outputRoots: stringArray(validationSuites.outputRoots),
+    },
+    matrixReports: {
+      enabled: matrixReports.enabled === true,
+      roots: stringArray(matrixReports.roots),
+      dryRun: matrixReports.dryRun === true,
+      continueOnFailure: matrixReports.continueOnFailure === true,
+      commands: (Array.isArray(matrixReports.commands) ? matrixReports.commands : []).map((command) => {
+        const commandRecord = command && typeof command === "object" && !Array.isArray(command) ? command : {}
+        return {
+          artifactIndexPath: commandRecord.artifactIndexPath,
+          args: stringArray(commandRecord.args),
+          cwd: commandRecord.cwd,
+          reportPath: commandRecord.reportPath,
+          scriptPath: commandRecord.scriptPath,
+        }
+      }),
+    },
+  }
+}
+
+function validateValidationGateGeneratedEvidenceSummary(generatedEvidence, source) {
+  if (!generatedEvidence || typeof generatedEvidence !== "object" || Array.isArray(generatedEvidence)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateStringArray(generatedEvidence.kinds ?? [], `${source}.kinds`)
+  validateGeneratedValidationSuitesSummary(generatedEvidence.validationSuites, `${source}.validationSuites`)
+  validateGeneratedMatrixReportsSummary(generatedEvidence.matrixReports, `${source}.matrixReports`)
+}
+
+function validateGeneratedValidationSuitesSummary(validationSuites, source) {
+  if (!validationSuites || typeof validationSuites !== "object" || Array.isArray(validationSuites)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (typeof validationSuites.enabled !== "boolean") {
+    throw new Error(`${source} has invalid enabled`)
+  }
+  validateStringArray(validationSuites.artifactIndexes ?? [], `${source}.artifactIndexes`)
+  validateStringArray(validationSuites.outputRoots ?? [], `${source}.outputRoots`)
+  if (validationSuites.enabled && ((validationSuites.artifactIndexes ?? []).length === 0 || (validationSuites.outputRoots ?? []).length === 0)) {
+    throw new Error(`${source} enabled evidence is missing paths`)
+  }
+  if (!validationSuites.enabled && ((validationSuites.artifactIndexes ?? []).length > 0 || (validationSuites.outputRoots ?? []).length > 0)) {
+    throw new Error(`${source} disabled evidence has paths`)
+  }
+}
+
+function validateGeneratedMatrixReportsSummary(matrixReports, source) {
+  if (!matrixReports || typeof matrixReports !== "object" || Array.isArray(matrixReports)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (typeof matrixReports.enabled !== "boolean") {
+    throw new Error(`${source} has invalid enabled`)
+  }
+  if (typeof matrixReports.dryRun !== "boolean") {
+    throw new Error(`${source} has invalid dryRun`)
+  }
+  if (typeof matrixReports.continueOnFailure !== "boolean") {
+    throw new Error(`${source} has invalid continueOnFailure`)
+  }
+  validateStringArray(matrixReports.roots ?? [], `${source}.roots`)
+  if (!Array.isArray(matrixReports.commands)) {
+    throw new Error(`${source}.commands is not an array`)
+  }
+  for (const [index, command] of matrixReports.commands.entries()) {
+    validateGeneratedMatrixCommandSummary(command, `${source}.commands[${index}]`)
+  }
+  if (matrixReports.enabled && ((matrixReports.roots ?? []).length === 0 || matrixReports.commands.length === 0)) {
+    throw new Error(`${source} enabled evidence is missing paths`)
+  }
+  if (!matrixReports.enabled && ((matrixReports.roots ?? []).length > 0 || matrixReports.commands.length > 0)) {
+    throw new Error(`${source} disabled evidence has paths`)
+  }
+}
+
+function validateGeneratedMatrixCommandSummary(command, source) {
+  if (!command || typeof command !== "object" || Array.isArray(command)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const key of ["artifactIndexPath", "cwd", "reportPath", "scriptPath"]) {
+    if (!nonEmptyString(command[key])) {
+      throw new Error(`${source} has invalid ${key}`)
+    }
+  }
+  validateStringArray(command.args ?? [], `${source}.args`)
 }
 
 function validateValidationGateArtifactCoverage(coverage, source) {

@@ -358,6 +358,45 @@ test("aggregates failure runtime signal coverage from failed reports", () => {
   )
 })
 
+test("aggregates generated evidence provenance from gate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture({
+    generatedEvidence: generatedEvidenceFixture(),
+  })], {
+    sources: ["distributed-runtime-gate.json"],
+    validateReport: () => {},
+  })
+
+  assert.deepEqual(aggregate.coverage.generatedEvidenceKinds, {
+    "matrix-report": 1,
+    "validation-suite-run": 1,
+  })
+  assert.deepEqual(aggregate.reports[0].generatedEvidence, {
+    kinds: ["validation-suite-run", "matrix-report"],
+    validationSuites: {
+      enabled: true,
+      artifactIndexes: [
+        "/tmp/suites/cloud/arroba-drill-artifacts.json",
+        "/tmp/suites/oss/arroba-drill-artifacts.json",
+      ],
+      outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
+    },
+    matrixReports: {
+      enabled: true,
+      roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
+      dryRun: false,
+      continueOnFailure: true,
+      commands: [{
+        artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
+        args: ["--include-hetzner"],
+        cwd: "/repo/arroba",
+        reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
+        scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
+      }],
+    },
+  })
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_evidence_kinds: matrix-report=1 validation-suite-run=1/)
+})
+
 test("rejects inconsistent aggregate status and coverage", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["workspace-live-sync"],
@@ -397,6 +436,32 @@ test("rejects inconsistent aggregate status and coverage", () => {
     /matrixRuntimeSignalSources does not match reports/,
   )
 })
+
+function generatedEvidenceFixture() {
+  return {
+    validationSuites: {
+      enabled: true,
+      artifactIndexes: [
+        "/tmp/suites/cloud/arroba-drill-artifacts.json",
+        "/tmp/suites/oss/arroba-drill-artifacts.json",
+      ],
+      outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
+    },
+    matrixReports: {
+      enabled: true,
+      roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
+      dryRun: false,
+      continueOnFailure: true,
+      commands: [{
+        artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
+        args: ["--include-hetzner"],
+        cwd: "/repo/arroba",
+        reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
+        scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
+      }],
+    },
+  }
+}
 
 function reportFixture(overrides = {}) {
   return {

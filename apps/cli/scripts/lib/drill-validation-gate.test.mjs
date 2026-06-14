@@ -1109,6 +1109,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingProviders: { claude: 1 },
       requiredScenarios: { local: 1, remote: 1 },
       missingScenarios: { remote: 1 },
+      generatedEvidenceKinds: {},
     })
     assert.deepEqual(aggregate.reports.map((report) => report.platformCoverage), [
       {

@@ -91,11 +91,15 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.missingMatrixClassifications ?? []).filter(nonEmptyString),
     ...(aggregate.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
   ])
+  const generatedEvidenceKinds = new Set([
+    ...Object.keys(aggregate.coverage?.generatedEvidenceKinds ?? {}),
+  ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+    ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
   }
 }
 
