@@ -83,7 +83,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
         {
           name: "remote-agent-runtime",
           requiredMatrices: ["remote-agent-runtime-matrix"],
-          requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"],
+          requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"],
         },
         {
           name: "remote-home-extension",
