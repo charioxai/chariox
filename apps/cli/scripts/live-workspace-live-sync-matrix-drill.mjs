@@ -13,6 +13,7 @@ import {
   drillDeploymentPresetMetadata,
   parseHetznerPassthroughArg,
 } from './lib/drill-environment-presets.mjs'
+import { providerProfileMetadata } from './lib/drill-provider-profiles.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..', '..', '..')
@@ -241,6 +242,21 @@ function commandForScenario(item, passthrough) {
   }
 }
 
+function providerMetadataFor(selected) {
+  const providers = [...new Set(selected
+    .map((item) => valueAfter(item.args, '--provider'))
+    .filter(Boolean))]
+    .sort()
+  const providerModels = {}
+  if (providers.includes('codex')) providerModels.codex = codexModelId
+  if (providers.includes('opencode')) providerModels.opencode = 'opencode/gpt-5.2'
+  return providerProfileMetadata({
+    providers,
+    defaultModel: 'per-provider',
+    providerModels,
+  })
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -263,6 +279,7 @@ async function main() {
       includeRemote: options.includeRemote,
       includeHetzner: options.includeHetzner,
       includeOpencode: options.includeOpencode,
+      ...providerMetadataFor(selected),
       ...drillDeploymentPresetMetadata([
         'local',
         ...(options.includeRemote ? ['same-host-remote', 'self-hosted-relay'] : []),
