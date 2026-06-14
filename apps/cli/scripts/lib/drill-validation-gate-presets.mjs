@@ -1,6 +1,7 @@
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
+import { WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS } from "./workspace-live-sync-fixtures.mjs"
 
 export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "distributed-runtime": Object.freeze({
@@ -131,26 +132,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredMatrixRuntimeSignals: Object.freeze(["relay-target-freshness", "session-authority", "workspace-live-sync-state"]),
     requiredDeploymentPresets: Object.freeze(["hetzner", "local", "same-host-remote", "self-hosted-relay"]),
     requiredProviders: Object.freeze(["codex", "opencode"]),
-    requiredScenarios: Object.freeze([
-      "hetzner-permission-codex",
-      "hetzner-permission-opencode",
-      "hetzner-tracked-codex",
-      "hetzner-tracked-opencode",
-      "local-managed-codex",
-      "local-managed-opencode",
-      "local-off-codex",
-      "local-permission-codex",
-      "local-permission-opencode",
-      "local-tracked-codex",
-      "local-tracked-opencode",
-      "remote-managed-codex",
-      "remote-managed-opencode",
-      "remote-permission-codex",
-      "remote-permission-opencode",
-      "remote-tracked-codex",
-      "remote-tracked-opencode",
-      "remote-tracked-restart-codex",
-    ]),
+    requiredScenarios: WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS,
   }),
   "remote-home-extension": Object.freeze({
     description: "Home-owned extension execution evidence for remote agents and collab authority checks.",

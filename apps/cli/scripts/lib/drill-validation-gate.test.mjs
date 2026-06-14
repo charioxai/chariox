@@ -20,6 +20,10 @@ import {
 } from "./drill-validation-gate.mjs"
 import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
+import {
+  workspaceLiveSyncRequiredScenarioDescriptors,
+  workspaceLiveSyncRequiredScenarioIds,
+} from "./workspace-live-sync-fixtures.mjs"
 
 test("describes validation gate presets", () => {
   const presets = describeDrillValidationGatePresets()
@@ -1142,41 +1146,9 @@ function matrixReport(overrides = {}) {
   }
 }
 
-function workspaceLiveSyncRequiredScenarioIds() {
-  return [
-    "hetzner-permission-codex",
-    "hetzner-permission-opencode",
-    "hetzner-tracked-codex",
-    "hetzner-tracked-opencode",
-    "local-managed-codex",
-    "local-managed-opencode",
-    "local-off-codex",
-    "local-permission-codex",
-    "local-permission-opencode",
-    "local-tracked-codex",
-    "local-tracked-opencode",
-    "remote-managed-codex",
-    "remote-managed-opencode",
-    "remote-permission-codex",
-    "remote-permission-opencode",
-    "remote-tracked-codex",
-    "remote-tracked-opencode",
-    "remote-tracked-restart-codex",
-  ]
-}
-
 function workspaceLiveSyncRequiredScenarios() {
-  return workspaceLiveSyncRequiredScenarioIds().map((id) => {
-    if (id.includes("permission")) {
-      return scenario(id, "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority", "workspace-live-sync-state"] })
-    }
-    if (id.includes("restart")) {
-      return scenario(id, "passed", { classification: "relay-target-freshness", runtimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"] })
-    }
-    if (id.includes("managed") || id.includes("tracked")) {
-      return scenario(id, "passed", { classification: "workspace-live-sync-conflict", runtimeSignals: ["session-authority", "workspace-live-sync-state"] })
-    }
-    return scenario(id, "passed", { runtimeSignals: ["session-authority"] })
+  return workspaceLiveSyncRequiredScenarioDescriptors().map(({ id, classification, runtimeSignals }) => {
+    return scenario(id, "passed", { classification, runtimeSignals })
   })
 }
 

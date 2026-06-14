@@ -16,6 +16,7 @@ import {
   normalizeRequiredRuntimeSignals,
   normalizeRequiredScenarios,
 } from "./drill-validation-gate-presets.mjs"
+import { workspaceLiveSyncRequiredScenarioIds } from "./workspace-live-sync-fixtures.mjs"
 
 test("describes stable validation gate presets", () => {
   assert.deepEqual(Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort(), [
@@ -63,7 +64,7 @@ test("describes stable validation gate presets", () => {
       requiredMatrixRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
       requiredDeploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["codex", "opencode"],
-      requiredScenarios: ["hetzner-permission-codex", "hetzner-permission-opencode", "hetzner-tracked-codex", "hetzner-tracked-opencode", "local-managed-codex", "local-managed-opencode", "local-off-codex", "local-permission-codex", "local-permission-opencode", "local-tracked-codex", "local-tracked-opencode", "remote-managed-codex", "remote-managed-opencode", "remote-permission-codex", "remote-permission-opencode", "remote-tracked-codex", "remote-tracked-opencode", "remote-tracked-restart-codex"],
+      requiredScenarios: workspaceLiveSyncRequiredScenarioIds(),
     },
   )
   assert.deepEqual(

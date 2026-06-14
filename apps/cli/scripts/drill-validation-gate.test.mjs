@@ -12,6 +12,7 @@ import {
   writeDrillArtifactIndex,
 } from "./lib/drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
+import { workspaceLiveSyncRequiredScenarioDescriptors } from "./lib/workspace-live-sync-fixtures.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-validation-gate.mjs", import.meta.url))
@@ -554,30 +555,8 @@ async function writeWorkspaceLiveSyncPresetReport(file) {
 }
 
 function workspaceLiveSyncRequiredScenarios() {
-  return [
-    "hetzner-permission-codex",
-    "hetzner-permission-opencode",
-    "hetzner-tracked-codex",
-    "hetzner-tracked-opencode",
-    "local-managed-codex",
-    "local-managed-opencode",
-    "local-off-codex",
-    "local-permission-codex",
-    "local-permission-opencode",
-    "local-tracked-codex",
-    "local-tracked-opencode",
-    "remote-managed-codex",
-    "remote-managed-opencode",
-    "remote-permission-codex",
-    "remote-permission-opencode",
-    "remote-tracked-codex",
-    "remote-tracked-opencode",
-    "remote-tracked-restart-codex",
-  ].map((id) => {
-    if (id.includes("permission")) return scenario(id, "kernel-authority", ["session-authority", "workspace-live-sync-state"])
-    if (id.includes("restart")) return scenario(id, "relay-target-freshness", ["relay-target-freshness", "session-authority", "workspace-live-sync-state"])
-    if (id.includes("managed") || id.includes("tracked")) return scenario(id, "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"])
-    return scenario(id, null, ["session-authority"])
+  return workspaceLiveSyncRequiredScenarioDescriptors().map(({ id, classification, runtimeSignals }) => {
+    return scenario(id, classification, runtimeSignals)
   })
 }
 

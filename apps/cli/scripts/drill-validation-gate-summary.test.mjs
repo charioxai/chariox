@@ -10,6 +10,7 @@ import { promisify } from "node:util"
 import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { runDrillValidationGate } from "./lib/drill-validation-gate.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
+import { workspaceLiveSyncRequiredScenarioDescriptors } from "./lib/workspace-live-sync-fixtures.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-validation-gate-summary.mjs", import.meta.url))
@@ -221,30 +222,8 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
 }
 
 function workspaceLiveSyncRequiredScenarios() {
-  return [
-    "hetzner-permission-codex",
-    "hetzner-permission-opencode",
-    "hetzner-tracked-codex",
-    "hetzner-tracked-opencode",
-    "local-managed-codex",
-    "local-managed-opencode",
-    "local-off-codex",
-    "local-permission-codex",
-    "local-permission-opencode",
-    "local-tracked-codex",
-    "local-tracked-opencode",
-    "remote-managed-codex",
-    "remote-managed-opencode",
-    "remote-permission-codex",
-    "remote-permission-opencode",
-    "remote-tracked-codex",
-    "remote-tracked-opencode",
-    "remote-tracked-restart-codex",
-  ].map((id) => {
-    if (id.includes("permission")) return passingScenario(id, "kernel-authority", ["session-authority", "workspace-live-sync-state"])
-    if (id.includes("restart")) return passingScenario(id, "relay-target-freshness", ["relay-target-freshness", "session-authority", "workspace-live-sync-state"])
-    if (id.includes("managed") || id.includes("tracked")) return passingScenario(id, "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"])
-    return passingScenario(id, null, ["session-authority"])
+  return workspaceLiveSyncRequiredScenarioDescriptors().map(({ id, classification, runtimeSignals }) => {
+    return passingScenario(id, classification, runtimeSignals)
   })
 }
 
