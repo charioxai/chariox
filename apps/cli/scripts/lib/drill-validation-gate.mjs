@@ -65,22 +65,35 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
     failed: 0,
   }
   const nextActions = new Map()
+  const coverage = {
+    requiredDeploymentPresets: new Map(),
+    missingDeploymentPresets: new Map(),
+    requiredProviders: new Map(),
+    missingProviders: new Map(),
+  }
   const summaries = reports.map((report, index) => {
     validateDrillValidationGateReport(report, sources[index] ?? "validation gate report")
     totals[report.status] += 1
     for (const action of report.nextActions) {
       countDrillAggregateNextAction(nextActions, action)
     }
+    const matrixCoverage = validationGateReportMatrixCoverage(report)
+    countStringValues(coverage.requiredDeploymentPresets, matrixCoverage.requiredDeploymentPresets)
+    countStringValues(coverage.missingDeploymentPresets, matrixCoverage.missingDeploymentPresets)
+    countStringValues(coverage.requiredProviders, matrixCoverage.requiredProviders)
+    countStringValues(coverage.missingProviders, matrixCoverage.missingProviders)
     return {
       source: sources[index] ?? null,
       status: report.status,
       checks: Object.fromEntries(Object.entries(report.checks).map(([name, check]) => [name, check.status])),
+      matrixCoverage,
     }
   })
   const aggregate = {
     schema: DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA,
     status: totals.failed > 0 ? "failed" : "passed",
     totals,
+    coverage: formatValidationGateCoverageCounts(coverage),
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries,
   }
@@ -98,6 +111,13 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+    }
+  }
+  if (aggregate.coverage) {
+    const coverageLines = formatValidationGateCoverageSummary(aggregate.coverage)
+    if (coverageLines.length > 0) {
+      lines.push("coverage:")
+      lines.push(...coverageLines)
     }
   }
   lines.push(aggregate.status === "passed"
@@ -286,6 +306,9 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   for (const [index, report] of aggregate.reports.entries()) {
     validateGateAggregateReportSummary(report, `${source}.reports[${index}]`)
   }
+  if (aggregate.coverage !== undefined) {
+    validateValidationGateCoverageAggregate(aggregate.coverage, `${source}.coverage`)
+  }
   if (aggregate.totals.reports !== aggregate.reports.length) {
     throw new Error(`${source} totals.reports does not match reports`)
   }
@@ -297,6 +320,9 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   const expectedStatus = aggregate.totals.failed > 0 ? "failed" : "passed"
   if (aggregate.status !== expectedStatus) {
     throw new Error(`${source} status does not match totals`)
+  }
+  if (aggregate.coverage !== undefined) {
+    assertValidationGateCoverageMatchesReports(aggregate, source)
   }
 }
 
@@ -462,6 +488,17 @@ function validateStringArray(value, source) {
   }
 }
 
+function validateCountObject(value, source) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const [key, count] of Object.entries(value)) {
+    if (!nonEmptyString(key) || !Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`${source} has invalid count for ${JSON.stringify(key)}`)
+    }
+  }
+}
+
 function validateGateAggregateReportSummary(report, source) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     throw new Error(`${source} is not an object`)
@@ -479,6 +516,99 @@ function validateGateAggregateReportSummary(report, source) {
     if (!["passed", "failed", "skipped"].includes(report.checks[name])) {
       throw new Error(`${source}.checks has invalid ${name}`)
     }
+  }
+  if (report.matrixCoverage !== undefined) {
+    validateValidationGateMatrixCoverage(report.matrixCoverage, `${source}.matrixCoverage`)
+  }
+}
+
+function validationGateReportMatrixCoverage(report) {
+  const matrices = report.checks.matrices
+  return {
+    requiredDeploymentPresets: [...(matrices.requiredDeploymentPresets ?? [])],
+    missingDeploymentPresets: [...(matrices.missingDeploymentPresets ?? [])],
+    requiredProviders: [...(matrices.requiredProviders ?? [])],
+    missingProviders: [...(matrices.missingProviders ?? [])],
+  }
+}
+
+function countStringValues(counts, values) {
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1)
+  }
+}
+
+function formatValidationGateCoverageCounts(coverage) {
+  return {
+    requiredDeploymentPresets: countMapToObject(coverage.requiredDeploymentPresets),
+    missingDeploymentPresets: countMapToObject(coverage.missingDeploymentPresets),
+    requiredProviders: countMapToObject(coverage.requiredProviders),
+    missingProviders: countMapToObject(coverage.missingProviders),
+  }
+}
+
+function countMapToObject(counts) {
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function formatValidationGateCoverageSummary(coverage) {
+  const lines = []
+  appendCoverageLine(lines, "required_deployment_presets", coverage.requiredDeploymentPresets)
+  appendCoverageLine(lines, "missing_deployment_presets", coverage.missingDeploymentPresets)
+  appendCoverageLine(lines, "required_providers", coverage.requiredProviders)
+  appendCoverageLine(lines, "missing_providers", coverage.missingProviders)
+  return lines
+}
+
+function appendCoverageLine(lines, label, counts) {
+  const entries = Object.entries(counts ?? {})
+  if (entries.length > 0) {
+    lines.push(`- ${label}: ${entries.map(([key, count]) => `${key}=${count}`).join(" ")}`)
+  }
+}
+
+function validateValidationGateCoverageAggregate(coverage, source) {
+  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
+  validateCountObject(coverage.missingDeploymentPresets ?? {}, `${source}.missingDeploymentPresets`)
+  validateCountObject(coverage.requiredProviders ?? {}, `${source}.requiredProviders`)
+  validateCountObject(coverage.missingProviders ?? {}, `${source}.missingProviders`)
+}
+
+function validateValidationGateMatrixCoverage(coverage, source) {
+  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateStringArray(coverage.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
+  validateStringArray(coverage.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
+  validateStringArray(coverage.requiredProviders ?? [], `${source}.requiredProviders`)
+  validateStringArray(coverage.missingProviders ?? [], `${source}.missingProviders`)
+}
+
+function assertValidationGateCoverageMatchesReports(aggregate, source) {
+  const expected = {
+    requiredDeploymentPresets: new Map(),
+    missingDeploymentPresets: new Map(),
+    requiredProviders: new Map(),
+    missingProviders: new Map(),
+  }
+  for (const report of aggregate.reports) {
+    const coverage = report.matrixCoverage ?? {
+      requiredDeploymentPresets: [],
+      missingDeploymentPresets: [],
+      requiredProviders: [],
+      missingProviders: [],
+    }
+    countStringValues(expected.requiredDeploymentPresets, coverage.requiredDeploymentPresets ?? [])
+    countStringValues(expected.missingDeploymentPresets, coverage.missingDeploymentPresets ?? [])
+    countStringValues(expected.requiredProviders, coverage.requiredProviders ?? [])
+    countStringValues(expected.missingProviders, coverage.missingProviders ?? [])
+  }
+  const expectedCoverage = formatValidationGateCoverageCounts(expected)
+  if (JSON.stringify(aggregate.coverage) !== JSON.stringify(expectedCoverage)) {
+    throw new Error(`${source} coverage does not match reports`)
   }
 }
 

@@ -444,6 +444,60 @@ test("summarizes validation gate reports", async () => {
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /status=failed reports=2 passed=1 failed=1/)
 })
 
+test("summarizes validation gate matrix coverage across reports", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      metadata: {
+        deploymentPresets: "local,self-hosted-relay",
+        providers: "codex,opencode",
+      },
+    }))
+    const passed = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredDeploymentPresets: ["local"],
+      requiredProviders: ["codex"],
+    })
+    const failed = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredDeploymentPresets: ["hosted-cloud", "local"],
+      requiredProviders: ["claude", "codex"],
+    })
+    const aggregate = summarizeDrillValidationGateReports([passed, failed], {
+      sources: ["passed.json", "failed.json"],
+    })
+
+    assert.equal(aggregate.status, "failed")
+    assert.deepEqual(aggregate.coverage, {
+      requiredDeploymentPresets: { "hosted-cloud": 1, local: 2 },
+      missingDeploymentPresets: { "hosted-cloud": 1 },
+      requiredProviders: { claude: 1, codex: 2 },
+      missingProviders: { claude: 1 },
+    })
+    assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
+      {
+        requiredDeploymentPresets: ["local"],
+        missingDeploymentPresets: [],
+        requiredProviders: ["codex"],
+        missingProviders: [],
+      },
+      {
+        requiredDeploymentPresets: ["hosted-cloud", "local"],
+        missingDeploymentPresets: ["hosted-cloud"],
+        requiredProviders: ["claude", "codex"],
+        missingProviders: ["claude"],
+      },
+    ])
+    const text = formatDrillValidationGateAggregateSummary(aggregate)
+    assert.match(text, /coverage:/)
+    assert.match(text, /required_deployment_presets: hosted-cloud=1 local=2/)
+    assert.match(text, /missing_providers: claude=1/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("reads and discovers validation gate aggregate artifacts", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -474,6 +528,16 @@ test("rejects inconsistent validation gate aggregates", async () => {
       },
     }),
     /totals do not match reports/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        requiredProviders: { codex: 2 },
+      },
+    }),
+    /coverage does not match reports/,
   )
 })
 
