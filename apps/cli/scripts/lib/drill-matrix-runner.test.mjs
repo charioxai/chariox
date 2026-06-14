@@ -13,6 +13,7 @@ import {
   selectDrillMatrixScenarios,
   validateDrillMatrixScenarioDefinitions,
 } from "./drill-matrix-runner.mjs"
+import { verifyDrillArtifactIndex } from "./drill-artifacts.mjs"
 
 test("parses comma-separated scenario ids", () => {
   assert.deepEqual(parseDrillScenarioIds("one, two,,three "), ["one", "two", "three"])
@@ -84,6 +85,23 @@ test("rejects malformed selected matrix scenarios before running", async () => {
     /missing description/,
   )
   assert.equal(called, false)
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("rejects artifact index output without a matrix report path", async () => {
+  const dir = await fixtureDir()
+  const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
+
+  await assert.rejects(
+    () => runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{ id: "pass", description: "passing scenario", script }],
+      commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+      cwd: dir,
+      artifactIndexPath: path.join(dir, "arroba-drill-artifacts.json"),
+    }),
+    /artifactIndexPath requires reportPath/,
+  )
   await rm(dir, { recursive: true, force: true })
 })
 
@@ -186,6 +204,33 @@ test("runs a passing matrix scenario", async () => {
   assert.equal(report.scenarios[0].id, "pass")
   assert.deepEqual(report.scenarios[0].exitCriteria, ["child command exits zero"])
   assert.equal(report.scenarios[0].command, process.execPath)
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("writes artifact index for matrix reports", async () => {
+  const dir = await fixtureDir()
+  const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
+  const reportPath = path.join(dir, "reports", "matrix.json")
+  const artifactIndexPath = path.join(dir, "reports", "arroba-drill-artifacts.json")
+
+  await runDrillMatrix({
+    matrixName: "test-matrix",
+    scenarios: [{ id: "pass", description: "passing scenario", script }],
+    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+    cwd: dir,
+    reportPath,
+    artifactIndexPath,
+  })
+
+  const index = await verifyDrillArtifactIndex(artifactIndexPath)
+  assert.equal(index.metadata.matrix, "test-matrix")
+  assert.deepEqual(index.artifacts.map((artifact) => ({
+    path: artifact.path,
+    schema: artifact.schema,
+  })), [{
+    path: "matrix.json",
+    schema: "arroba.drill.matrix.v1",
+  }])
   await rm(dir, { recursive: true, force: true })
 })
 

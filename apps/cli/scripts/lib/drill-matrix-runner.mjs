@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
@@ -70,10 +71,14 @@ export async function runDrillMatrix({
   continueOnFailure = false,
   dryRun = false,
   reportPath = null,
+  artifactIndexPath = null,
   metadata = {},
 }) {
   validateDrillMatrixScenarioDefinitions(scenarios)
   validateCommandFactory(commandForScenario)
+  if (artifactIndexPath && !reportPath) {
+    throw new Error("matrix artifactIndexPath requires reportPath")
+  }
   const preparedScenarios = prepareMatrixScenarioCommands(scenarios, commandForScenario)
   const startedAt = new Date()
   console.log(`[${matrixName}] selected ${scenarios.map((scenario) => scenario.id).join(", ")}`)
@@ -90,7 +95,7 @@ export async function runDrillMatrix({
         durationMs: 0,
       })
     }
-    await maybeWriteMatrixReport({ reportPath, matrixName, startedAt, results, dryRun, metadata })
+    await maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixName, startedAt, results, dryRun, metadata })
     return results
   }
 
@@ -127,7 +132,7 @@ export async function runDrillMatrix({
     )
   }
 
-  await maybeWriteMatrixReport({ reportPath, matrixName, startedAt, results, dryRun, metadata })
+  await maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixName, startedAt, results, dryRun, metadata })
   return results
 }
 
@@ -272,7 +277,7 @@ function exitCriteriaFor(scenario) {
   return []
 }
 
-async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, results, dryRun, metadata }) {
+async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixName, startedAt, results, dryRun, metadata }) {
   if (!reportPath) return
   const completedAt = new Date()
   const report = {
@@ -302,6 +307,14 @@ async function maybeWriteMatrixReport({ reportPath, matrixName, startedAt, resul
   validateDrillMatrixReport(report, reportPath)
   await mkdir(path.dirname(reportPath), { recursive: true })
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+  if (artifactIndexPath) {
+    await writeDrillArtifactIndex({
+      rootDir: path.dirname(reportPath),
+      artifacts: [path.basename(reportPath)],
+      indexPath: artifactIndexPath,
+      metadata: { matrix: matrixName },
+    })
+  }
   console.log(`[${matrixName}] report ${reportPath}`)
 }
 
