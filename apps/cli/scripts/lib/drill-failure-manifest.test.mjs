@@ -161,7 +161,9 @@ test("aggregates preserved drill failure summaries", () => {
     error: { name: "Error", message: "Token refresh failed: 401", stack: null },
   })
 
-  const aggregate = summarizeDrillFailureManifests([relay, provider])
+  const aggregate = summarizeDrillFailureManifests([relay, provider], {
+    sources: ["/tmp/relay/arroba-drill-failure.json", "/tmp/provider/arroba-drill-failure.json"],
+  })
 
   assert.equal(aggregate.schema, "arroba.drill.failure.aggregate.v1")
   assert.equal(aggregate.total, 2)
@@ -169,18 +171,29 @@ test("aggregates preserved drill failure summaries", () => {
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1, "relay-runtime": 1 })
   assert.deepEqual(aggregate.failures.map((failure) => ({
     drill: failure.drill,
+    source: failure.source,
     owner: failure.owner,
     classification: failure.classification,
   })), [
-    { drill: "relay-drill", owner: "runtime-network", classification: "relay-runtime" },
-    { drill: "provider-drill", owner: "provider-account", classification: "provider-auth" },
+    {
+      drill: "relay-drill",
+      source: "/tmp/relay/arroba-drill-failure.json",
+      owner: "runtime-network",
+      classification: "relay-runtime",
+    },
+    {
+      drill: "provider-drill",
+      source: "/tmp/provider/arroba-drill-failure.json",
+      owner: "provider-account",
+      classification: "provider-auth",
+    },
   ])
 
   const text = formatDrillFailureManifestAggregateSummary(aggregate)
   assert.match(text, /drill failure aggregate:/)
   assert.match(text, /owners: provider-account=1 runtime-network=1/)
   assert.match(text, /classifications: provider-auth=1 relay-runtime=1/)
-  assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime root=\/tmp\/relay/)
+  assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime root=\/tmp\/relay source=\/tmp\/relay\/arroba-drill-failure.json/)
   assert.match(text, /next: inspect relay and kernel logs/)
 })
 

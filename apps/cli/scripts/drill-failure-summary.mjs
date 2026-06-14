@@ -53,7 +53,7 @@ async function main() {
       console.log(formatDrillFailureManifestSummary(manifest, { source: input }))
     }
   }
-  const aggregate = summarizeDrillFailureManifests(manifests)
+  const aggregate = summarizeDrillFailureManifests(manifests, { sources: inputs })
   if (options.outputPath) {
     await mkdir(path.dirname(options.outputPath), { recursive: true })
     await writeFile(options.outputPath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8")

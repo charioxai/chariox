@@ -93,8 +93,10 @@ export function formatDrillFailureManifestSummary(manifest, { source = null } = 
   return lines.join("\n")
 }
 
-export function summarizeDrillFailureManifests(manifests) {
-  const summaries = manifests.map((manifest) => summarizeDrillFailureManifest(manifest))
+export function summarizeDrillFailureManifests(manifests, { sources = [] } = {}) {
+  const summaries = manifests.map((manifest, index) => summarizeDrillFailureManifest(manifest, {
+    source: sources[index] ?? null,
+  }))
   const owners = new Map()
   const classifications = new Map()
   const failures = []
@@ -105,6 +107,7 @@ export function summarizeDrillFailureManifests(manifests) {
     classifications.set(kind, (classifications.get(kind) ?? 0) + 1)
     failures.push({
       drill: summary.metadata.drill ?? "unknown",
+      source: summary.source,
       rootDir: summary.rootDir,
       owner,
       classification: kind,
@@ -137,7 +140,8 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
   if (aggregate.failures.length > 0) {
     lines.push("failures:")
     for (const failure of aggregate.failures) {
-      lines.push(`- ${failure.drill} owner=${failure.owner} classification=${failure.classification} root=${failure.rootDir}`)
+      const source = failure.source ? ` source=${failure.source}` : ""
+      lines.push(`- ${failure.drill} owner=${failure.owner} classification=${failure.classification} root=${failure.rootDir}${source}`)
       lines.push(`  next: ${failure.nextAction}`)
     }
   }
@@ -181,6 +185,23 @@ function validateDrillFailureManifestAggregate(aggregate) {
   }
   if (!Array.isArray(aggregate.failures)) {
     throw new Error("aggregate has invalid failures")
+  }
+  for (const [index, failure] of aggregate.failures.entries()) {
+    validateDrillFailureAggregateEntry(failure, `aggregate.failures[${index}]`)
+  }
+}
+
+function validateDrillFailureAggregateEntry(failure, source) {
+  if (!failure || typeof failure !== "object" || Array.isArray(failure)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const key of ["drill", "rootDir", "owner", "classification", "nextAction"]) {
+    if (!nonEmptyString(failure[key])) {
+      throw new Error(`${source} is missing ${key}`)
+    }
+  }
+  if (failure.source !== null && failure.source !== undefined && !nonEmptyString(failure.source)) {
+    throw new Error(`${source} has invalid source`)
   }
 }
 
