@@ -55,7 +55,7 @@ export function validateDrillMatrixReport(report, source = "report") {
     throw new Error(`${source} is missing dryRun`)
   }
   validateDrillTimestampOrder(report, source)
-  if (!Number.isFinite(report.durationMs) || report.durationMs < 0) {
+  if (!Number.isSafeInteger(report.durationMs) || report.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }
   validateDrillDurationMatchesTimestamps(report, source)
@@ -507,7 +507,7 @@ function validateDrillMatrixScenario(scenario, source) {
       throw new Error(`${source} nextAction does not match classification`)
     }
   }
-  if (!Number.isFinite(scenario.durationMs) || scenario.durationMs < 0) {
+  if (!Number.isSafeInteger(scenario.durationMs) || scenario.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }
   if (scenario.reason !== null && typeof scenario.reason !== "string") {
@@ -589,7 +589,7 @@ export function validateDrillMatrixAggregate(aggregate) {
     throw new Error("aggregate is missing totals")
   }
   for (const key of ["reports", "scenarios", "passed", "failed", "skipped", "dryRun", "durationMs"]) {
-    if (!Number.isFinite(aggregate.totals[key]) || aggregate.totals[key] < 0) {
+    if (!Number.isSafeInteger(aggregate.totals[key]) || aggregate.totals[key] < 0) {
       throw new Error(`aggregate totals has invalid ${key}`)
     }
   }
@@ -859,11 +859,11 @@ function validateMatrixAggregateReport(report, source) {
     validateRuntimeSignalEvidenceObject(report.runtimeSignalScenarios, `${source}.runtimeSignalScenarios`, { aggregate: false })
     assertRuntimeSignalEvidenceCounts(`${source}.runtimeSignals`, report.runtimeSignals ?? {}, report.runtimeSignalScenarios)
   }
-  if (!Number.isFinite(report.scenarioCount) || report.scenarioCount < 0) {
+  if (!Number.isSafeInteger(report.scenarioCount) || report.scenarioCount < 0) {
     throw new Error(`${source} has invalid scenarioCount`)
   }
   validateMatrixAggregateReportCounts(report.counts, `${source}.counts`)
-  if (!Number.isFinite(report.durationMs) || report.durationMs < 0) {
+  if (!Number.isSafeInteger(report.durationMs) || report.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }
   const scenarioCount = report.counts.passed + report.counts.failed + report.counts.skipped + report.counts.dryRun

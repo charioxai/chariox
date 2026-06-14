@@ -360,8 +360,26 @@ test("rejects inconsistent matrix aggregates", () => {
   }), /scenario total does not match status counts/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
+    totals: { ...aggregate.totals, durationMs: 10.5 },
+  }), /aggregate totals has invalid durationMs/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
     totals: { ...aggregate.totals, scenarios: 2, failed: 2 },
   }), /totals.scenarios does not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      scenarioCount: 1.5,
+    }],
+  }), /reports\[0\] has invalid scenarioCount/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      durationMs: 10.5,
+    }],
+  }), /reports\[0\] has invalid durationMs/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     reports: [{
@@ -614,6 +632,13 @@ test("rejects malformed matrix reports", () => {
   }), /invalid durationMs/)
 
   assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      durationMs: 1000.5,
+      completedAt: "2026-06-13T00:00:01.500Z",
+    }),
+  }), /invalid durationMs/)
+
+  assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
     durationMs: 999,
   }), /durationMs must match completedAt - startedAt/)
@@ -737,6 +762,12 @@ test("rejects malformed matrix reports", () => {
       scenarios: [scenario("broken", "skipped", { reason: "not selected", durationMs: 1 })],
     }),
   }), /scenarios\[0\] skipped scenario must have zero durationMs/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("broken", "passed", { durationMs: 1.5 })],
+    }),
+  }), /scenarios\[0\] has invalid durationMs/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
