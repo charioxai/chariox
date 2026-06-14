@@ -114,6 +114,18 @@ export function formatDrillValidationGateSummary(report) {
     if (artifactKinds.length > 0) {
       lines.push(`artifact_kinds=${artifactKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
     }
+    const generatedEvidenceKinds = Object.entries(artifacts.aggregate.generatedEvidenceKinds ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (generatedEvidenceKinds.length > 0) {
+      lines.push(`artifact_generated_evidence_kinds=${generatedEvidenceKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
+    const requiredGeneratedEvidenceKinds = Object.entries(artifacts.aggregate.requiredGeneratedEvidenceKinds ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (requiredGeneratedEvidenceKinds.length > 0) {
+      lines.push(`artifact_required_generated_evidence_kinds=${requiredGeneratedEvidenceKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
+    const missingGeneratedEvidenceKinds = Object.entries(artifacts.aggregate.missingGeneratedEvidenceKinds ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (missingGeneratedEvidenceKinds.length > 0) {
+      lines.push(`artifact_missing_generated_evidence_kinds=${missingGeneratedEvidenceKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
     const evidenceRepos = Object.entries(artifacts.aggregate.evidenceRepos ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (evidenceRepos.length > 0) {
       lines.push(`artifact_evidence_repos=${evidenceRepos.map(([repo, count]) => `${repo}:${count}`).join(",")}`)

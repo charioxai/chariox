@@ -60,6 +60,17 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       cloud: 1,
       oss: 2,
     })
+    assert.deepEqual(stdoutAggregate.generatedEvidenceKinds, {
+      "matrix-report": 1,
+      "validation-suite-run": 1,
+    })
+    assert.deepEqual(stdoutAggregate.requiredGeneratedEvidenceKinds, {
+      "matrix-report": 2,
+      "validation-suite-run": 1,
+    })
+    assert.deepEqual(stdoutAggregate.missingGeneratedEvidenceKinds, {
+      "matrix-report": 1,
+    })
     assert.deepEqual(stdoutAggregate.indexes.map((index) => index.source), [
       firstIndexPath,
       secondIndexPath,
@@ -71,6 +82,9 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.owners, "runtime-network,validation-harness")
     assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
     assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,matrix-report,validation-gate")
+    assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
+    assert.equal(artifactIndex.metadata.requiredGeneratedEvidenceKinds, "matrix-report,validation-suite-run")
+    assert.equal(artifactIndex.metadata.missingGeneratedEvidenceKinds, "matrix-report")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
@@ -165,6 +179,15 @@ async function writeIndexedReport(rootDir, name, schema) {
       artifactKinds: name === "one"
         ? "validation-gate,artifact-index"
         : "matrix-report",
+      generatedEvidenceKinds: name === "one"
+        ? "validation-suite-run"
+        : "matrix-report",
+      requiredGeneratedEvidenceKinds: name === "one"
+        ? "validation-suite-run,matrix-report"
+        : "matrix-report",
+      missingGeneratedEvidenceKinds: name === "one"
+        ? "matrix-report"
+        : "",
       evidenceRepos: name === "one"
         ? "oss"
         : "oss,cloud",

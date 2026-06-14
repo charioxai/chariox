@@ -193,6 +193,11 @@ test("summarizes drill artifact indexes", async () => {
         classifications: "validation-gate,artifact-coverage",
         owners: "validation-harness",
         runtimeSignals: "session-authority,provider-run-lifecycle",
+        artifactKinds: "validation-gate,validation-suite-run",
+        generatedEvidenceKinds: "validation-suite-run",
+        requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
+        missingGeneratedEvidenceKinds: "matrix-report",
+        evidenceRepos: "oss",
       },
     })
     const second = await writeDrillArtifactIndex({
@@ -202,6 +207,10 @@ test("summarizes drill artifact indexes", async () => {
         classifications: "matrix-coverage",
         owners: "validation-harness,runtime-network",
         runtimeSignals: "session-authority,lease-health",
+        artifactKinds: "matrix-report",
+        generatedEvidenceKinds: "matrix-report",
+        requiredGeneratedEvidenceKinds: "matrix-report",
+        evidenceRepos: "cloud,oss",
       },
     })
 
@@ -234,6 +243,26 @@ test("summarizes drill artifact indexes", async () => {
       "artifact-coverage": 1,
       "matrix-coverage": 1,
       "validation-gate": 1,
+    })
+    assert.deepEqual(aggregate.artifactKinds, {
+      "matrix-report": 1,
+      "validation-gate": 1,
+      "validation-suite-run": 1,
+    })
+    assert.deepEqual(aggregate.generatedEvidenceKinds, {
+      "matrix-report": 1,
+      "validation-suite-run": 1,
+    })
+    assert.deepEqual(aggregate.requiredGeneratedEvidenceKinds, {
+      "matrix-report": 2,
+      "validation-suite-run": 1,
+    })
+    assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, {
+      "matrix-report": 1,
+    })
+    assert.deepEqual(aggregate.evidenceRepos, {
+      cloud: 1,
+      oss: 2,
     })
     assert.deepEqual(aggregate.indexes.map((index) => index.source), [
       "one/arroba-drill-artifacts.json",
@@ -268,8 +297,13 @@ test("summarizes drill artifact indexes", async () => {
       },
     ])
     assert.deepEqual(diagnosticMetadataForDrillArtifactIndexAggregate(aggregate), {
+      artifactKinds: "matrix-report,validation-gate,validation-suite-run",
       classifications: "artifact-coverage,matrix-coverage,validation-gate",
+      evidenceRepos: "cloud,oss",
+      generatedEvidenceKinds: "matrix-report,validation-suite-run",
+      missingGeneratedEvidenceKinds: "matrix-report",
       owners: "runtime-network,validation-harness",
+      requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
     })
@@ -280,6 +314,9 @@ test("summarizes drill artifact indexes", async () => {
       "owners",
       "classifications",
       "artifactKinds",
+      "generatedEvidenceKinds",
+      "requiredGeneratedEvidenceKinds",
+      "missingGeneratedEvidenceKinds",
       "evidenceRepos",
     ])
     assert.deepEqual(DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS, [
@@ -323,6 +360,13 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
       }),
       /totals do not match indexes/,
     )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        generatedEvidenceKinds: { "matrix-report": 1 },
+      }),
+      /generatedEvidenceKinds do not match indexes/,
+    )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
@@ -338,7 +382,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       classifications: {},
       artifactKinds: {},
     }),
-    /missing evidenceRepos/,
+    /missing generatedEvidenceKinds/,
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions({
@@ -348,6 +392,9 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       owners: {},
       classifications: {},
       artifactKinds: {},
+      generatedEvidenceKinds: {},
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
       evidenceRepos: { oss: -1 },
     }),
     /evidenceRepos has invalid count/,

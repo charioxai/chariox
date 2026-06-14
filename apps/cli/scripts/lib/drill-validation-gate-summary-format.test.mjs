@@ -130,6 +130,9 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_owners=validation-platform:1/)
   assert.match(text, /artifact_classifications=cloud-validation-suite:1/)
   assert.match(text, /artifact_kinds=artifact-index:1,matrix-report:1,validation-suite-run:1/)
+  assert.match(text, /artifact_generated_evidence_kinds=matrix-report:1,validation-suite-run:1/)
+  assert.match(text, /artifact_required_generated_evidence_kinds=matrix-report:2,validation-suite-run:1/)
+  assert.match(text, /artifact_missing_generated_evidence_kinds=matrix-report:1/)
   assert.match(text, /artifact_evidence_repos=cloud:1,oss:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
   assert.match(text, /matrix_runtime_signals=session-authority:1,workspace-live-sync-state:1/)
@@ -272,6 +275,17 @@ function artifactAggregateFixture() {
       "matrix-report": 1,
       "validation-suite-run": 1,
     },
+    generatedEvidenceKinds: {
+      "matrix-report": 1,
+      "validation-suite-run": 1,
+    },
+    requiredGeneratedEvidenceKinds: {
+      "matrix-report": 2,
+      "validation-suite-run": 1,
+    },
+    missingGeneratedEvidenceKinds: {
+      "matrix-report": 1,
+    },
     evidenceRepos: {
       cloud: 1,
       oss: 1,
@@ -306,6 +320,17 @@ function artifactAggregateFixture() {
         "artifact-index": 1,
         "matrix-report": 1,
         "validation-suite-run": 1,
+      },
+      generatedEvidenceKinds: {
+        "matrix-report": 1,
+        "validation-suite-run": 1,
+      },
+      requiredGeneratedEvidenceKinds: {
+        "matrix-report": 2,
+        "validation-suite-run": 1,
+      },
+      missingGeneratedEvidenceKinds: {
+        "matrix-report": 1,
       },
       evidenceRepos: {
         cloud: 1,

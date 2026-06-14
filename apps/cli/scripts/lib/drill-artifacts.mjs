@@ -18,6 +18,9 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "owners",
   "classifications",
   "artifactKinds",
+  "generatedEvidenceKinds",
+  "requiredGeneratedEvidenceKinds",
+  "missingGeneratedEvidenceKinds",
   "evidenceRepos",
 ])
 export const DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS = Object.freeze([
@@ -32,6 +35,9 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   owners: "owners",
   classifications: "classifications",
   artifactKinds: "artifact_kinds",
+  generatedEvidenceKinds: "generated_evidence_kinds",
+  requiredGeneratedEvidenceKinds: "required_generated_evidence_kinds",
+  missingGeneratedEvidenceKinds: "missing_generated_evidence_kinds",
   evidenceRepos: "evidence_repos",
 })
 
@@ -155,6 +161,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const owners = new Map()
   const classifications = new Map()
   const artifactKinds = new Map()
+  const generatedEvidenceKinds = new Map()
+  const requiredGeneratedEvidenceKinds = new Map()
+  const missingGeneratedEvidenceKinds = new Map()
   const evidenceRepos = new Map()
   const summaries = indexes.map((index, indexPosition) => {
     validateDrillArtifactIndex(index, sources[indexPosition] ?? "drill artifact index")
@@ -169,6 +178,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
     const indexArtifactKinds = metadataListFromMetadata(index.metadata, "artifactKinds")
+    const indexGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "generatedEvidenceKinds")
+    const indexRequiredGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "requiredGeneratedEvidenceKinds")
+    const indexMissingGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "missingGeneratedEvidenceKinds")
     const indexEvidenceRepos = metadataListFromMetadata(index.metadata, "evidenceRepos")
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
@@ -176,6 +188,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
     countValues(indexArtifactKinds, artifactKinds)
+    countValues(indexGeneratedEvidenceKinds, generatedEvidenceKinds)
+    countValues(indexRequiredGeneratedEvidenceKinds, requiredGeneratedEvidenceKinds)
+    countValues(indexMissingGeneratedEvidenceKinds, missingGeneratedEvidenceKinds)
     countValues(indexEvidenceRepos, evidenceRepos)
     for (const artifact of index.artifacts) {
       totals.artifacts += 1
@@ -197,6 +212,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
       artifactKinds: countValues(indexArtifactKinds),
+      generatedEvidenceKinds: countValues(indexGeneratedEvidenceKinds),
+      requiredGeneratedEvidenceKinds: countValues(indexRequiredGeneratedEvidenceKinds),
+      missingGeneratedEvidenceKinds: countValues(indexMissingGeneratedEvidenceKinds),
       evidenceRepos: countValues(indexEvidenceRepos),
     }
   })
@@ -210,6 +228,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
     artifactKinds: sortedCountObject(artifactKinds),
+    generatedEvidenceKinds: sortedCountObject(generatedEvidenceKinds),
+    requiredGeneratedEvidenceKinds: sortedCountObject(requiredGeneratedEvidenceKinds),
+    missingGeneratedEvidenceKinds: sortedCountObject(missingGeneratedEvidenceKinds),
     evidenceRepos: sortedCountObject(evidenceRepos),
     indexes: summaries,
   }
@@ -313,59 +334,23 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   }
   const expectedArtifacts = aggregate.indexes.reduce((sum, index) => sum + index.artifacts, 0)
   const expectedSizeBytes = aggregate.indexes.reduce((sum, index) => sum + index.sizeBytes, 0)
-  const expectedRuntimeSignals = new Map()
-  const expectedRuntimeSignalOwners = new Map()
-  const expectedCoverageAreas = new Map()
-  const expectedOwners = new Map()
-  const expectedClassifications = new Map()
-  const expectedArtifactKinds = new Map()
-  const expectedEvidenceRepos = new Map()
+  const expectedDiagnosticCounts = Object.fromEntries(
+    DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS.map((key) => [key, new Map()]),
+  )
   for (const index of aggregate.indexes) {
-    for (const [signal, count] of Object.entries(index.runtimeSignals ?? {})) {
-      expectedRuntimeSignals.set(signal, (expectedRuntimeSignals.get(signal) ?? 0) + count)
-    }
-    for (const [owner, count] of Object.entries(index.runtimeSignalOwners ?? {})) {
-      expectedRuntimeSignalOwners.set(owner, (expectedRuntimeSignalOwners.get(owner) ?? 0) + count)
-    }
-    for (const [area, count] of Object.entries(index.coverageAreas ?? {})) {
-      expectedCoverageAreas.set(area, (expectedCoverageAreas.get(area) ?? 0) + count)
-    }
-    for (const [owner, count] of Object.entries(index.owners ?? {})) {
-      expectedOwners.set(owner, (expectedOwners.get(owner) ?? 0) + count)
-    }
-    for (const [classification, count] of Object.entries(index.classifications ?? {})) {
-      expectedClassifications.set(classification, (expectedClassifications.get(classification) ?? 0) + count)
-    }
-    for (const [kind, count] of Object.entries(index.artifactKinds ?? {})) {
-      expectedArtifactKinds.set(kind, (expectedArtifactKinds.get(kind) ?? 0) + count)
-    }
-    for (const [repo, count] of Object.entries(index.evidenceRepos ?? {})) {
-      expectedEvidenceRepos.set(repo, (expectedEvidenceRepos.get(repo) ?? 0) + count)
+    for (const [key, expectedCounts] of Object.entries(expectedDiagnosticCounts)) {
+      for (const [value, count] of Object.entries(index[key] ?? {})) {
+        expectedCounts.set(value, (expectedCounts.get(value) ?? 0) + count)
+      }
     }
   }
   if (aggregate.totals.artifacts !== expectedArtifacts || aggregate.totals.sizeBytes !== expectedSizeBytes) {
     throw new Error(`${source} totals do not match indexes`)
   }
-  if (JSON.stringify(aggregate.runtimeSignals ?? {}) !== JSON.stringify(sortedCountObject(expectedRuntimeSignals))) {
-    throw new Error(`${source} runtimeSignals do not match indexes`)
-  }
-  if (JSON.stringify(aggregate.runtimeSignalOwners ?? {}) !== JSON.stringify(sortedCountObject(expectedRuntimeSignalOwners))) {
-    throw new Error(`${source} runtimeSignalOwners do not match indexes`)
-  }
-  if (JSON.stringify(aggregate.coverageAreas ?? {}) !== JSON.stringify(sortedCountObject(expectedCoverageAreas))) {
-    throw new Error(`${source} coverageAreas do not match indexes`)
-  }
-  if (JSON.stringify(aggregate.owners ?? {}) !== JSON.stringify(sortedCountObject(expectedOwners))) {
-    throw new Error(`${source} owners do not match indexes`)
-  }
-  if (JSON.stringify(aggregate.classifications ?? {}) !== JSON.stringify(sortedCountObject(expectedClassifications))) {
-    throw new Error(`${source} classifications do not match indexes`)
-  }
-  if (JSON.stringify(aggregate.artifactKinds ?? {}) !== JSON.stringify(sortedCountObject(expectedArtifactKinds))) {
-    throw new Error(`${source} artifactKinds do not match indexes`)
-  }
-  if (JSON.stringify(aggregate.evidenceRepos ?? {}) !== JSON.stringify(sortedCountObject(expectedEvidenceRepos))) {
-    throw new Error(`${source} evidenceRepos do not match indexes`)
+  for (const [key, expectedCounts] of Object.entries(expectedDiagnosticCounts)) {
+    if (JSON.stringify(aggregate[key] ?? {}) !== JSON.stringify(sortedCountObject(expectedCounts))) {
+      throw new Error(`${source} ${key} do not match indexes`)
+    }
   }
 }
 
