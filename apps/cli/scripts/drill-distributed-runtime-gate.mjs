@@ -41,6 +41,8 @@ function printHelp() {
     "                         Discover artifact indexes under each repo's .artifacts root",
     "  --include-default-failures",
     "                         Discover failure manifests under each repo's .artifacts root",
+    "  --failure-manifest PATH",
+    "                         Read a specific failure manifest or preserved root; repeatable",
     "  --failure-root ROOT     Discover failure manifests below ROOT; repeatable",
     "  --platform-bundle DIR   Use an existing drill platform bundle instead of generating one",
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
@@ -84,6 +86,7 @@ async function main() {
     const report = await runDrillValidationGate({
       artifactIndexes: options.artifactIndexes,
       artifactRoots: artifactRootsFor(options),
+      failureInputs: options.failureInputs,
       failureRoots: failureRootsFor(options),
       matrixRoots: matrixRootsFor(options),
       maxDepth: options.maxDepth,
@@ -146,6 +149,7 @@ function parseArgs(argv) {
     artifactIndexes: [],
     artifactRoots: [],
     defaultRoots: true,
+    failureInputs: [],
     failureRoots: [],
     help: false,
     includeDefaultArtifacts: false,
@@ -193,6 +197,11 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--artifact-root=")) {
       options.artifactRoots.push(arg.slice("--artifact-root=".length))
+    } else if (arg === "--failure-manifest") {
+      options.failureInputs.push(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--failure-manifest=")) {
+      options.failureInputs.push(arg.slice("--failure-manifest=".length))
     } else if (arg === "--failure-root") {
       options.failureRoots.push(readValue(argv, index, arg))
       index += 1

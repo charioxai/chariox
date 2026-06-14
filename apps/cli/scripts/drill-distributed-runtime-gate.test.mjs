@@ -317,6 +317,47 @@ test("distributed runtime gate can include default failure manifests", async () 
   }
 })
 
+test("distributed runtime gate accepts explicit failure manifests", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), { evidenceRepo: "oss" })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+    const failureManifest = await writeFailureManifest(path.join(rootDir, "preserved", "arroba-drill-failure.json"), {
+      drill: "remote-agent-runtime-matrix",
+      message: "worker lease expired",
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--include-default-artifacts",
+        "--failure-manifest",
+        failureManifest,
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.equal(report.checks.failures.status, "failed")
+        assert.deepEqual(report.checks.failures.inputs, [failureManifest])
+        assert.equal(report.checks.failures.aggregate.total, 1)
+        assert.equal(report.checks.failures.aggregate.failures[0].drill, "remote-agent-runtime-matrix")
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("distributed runtime gate reports missing hosted Cloud evidence", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {
@@ -584,6 +625,7 @@ async function writeFailureManifest(file, {
     metadata: { drill },
     error: { name: "Error", message, stack: null },
   }, null, 2)}\n`, "utf8")
+  return file
 }
 
 function scenario(id, classification, runtimeSignals = [], overrides = {}) {
