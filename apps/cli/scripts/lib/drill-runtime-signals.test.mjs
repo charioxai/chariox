@@ -9,6 +9,7 @@ import {
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
   isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignals,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 
@@ -53,6 +54,25 @@ test("writes and validates runtime signal manifest", () => {
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-sync-state"), true)
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-synch-state"), false)
   assert.doesNotThrow(() => validateDrillRuntimeSignalsManifest(manifest))
+})
+
+test("rejects unknown drill runtime signals in shared helpers", () => {
+  assert.throws(
+    () => drillRuntimeSignalOwner("workspace-live-synch-state"),
+    /unknown drill runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => drillRuntimeSignalOwnersFor(["workspace-live-sync-state", "workspace-live-synch-state"]),
+    /drill runtime signals\[1\] has unknown runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => drillRuntimeSignalOwnerCounts({ "workspace-live-synch-state": 1 }),
+    /unknown drill runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillRuntimeSignals(["session-authority", "runtime-projector-health"], "report.runtimeSignals"),
+    /report\.runtimeSignals\[1\] has unknown runtime signal "runtime-projector-health"/,
+  )
 })
 
 test("rejects runtime signal manifest drift", () => {

@@ -62,10 +62,14 @@ export function isKnownDrillRuntimeSignal(signal) {
 }
 
 export function drillRuntimeSignalOwner(signal) {
-  return RUNTIME_SIGNALS[signal]?.owner ?? "runtime-state"
+  if (!isKnownDrillRuntimeSignal(signal)) {
+    throw new Error(`unknown drill runtime signal ${JSON.stringify(signal)}`)
+  }
+  return RUNTIME_SIGNALS[signal].owner
 }
 
 export function drillRuntimeSignalOwnersFor(runtimeSignals) {
+  validateDrillRuntimeSignals(runtimeSignals)
   return [...new Set((runtimeSignals ?? []).map((signal) => drillRuntimeSignalOwner(signal)))].sort()
 }
 
@@ -76,6 +80,14 @@ export function drillRuntimeSignalOwnerCounts(runtimeSignals) {
     counts.set(owner, (counts.get(owner) ?? 0) + count)
   }
   return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+export function validateDrillRuntimeSignals(runtimeSignals, source = "drill runtime signals") {
+  for (const [index, signal] of (runtimeSignals ?? []).entries()) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source}[${index}] has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
 }
 
 export function drillRuntimeSignalsManifest() {
