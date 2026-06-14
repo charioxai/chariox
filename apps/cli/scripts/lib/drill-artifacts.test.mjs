@@ -6,6 +6,7 @@ import test from "node:test"
 
 import {
   DRILL_ARTIFACT_INDEX_SCHEMA,
+  findDrillArtifactIndexPaths,
   finalizeDrillArtifacts,
   prepareDrillArtifacts,
   readDrillArtifactIndex,
@@ -95,6 +96,34 @@ test("writes and verifies drill artifact indexes", async () => {
       null,
     ])
     assert.doesNotMatch(JSON.stringify(index), /should-not-persist/)
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("discovers drill artifact indexes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  try {
+    await mkdir(path.join(root, "one", "reports"), { recursive: true })
+    await mkdir(path.join(root, "two", "reports"), { recursive: true })
+    await writeFile(path.join(root, "one", "reports", "gate.json"), "{\"schema\":\"one\"}\n", "utf8")
+    await writeFile(path.join(root, "two", "reports", "gate.json"), "{\"schema\":\"two\"}\n", "utf8")
+    const firstIndexPath = path.join(root, "one", "arroba-drill-artifacts.json")
+    const secondIndexPath = path.join(root, "two", "arroba-drill-artifacts.json")
+    await writeDrillArtifactIndex({
+      rootDir: path.join(root, "one"),
+      artifacts: ["reports/gate.json"],
+    })
+    await writeDrillArtifactIndex({
+      rootDir: path.join(root, "two"),
+      artifacts: ["reports/gate.json"],
+    })
+    await writeFile(path.join(root, "arroba-drill-artifacts.json"), "{\"schema\":\"other\"}\n", "utf8")
+
+    assert.deepEqual(await findDrillArtifactIndexPaths([root]), [
+      firstIndexPath,
+      secondIndexPath,
+    ])
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
