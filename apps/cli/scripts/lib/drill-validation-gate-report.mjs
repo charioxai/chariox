@@ -288,6 +288,9 @@ function validateGeneratedValidationSuites(validationSuites, source) {
   }
   validateStringArray(validationSuites.artifactIndexes, `${source}.artifactIndexes`)
   validateStringArray(validationSuites.outputRoots, `${source}.outputRoots`)
+  if (validationSuites.enabled && (validationSuites.artifactIndexes.length === 0 || validationSuites.outputRoots.length === 0)) {
+    throw new Error(`${source} enabled evidence is missing paths`)
+  }
   if (!validationSuites.enabled && (validationSuites.artifactIndexes.length > 0 || validationSuites.outputRoots.length > 0)) {
     throw new Error(`${source} disabled evidence has paths`)
   }
@@ -312,6 +315,9 @@ function validateGeneratedMatrixReports(matrixReports, source) {
   }
   for (const [index, command] of matrixReports.commands.entries()) {
     validateGeneratedMatrixCommand(command, `${source}.commands[${index}]`)
+  }
+  if (matrixReports.enabled && (matrixReports.roots.length === 0 || matrixReports.commands.length === 0)) {
+    throw new Error(`${source} enabled evidence is missing paths`)
   }
   if (!matrixReports.enabled && (matrixReports.roots.length > 0 || matrixReports.commands.length > 0)) {
     throw new Error(`${source} disabled evidence has paths`)

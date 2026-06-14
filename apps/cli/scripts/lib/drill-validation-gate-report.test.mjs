@@ -60,6 +60,19 @@ test("validates optional generated evidence provenance", () => {
     () => validateDrillValidationGateReport(report({
       generatedEvidence: {
         ...generatedEvidence(),
+        validationSuites: {
+          enabled: true,
+          artifactIndexes: [],
+          outputRoots: [],
+        },
+      },
+    })),
+    /generatedEvidence\.validationSuites enabled evidence is missing paths/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
         matrixReports: {
           ...generatedEvidence().matrixReports,
           commands: [{
@@ -73,6 +86,21 @@ test("validates optional generated evidence provenance", () => {
       },
     })),
     /generatedEvidence\.matrixReports\.commands\[0\] has invalid reportPath/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          enabled: true,
+          roots: [],
+          commands: [],
+          dryRun: false,
+          continueOnFailure: false,
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports enabled evidence is missing paths/,
   )
   assert.throws(
     () => validateDrillValidationGateReport(report({
