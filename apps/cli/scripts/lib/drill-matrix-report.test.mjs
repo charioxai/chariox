@@ -135,6 +135,12 @@ test("aggregates multiple matrix reports for CI", () => {
     codex: 1,
     opencode: 1,
   })
+  assert.deepEqual(aggregate.scenarioIds, {
+    hetzner: 1,
+    local: 1,
+    remote: 1,
+    tracked: 1,
+  })
   assert.deepEqual(aggregate.owners, { "provider-account": 1 })
   assert.deepEqual(aggregate.nextActions.map((action) => ({
     owner: action.owner,
@@ -151,9 +157,10 @@ test("aggregates multiple matrix reports for CI", () => {
     matrix: report.matrix,
     deploymentPresets: report.deploymentPresets,
     providers: report.providers,
+    scenarioIds: report.scenarioIds,
   })), [
-    { matrix: "remote", deploymentPresets: ["hetzner", "local", "self-hosted-relay"], providers: ["codex", "opencode"] },
-    { matrix: "workspace", deploymentPresets: ["hosted-cloud"], providers: ["claude"] },
+    { matrix: "remote", deploymentPresets: ["hetzner", "local", "self-hosted-relay"], providers: ["codex", "opencode"], scenarioIds: ["local", "remote", "hetzner"] },
+    { matrix: "workspace", deploymentPresets: ["hosted-cloud"], providers: ["claude"], scenarioIds: ["tracked"] },
   ])
   assert.deepEqual(aggregate.failedScenarios, [{
     matrix: "remote",
@@ -196,6 +203,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /owners: provider-account=1/)
   assert.match(text, /deployment_presets: hetzner=1 hosted-cloud=1 local=1 self-hosted-relay=1/)
   assert.match(text, /providers: claude=1 codex=1 opencode=1/)
+  assert.match(text, /scenario_ids: hetzner=1 local=1 remote=1 tracked=1/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
   assert.match(text, /next: refresh provider login/)
@@ -255,6 +263,17 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     providers: { codex: 2 },
   }), /providers do not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    scenarioIds: { remote: 2 },
+  }), /scenarioIds do not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      scenarioIds: [],
+    }],
+  }), /reports\[0\] scenarioIds do not match scenarioCount/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     nextActions: [],

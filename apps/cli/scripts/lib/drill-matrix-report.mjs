@@ -100,6 +100,7 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
     durationMs: report.durationMs,
     deploymentPresets: deploymentPresetsForReport(report),
     providers: providersForReport(report),
+    scenarioIds: report.scenarios.map((scenario) => scenario.id),
     scenarioCount: report.scenarios.length,
     counts,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -127,6 +128,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
   const nextActions = new Map()
   const deploymentPresets = new Map()
   const providers = new Map()
+  const scenarioIds = new Map()
   const failedScenarios = []
   const skippedScenarios = []
   const incompleteScenarios = []
@@ -142,6 +144,9 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     }
     for (const provider of summary.providers) {
       providers.set(provider, (providers.get(provider) ?? 0) + 1)
+    }
+    for (const scenarioId of summary.scenarioIds) {
+      scenarioIds.set(scenarioId, (scenarioIds.get(scenarioId) ?? 0) + 1)
     }
     for (const [classification, count] of Object.entries(summary.classifications)) {
       classifications.set(classification, (classifications.get(classification) ?? 0) + count)
@@ -184,6 +189,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
     deploymentPresets: Object.fromEntries([...deploymentPresets.entries()].sort(([left], [right]) => left.localeCompare(right))),
     providers: Object.fromEntries([...providers.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    scenarioIds: Object.fromEntries([...scenarioIds.entries()].sort(([left], [right]) => left.localeCompare(right))),
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries.map((summary) => ({
@@ -192,6 +198,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
       status: summary.status,
       deploymentPresets: summary.deploymentPresets,
       providers: summary.providers,
+      scenarioIds: summary.scenarioIds,
       scenarioCount: summary.scenarioCount,
       counts: summary.counts,
       durationMs: summary.durationMs,
@@ -270,6 +277,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const providers = Object.entries(aggregate.providers ?? {})
   if (providers.length > 0) {
     lines.push(`providers: ${providers.map(([provider, count]) => `${provider}=${count}`).join(" ")}`)
+  }
+  const scenarioIds = Object.entries(aggregate.scenarioIds ?? {})
+  if (scenarioIds.length > 0) {
+    lines.push(`scenario_ids: ${scenarioIds.map(([id, count]) => `${id}=${count}`).join(" ")}`)
   }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -529,6 +540,7 @@ function validateDrillMatrixAggregate(aggregate) {
   }
   validateCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
   validateCountObject(aggregate.providers ?? {}, "aggregate.providers")
+  validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
   if (aggregate.nextActions !== undefined && !Array.isArray(aggregate.nextActions)) {
     throw new Error("aggregate has invalid nextActions")
   }
@@ -587,6 +599,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failedScenarios, "owner")
   assertDeploymentPresetCountsMatchReports(aggregate)
   assertProviderCountsMatchReports(aggregate)
+  assertScenarioIdCountsMatchReports(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
 }
 
@@ -641,6 +654,19 @@ function assertProviderCountsMatchReports(aggregate) {
   }
 }
 
+function assertScenarioIdCountsMatchReports(aggregate) {
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    for (const scenarioId of report.scenarioIds ?? []) {
+      expected.set(scenarioId, (expected.get(scenarioId) ?? 0) + 1)
+    }
+  }
+  const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(aggregate.scenarioIds ?? {}) !== JSON.stringify(expectedCounts)) {
+    throw new Error("aggregate scenarioIds do not match reports")
+  }
+}
+
 function validateMatrixAggregateReport(report, source) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     throw new Error(`${source} is not an object`)
@@ -660,6 +686,9 @@ function validateMatrixAggregateReport(report, source) {
   if (!Array.isArray(report.providers ?? []) || !(report.providers ?? []).every(nonEmptyString)) {
     throw new Error(`${source} has invalid providers`)
   }
+  if (!Array.isArray(report.scenarioIds ?? []) || !(report.scenarioIds ?? []).every(nonEmptyString)) {
+    throw new Error(`${source} has invalid scenarioIds`)
+  }
   if (!Number.isFinite(report.scenarioCount) || report.scenarioCount < 0) {
     throw new Error(`${source} has invalid scenarioCount`)
   }
@@ -670,6 +699,9 @@ function validateMatrixAggregateReport(report, source) {
   const scenarioCount = report.counts.passed + report.counts.failed + report.counts.skipped + report.counts.dryRun
   if (report.scenarioCount !== scenarioCount) {
     throw new Error(`${source} scenarioCount does not match counts`)
+  }
+  if ((report.scenarioIds ?? []).length !== report.scenarioCount) {
+    throw new Error(`${source} scenarioIds do not match scenarioCount`)
   }
   const expectedStatus = report.counts.failed > 0
     ? "failed"

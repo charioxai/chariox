@@ -877,7 +877,7 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
       : drillMatrixReportExitCode(reports)
     const missingDeploymentPresets = missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets)
     const missingProviders = missingRequiredProviders(aggregate, requiredProviders)
-    const missingScenarios = missingRequiredScenarios(reports, requiredScenarios)
+    const missingScenarios = missingRequiredScenarios(aggregate, requiredScenarios)
     return {
       status: exitCode === 0 && missingDeploymentPresets.length === 0 && missingProviders.length === 0 && missingScenarios.length === 0 ? "passed" : "failed",
       roots: [...matrixRoots],
@@ -920,13 +920,8 @@ function missingRequiredProviders(aggregate, requiredProviders) {
   return requiredProviders.filter((provider) => !present.has(provider))
 }
 
-function missingRequiredScenarios(reports, requiredScenarios) {
-  const present = new Set()
-  for (const report of reports) {
-    for (const scenario of report.scenarios ?? []) {
-      if (nonEmptyString(scenario.id)) present.add(scenario.id)
-    }
-  }
+function missingRequiredScenarios(aggregate, requiredScenarios) {
+  const present = new Set(Object.keys(aggregate.scenarioIds ?? {}))
   return requiredScenarios.filter((scenario) => !present.has(scenario))
 }
 
