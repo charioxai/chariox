@@ -2,9 +2,10 @@
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -167,11 +168,19 @@ function logStep(name, details = null) {
   else console.log(`[cloud-publication-drill] ${name}`, JSON.stringify(details))
 }
 
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function tail(value, max = 4000) {
+  return typeof value === 'string' ? value.slice(-max) : ''
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   await mkdir(options.artifactsDir, { recursive: true })
-  await mkdir(path.join(repoRoot, '.tmp'), { recursive: true })
-  const root = await mkdtemp(path.join(repoRoot, '.tmp', 'arroba-cloud-publication-drill-'))
+  const root = path.join(repoRoot, '.artifacts', 'live-cloud-publication-deployment-drill', `arroba-cloud-publication-drill-${nowStamp()}`)
+  await prepareDrillArtifacts(root)
   const workspace = path.join(root, 'workspace')
   const exportDir = path.join(root, 'exported')
   const packageDir = path.join(root, 'package')
@@ -218,6 +227,7 @@ async function main() {
   let client = null
   let deploymentId = null
   let succeeded = false
+  let failure = null
   const sessionIds = []
   try {
     await mkdir(workspace, { recursive: true })
@@ -343,6 +353,9 @@ async function main() {
     await writeFile(statePath, `${JSON.stringify({ deployment: readyDeployment, publicationContext, evidence, logs }, null, 2)}\n`)
     logStep('evidence_written', { statePath, ...evidence })
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (!succeeded && deploymentId) {
       const profile = relayCloudProfile(await loadPreferences().catch(() => ({})))
@@ -354,8 +367,50 @@ async function main() {
     await client?.close?.().catch(() => {})
     await stopProcess(kernel).catch((error) => logStep('cleanup_warning', { process: 'kernel', error: errorMessage(error) }))
     await stopProcess(relay).catch((error) => logStep('cleanup_warning', { process: 'relay', error: errorMessage(error) }))
-    if (!options.keepTmp) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-    else logStep('kept_tmp', { root })
+    if (options.keepTmp && succeeded) {
+      logStep('kept_tmp', { root })
+    } else {
+      await finalizeDrillArtifacts({
+        rootDir: root,
+        passed: succeeded,
+        preserveOnFailure: true,
+        failure,
+        metadata: {
+          drill: 'live-cloud-publication-deployment',
+          mode: options.mode,
+          transport: options.transport,
+          slug: options.slug,
+          provider: options.provider,
+          model: options.model,
+          credentialProfile: options.credentialProfile,
+          realDashboard: options.realDashboard,
+          agentAppShopping: options.agentAppShopping,
+          agentAppSessionIsolation: options.agentAppSessionIsolation,
+          browserScreenshot: options.browserScreenshot,
+          deploymentId,
+          sessionCount: sessionIds.length,
+          ports: {
+            kernelPort,
+            relayPort,
+            mcpPort,
+            opencodePort,
+            codexPort,
+            servePort,
+            actionPort,
+          },
+          processLogs: {
+            kernelStdout: tail(kernel?.logs?.stdout),
+            kernelStderr: tail(kernel?.logs?.stderr),
+            relayStdout: tail(relay?.logs?.stdout),
+            relayStderr: tail(relay?.logs?.stderr),
+            serveStdout: tail(serve?.logs?.stdout),
+            serveStderr: tail(serve?.logs?.stderr),
+            actionStdout: tail(actionServer?.logs?.stdout),
+            actionStderr: tail(actionServer?.logs?.stderr),
+          },
+        },
+      })
+    }
   }
 }
 
