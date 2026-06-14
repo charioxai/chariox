@@ -51,6 +51,14 @@ const TEST_HARNESS_PATTERNS = [
   /missing built CLI/i,
 ]
 
+const RUNTIME_TIMEOUT_PATTERNS = [
+  /timed out waiting for (?:provider run|agents? to become idle|agent idle|file content|\/|TCP listener)/i,
+  /did not become ready/i,
+  /did not expose runtime MCP binding/i,
+  /provider run ended before ready/i,
+  /last_observation=/i,
+]
+
 export function classifyDrillChildFailure(text) {
   if (PROVIDER_ACCOUNT_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'provider-account'
@@ -69,6 +77,9 @@ export function classifyDrillChildFailure(text) {
   }
   if (TEST_HARNESS_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'test-harness'
+  }
+  if (RUNTIME_TIMEOUT_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'runtime-timeout'
   }
   if (/provider_error|OpenCode error|Codex error|Claude error/i.test(text)) {
     return 'provider-error'
@@ -100,6 +111,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'test-harness'
       ? 'Local drill prerequisites or build tooling blocked validation before the runtime behavior could be proven.'
+      : null,
+    classification === 'runtime-timeout'
+      ? 'Runtime state did not converge before the drill timeout.'
       : null,
     tail ? `child output tail:\n${tail}` : null,
   ].filter(Boolean).join('\n')

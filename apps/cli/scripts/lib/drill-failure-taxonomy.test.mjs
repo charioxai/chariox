@@ -11,6 +11,7 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("provider-auth"), "provider-account")
   assert.equal(drillFailureOwnerForClassification("cloud-runtime"), "cloud-deployment")
   assert.equal(drillFailureOwnerForClassification("relay-runtime"), "runtime-network")
+  assert.equal(drillFailureOwnerForClassification("runtime-timeout"), "runtime-state")
   assert.equal(drillFailureOwnerForClassification("test-harness"), "validation-harness")
   assert.equal(drillFailureOwnerForClassification("unknown"), "drill-or-runtime")
 })

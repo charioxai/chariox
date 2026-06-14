@@ -29,6 +29,11 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect relay and kernel logs in the preserved artifact root, then rerun the drill",
     scenarioNextAction: "inspect relay and kernel logs in the preserved artifacts, then rerun the scenario",
   },
+  "runtime-timeout": {
+    owner: "runtime-state",
+    drillNextAction: "inspect preserved runtime state, provider run lifecycle, and drill timeout diagnostics, then rerun the drill",
+    scenarioNextAction: "inspect preserved runtime state, provider run lifecycle, and drill timeout diagnostics, then rerun the scenario",
+  },
   "test-harness": {
     owner: "validation-harness",
     drillNextAction: "install or build the missing local drill prerequisite, then rerun the drill",

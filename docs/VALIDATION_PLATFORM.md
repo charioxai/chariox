@@ -93,6 +93,7 @@ Every new runtime feature should define:
 - At least one local drill that proves the kernel-owned runtime path.
 - Matrix scenarios for remote, hosted, collab, native TUI, slice, and provider variants when the feature crosses those surfaces.
 - Failure artifacts sufficient to identify the failing owner: provider account/auth, relay, kernel authority, worker execution, UI/client projection, or test harness.
+- Diagnostic wait failures that include `last_observation` should classify as runtime state timeouts unless the failure is clearly relay, cloud, provider auth/account, Docker, or test harness owned.
 - A reportable command that can be run by humans and CI without editing the script.
 - Default matrix report output under `.artifacts/drill-matrices` so dry-runs and live runs leave auditable evidence without requiring a custom `--report` flag.
 

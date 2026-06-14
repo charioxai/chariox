@@ -138,6 +138,14 @@ test("classifies common drill failure owners and next actions", () => {
     owner: "cloud-deployment",
     nextAction: "inspect Cloud deployment/control-plane status and preserved logs, then rerun the drill",
   })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "timed out waiting for provider run run-1 to become ready\nlast_observation={\"state\":\"Starting\"}", stack: null },
+  })), {
+    kind: "runtime-timeout",
+    owner: "runtime-state",
+    nextAction: "inspect preserved runtime state, provider run lifecycle, and drill timeout diagnostics, then rerun the drill",
+  })
 })
 
 test("aggregates preserved drill failure summaries", () => {

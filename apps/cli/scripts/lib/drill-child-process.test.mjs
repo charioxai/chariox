@@ -60,6 +60,20 @@ test('classifies relay runtime failures', () => {
   )
 })
 
+test('classifies runtime state timeouts', () => {
+  const text = 'timed out waiting for agents to become idle: agent-1\nlast_observation=[{"agentState":"Working"}]'
+
+  assert.equal(classifyDrillChildFailure(text), 'runtime-timeout')
+  assert.match(
+    formatDrillChildFailure('runtime drill', 1, null, '', text),
+    /Runtime state did not converge/,
+  )
+})
+
+test('keeps relay timeouts classified as relay runtime', () => {
+  assert.equal(classifyDrillChildFailure('timed out waiting for relay target worker'), 'relay-runtime')
+})
+
 test('classifies Docker runtime failures', () => {
   const text = 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock'
 
