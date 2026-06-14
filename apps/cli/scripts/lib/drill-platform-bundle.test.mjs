@@ -12,6 +12,7 @@ import {
   verifyDrillPlatformBundle,
   writeDrillPlatformBundle,
 } from "./drill-platform-bundle.mjs"
+import { DRILL_RUNTIME_SIGNAL_IDS } from "./drill-runtime-signals.mjs"
 
 test("defines stable drill platform bundle artifacts", () => {
   assert.deepEqual(DRILL_PLATFORM_BUNDLE_ARTIFACTS, [
@@ -65,6 +66,22 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredMatrices,
       ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+    )
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactRuntimeSignals,
+      DRILL_RUNTIME_SIGNAL_IDS,
+    )
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactRuntimeSignalOwners,
+      ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
+    )
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactOwners,
+      ["validation-platform"],
+    )
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactClassifications,
+      ["cloud-validation-suite", "validation-suite"],
     )
     assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "remote-home-extension").requiredMatrices,
