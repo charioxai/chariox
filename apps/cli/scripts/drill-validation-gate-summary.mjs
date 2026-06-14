@@ -12,6 +12,7 @@ import {
   readDrillValidationGateReport,
   summarizeDrillValidationGateReports,
 } from "./lib/drill-validation-gate.mjs"
+import { runtimeSignalMetadataForValidationGateAggregate } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
 
 function printHelp() {
   console.log([
@@ -82,7 +83,7 @@ async function main() {
       metadata: {
         drill: "validation-gate-summary",
         status: aggregate.status,
-        ...runtimeSignalMetadataForAggregate(aggregate),
+        ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
       },
     })
   }
@@ -162,17 +163,6 @@ function parseArgs(argv) {
     throw new Error("--output-artifact-index requires --output")
   }
   return options
-}
-
-function runtimeSignalMetadataForAggregate(aggregate) {
-  const signals = new Set([
-    ...Object.keys(aggregate.coverage?.artifactRuntimeSignals ?? {}),
-    ...Object.keys(aggregate.coverage?.failureRuntimeSignals ?? {}),
-    ...Object.keys(aggregate.matrixRuntimeSignalSources ?? {}),
-  ])
-  return signals.size > 0
-    ? { runtimeSignals: [...signals].sort().join(",") }
-    : {}
 }
 
 main().catch((error) => {

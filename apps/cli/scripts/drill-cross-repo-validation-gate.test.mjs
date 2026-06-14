@@ -103,6 +103,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["self-hosted-relay"], 1)
     assert.equal(artifactIndex.metadata.drill, "cross-repo-validation-gate")
     assert.equal(artifactIndex.metadata.status, "passed")
+    assert.equal(artifactIndex.metadata.runtimeSignals, "agent-lifecycle,client-projection-health,provider-run-lifecycle,session-authority,slice-auth-state,slice-runtime-state")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

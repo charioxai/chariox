@@ -58,6 +58,11 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 1)
     assert.equal(artifactIndex.metadata.drill, "distributed-runtime-gate")
     assert.equal(artifactIndex.metadata.preset, "distributed-runtime")
+    const indexedRuntimeSignals = artifactIndex.metadata.runtimeSignals.split(",")
+    assert.equal(indexedRuntimeSignals.includes("home-extension-manifest-sync"), true)
+    assert.equal(indexedRuntimeSignals.includes("provider-run-lifecycle"), true)
+    assert.equal(indexedRuntimeSignals.includes("slice-auth-state"), true)
+    assert.equal(indexedRuntimeSignals.includes("workspace-live-sync-state"), true)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

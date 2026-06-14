@@ -14,6 +14,7 @@ import {
   formatDrillValidationGateSummary,
   runDrillValidationGate,
 } from "./lib/drill-validation-gate.mjs"
+import { runtimeSignalMetadataForValidationGateReport } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -72,6 +73,7 @@ async function main() {
         status: report.status,
         ossRoot: options.ossRoot,
         cloudRoot: options.cloudRoot,
+        ...runtimeSignalMetadataForValidationGateReport(report),
       },
     })
   }
