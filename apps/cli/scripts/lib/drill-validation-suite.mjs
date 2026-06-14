@@ -8,6 +8,8 @@ import {
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -301,8 +303,8 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactCoverageAreas: sortedStringArray(preset.requiredArtifactCoverageAreas, `${preset.name}.requiredArtifactCoverageAreas`),
     requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
     requiredArtifactKinds: sortedArtifactKindArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
-    requiredArtifactGeneratedEvidenceKinds: sortedStringArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
-    requiredArtifactEvidenceRepos: sortedStringArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
+    requiredArtifactGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
+    requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
     requiredArtifactRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
@@ -349,6 +351,26 @@ function sortedArtifactKindArray(value, source) {
     }
   }
   return kinds
+}
+
+function sortedGeneratedEvidenceKindArray(value, source) {
+  const kinds = sortedStringArray(value, source)
+  for (const [index, kind] of kinds.entries()) {
+    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
+    }
+  }
+  return kinds
+}
+
+function sortedArtifactEvidenceRepoArray(value, source) {
+  const repos = sortedStringArray(value, source)
+  for (const [index, repo] of repos.entries()) {
+    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown artifact evidence repo ${JSON.stringify(repo)}`)
+    }
+  }
+  return repos
 }
 
 function sortedRuntimeSignalOwnerArray(value, source) {

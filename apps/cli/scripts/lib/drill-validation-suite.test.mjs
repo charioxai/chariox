@@ -186,6 +186,8 @@ test("normalizes validation suite preset contracts", () => {
     requiredPlatformCoverageAreas: ["runtime-fixtures", "matrix-validation", "matrix-validation"],
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run", "validation-suite-run"],
+    requiredArtifactGeneratedEvidenceKinds: ["matrix-report", "matrix-report"],
+    requiredArtifactEvidenceRepos: ["oss", "cloud", "oss"],
     requiredArtifactRuntimeSignals: ["workspace-live-sync-state", "session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
@@ -198,8 +200,8 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactCoverageAreas: [],
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
-    requiredArtifactGeneratedEvidenceKinds: [],
-    requiredArtifactEvidenceRepos: [],
+    requiredArtifactGeneratedEvidenceKinds: ["matrix-report"],
+    requiredArtifactEvidenceRepos: ["cloud", "oss"],
     requiredArtifactRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
@@ -243,6 +245,16 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad artifact kind",
     requiredArtifactKinds: ["validation-sutie"],
   }]), /requiredArtifactKinds\[0\] has unknown artifact kind "validation-sutie"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-generated-evidence-kind",
+    description: "bad generated evidence kind",
+    requiredArtifactGeneratedEvidenceKinds: ["matrix-reprot"],
+  }]), /requiredArtifactGeneratedEvidenceKinds\[0\] has unknown generated evidence kind "matrix-reprot"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-evidence-repo",
+    description: "bad artifact evidence repo",
+    requiredArtifactEvidenceRepos: ["clodu"],
+  }]), /requiredArtifactEvidenceRepos\[0\] has unknown artifact evidence repo "clodu"/)
 })
 
 test("finds missing shared drill validation suite paths", async () => {
