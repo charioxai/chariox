@@ -32,7 +32,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "remote-home-extension": Object.freeze({
     description: "Home-owned extension execution evidence for remote agents and collab authority checks.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
-    requiredFailureClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
+    requiredFailureClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"]),
     requiredMatrices: Object.freeze(["remote-home-extension-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
   }),

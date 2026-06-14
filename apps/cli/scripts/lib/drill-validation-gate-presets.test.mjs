@@ -90,7 +90,7 @@ test("expands validation gate preset requirements", () => {
     requiredScenarios: ["local"],
   }), {
     requiredPlatformCoverageAreas: ["runtime-fixtures", "failure-diagnostics", "matrix-validation", "runtime-fixtures"],
-    requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "worker-execution"],
+    requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
     requiredMatrices: ["custom-matrix", "remote-home-extension-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "worker-execution"],
     requiredDeploymentPresets: ["local"],
