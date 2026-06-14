@@ -9,6 +9,10 @@ import {
   drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
 } from "./drill-failure-taxonomy.mjs"
+import {
+  isSensitiveDrillKey,
+  looksLikeDrillSecretValue,
+} from "./drill-secrets.mjs"
 
 export async function readDrillMatrixReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))
@@ -360,7 +364,7 @@ function validateDrillMatrixScenario(scenario, source) {
   )) {
     throw new Error(`${source} has invalid artifactHints`)
   }
-  if (scenario.artifactHints?.some((value) => looksLikeSecretValue(value))) {
+  if (scenario.artifactHints?.some((value) => looksLikeDrillSecretValue(value))) {
     throw new Error(`${source} includes secret-looking artifactHints`)
   }
 }
@@ -459,11 +463,11 @@ function validateReportMetadata(value, source) {
 }
 
 function validateReportMetadataValue(value, source, key = "") {
-  if (isSensitiveReportKey(key)) {
+  if (isSensitiveDrillKey(key)) {
     throw new Error(`${source} includes sensitive metadata key ${JSON.stringify(key)}`)
   }
   if (typeof value === "string") {
-    if (looksLikeSecretValue(value)) {
+    if (looksLikeDrillSecretValue(value)) {
       throw new Error(`${source} includes secret-looking metadata value`)
     }
     return
@@ -481,16 +485,6 @@ function validateReportMetadataValue(value, source, key = "") {
   for (const [childKey, childValue] of Object.entries(value)) {
     validateReportMetadataValue(childValue, `${source}.${childKey}`, childKey)
   }
-}
-
-function isSensitiveReportKey(key) {
-  return /token|secret|password|credential|cookie|authorization|api[-_]?key/i.test(key)
-}
-
-function looksLikeSecretValue(value) {
-  return /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i.test(value)
-    || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(value)
-    || /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/.test(value)
 }
 
 function nonEmptyString(value) {

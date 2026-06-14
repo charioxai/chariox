@@ -7,6 +7,7 @@ import {
 } from "./drill-aggregate-actions.mjs"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import { drillFailureClassificationForKind } from "./drill-failure-taxonomy.mjs"
+import { isSensitiveDrillKey } from "./drill-secrets.mjs"
 
 const FAILURE_MANIFEST_FILE = "arroba-drill-failure.json"
 const FAILURE_MANIFEST_SCHEMA = "arroba.drill.failure.v1"
@@ -250,15 +251,11 @@ function summarizeMetadata(metadata) {
 }
 
 function summarizeMetadataValue(key, value) {
-  if (isSensitiveKey(key)) return "<redacted>"
+  if (isSensitiveDrillKey(key)) return "<redacted>"
   if (typeof value === "string") return value.length > 160 ? `${value.slice(0, 157)}...` : value
   if (typeof value === "number" || typeof value === "boolean") return String(value)
   if (value === null) return "null"
   return null
-}
-
-function isSensitiveKey(key) {
-  return /token|secret|password|credential|cookie|key/i.test(key)
 }
 
 function nonEmptyString(value) {
