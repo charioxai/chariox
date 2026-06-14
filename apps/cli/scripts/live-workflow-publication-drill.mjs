@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -42,6 +43,14 @@ const {
 function logStep(name, details = null) {
   if (details == null) console.log(`[publication-drill] ${name}`)
   else console.log(`[publication-drill] ${name}`, JSON.stringify(details))
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function tail(value, max = 4000) {
+  return typeof value === 'string' ? value.slice(-max) : ''
 }
 
 function envFlag(name, defaultValue = false) {
@@ -1762,9 +1771,10 @@ async function createSelfSignedCertificate(root) {
 
 async function main() {
   const drillTmpRoot = process.env.ARROBA_PUBLICATION_DRILL_TMPDIR
-    ?? path.join(repoRoot, '.tmp')
+    ?? path.join(repoRoot, '.artifacts', 'live-workflow-publication-drill')
   await mkdir(drillTmpRoot, { recursive: true })
-  const root = await mkdtemp(path.join(drillTmpRoot, 'arroba-publication-drill-'))
+  const root = path.join(drillTmpRoot, `arroba-publication-drill-${nowStamp()}`)
+  await prepareDrillArtifacts(root)
   const workspace = path.join(root, 'workspace')
   const apiSseWorkspace = path.join(root, 'api-sse-workspace')
   const apiSseTunnelWorkspace = path.join(root, 'api-sse-tunnel-workspace')
@@ -1823,6 +1833,7 @@ async function main() {
   const dockerContainers = []
   const dockerImages = []
   let succeeded = false
+  let failure = null
   try {
     await mkdir(workspace, { recursive: true })
     await mkdir(apiSseWorkspace, { recursive: true })
@@ -3473,6 +3484,9 @@ async function main() {
       workflowRunId: body.workflow_run?.id ?? null,
     })
     succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) {
       for (const id of sessionIds.reverse()) {
@@ -3494,7 +3508,33 @@ async function main() {
       console.error('[publication-drill] kernel logs', kernel?.logs ?? null)
       console.error('[publication-drill] gateway logs', gateway?.logs ?? null)
     }
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    await finalizeDrillArtifacts({
+      rootDir: root,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-workflow-publication',
+        relayUrl,
+        kernelUrl,
+        gatewayUrl,
+        gatewayHttpsUrl,
+        daemonAlias,
+        sessionCount: sessionIds.length,
+        remainingDockerContainers: dockerContainers.length,
+        remainingDockerImages: dockerImages.length,
+        realDashboardEnabled: realDashboard != null,
+        containerDrillEnabled: envFlag('ARROBA_PUBLICATION_CONTAINER_DRILL'),
+        processLogs: {
+          relayStdout: tail(relay?.logs?.stdout),
+          relayStderr: tail(relay?.logs?.stderr),
+          kernelStdout: tail(kernel?.logs?.stdout),
+          kernelStderr: tail(kernel?.logs?.stderr),
+          gatewayStdout: tail(gateway?.logs?.stdout),
+          gatewayStderr: tail(gateway?.logs?.stderr),
+        },
+      },
+    })
   }
 }
 
