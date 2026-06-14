@@ -95,7 +95,8 @@ export async function findDrillValidationGateAggregatePaths(roots, { maxDepth = 
   return [...discovered].sort()
 }
 
-export function summarizeDrillValidationGateReports(reports, { sources = [] } = {}) {
+export function summarizeDrillValidationGateReports(reports, { sources = [], requiredPresets = [] } = {}) {
+  const normalizedRequiredPresets = normalizeRequiredPresets(requiredPresets)
   const totals = {
     reports: reports.length,
     passed: 0,
@@ -151,11 +152,22 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
       matrixCoverage,
     }
   })
+  const coverageCounts = formatValidationGateCoverageCounts(coverage)
+  const missingPresets = normalizedRequiredPresets.filter((preset) => !(preset in coverageCounts.presets))
+  if (missingPresets.length > 0) {
+    countDrillAggregateNextAction(nextActions, {
+      owner: "validation-harness",
+      classification: "validation-gate",
+      nextAction: `provide validation gate reports for presets: ${missingPresets.join(", ")}`,
+    })
+  }
   const aggregate = {
     schema: DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA,
-    status: totals.failed > 0 ? "failed" : "passed",
+    status: totals.failed > 0 || missingPresets.length > 0 ? "failed" : "passed",
     totals,
-    coverage: formatValidationGateCoverageCounts(coverage),
+    requiredPresets: normalizedRequiredPresets,
+    missingPresets,
+    coverage: coverageCounts,
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries,
   }
@@ -181,6 +193,9 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
       lines.push("coverage:")
       lines.push(...coverageLines)
     }
+  }
+  if ((aggregate.requiredPresets ?? []).length > 0) {
+    lines.push(`required_presets=${aggregate.requiredPresets.join(",")} missing=${(aggregate.missingPresets ?? []).join(",") || "none"}`)
   }
   lines.push(aggregate.status === "passed"
     ? "next: all validation gate reports passed"
@@ -425,6 +440,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   if (!Array.isArray(aggregate.nextActions)) {
     throw new Error(`${source} has invalid nextActions`)
   }
+  validateStringArray(aggregate.requiredPresets ?? [], `${source}.requiredPresets`)
+  validateStringArray(aggregate.missingPresets ?? [], `${source}.missingPresets`)
   for (const [index, action] of aggregate.nextActions.entries()) {
     validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
   }
@@ -445,9 +462,13 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   if (aggregate.totals.passed !== passed || aggregate.totals.failed !== failed) {
     throw new Error(`${source} totals do not match reports`)
   }
-  const expectedStatus = aggregate.totals.failed > 0 ? "failed" : "passed"
+  const expectedMissingPresets = missingRequiredValidationGatePresets(aggregate, aggregate.requiredPresets ?? [])
+  if (JSON.stringify(aggregate.missingPresets ?? []) !== JSON.stringify(expectedMissingPresets)) {
+    throw new Error(`${source} missingPresets does not match reports`)
+  }
+  const expectedStatus = aggregate.totals.failed > 0 || expectedMissingPresets.length > 0 ? "failed" : "passed"
   if (aggregate.status !== expectedStatus) {
-    throw new Error(`${source} status does not match totals`)
+    throw new Error(`${source} status does not match totals and requirements`)
   }
   if (aggregate.coverage !== undefined) {
     assertValidationGateCoverageMatchesReports(aggregate, source)
@@ -1338,6 +1359,11 @@ function missingRequiredProviders(aggregate, requiredProviders) {
 function missingRequiredScenarios(aggregate, requiredScenarios) {
   const present = new Set(Object.keys(aggregate.scenarioIds ?? {}))
   return requiredScenarios.filter((scenario) => !present.has(scenario))
+}
+
+function missingRequiredValidationGatePresets(aggregate, requiredPresets) {
+  const present = new Set(Object.keys(aggregate.coverage?.presets ?? {}))
+  return requiredPresets.filter((preset) => !present.has(preset))
 }
 
 function missingRequiredMatrices(aggregate, requiredMatrices) {

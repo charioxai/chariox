@@ -190,6 +190,26 @@ test("applies validation gate requirement presets", async () => {
     assert.deepEqual(aggregate.coverage.presets, { "workspace-live-sync": 1 })
     assert.deepEqual(aggregate.reports[0].presets, ["workspace-live-sync"])
     assert.match(formatDrillValidationGateAggregateSummary(aggregate), /presets: workspace-live-sync=1/)
+    const requiredAggregate = summarizeDrillValidationGateReports([report], {
+      sources: ["workspace-live-sync.json"],
+      requiredPresets: ["workspace-live-sync"],
+    })
+    assert.equal(requiredAggregate.status, "passed")
+    assert.deepEqual(requiredAggregate.requiredPresets, ["workspace-live-sync"])
+    assert.deepEqual(requiredAggregate.missingPresets, [])
+    assert.match(formatDrillValidationGateAggregateSummary(requiredAggregate), /required_presets=workspace-live-sync missing=none/)
+    const missingAggregate = summarizeDrillValidationGateReports([report], {
+      sources: ["workspace-live-sync.json"],
+      requiredPresets: ["remote-home-extension"],
+    })
+    assert.equal(missingAggregate.status, "failed")
+    assert.deepEqual(missingAggregate.requiredPresets, ["remote-home-extension"])
+    assert.deepEqual(missingAggregate.missingPresets, ["remote-home-extension"])
+    assert.deepEqual(missingAggregate.nextActions.map(({ classification, nextAction }) => ({ classification, nextAction })), [{
+      classification: "validation-gate",
+      nextAction: "provide validation gate reports for presets: remote-home-extension",
+    }])
+    assert.match(formatDrillValidationGateAggregateSummary(missingAggregate), /required_presets=remote-home-extension missing=remote-home-extension/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -893,6 +913,15 @@ test("rejects inconsistent validation gate aggregates", async () => {
       },
     }),
     /coverage does not match reports/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      status: "passed",
+      requiredPresets: ["workspace-live-sync"],
+      missingPresets: [],
+    }),
+    /missingPresets does not match reports/,
   )
 })
 

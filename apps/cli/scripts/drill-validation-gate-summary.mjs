@@ -19,6 +19,7 @@ function printHelp() {
     "  --gate-report PATH     Read a specific validation gate report; repeatable",
     "  --gate-root ROOT       Discover validation gate reports below ROOT; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
+    "  --require-preset NAME  Require aggregate evidence for a validation gate preset; repeatable or comma-separated",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -40,7 +41,10 @@ async function main() {
     throw new Error("no validation gate reports found")
   }
   const reports = await Promise.all(reportPaths.map((reportPath) => readDrillValidationGateReport(reportPath)))
-  const aggregate = summarizeDrillValidationGateReports(reports, { sources: reportPaths })
+  const aggregate = summarizeDrillValidationGateReports(reports, {
+    sources: reportPaths,
+    requiredPresets: options.requiredPresets,
+  })
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
@@ -69,6 +73,7 @@ function parseArgs(argv) {
     maxDepth: 8,
     outputArtifactIndexPath: null,
     outputPath: null,
+    requiredPresets: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -95,6 +100,13 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--max-depth=")) {
       options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
+    } else if (arg === "--require-preset") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-preset requires a value")
+      options.requiredPresets.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-preset=")) {
+      options.requiredPresets.push(arg.slice("--require-preset=".length))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
