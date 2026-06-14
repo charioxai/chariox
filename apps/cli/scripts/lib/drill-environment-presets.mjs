@@ -10,6 +10,22 @@ const HETZNER_METADATA_KEYS = {
   "--hetzner-repo": "hasHetznerRepoOverride",
 }
 
+export const DRILL_DEPLOYMENT_PRESETS = Object.freeze([
+  "hetzner",
+  "hosted-cloud",
+  "local",
+  "same-host-remote",
+  "self-hosted-relay",
+])
+
+const DEPLOYMENT_PRESET_FLAGS = {
+  "hetzner": "includesHetzner",
+  "hosted-cloud": "includesHostedCloud",
+  "local": "includesLocal",
+  "same-host-remote": "includesSameHostRemote",
+  "self-hosted-relay": "includesSelfHostedRelay",
+}
+
 export function parseHetznerPassthroughArg(argv, index) {
   const arg = argv[index]
   if (!arg) return null
@@ -44,4 +60,29 @@ export function hetznerPassthroughMetadata(passthrough) {
     if (key) metadata[key] = true
   }
   return metadata
+}
+
+export function drillDeploymentPresetMetadata(presets, { hetznerPassthrough = [] } = {}) {
+  const normalized = [...new Set((presets ?? []).map((preset) => String(preset).trim()).filter(Boolean))].sort()
+  for (const preset of normalized) {
+    if (!DRILL_DEPLOYMENT_PRESETS.includes(preset)) {
+      throw new Error(`unknown drill deployment preset: ${preset}`)
+    }
+  }
+  const metadata = {
+    deploymentPresetCount: normalized.length,
+    deploymentPresets: normalized.join(","),
+    includesHetzner: false,
+    includesHostedCloud: false,
+    includesLocal: false,
+    includesSameHostRemote: false,
+    includesSelfHostedRelay: false,
+  }
+  for (const preset of normalized) {
+    metadata[DEPLOYMENT_PRESET_FLAGS[preset]] = true
+  }
+  return {
+    ...metadata,
+    ...hetznerPassthroughMetadata(hetznerPassthrough),
+  }
 }

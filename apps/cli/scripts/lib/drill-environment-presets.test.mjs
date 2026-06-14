@@ -2,7 +2,9 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  DRILL_DEPLOYMENT_PRESETS,
   appendHetznerPassthrough,
+  drillDeploymentPresetMetadata,
   hetznerPassthroughMetadata,
   parseHetznerPassthroughArg,
 } from "./drill-environment-presets.mjs"
@@ -41,5 +43,36 @@ test("summarizes Hetzner passthrough without leaking values", () => {
       hasHetznerSshIdentityOverride: true,
       hasHetznerRepoOverride: false,
     },
+  )
+})
+
+test("summarizes deployment presets without leaking machine details", () => {
+  assert.deepEqual(DRILL_DEPLOYMENT_PRESETS, [
+    "hetzner",
+    "hosted-cloud",
+    "local",
+    "same-host-remote",
+    "self-hosted-relay",
+  ])
+  assert.deepEqual(
+    drillDeploymentPresetMetadata(["local", "self-hosted-relay", "hetzner", "local"], {
+      hetznerPassthrough: ["--hetzner-host", "root@example", "--hetzner-repo", "/tmp/private"],
+    }),
+    {
+      deploymentPresetCount: 3,
+      deploymentPresets: "hetzner,local,self-hosted-relay",
+      includesHetzner: true,
+      includesHostedCloud: false,
+      includesLocal: true,
+      includesSameHostRemote: false,
+      includesSelfHostedRelay: true,
+      hasHetznerHostOverride: true,
+      hasHetznerSshIdentityOverride: false,
+      hasHetznerRepoOverride: true,
+    },
+  )
+  assert.throws(
+    () => drillDeploymentPresetMetadata(["unknown"]),
+    /unknown drill deployment preset/,
   )
 })

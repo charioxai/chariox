@@ -10,7 +10,7 @@ import {
 } from './lib/drill-matrix-runner.mjs'
 import {
   appendHetznerPassthrough,
-  hetznerPassthroughMetadata,
+  drillDeploymentPresetMetadata,
   parseHetznerPassthroughArg,
 } from './lib/drill-environment-presets.mjs'
 
@@ -161,7 +161,11 @@ async function main() {
     artifactIndexPath,
     metadata: {
       includeHetzner: options.includeHetzner,
-      ...hetznerPassthroughMetadata(options.passthrough),
+      ...drillDeploymentPresetMetadata([
+        'local',
+        'self-hosted-relay',
+        ...(options.includeHetzner ? ['hetzner'] : []),
+      ], { hetznerPassthrough: options.passthrough }),
     },
   })
   const failed = results.filter((result) => !result.ok)

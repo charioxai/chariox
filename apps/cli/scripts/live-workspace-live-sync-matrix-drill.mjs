@@ -10,7 +10,7 @@ import {
 } from './lib/drill-matrix-runner.mjs'
 import {
   appendHetznerPassthrough,
-  hetznerPassthroughMetadata,
+  drillDeploymentPresetMetadata,
   parseHetznerPassthroughArg,
 } from './lib/drill-environment-presets.mjs'
 
@@ -233,7 +233,11 @@ async function main() {
       includeRemote: options.includeRemote,
       includeHetzner: options.includeHetzner,
       includeOpencode: options.includeOpencode,
-      ...hetznerPassthroughMetadata(options.passthrough),
+      ...drillDeploymentPresetMetadata([
+        'local',
+        ...(options.includeRemote ? ['same-host-remote', 'self-hosted-relay'] : []),
+        ...(options.includeHetzner ? ['hetzner', 'self-hosted-relay'] : []),
+      ], { hetznerPassthrough: options.passthrough }),
       codexModelId,
     },
   })
