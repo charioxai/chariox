@@ -51,8 +51,20 @@ test("describes stable validation gate presets", () => {
     },
   )
   assert.deepEqual(
-    describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
-    ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
+    describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0],
+    {
+      name: "workspace-live-sync",
+      description: "Workspace Live Sync local/remote matrix evidence and distributed sync diagnostics.",
+      requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
+      requiredFailureClassifications: ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
+      requiredMatrices: ["workspace-live-sync-matrix"],
+      requiredMatrixClassifications: ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
+      requiredDeploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
+      requiredProviders: ["codex", "opencode"],
+      requiredScenarios: ["hetzner-permission-codex", "hetzner-permission-opencode", "hetzner-tracked-codex", "hetzner-tracked-opencode", "local-managed-codex", "local-managed-opencode", "local-off-codex", "local-permission-codex", "local-permission-opencode", "local-tracked-codex", "local-tracked-opencode", "remote-managed-codex", "remote-managed-opencode", "remote-permission-codex", "remote-permission-opencode", "remote-tracked-codex", "remote-tracked-opencode", "remote-tracked-restart-codex"],
+    },
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["slice-runtime"] })[0],

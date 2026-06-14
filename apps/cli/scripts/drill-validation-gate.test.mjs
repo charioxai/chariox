@@ -545,13 +545,40 @@ async function writeWorkspaceLiveSyncPresetReport(file) {
     startedAt: "2026-06-13T00:00:00.000Z",
     completedAt: "2026-06-13T00:00:01.000Z",
     durationMs: 1000,
-    metadata: {},
-    scenarios: [
-      scenario("managed", "workspace-live-sync-conflict", ["workspace-live-sync-state"]),
-      scenario("permission", "kernel-authority", ["session-authority"]),
-      scenario("restart", "relay-target-freshness", ["relay-target-freshness"]),
-    ],
+    metadata: {
+      deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+      providers: "codex,opencode",
+    },
+    scenarios: workspaceLiveSyncRequiredScenarios(),
   }, null, 2)}\n`, "utf8")
+}
+
+function workspaceLiveSyncRequiredScenarios() {
+  return [
+    "hetzner-permission-codex",
+    "hetzner-permission-opencode",
+    "hetzner-tracked-codex",
+    "hetzner-tracked-opencode",
+    "local-managed-codex",
+    "local-managed-opencode",
+    "local-off-codex",
+    "local-permission-codex",
+    "local-permission-opencode",
+    "local-tracked-codex",
+    "local-tracked-opencode",
+    "remote-managed-codex",
+    "remote-managed-opencode",
+    "remote-permission-codex",
+    "remote-permission-opencode",
+    "remote-tracked-codex",
+    "remote-tracked-opencode",
+    "remote-tracked-restart-codex",
+  ].map((id) => {
+    if (id.includes("permission")) return scenario(id, "kernel-authority", ["session-authority", "workspace-live-sync-state"])
+    if (id.includes("restart")) return scenario(id, "relay-target-freshness", ["relay-target-freshness", "session-authority", "workspace-live-sync-state"])
+    if (id.includes("managed") || id.includes("tracked")) return scenario(id, "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"])
+    return scenario(id, null, ["session-authority"])
+  })
 }
 
 function scenario(id, classification, runtimeSignals = []) {

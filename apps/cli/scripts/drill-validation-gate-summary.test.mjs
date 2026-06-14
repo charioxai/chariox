@@ -131,7 +131,7 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
       "--require-provider",
       "codex",
       "--require-scenario",
-      "managed",
+      "local-managed-codex",
       "--json",
     ])
     const passedAggregate = JSON.parse(stdout)
@@ -142,7 +142,10 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
     assert.deepEqual(passedAggregate.missingRuntimeSignals, [])
     assert.deepEqual(passedAggregate.requiredMatrixRuntimeSignals, ["workspace-live-sync-state"])
     assert.deepEqual(passedAggregate.missingMatrixRuntimeSignals, [])
-    assert.deepEqual(passedAggregate.matrixRuntimeSignalSources["workspace-live-sync-state"].map((entry) => entry.id), ["managed"])
+    assert.equal(
+      passedAggregate.matrixRuntimeSignalSources["workspace-live-sync-state"].some((entry) => entry.id === "local-managed-codex"),
+      true,
+    )
     assert.deepEqual(passedAggregate.missingProviders, [])
 
     await assert.rejects(
@@ -202,14 +205,10 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
     completedAt: "2026-06-13T00:00:01.000Z",
     durationMs: 1000,
     metadata: {
-      deploymentPresets: "local,self-hosted-relay",
+      deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
       providers: "codex,opencode",
     },
-    scenarios: [
-      passingScenario("managed", "workspace-live-sync-conflict", ["workspace-live-sync-state"]),
-      passingScenario("permission", "kernel-authority", ["session-authority"]),
-      passingScenario("restart", "relay-target-freshness", ["relay-target-freshness"]),
-    ],
+    scenarios: workspaceLiveSyncRequiredScenarios(),
   })
   return runDrillValidationGate({
     platformBundleDir: bundleDir,
@@ -217,7 +216,35 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
     presets: ["workspace-live-sync"],
     requiredDeploymentPresets: ["local"],
     requiredProviders: ["codex"],
-    requiredScenarios: ["managed"],
+    requiredScenarios: ["local-managed-codex"],
+  })
+}
+
+function workspaceLiveSyncRequiredScenarios() {
+  return [
+    "hetzner-permission-codex",
+    "hetzner-permission-opencode",
+    "hetzner-tracked-codex",
+    "hetzner-tracked-opencode",
+    "local-managed-codex",
+    "local-managed-opencode",
+    "local-off-codex",
+    "local-permission-codex",
+    "local-permission-opencode",
+    "local-tracked-codex",
+    "local-tracked-opencode",
+    "remote-managed-codex",
+    "remote-managed-opencode",
+    "remote-permission-codex",
+    "remote-permission-opencode",
+    "remote-tracked-codex",
+    "remote-tracked-opencode",
+    "remote-tracked-restart-codex",
+  ].map((id) => {
+    if (id.includes("permission")) return passingScenario(id, "kernel-authority", ["session-authority", "workspace-live-sync-state"])
+    if (id.includes("restart")) return passingScenario(id, "relay-target-freshness", ["relay-target-freshness", "session-authority", "workspace-live-sync-state"])
+    if (id.includes("managed") || id.includes("tracked")) return passingScenario(id, "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"])
+    return passingScenario(id, null, ["session-authority"])
   })
 }
 

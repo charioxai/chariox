@@ -114,6 +114,9 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrixRuntimeSignals: [...(preset.requiredMatrixRuntimeSignals ?? [])],
+      requiredDeploymentPresets: [...(preset.requiredDeploymentPresets ?? [])],
+      requiredProviders: [...(preset.requiredProviders ?? [])],
+      requiredScenarios: [...(preset.requiredScenarios ?? [])],
     })),
   }
 }
