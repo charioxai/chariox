@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, rm } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -45,6 +45,10 @@ const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 function parseArgs(argv) {
   const options = {
@@ -130,6 +134,27 @@ function spawnProcess(command, args, options) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const unwrap = (resp, key) => resp?.[key] ?? resp
 const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
+
+function eventCounts(events) {
+  return events.reduce((counts, event) => {
+    const key = event.event ?? 'unknown'
+    counts[key] = (counts[key] ?? 0) + 1
+    return counts
+  }, {})
+}
+
+function describeRemoteKernelsForError(kernels) {
+  return kernels.map((kernel) => ({
+    kernel_id: kernel.kernel_id,
+    machine_id: kernel.machine_id,
+    machine_alias: kernel.machine_alias,
+    kernel_alias: kernel.kernel_alias,
+    available_providers: kernel.available_providers ?? [],
+    accepting_remote_leases: kernel.accepting_remote_leases ?? false,
+    leased_agent_count: kernel.leased_agent_count ?? 0,
+    local_session_count: kernel.local_session_count ?? 0,
+  }))
+}
 
 function modelForProvider(provider, options) {
   const explicit = options.providerModels[provider]
@@ -241,7 +266,7 @@ async function waitForRemoteKernel(client, machineRef, provider, timeoutMs, poll
     if (kernel) return kernel
     await sleep(pollMs)
   }
-  throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(last)}`)
+  throw new Error(`remote machine ${machineRef} did not advertise provider ${provider}; last=${JSON.stringify(describeRemoteKernelsForError(last))}`)
 }
 
 async function waitForEvent(bucket, predicate, timeoutMs, description) {
@@ -315,22 +340,11 @@ async function main() {
   }
 
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-multi-agent-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-remote-multi-agent-relay-drill', nowStamp())
   const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-multi-agent-relay-drill')
-  await mkdir(rootDir, { recursive: true })
+  await prepareDrillArtifacts(rootDir)
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
-
-  ;({ LocalIpcClient, requests: {
-    createSessionRequest,
-    attachToSessionRequest,
-    getSessionStateRequest,
-    listRemoteMachinesRequest,
-    listAgentsRequest,
-    submitPromptRequest,
-    pumpTerminalOutputRequest,
-    endSessionRequest,
-  } } = await loadCliModules(cliRuntimeDir))
 
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
   const relayEnv = {
@@ -345,17 +359,6 @@ async function main() {
   const workerMachineId = `machine-worker-${process.pid}`
   const workerMachineAlias = `builder-west-${process.pid}`
 
-  const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
-    path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
-  )
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
-
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
 
@@ -365,8 +368,40 @@ async function main() {
   let localClient = null
   let remoteClient = null
   let sessionId = null
+  let passed = false
+  let failure = null
+  let machines = []
+  let listed = []
+  let finalState = null
+  let resumed = null
+  const localEvents = []
+  const remoteEvents = []
+  const localSidecars = []
+  const remoteAgents = []
+  const beforeReconnectResults = []
+  const afterReconnectResults = []
 
   try {
+    ;({ LocalIpcClient, requests: {
+      createSessionRequest,
+      attachToSessionRequest,
+      getSessionStateRequest,
+      listRemoteMachinesRequest,
+      listAgentsRequest,
+      submitPromptRequest,
+      pumpTerminalOutputRequest,
+      endSessionRequest,
+    } } = await loadCliModules(cliRuntimeDir))
+    const relayBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/Cargo.toml'),
+      'arroba-relay',
+    )
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     homeChild = spawnProcess(daemonBinary, [], {
       cwd: repoRoot,
@@ -415,10 +450,7 @@ async function main() {
       targetDaemonAlias: 'home',
     })
 
-    const machines = await waitForRemoteMachine(remoteClient, workerMachineId)
-
-    const localEvents = []
-    const remoteEvents = []
+    machines = await waitForRemoteMachine(remoteClient, workerMachineId)
 
     const session = unwrap(await localClient.send(createSessionRequest(repoRoot, repoRoot)), 'SessionCreated').session
     sessionId = session.id
@@ -439,8 +471,6 @@ async function main() {
     await waitForEvent(localEvents, (event) => event.event === 'session_snapshot', 30_000, 'local snapshot')
     await waitForEvent(remoteEvents, (event) => event.event === 'session_snapshot', 30_000, 'remote snapshot')
 
-    const localSidecars = []
-    const remoteAgents = []
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const localSidecar = unwrapVariant(
@@ -459,12 +489,11 @@ async function main() {
       remoteAgents.push(remoteAgent)
     }
 
-    const listed = unwrapVariant(await remoteClient.send(listAgentsRequest(session.id)), 'AgentsListed').agents || []
+    listed = unwrapVariant(await remoteClient.send(listAgentsRequest(session.id)), 'AgentsListed').agents || []
     if (listed.length < 1 + localSidecars.length + remoteAgents.length) {
       throw new Error(`expected at least ${1 + localSidecars.length + remoteAgents.length} agents in session, got ${listed.length}`)
     }
 
-    const beforeReconnectResults = []
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const localBaseline = localEvents.filter((event) => event.event === 'assistant_message_completed').length
@@ -493,9 +522,8 @@ async function main() {
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     await waitForRelayTarget(relayUrl, relayToken, 'home')
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
-    const resumed = await waitForEvent(remoteEvents, (event) => event.event === 'transport_resumed', 45_000, 'transport_resumed')
+    resumed = await waitForEvent(remoteEvents, (event) => event.event === 'transport_resumed', 45_000, 'transport_resumed')
 
-    const afterReconnectResults = []
     for (let index = 0; index < remoteAgents.length; index += 1) {
       const provider = options.providers[index]
       const baselineRemote = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
@@ -515,7 +543,7 @@ async function main() {
       })
     }
 
-    const finalState = unwrapVariant(await remoteClient.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
+    finalState = unwrapVariant(await remoteClient.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
 
     console.log(JSON.stringify({
       status: 'ok',
@@ -565,6 +593,10 @@ async function main() {
       finalFocusedAgentId: finalState.session?.focused_agent_id ?? null,
       listedAgentCount: listed.length,
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (remoteClient) {
       if (sessionId) await remoteClient.send(endSessionRequest(sessionId)).catch(() => {})
@@ -576,7 +608,49 @@ async function main() {
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-remote-multi-agent-relay',
+        providers: options.providers,
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        ports,
+        relayUrl,
+        homeKernelUrl,
+        workerKernelUrl: `ws://127.0.0.1:${ports.workerKernelPort}`,
+        homeDaemonId,
+        workerDaemonId,
+        workerMachineId,
+        workerMachineAlias,
+        sessionId,
+        machineCount: machines.length,
+        listedAgentCount: listed.length,
+        localSidecars: localSidecars.map((agent) => ({ id: agent.id, provider: agent.provider })),
+        remoteAgents: remoteAgents.map((agent) => ({
+          id: agent.id,
+          provider: agent.provider,
+          remoteExecution: agent.remote_execution ?? null,
+        })),
+        events: {
+          local: eventCounts(localEvents),
+          remote: eventCounts(remoteEvents),
+        },
+        recentLocalEvents: localEvents.slice(-20),
+        recentRemoteEvents: remoteEvents.slice(-20),
+        relayReconnect: resumed ? { resumedFromEventId: resumed.resumed_from_event_id ?? null } : null,
+        crossObservation: {
+          beforeReconnect: beforeReconnectResults,
+          afterReconnect: afterReconnectResults,
+        },
+        finalFocusedAgentId: finalState?.session?.focused_agent_id ?? null,
+      },
+    })
     await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   }
 }
