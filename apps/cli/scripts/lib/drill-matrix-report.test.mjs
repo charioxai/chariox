@@ -245,6 +245,34 @@ test("rejects inconsistent matrix aggregates", () => {
   }), /nextActions do not match failedScenarios/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
+    failedScenarios: [{
+      ...aggregate.failedScenarios[0],
+      classification: "not-real",
+    }],
+  }), /failedScenarios\[0\] has unknown classification/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    failedScenarios: [{
+      ...aggregate.failedScenarios[0],
+      owner: "runtime-network",
+    }],
+  }), /failedScenarios\[0\] owner does not match classification/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    failedScenarios: [{
+      ...aggregate.failedScenarios[0],
+      nextAction: "try something else",
+    }],
+  }), /failedScenarios\[0\] nextAction does not match classification/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    failedScenarios: [{
+      ...aggregate.failedScenarios[0],
+      artifactHints: ["Bearer abcdefghijklmnopqrstuvwxyz"],
+    }],
+  }), /failedScenarios\[0\] includes secret-looking artifactHints/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
     status: "passed",
   }), /status does not match totals/)
 })

@@ -487,6 +487,7 @@ function validateDrillMatrixAggregate(aggregate) {
   }
   for (const [index, scenario] of aggregate.failedScenarios.entries()) {
     validateMatrixAggregateScenario(scenario, `aggregate.failedScenarios[${index}]`)
+    validateMatrixAggregateFailedScenario(scenario, `aggregate.failedScenarios[${index}]`)
   }
   if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {
     throw new Error("aggregate is missing owners")
@@ -645,6 +646,31 @@ function validateMatrixAggregateScenario(scenario, source) {
     || !scenario.artifactHints.every((value) => typeof value === "string")
   )) {
     throw new Error(`${source} has invalid artifactHints`)
+  }
+  if (scenario.artifactHints?.some((value) => looksLikeDrillSecretValue(value))) {
+    throw new Error(`${source} includes secret-looking artifactHints`)
+  }
+}
+
+function validateMatrixAggregateFailedScenario(scenario, source) {
+  if (!nonEmptyString(scenario.classification)) {
+    throw new Error(`${source} is missing classification`)
+  }
+  if (!isKnownDrillFailureClassification(scenario.classification)) {
+    throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
+  }
+  if (!nonEmptyString(scenario.owner)) {
+    throw new Error(`${source} is missing owner`)
+  }
+  if (scenario.owner !== drillFailureOwnerForClassification(scenario.classification)) {
+    throw new Error(`${source} owner does not match classification`)
+  }
+  if (!nonEmptyString(scenario.reason)) {
+    throw new Error(`${source} is missing reason`)
+  }
+  const expectedNextAction = drillFailureNextActionForClassification(scenario.classification, { target: "scenario" })
+  if (scenario.nextAction !== expectedNextAction) {
+    throw new Error(`${source} nextAction does not match classification`)
   }
 }
 
