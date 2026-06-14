@@ -19,17 +19,19 @@ import { verifyDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
 
 export async function runDrillValidationGate({
+  failureInputs = [],
   failureRoots = [],
+  matrixReports = [],
   matrixRoots = [],
   maxDepth = 8,
   platformBundleDir = null,
   requireComplete = false,
 } = {}) {
   const checks = {
-    configuration: configurationCheck({ failureRoots, matrixRoots, platformBundleDir }),
+    configuration: configurationCheck({ failureInputs, failureRoots, matrixReports, matrixRoots, platformBundleDir }),
     platformBundle: await platformBundleCheck(platformBundleDir),
-    matrices: await matrixCheck(matrixRoots, { maxDepth, requireComplete }),
-    failures: await failureCheck(failureRoots, { maxDepth }),
+    matrices: await matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete }),
+    failures: await failureCheck({ failureInputs, failureRoots }, { maxDepth }),
   }
   const nextActions = validationGateNextActions(checks)
   return {
@@ -132,8 +134,12 @@ function validationGateNextActions(checks) {
   return formatDrillAggregateNextActionCounts(counts)
 }
 
-function configurationCheck({ failureRoots, matrixRoots, platformBundleDir }) {
-  const configured = Boolean(platformBundleDir) || matrixRoots.length > 0 || failureRoots.length > 0
+function configurationCheck({ failureInputs, failureRoots, matrixReports, matrixRoots, platformBundleDir }) {
+  const configured = Boolean(platformBundleDir)
+    || matrixRoots.length > 0
+    || matrixReports.length > 0
+    || failureRoots.length > 0
+    || failureInputs.length > 0
   return configured
     ? { status: "passed" }
     : {
@@ -165,21 +171,26 @@ async function platformBundleCheck(platformBundleDir) {
   }
 }
 
-async function matrixCheck(matrixRoots, { maxDepth, requireComplete }) {
-  if (matrixRoots.length === 0) {
+async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete }) {
+  if (matrixRoots.length === 0 && matrixReports.length === 0) {
     return {
       status: "skipped",
       roots: [],
+      inputs: [],
       reportPaths: [],
       requireComplete,
     }
   }
   try {
-    const reportPaths = await findDrillMatrixReportPaths(matrixRoots, { maxDepth })
+    const discovered = matrixRoots.length > 0
+      ? await findDrillMatrixReportPaths(matrixRoots, { maxDepth })
+      : []
+    const reportPaths = [...new Set([...matrixReports, ...discovered])].sort()
     if (reportPaths.length === 0) {
       return {
         status: "failed",
         roots: [...matrixRoots],
+        inputs: [...matrixReports],
         reportPaths,
         requireComplete,
         error: "no matrix reports found",
@@ -193,6 +204,7 @@ async function matrixCheck(matrixRoots, { maxDepth, requireComplete }) {
     return {
       status: exitCode === 0 ? "passed" : "failed",
       roots: [...matrixRoots],
+      inputs: [...matrixReports],
       reportPaths,
       requireComplete,
       aggregate,
@@ -201,6 +213,7 @@ async function matrixCheck(matrixRoots, { maxDepth, requireComplete }) {
     return {
       status: "failed",
       roots: [...matrixRoots],
+      inputs: [...matrixReports],
       reportPaths: [],
       requireComplete,
       error: error instanceof Error ? error.message : String(error),
@@ -208,21 +221,26 @@ async function matrixCheck(matrixRoots, { maxDepth, requireComplete }) {
   }
 }
 
-async function failureCheck(failureRoots, { maxDepth }) {
-  if (failureRoots.length === 0) {
+async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {
+  if (failureRoots.length === 0 && failureInputs.length === 0) {
     return {
       status: "skipped",
       roots: [],
+      inputs: [],
       manifestPaths: [],
     }
   }
   try {
-    const manifestPaths = await findDrillFailureManifestPaths(failureRoots, { maxDepth })
+    const discovered = failureRoots.length > 0
+      ? await findDrillFailureManifestPaths(failureRoots, { maxDepth })
+      : []
+    const manifestPaths = [...new Set([...failureInputs, ...discovered])].sort()
     const manifests = await Promise.all(manifestPaths.map((manifestPath) => readDrillFailureManifest(manifestPath)))
     const aggregate = summarizeDrillFailureManifests(manifests, { sources: manifestPaths })
     return {
       status: aggregate.total === 0 ? "passed" : "failed",
       roots: [...failureRoots],
+      inputs: [...failureInputs],
       manifestPaths,
       aggregate,
     }
@@ -230,6 +248,7 @@ async function failureCheck(failureRoots, { maxDepth }) {
     return {
       status: "failed",
       roots: [...failureRoots],
+      inputs: [...failureInputs],
       manifestPaths: [],
       error: error instanceof Error ? error.message : String(error),
     }

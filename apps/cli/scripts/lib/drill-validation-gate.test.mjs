@@ -39,6 +39,25 @@ test("passes with valid platform bundle and complete matrix reports", async () =
   }
 })
 
+test("passes with explicit matrix report paths", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath, matrixReport())
+
+    const report = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requireComplete: true,
+    })
+
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.matrices.inputs, [reportPath])
+    assert.deepEqual(report.checks.matrices.reportPaths, [reportPath])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("fails when no validation checks are configured", async () => {
   const report = await runDrillValidationGate()
 
@@ -104,6 +123,22 @@ test("fails when preserved failure manifests are found", async () => {
     ])
     assert.match(formatDrillValidationGateSummary(report), /failure_total=1/)
     assert.match(formatDrillValidationGateSummary(report), /next actions:/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("fails with explicit failure manifest paths", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const manifestPath = path.join(rootDir, "arroba-drill-failure.json")
+    await writeFailureManifest(manifestPath)
+
+    const report = await runDrillValidationGate({ failureInputs: [manifestPath] })
+
+    assert.equal(report.status, "failed")
+    assert.deepEqual(report.checks.failures.inputs, [manifestPath])
+    assert.deepEqual(report.checks.failures.manifestPaths, [manifestPath])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

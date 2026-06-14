@@ -59,6 +59,7 @@ node apps/cli/scripts/drill-validation-gate.mjs \
 ```
 
 The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first.
+Use `--matrix-report PATH` and `--failure-manifest PATH` when CI already knows the exact artifact paths and should avoid broad discovery.
 
 ## Matrix Reports
 

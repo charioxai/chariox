@@ -38,6 +38,28 @@ test("drill validation gate writes passing JSON report", async () => {
   }
 })
 
+test("drill validation gate accepts explicit matrix report paths", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--matrix-report",
+      reportPath,
+      "--require-complete",
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.matrices.inputs, [reportPath])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill validation gate rejects empty configuration", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--json"]),
@@ -57,7 +79,7 @@ test("drill validation gate exits non-zero for preserved failures", async () => 
     await writeFailureManifest(path.join(rootDir, "failed", "arroba-drill-failure.json"))
 
     await assert.rejects(
-      execFile(process.execPath, [scriptPath, "--failure-root", rootDir, "--json"]),
+      execFile(process.execPath, [scriptPath, "--failure-manifest", path.join(rootDir, "failed", "arroba-drill-failure.json"), "--json"]),
       (error) => {
         const report = JSON.parse(error.stdout)
         assert.equal(error.code, 1)
@@ -73,6 +95,34 @@ test("drill validation gate exits non-zero for preserved failures", async () => 
     await rm(rootDir, { recursive: true, force: true })
   }
 })
+
+async function writeMatrixReport(file) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify({
+    schema: "arroba.drill.matrix.v1",
+    matrix: "cli-matrix",
+    status: "passed",
+    dryRun: false,
+    startedAt: "2026-06-13T00:00:00.000Z",
+    completedAt: "2026-06-13T00:00:01.000Z",
+    durationMs: 1000,
+    metadata: {},
+    scenarios: [{
+      id: "local",
+      description: "local scenario",
+      requires: [],
+      exitCriteria: [],
+      status: "passed",
+      expectedFailure: false,
+      classification: null,
+      durationMs: 10,
+      reason: null,
+      command: "node",
+      args: ["local.mjs"],
+      artifactHints: [],
+    }],
+  }, null, 2)}\n`, "utf8")
+}
 
 async function writeFailureManifest(file) {
   await mkdir(path.dirname(file), { recursive: true })
