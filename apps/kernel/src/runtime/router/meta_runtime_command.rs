@@ -314,6 +314,7 @@ impl CommandRouter {
         let timestamp_ms = crate::session::unix_epoch_ms();
         let causation_id = provider_run_id.unwrap_or_else(|| metaagent.id());
         let correlation_id = format!("metaagent:{}:command:{timestamp_ms}", metaagent.id());
+        let display_command = redacted_meta_command_for_payload(command);
         let durable_state = {
             let app = self.app.lock().await;
             app.durable_state_store()
@@ -326,7 +327,7 @@ impl CommandRouter {
                 "user_id": metaagent.owner_user_id(),
                 "metaagent_id": metaagent.id(),
                 "provider_run_id": provider_run_id,
-                "command": command,
+                "command": display_command,
                 "status": status,
                 "result": result,
                 "causation_id": causation_id,
@@ -340,7 +341,7 @@ impl CommandRouter {
                 serde_json::json!({
                     "session_id": session.id(),
                     "metaagent_id": metaagent.id(),
-                    "command": command,
+                    "command": display_command,
                     "status": status,
                     "error": error.to_string(),
                 }),
@@ -1077,7 +1078,7 @@ fn meta_command_failure_result(command: &str, error: DaemonError) -> RuntimeTool
     RuntimeToolResult {
         ok: false,
         payload: serde_json::json!({
-            "command": command,
+            "command": redacted_meta_command_for_payload(command),
             "error": error.to_string(),
         }),
     }
@@ -1087,9 +1088,28 @@ fn meta_command_success_result(command: &str, response: &LocalDaemonResponse) ->
     RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({
-            "command": command,
+            "command": redacted_meta_command_for_payload(command),
             "response": summarize_meta_command_response(response),
         }),
+    }
+}
+
+fn redacted_meta_command_for_payload(command: &str) -> String {
+    let Ok(tokens) = crate::runtime::metaagent_command_registry::tokenize_command(command) else {
+        return command.to_string();
+    };
+    match (
+        tokens.first().map(String::as_str),
+        tokens.get(1).map(String::as_str),
+    ) {
+        (Some("credential" | "credentials"), Some("set" | "set-secret" | "delete-secret")) => {
+            let credential_ref = tokens.get(2).map_or("<credential-ref>", String::as_str);
+            format!(
+                "{} {} {} <redacted-secret>",
+                tokens[0], tokens[1], credential_ref
+            )
+        }
+        _ => command.to_string(),
     }
 }
 

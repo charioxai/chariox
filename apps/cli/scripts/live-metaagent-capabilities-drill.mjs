@@ -199,6 +199,12 @@ async function listRuntimeToolNames(providerRun) {
   return (result.tools ?? []).map((tool) => tool.name)
 }
 
+async function assertRuntimeToolDenied(providerRun, name, args, label) {
+  const result = await callRuntimeTool(providerRun, name, args)
+  assert(!result.ok, label, result.payload)
+  return result
+}
+
 async function waitForInteraction(client, requests, sessionId, agentId, title, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs
   let last = null
@@ -339,8 +345,24 @@ async function main() {
     const metaTools = await listRuntimeToolNames(metaRun)
     assert(metaTools.length > 0, 'metaagent runtime should expose runtime tools', { metaTools })
     assert(metaTools.every((tool) => tool.startsWith('arroba.meta.')), 'metaagent runtime must expose only meta tools', { metaTools })
-    const directReadDenied = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'README.md' })
-    assert(!directReadDenied.ok, 'metaagent direct workspace read must be denied', directReadDenied.payload)
+    const deniedToolCalls = [
+      ['arroba.read_artifact', { path: 'README.md' }, 'workspace artifact reads must be denied'],
+      ['arroba.write_artifact', { path: 'README.md', content_text: 'forbidden', domain: 'text' }, 'workspace artifact writes must be denied'],
+      ['arroba.register_script_path', { name: 'forbidden-script', path: '/tmp/forbidden-script.js' }, 'script registration must be denied'],
+      ['arroba.register_connector_path', { name: 'forbidden-connector', path: '/tmp/forbidden-connector' }, 'connector registration must be denied'],
+      ['arroba.request_extension', { kind: 'mcp', name: 'iso-mcp' }, 'user MCP requests must be denied'],
+      ['arroba.search_recall', { query: 'metaagent capability drill' }, 'recall search must be denied'],
+      ['arroba.request_credential_secret', { credential_id: 'iso-credential' }, 'raw credential secret requests must be denied'],
+      ['arroba.http_request_with_credential', { credential_id: 'iso-credential', url: 'https://example.invalid' }, 'credential-backed HTTP execution must be denied'],
+      ['arroba.slice_screenshot', {}, 'slice runtime tools must be denied'],
+      ['ack_workflow_turn', { status: 'complete' }, 'workflow-node runtime tools must be denied'],
+    ]
+    const deniedRuntimeTools = []
+    for (const [name, args, label] of deniedToolCalls) {
+      const denied = await assertRuntimeToolDenied(metaRun, name, args, `metaagent ${label}`)
+      deniedRuntimeTools.push({ name, payload: denied.payload })
+    }
+    log('direct-runtime-tool-denials-passed', { tools: deniedRuntimeTools.map((entry) => entry.name) })
 
     const overview = await callRuntimeTool(metaRun, 'arroba.meta.session_overview')
     assert(overview.ok, 'session_overview should succeed', overview.payload)
@@ -365,6 +387,8 @@ async function main() {
     assert(mcpInstall.ok, 'metaagent should install MCP definitions through kernel policy', mcpInstall.payload)
     const mcpGrant = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'mcp grant worker iso-mcp' })
     assert(mcpGrant.ok, 'metaagent should grant MCP to owned worker', mcpGrant.payload)
+    const mcpSelfGrant = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: `mcp grant ${metaagent.id} iso-mcp` })
+    assert(!mcpSelfGrant.ok, 'metaagent must not grant MCPs to itself', mcpSelfGrant.payload)
     const mcpRevoke = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'mcp revoke worker iso-mcp' })
     assert(mcpRevoke.ok, 'metaagent should revoke MCP from owned worker', mcpRevoke.payload)
     const mcpUninstall = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'mcp uninstall iso-mcp' })
@@ -375,6 +399,8 @@ async function main() {
     assert(skillInstall.ok, 'metaagent should install skill packages through kernel policy', skillInstall.payload)
     const skillGrant = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'skill grant worker iso-skill' })
     assert(skillGrant.ok, 'metaagent should grant skill to owned worker', skillGrant.payload)
+    const skillSelfGrant = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: `skill grant ${metaagent.id} iso-skill` })
+    assert(!skillSelfGrant.ok, 'metaagent must not grant skills to itself', skillSelfGrant.payload)
     const skillRevoke = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'skill revoke worker iso-skill' })
     assert(skillRevoke.ok, 'metaagent should revoke skill from owned worker', skillRevoke.payload)
     const skillUninstall = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'skill uninstall iso-skill' })
@@ -397,8 +423,10 @@ async function main() {
     assert(credentialGet.ok, 'metaagent should inspect credential handle metadata', credentialGet.payload)
     const vaultStatus = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'credential vault status' })
     assert(vaultStatus.ok, 'metaagent should inspect vault status', vaultStatus.payload)
-    const secretDenied = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'credential set-secret iso-credential not-a-real-secret' })
+    const secretSentinel = 'super-secret-drill-value'
+    const secretDenied = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: `credential set-secret iso-credential ${secretSentinel}` })
     assert(!secretDenied.ok, 'metaagent must not pass secret values through run_command', secretDenied.payload)
+    assert(!JSON.stringify(secretDenied.payload ?? {}).includes(secretSentinel), 'secret denial payload must not echo raw secret values', secretDenied.payload)
     const credentialRemove = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'credential remove iso-credential' })
     assert(credentialRemove.ok, 'metaagent should remove credential handles', credentialRemove.payload)
     log('credential-capabilities-passed')
