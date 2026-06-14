@@ -54,25 +54,35 @@ export function validateDrillMatrixReport(report, source = "report") {
   if (!Array.isArray(report.scenarios)) {
     throw new Error(`${source} is missing scenarios`)
   }
+  if (report.scenarios.length === 0) {
+    throw new Error(`${source} has no scenarios`)
+  }
   for (const [index, scenario] of report.scenarios.entries()) {
     validateDrillMatrixScenario(scenario, `${source}.scenarios[${index}]`)
+  }
+  validateDrillMatrixReportConsistency(report, source)
+}
+
+function validateDrillMatrixReportConsistency(report, source) {
+  const counts = countScenarioStatuses(report.scenarios)
+  const expectedStatus = counts.failed > 0
+    ? "failed"
+    : counts.dryRun === report.scenarios.length
+      ? "dry-run"
+      : "passed"
+  if (report.status !== expectedStatus) {
+    throw new Error(`${source} status does not match scenario statuses`)
+  }
+  if (report.dryRun !== (expectedStatus === "dry-run")) {
+    throw new Error(`${source} dryRun does not match scenario statuses`)
   }
 }
 
 export function summarizeDrillMatrixReport(report, { source = null } = {}) {
   validateDrillMatrixReport(report)
-  const counts = {
-    passed: 0,
-    failed: 0,
-    skipped: 0,
-    dryRun: 0,
-  }
+  const counts = countScenarioStatuses(report.scenarios)
   const classifications = new Map()
   for (const scenario of report.scenarios) {
-    if (scenario.status === "passed") counts.passed += 1
-    else if (scenario.status === "failed") counts.failed += 1
-    else if (scenario.status === "skipped") counts.skipped += 1
-    else if (scenario.status === "dry-run") counts.dryRun += 1
     const classification = scenario.classification
     if (typeof classification === "string" && classification) {
       classifications.set(classification, (classifications.get(classification) ?? 0) + 1)
@@ -440,6 +450,14 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   if (aggregate.totals.skipped + aggregate.totals.dryRun !== aggregate.incompleteScenarios.length) {
     throw new Error("aggregate incomplete total does not match incompleteScenarios")
   }
+  const expectedStatus = aggregate.totals.failed > 0
+    ? "failed"
+    : aggregate.totals.reports > 0 && aggregate.totals.dryRun === aggregate.totals.scenarios
+      ? "dry-run"
+      : "passed"
+  if (aggregate.status !== expectedStatus) {
+    throw new Error("aggregate status does not match totals")
+  }
   assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failedScenarios, "owner")
   assertNextActionCountsMatchScenarios(aggregate)
 }
@@ -536,6 +554,22 @@ function validateReportMetadataValue(value, source, key = "") {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function countScenarioStatuses(scenarios) {
+  const counts = {
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    dryRun: 0,
+  }
+  for (const scenario of scenarios) {
+    if (scenario.status === "passed") counts.passed += 1
+    else if (scenario.status === "failed") counts.failed += 1
+    else if (scenario.status === "skipped") counts.skipped += 1
+    else if (scenario.status === "dry-run") counts.dryRun += 1
+  }
+  return counts
 }
 
 function exitCriteriaForScenario(scenario) {

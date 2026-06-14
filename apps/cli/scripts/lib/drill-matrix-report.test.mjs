@@ -197,6 +197,10 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     nextActions: [],
   }), /nextActions do not match failedScenarios/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    status: "passed",
+  }), /status does not match totals/)
 })
 
 test("reads and validates report files", async () => {
@@ -231,6 +235,25 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     status: "unknown",
   }), /invalid status/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({ scenarios: [] }),
+  }), /has no scenarios/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      status: "passed",
+      scenarios: [scenario("remote", "failed", { classification: "provider-auth" })],
+    }),
+  }), /status does not match scenario statuses/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      status: "dry-run",
+      dryRun: false,
+      scenarios: [scenario("remote", "dry-run")],
+    }),
+  }), /dryRun does not match scenario statuses/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
@@ -285,18 +308,27 @@ test("rejects malformed matrix reports", () => {
 })
 
 function matrixReport(overrides = {}) {
+  const scenarios = overrides.scenarios ?? [scenario("local", "passed")]
+  const status = overrides.status ?? matrixStatusForScenarios(scenarios)
+  const dryRun = overrides.dryRun ?? status === "dry-run"
   return {
     schema: "arroba.drill.matrix.v1",
     matrix: "test-matrix",
-    status: "failed",
-    dryRun: false,
+    status,
+    dryRun,
     startedAt: "2026-06-13T00:00:00.000Z",
     completedAt: "2026-06-13T00:00:01.000Z",
     durationMs: 1000,
     metadata: {},
-    scenarios: [scenario("local", "passed")],
+    scenarios,
     ...overrides,
   }
+}
+
+function matrixStatusForScenarios(scenarios) {
+  if (scenarios.some((entry) => entry.status === "failed")) return "failed"
+  if (scenarios.length > 0 && scenarios.every((entry) => entry.status === "dry-run")) return "dry-run"
+  return "passed"
 }
 
 function scenario(id, status, overrides = {}) {

@@ -41,11 +41,11 @@ Required top-level fields:
 
 - `schema`: always `arroba.drill.matrix.v1`.
 - `matrix`: stable matrix name.
-- `status`: `passed`, `failed`, or `dry-run`.
-- `dryRun`: boolean.
+- `status`: `passed`, `failed`, or `dry-run`; it must match scenario statuses.
+- `dryRun`: boolean; true only when every selected scenario is `dry-run`.
 - `startedAt`, `completedAt`, `durationMs`.
 - `metadata`: feature-specific non-secret context such as enabled scenario groups or provider model ids.
-- `scenarios`: selected scenario results.
+- `scenarios`: selected scenario results; reports with no selected scenarios are invalid.
 
 Required scenario fields:
 
