@@ -7,6 +7,7 @@ import {
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
+import { drillRuntimeSignalOwner } from "./drill-runtime-signals.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
 export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
@@ -127,6 +128,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   }
   const schemas = new Map()
   const runtimeSignals = new Map()
+  const runtimeSignalOwners = new Map()
   const owners = new Map()
   const classifications = new Map()
   const summaries = indexes.map((index, indexPosition) => {
@@ -137,9 +139,11 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     }
     const indexSchemas = new Map()
     const indexRuntimeSignals = runtimeSignalsFromMetadata(index.metadata)
+    const indexRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRuntimeSignals)
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
     countValues(indexRuntimeSignals, runtimeSignals)
+    countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
     for (const artifact of index.artifacts) {
@@ -157,6 +161,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       sizeBytes: indexTotals.sizeBytes,
       schemas: sortedCountObject(indexSchemas),
       runtimeSignals: countValues(indexRuntimeSignals),
+      runtimeSignalOwners: countValues(indexRuntimeSignalOwners),
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
     }
@@ -166,6 +171,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     totals,
     schemas: sortedCountObject(schemas),
     runtimeSignals: sortedCountObject(runtimeSignals),
+    runtimeSignalOwners: sortedCountObject(runtimeSignalOwners),
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
     indexes: summaries,
@@ -178,6 +184,9 @@ export function diagnosticMetadataForDrillArtifactIndexAggregate(aggregate) {
   return {
     ...(Object.keys(aggregate.runtimeSignals ?? {}).length > 0
       ? { runtimeSignals: Object.keys(aggregate.runtimeSignals).sort().join(",") }
+      : {}),
+    ...(Object.keys(aggregate.runtimeSignalOwners ?? {}).length > 0
+      ? { runtimeSignalOwners: Object.keys(aggregate.runtimeSignalOwners).sort().join(",") }
       : {}),
     ...(Object.keys(aggregate.owners ?? {}).length > 0
       ? { owners: Object.keys(aggregate.owners).sort().join(",") }
@@ -201,6 +210,10 @@ export function formatDrillArtifactIndexAggregateSummary(aggregate) {
   const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
+  }
+  const runtimeSignalOwners = Object.entries(aggregate.runtimeSignalOwners ?? {})
+  if (runtimeSignalOwners.length > 0) {
+    lines.push(`runtime_signal_owners: ${runtimeSignalOwners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
   }
   const owners = Object.entries(aggregate.owners ?? {})
   if (owners.length > 0) {
@@ -256,6 +269,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   }
   validateCountObject(aggregate.schemas, `${source}.schemas`)
   validateCountObject(aggregate.runtimeSignals ?? {}, `${source}.runtimeSignals`)
+  validateCountObject(aggregate.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(aggregate.owners ?? {}, `${source}.owners`)
   validateCountObject(aggregate.classifications ?? {}, `${source}.classifications`)
   if (!Array.isArray(aggregate.indexes)) {
@@ -270,11 +284,15 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   const expectedArtifacts = aggregate.indexes.reduce((sum, index) => sum + index.artifacts, 0)
   const expectedSizeBytes = aggregate.indexes.reduce((sum, index) => sum + index.sizeBytes, 0)
   const expectedRuntimeSignals = new Map()
+  const expectedRuntimeSignalOwners = new Map()
   const expectedOwners = new Map()
   const expectedClassifications = new Map()
   for (const index of aggregate.indexes) {
     for (const [signal, count] of Object.entries(index.runtimeSignals ?? {})) {
       expectedRuntimeSignals.set(signal, (expectedRuntimeSignals.get(signal) ?? 0) + count)
+    }
+    for (const [owner, count] of Object.entries(index.runtimeSignalOwners ?? {})) {
+      expectedRuntimeSignalOwners.set(owner, (expectedRuntimeSignalOwners.get(owner) ?? 0) + count)
     }
     for (const [owner, count] of Object.entries(index.owners ?? {})) {
       expectedOwners.set(owner, (expectedOwners.get(owner) ?? 0) + count)
@@ -288,6 +306,9 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   }
   if (JSON.stringify(aggregate.runtimeSignals ?? {}) !== JSON.stringify(sortedCountObject(expectedRuntimeSignals))) {
     throw new Error(`${source} runtimeSignals do not match indexes`)
+  }
+  if (JSON.stringify(aggregate.runtimeSignalOwners ?? {}) !== JSON.stringify(sortedCountObject(expectedRuntimeSignalOwners))) {
+    throw new Error(`${source} runtimeSignalOwners do not match indexes`)
   }
   if (JSON.stringify(aggregate.owners ?? {}) !== JSON.stringify(sortedCountObject(expectedOwners))) {
     throw new Error(`${source} owners do not match indexes`)
@@ -363,6 +384,7 @@ function validateArtifactIndexSummary(summary, source) {
   }
   validateCountObject(summary.schemas, `${source}.schemas`)
   validateCountObject(summary.runtimeSignals ?? {}, `${source}.runtimeSignals`)
+  validateCountObject(summary.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(summary.owners ?? {}, `${source}.owners`)
   validateCountObject(summary.classifications ?? {}, `${source}.classifications`)
 }
@@ -416,6 +438,10 @@ function sortedCountObject(counts) {
 
 function runtimeSignalsFromMetadata(metadata) {
   return metadataListFromMetadata(metadata, "runtimeSignals")
+}
+
+function runtimeSignalOwnersFromRuntimeSignals(runtimeSignals) {
+  return [...new Set(runtimeSignals.map((signal) => drillRuntimeSignalOwner(signal)))].sort()
 }
 
 function metadataListFromMetadata(metadata, key) {

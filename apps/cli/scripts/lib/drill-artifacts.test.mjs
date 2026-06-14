@@ -219,6 +219,10 @@ test("summarizes drill artifact indexes", async () => {
       "provider-run-lifecycle": 1,
       "session-authority": 2,
     })
+    assert.deepEqual(aggregate.runtimeSignalOwners, {
+      "kernel-authority": 2,
+      "provider-runtime": 1,
+    })
     assert.deepEqual(aggregate.owners, {
       "runtime-network": 1,
       "validation-harness": 2,
@@ -242,6 +246,15 @@ test("summarizes drill artifact indexes", async () => {
         "session-authority": 1,
       },
     ])
+    assert.deepEqual(aggregate.indexes.map((index) => index.runtimeSignalOwners), [
+      {
+        "kernel-authority": 1,
+        "provider-runtime": 1,
+      },
+      {
+        "kernel-authority": 1,
+      },
+    ])
     assert.deepEqual(aggregate.indexes.map((index) => index.owners), [
       {
         "validation-harness": 1,
@@ -254,11 +267,13 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(diagnosticMetadataForDrillArtifactIndexAggregate(aggregate), {
       classifications: "artifact-coverage,matrix-coverage,validation-gate",
       owners: "runtime-network,validation-harness",
+      runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
     })
     assert.doesNotThrow(() => validateDrillArtifactIndexAggregate(aggregate))
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /indexes=2 artifacts=3/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=2/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signal_owners: kernel-authority=2 provider-runtime=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /owners: runtime-network=1 validation-harness=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)
   } finally {

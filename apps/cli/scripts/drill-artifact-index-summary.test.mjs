@@ -47,6 +47,10 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       "session-authority": 2,
       "workspace-live-sync-state": 1,
     })
+    assert.deepEqual(stdoutAggregate.runtimeSignalOwners, {
+      "kernel-authority": 2,
+      "runtime-state": 1,
+    })
     assert.deepEqual(stdoutAggregate.indexes.map((index) => index.source), [
       firstIndexPath,
       secondIndexPath,
@@ -54,6 +58,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.drill, "artifact-index-summary")
     assert.equal(artifactIndex.metadata.indexes, 2)
     assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,session-authority,workspace-live-sync-state")
+    assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,runtime-state")
     assert.equal(artifactIndex.metadata.owners, "runtime-network,validation-harness")
     assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
