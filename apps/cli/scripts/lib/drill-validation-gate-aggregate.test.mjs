@@ -37,6 +37,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactSchemas, {
     "arroba.drill.validation_suite_run.v1": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactOwners, {
+    "validation-platform": 1,
+  })
+  assert.deepEqual(aggregate.coverage.artifactClassifications, {
+    "cloud-validation-suite": 1,
+  })
   assert.deepEqual(aggregate.matrixRuntimeSignalSources, {
     "workspace-live-sync-state": [{
       reportSource: "workspace-live-sync.json",
@@ -55,12 +61,20 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.owners, {
+    "validation-platform": 1,
+  })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.classifications, {
+    "cloud-validation-suite": 1,
+  })
   assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
   const text = formatDrillValidationGateAggregateSummary(aggregate)
   assert.match(text, /required_providers=codex missing=none/)
   assert.match(text, /required_artifact_schemas=arroba\.drill\.validation_suite_run\.v1 missing=none/)
   assert.match(text, /- artifact_schemas: arroba.drill.validation_suite_run.v1=1/)
   assert.match(text, /- artifact_runtime_signals: session-authority=2 workspace-live-sync-state=1/)
+  assert.match(text, /- artifact_owners: validation-platform=1/)
+  assert.match(text, /- artifact_classifications: cloud-validation-suite=1/)
   assert.match(text, /matrix_runtime_signal_sources:/)
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/workspace-live-sync-matrix\.json report=workspace-live-sync\.json/)
 })
@@ -293,6 +307,12 @@ function reportFixture(overrides = {}) {
           runtimeSignals: {
             "session-authority": 2,
             "workspace-live-sync-state": 1,
+          },
+          owners: {
+            "validation-platform": 1,
+          },
+          classifications: {
+            "cloud-validation-suite": 1,
           },
         },
       },

@@ -11,7 +11,13 @@ import {
 test("builds runtime signal metadata for validation gate reports", () => {
   const metadata = runtimeSignalMetadataForValidationGateReport({
     checks: {
-      artifacts: { aggregate: { runtimeSignals: { "session-authority": 1 } } },
+      artifacts: {
+        aggregate: {
+          classifications: { "cloud-validation-suite": 1 },
+          owners: { "validation-platform": 1 },
+          runtimeSignals: { "session-authority": 1 },
+        },
+      },
       failures: { aggregate: { runtimeSignals: { "relay-target-freshness": 1 } } },
       matrices: {
         aggregate: {
@@ -30,7 +36,13 @@ test("builds runtime signal metadata for validation gate reports", () => {
 test("builds owner and classification metadata for validation gate reports", () => {
   const metadata = diagnosticMetadataForValidationGateReport({
     checks: {
-      artifacts: { aggregate: { runtimeSignals: { "session-authority": 1 } } },
+      artifacts: {
+        aggregate: {
+          classifications: { "cloud-validation-suite": 1 },
+          owners: { "validation-platform": 1 },
+          runtimeSignals: { "session-authority": 1 },
+        },
+      },
       failures: {
         aggregate: {
           owners: { "runtime-network": 1 },
@@ -54,8 +66,8 @@ test("builds owner and classification metadata for validation gate reports", () 
   })
 
   assert.deepEqual(metadata, {
-    classifications: "matrix-coverage,provider-auth,relay-runtime,slice-runtime",
-    owners: "provider-account,runtime-network,validation-harness",
+    classifications: "cloud-validation-suite,matrix-coverage,provider-auth,relay-runtime,slice-runtime",
+    owners: "provider-account,runtime-network,validation-harness,validation-platform",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })
@@ -64,6 +76,8 @@ test("builds runtime signal metadata for validation gate aggregates", () => {
   const metadata = runtimeSignalMetadataForValidationGateAggregate({
     coverage: {
       artifactRuntimeSignals: { "session-authority": 1 },
+      artifactOwners: { "validation-platform": 1 },
+      artifactClassifications: { "cloud-validation-suite": 1 },
       failureRuntimeSignals: { "relay-target-freshness": 1 },
     },
     matrixRuntimeSignalSources: {
@@ -81,6 +95,8 @@ test("builds owner and classification metadata for validation gate aggregates", 
   const metadata = diagnosticMetadataForValidationGateAggregate({
     coverage: {
       artifactRuntimeSignals: { "session-authority": 1 },
+      artifactOwners: { "validation-platform": 1 },
+      artifactClassifications: { "cloud-validation-suite": 1 },
       failureRuntimeSignals: { "relay-target-freshness": 1 },
       requiredFailureClassifications: { "kernel-authority": 1 },
       missingFailureClassifications: { "remote-extension-sync": 1 },
@@ -102,8 +118,8 @@ test("builds owner and classification metadata for validation gate aggregates", 
   })
 
   assert.deepEqual(metadata, {
-    classifications: "kernel-authority,matrix-coverage,provider-auth,remote-extension-sync,workspace-live-sync-conflict",
-    owners: "validation-harness",
+    classifications: "cloud-validation-suite,kernel-authority,matrix-coverage,provider-auth,remote-extension-sync,workspace-live-sync-conflict",
+    owners: "validation-harness,validation-platform",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })

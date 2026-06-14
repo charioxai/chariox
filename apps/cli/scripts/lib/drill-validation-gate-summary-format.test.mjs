@@ -126,6 +126,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_total=3 size_bytes=42/)
   assert.match(text, /artifact_schemas=arroba\.drill\.matrix\.v1:2,arroba\.drill\.validation_suite_run\.v1:1/)
   assert.match(text, /artifact_runtime_signals=session-authority:2,workspace-live-sync-state:1/)
+  assert.match(text, /artifact_owners=validation-platform:1/)
+  assert.match(text, /artifact_classifications=cloud-validation-suite:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
   assert.match(text, /matrix_exit_criteria=dry-run:1,satisfied:1/)
   assert.match(text, /matrix_incomplete_exit_criteria:/)
@@ -206,6 +208,12 @@ function artifactAggregateFixture() {
       "session-authority": 2,
       "workspace-live-sync-state": 1,
     },
+    owners: {
+      "validation-platform": 1,
+    },
+    classifications: {
+      "cloud-validation-suite": 1,
+    },
     indexes: [{
       source: "/tmp/artifacts.json",
       rootDir: "/tmp/artifacts",
@@ -218,6 +226,12 @@ function artifactAggregateFixture() {
       runtimeSignals: {
         "session-authority": 2,
         "workspace-live-sync-state": 1,
+      },
+      owners: {
+        "validation-platform": 1,
+      },
+      classifications: {
+        "cloud-validation-suite": 1,
       },
     }],
   }

@@ -1022,6 +1022,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactSchemas: {},
       artifactSchemas: {},
       artifactRuntimeSignals: {},
+      artifactOwners: {},
+      artifactClassifications: {},
       failureRuntimeSignals: {},
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
       missingMatrices: { "hosted-matrix": 1 },
@@ -1055,8 +1057,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {} },
-      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {} },
+      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {}, owners: {}, classifications: {} },
+      { requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, runtimeSignals: {}, owners: {}, classifications: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {} },

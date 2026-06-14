@@ -12,11 +12,13 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
 
 export function diagnosticMetadataForValidationGateReport(report) {
   const owners = new Set([
+    ...Object.keys(report.checks?.artifacts?.aggregate?.owners ?? {}),
     ...Object.keys(report.checks?.failures?.aggregate?.owners ?? {}),
     ...Object.keys(report.checks?.matrices?.aggregate?.owners ?? {}),
     ...(report.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
   ])
   const classifications = new Set([
+    ...Object.keys(report.checks?.artifacts?.aggregate?.classifications ?? {}),
     ...Object.keys(report.checks?.failures?.aggregate?.classifications ?? {}),
     ...Object.keys(report.checks?.matrices?.aggregate?.classifications ?? {}),
     ...(report.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
@@ -41,9 +43,11 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
 
 export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const owners = new Set([
+    ...Object.keys(aggregate.coverage?.artifactOwners ?? {}),
     ...(aggregate.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
   ])
   const classifications = new Set([
+    ...Object.keys(aggregate.coverage?.artifactClassifications ?? {}),
     ...Object.keys(aggregate.coverage?.requiredFailureClassifications ?? {}),
     ...Object.keys(aggregate.coverage?.missingFailureClassifications ?? {}),
     ...Object.keys(aggregate.coverage?.requiredMatrixClassifications ?? {}),
