@@ -1030,8 +1030,12 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       artifactClassifications: {},
       failureRuntimeSignals: {},
       failureRuntimeSignalOwners: {},
+      failureOwners: {},
+      failureClassifications: {},
       matrixRuntimeSignals: {},
       matrixRuntimeSignalOwners: {},
+      matrixOwners: {},
+      matrixClassifications: {},
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
       missingMatrices: { "hosted-matrix": 1 },
       requiredMatrixClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
@@ -1068,13 +1072,15 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
-      { runtimeSignals: {}, runtimeSignalOwners: {} },
-      { runtimeSignals: {}, runtimeSignalOwners: {} },
+      { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
+      { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
       {
         runtimeSignals: {},
         runtimeSignalOwners: {},
+        owners: {},
+        classifications: {},
         requiredMatrices: ["test-matrix"],
         missingMatrices: [],
         requiredMatrixClassifications: ["kernel-authority"],
@@ -1091,6 +1097,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       {
         runtimeSignals: {},
         runtimeSignalOwners: {},
+        owners: {},
+        classifications: {},
         requiredMatrices: ["hosted-matrix", "test-matrix"],
         missingMatrices: ["hosted-matrix"],
         requiredMatrixClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],

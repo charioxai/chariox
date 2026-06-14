@@ -73,10 +73,14 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.failureRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.matrixRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.artifactOwners ?? {}),
+    ...Object.keys(aggregate.coverage?.failureOwners ?? {}),
+    ...Object.keys(aggregate.coverage?.matrixOwners ?? {}),
     ...(aggregate.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
   ])
   const classifications = new Set([
     ...Object.keys(aggregate.coverage?.artifactClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.failureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.matrixClassifications ?? {}),
     ...Object.keys(aggregate.coverage?.requiredFailureClassifications ?? {}),
     ...Object.keys(aggregate.coverage?.missingFailureClassifications ?? {}),
     ...Object.keys(aggregate.coverage?.requiredMatrixClassifications ?? {}),
