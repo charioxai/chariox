@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import { access, mkdir, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -49,6 +49,10 @@ const DEFAULT_POLL_MS = 1_000
 const RELAY_ISSUER = 'arroba-remote-machine-runtime-drill'
 const RELAY_SECRET = 'arroba-remote-machine-runtime-drill-secret'
 const RELAY_REALM = 'remote-machine-runtime-drill'
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 function base64url(input) {
   return Buffer.from(input).toString('base64url')
@@ -275,20 +279,11 @@ async function main() {
   }
 
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-machine-drill-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-remote-machine-runtime-drill', nowStamp())
   const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-machine-runtime-drill')
-  await mkdir(rootDir, { recursive: true })
+  await prepareDrillArtifacts(rootDir)
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
-
-  ;({ LocalIpcClient, requests: {
-    createSessionRequest,
-    attachToSessionRequest,
-    getSessionStateRequest,
-    listSessionsRequest,
-    endSessionRequest,
-    submitPromptRequest,
-  } } = await loadCliModules(cliRuntimeDir))
 
   const relayEnv = {
     ...process.env,
@@ -351,17 +346,6 @@ async function main() {
     codexPort: ports.workerCodexPort,
   })
 
-  const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
-    path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
-  )
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
-
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   let relayChild = null
@@ -371,8 +355,34 @@ async function main() {
   let sessionId = null
   let eventLog = []
   let cliDisplay = null
+  let passed = false
+  let failure = null
+  let remoteMachines = []
+  let kernels = []
+  let selectedKernel = null
+  let remoteAgent = null
+  let remoteExecution = null
+  let finalState = null
 
   try {
+    ;({ LocalIpcClient, requests: {
+      createSessionRequest,
+      attachToSessionRequest,
+      getSessionStateRequest,
+      listSessionsRequest,
+      endSessionRequest,
+      submitPromptRequest,
+    } } = await loadCliModules(cliRuntimeDir))
+    const relayBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/Cargo.toml'),
+      'arroba-relay',
+    )
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     homeChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: homeEnv })
     workerChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: workerEnv })
@@ -394,7 +404,7 @@ async function main() {
     await client.subscribeToKernelEvents(sessionId, attachment.id)
 
     const machineList = unwrapVariant(await client.send({ ListRemoteMachines: {} }), 'RemoteMachinesListed')
-    const remoteMachines = machineList.machines || []
+    remoteMachines = machineList.machines || []
     if (!remoteMachines.some((machine) => machine.machine_id === workerMachineId)) {
       throw new Error(`machine ${workerMachineId} not visible through home kernel`)
     }
@@ -403,8 +413,8 @@ async function main() {
       await client.send({ ListRemoteMachineKernels: { machine_ref: workerMachineId } }),
       'RemoteMachineKernelsListed',
     )
-    const kernels = kernelList.kernels || []
-    const selectedKernel = kernels.find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers || []).includes(options.provider))
+    kernels = kernelList.kernels || []
+    selectedKernel = kernels.find((kernel) => kernel.accepting_remote_leases && (kernel.available_providers || []).includes(options.provider))
     if (!selectedKernel) {
       throw new Error(`no worker kernel on ${workerMachineId} advertises provider ${options.provider}`)
     }
@@ -442,7 +452,7 @@ async function main() {
         kernel_ref: selectedKernel.kernel_id,
       },
     }), 'AgentSpawned')
-    const remoteAgent = spawned.agent
+    remoteAgent = spawned.agent
 
     const sourceAttachmentPath = path.join(rootDir, 'remote-attachment.txt')
     await writeFile(sourceAttachmentPath, 'relay remote attachment\n', 'utf8')
@@ -489,9 +499,9 @@ async function main() {
       'PromptCancelled',
     )
 
-    const finalState = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+    finalState = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const finalAgent = finalState.session?.agents?.find((agent) => agent.id === remoteAgent.id) ?? remoteAgent
-    const remoteExecution = finalAgent.remote_execution ?? null
+    remoteExecution = finalAgent.remote_execution ?? null
     if (!remoteExecution?.leased_agent_id) {
       throw new Error(`spawned agent ${remoteAgent.id} did not have remote execution placement\n${JSON.stringify(finalAgent, null, 2)}`)
     }
@@ -539,6 +549,10 @@ async function main() {
       })),
       finalFocusedAgentId: finalState.session?.focused_agent_id ?? null,
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (client) {
       if (sessionId) await client.send(endSessionRequest(sessionId)).catch(() => {})
@@ -547,7 +561,47 @@ async function main() {
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-remote-machine-runtime',
+        provider: options.provider,
+        model: options.model,
+        providerModels: options.providerModels,
+        workspace: options.workspace,
+        worktree: options.worktree,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        ports,
+        relayUrl,
+        homeKernelUrl,
+        workerKernelUrl: `ws://127.0.0.1:${ports.workerKernelPort}`,
+        homeDaemonId,
+        workerDaemonId,
+        workerMachineId,
+        workerMachineAlias,
+        sessionId,
+        remoteAgentId: remoteAgent?.id ?? null,
+        remoteExecution,
+        selectedKernel: selectedKernel ? {
+          kernelId: selectedKernel.kernel_id,
+          machineId: selectedKernel.machine_id,
+          providers: selectedKernel.available_providers,
+        } : null,
+        machineCount: remoteMachines.length,
+        kernelCount: kernels.length,
+        terminalCliDisplay: cliDisplay,
+        finalFocusedAgentId: finalState?.session?.focused_agent_id ?? null,
+        eventCounts: eventLog.reduce((counts, event) => {
+          counts[event.event ?? 'unknown'] = (counts[event.event ?? 'unknown'] ?? 0) + 1
+          return counts
+        }, {}),
+        recentEvents: eventLog.slice(-30),
+      },
+    })
     await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   }
 }
