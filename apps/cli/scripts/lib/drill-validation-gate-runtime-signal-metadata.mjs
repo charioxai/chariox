@@ -1,3 +1,5 @@
+import { drillRuntimeSignalOwner } from "./drill-runtime-signals.mjs"
+
 export function runtimeSignalMetadataForValidationGateReport(report) {
   const signals = new Set([
     ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignals ?? {}),
@@ -6,6 +8,7 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
     ...Object.keys(report.checks?.matrices?.aggregate?.runtimeSignalScenarios ?? {}),
   ])
   const signalOwners = new Set([
+    ...[...signals].map((signal) => drillRuntimeSignalOwner(signal)),
     ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignalOwners ?? {}),
   ])
   return signals.size > 0
@@ -43,6 +46,7 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.matrixRuntimeSignalSources ?? {}),
   ])
   const signalOwners = new Set([
+    ...[...signals].map((signal) => drillRuntimeSignalOwner(signal)),
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
   ])
   return signals.size > 0

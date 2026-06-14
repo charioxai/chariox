@@ -30,7 +30,7 @@ test("builds runtime signal metadata for validation gate reports", () => {
   })
 
   assert.deepEqual(metadata, {
-    runtimeSignalOwners: "kernel-authority",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
   })
 })
@@ -71,7 +71,7 @@ test("builds owner and classification metadata for validation gate reports", () 
   assert.deepEqual(metadata, {
     classifications: "cloud-validation-suite,matrix-coverage,provider-auth,relay-runtime,slice-runtime",
     owners: "provider-account,runtime-network,validation-harness,validation-platform",
-    runtimeSignalOwners: "kernel-authority",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })
@@ -92,7 +92,7 @@ test("builds runtime signal metadata for validation gate aggregates", () => {
   })
 
   assert.deepEqual(metadata, {
-    runtimeSignalOwners: "kernel-authority",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
   })
 })
@@ -127,7 +127,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
   assert.deepEqual(metadata, {
     classifications: "cloud-validation-suite,kernel-authority,matrix-coverage,provider-auth,remote-extension-sync,workspace-live-sync-conflict",
     owners: "kernel-authority,validation-harness,validation-platform",
-    runtimeSignalOwners: "kernel-authority",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })

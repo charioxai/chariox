@@ -59,6 +59,7 @@ test("drill validation gate summary aggregates discovered reports", async () => 
     assert.equal(artifactIndex.metadata.drill, "validation-gate-summary")
     assert.equal(artifactIndex.metadata.status, "failed")
     assert.equal(artifactIndex.metadata.runtimeSignals, "relay-target-freshness,session-authority,workspace-live-sync-state")
+    assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,runtime-network,runtime-state")
     assert.match(artifactIndex.metadata.owners, /validation-harness/)
     assert.match(artifactIndex.metadata.classifications, /validation-gate/)
     assert.match(artifactIndex.metadata.classifications, /workspace-live-sync-conflict/)
