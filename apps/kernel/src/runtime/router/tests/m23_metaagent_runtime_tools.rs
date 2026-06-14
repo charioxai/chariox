@@ -428,6 +428,182 @@ async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
 }
 
 #[tokio::test]
+async fn local_metaagent_task_update_notifies_metaagent() {
+    let env = TestMetaRuntimeEnv::new("local-task-update-notify");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let update =
+        LocalDaemonRequest::UpdateMetaagentTask(crate::local::UpdateMetaagentTaskRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            task_markdown: Some("# Updated task".to_string()),
+            plan_markdown: Some("1. Re-plan.".to_string()),
+        });
+    let response = router
+        .dispatch(
+            KernelCommand::from_local_request("update-meta-task", None, None, &update),
+            update,
+        )
+        .await
+        .expect("task update should dispatch");
+    let LocalDaemonResponse::MetaagentTaskUpdated { session, task } = response else {
+        panic!("unexpected task response: {response:?}");
+    };
+    assert_eq!(
+        task.as_ref().map(|task| task.task_markdown()),
+        Some("# Updated task")
+    );
+    let active = session
+        .active_prompt_for_agent(metaagent.id())
+        .expect("task update should notify the metaagent");
+    assert!(
+        active.prompt().contains("edited your task and plan"),
+        "{}",
+        active.prompt()
+    );
+    let task_attachments = app
+        .lock()
+        .await
+        .attachments()
+        .list_client_attachments(&format!("metaagent:{}:task", metaagent.id()));
+    assert_eq!(task_attachments.len(), 1);
+    assert_eq!(task_attachments[0].session_id(), session.id());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_metaagent_task_pause_and_abort_cancel_active_prompt() {
+    tokio::spawn(async {
+        let env = TestMetaRuntimeEnv::new("local-task-cancel");
+        let workspace = env.root.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace should be created");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .expect("session should be created");
+        let metaagent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("meta")
+                    .with_role(crate::agent::AgentRole::Meta),
+            )
+            .expect("metaagent should spawn");
+        launch_test_provider(
+            &mut app,
+            session.id(),
+            metaagent.id(),
+            "dev-stub",
+            "dev-stub",
+            "meta-model",
+        );
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+        let update =
+            LocalDaemonRequest::UpdateMetaagentTask(crate::local::UpdateMetaagentTaskRequest {
+                session_id: session.id().to_string(),
+                metaagent_id: metaagent.id().to_string(),
+                task_markdown: Some("# Active task".to_string()),
+                plan_markdown: Some("1. Keep going.".to_string()),
+            });
+        router
+            .dispatch(
+                KernelCommand::from_local_request(
+                    "update-meta-task-before-pause",
+                    None,
+                    None,
+                    &update,
+                ),
+                update,
+            )
+            .await
+            .expect("task update should start notification prompt");
+
+        let pause =
+            LocalDaemonRequest::PauseMetaagentTask(crate::local::PauseMetaagentTaskRequest {
+                session_id: session.id().to_string(),
+                metaagent_id: metaagent.id().to_string(),
+            });
+        let paused = router
+            .dispatch(
+                KernelCommand::from_local_request("pause-meta-task", None, None, &pause),
+                pause,
+            )
+            .await
+            .expect("pause should dispatch");
+        let LocalDaemonResponse::MetaagentTaskUpdated { session, task } = paused else {
+            panic!("unexpected pause response: {paused:?}");
+        };
+        assert_eq!(
+            task.as_ref().map(|task| task.status()),
+            Some(crate::session::MetaagentTaskStatus::Paused)
+        );
+        assert_eq!(
+            session
+                .active_prompt_for_agent(metaagent.id())
+                .map(|prompt| prompt.status()),
+            Some(crate::session::PromptStatus::Cancelling)
+        );
+
+        let abort =
+            LocalDaemonRequest::AbortMetaagentTask(crate::local::AbortMetaagentTaskRequest {
+                session_id: session.id().to_string(),
+                metaagent_id: metaagent.id().to_string(),
+                reason: Some("user stopped the task".to_string()),
+            });
+        let aborted = router
+            .dispatch(
+                KernelCommand::from_local_request("abort-meta-task", None, None, &abort),
+                abort,
+            )
+            .await
+            .expect("abort should dispatch");
+        let LocalDaemonResponse::MetaagentTaskUpdated { session, task } = aborted else {
+            panic!("unexpected abort response: {aborted:?}");
+        };
+        assert_eq!(
+            task.as_ref().map(|task| task.status()),
+            Some(crate::session::MetaagentTaskStatus::Aborted)
+        );
+        assert_eq!(
+            session
+                .active_prompt_for_agent(metaagent.id())
+                .map(|prompt| prompt.status()),
+            Some(crate::session::PromptStatus::Cancelling)
+        );
+    })
+    .await
+    .expect("task cancellation test body should complete");
+}
+
+#[tokio::test]
 async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
     let env = TestMetaRuntimeEnv::new("shared-token-tool-visibility");
     let workspace = env.root.join("workspace");
