@@ -121,6 +121,12 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
     failedScenarios: report.scenarios.filter((scenario) => scenario.status === "failed"),
     skippedScenarios: report.scenarios.filter((scenario) => scenario.status === "skipped"),
     dryRunScenarios: report.scenarios.filter((scenario) => scenario.status === "dry-run"),
+    exitCriteria: countExitCriteriaStatuses(report.scenarios),
+    incompleteExitCriteria: incompleteExitCriteriaForScenarios(report.scenarios).map((criterion) => ({
+      ...criterion,
+      matrix: report.matrix,
+      source,
+    })),
   }
 }
 
@@ -146,9 +152,11 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
   const deploymentPresets = new Map()
   const providers = new Map()
   const scenarioIds = new Map()
+  const exitCriteria = new Map()
   const failedScenarios = []
   const skippedScenarios = []
   const incompleteScenarios = []
+  const incompleteExitCriteria = []
   for (const summary of summaries) {
     totals.scenarios += summary.scenarioCount
     totals.passed += summary.counts.passed
@@ -166,6 +174,10 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     for (const scenarioId of summary.scenarioIds) {
       scenarioIds.set(scenarioId, (scenarioIds.get(scenarioId) ?? 0) + 1)
     }
+    for (const [status, count] of Object.entries(summary.exitCriteria)) {
+      exitCriteria.set(status, (exitCriteria.get(status) ?? 0) + count)
+    }
+    incompleteExitCriteria.push(...summary.incompleteExitCriteria)
     for (const [classification, count] of Object.entries(summary.classifications)) {
       classifications.set(classification, (classifications.get(classification) ?? 0) + count)
     }
@@ -224,6 +236,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     deploymentPresets: Object.fromEntries([...deploymentPresets.entries()].sort(([left], [right]) => left.localeCompare(right))),
     providers: Object.fromEntries([...providers.entries()].sort(([left], [right]) => left.localeCompare(right))),
     scenarioIds: Object.fromEntries([...scenarioIds.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    exitCriteria: Object.fromEntries([...exitCriteria.entries()].sort(([left], [right]) => left.localeCompare(right))),
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries.map((summary) => ({
@@ -233,6 +246,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
       deploymentPresets: summary.deploymentPresets,
       providers: summary.providers,
       scenarioIds: summary.scenarioIds,
+      exitCriteria: summary.exitCriteria,
       runtimeSignals: summary.runtimeSignals,
       runtimeSignalScenarios: summary.runtimeSignalScenarios,
       scenarioCount: summary.scenarioCount,
@@ -242,6 +256,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     failedScenarios,
     skippedScenarios,
     incompleteScenarios,
+    incompleteExitCriteria,
   }
 }
 
@@ -326,6 +341,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   if (scenarioIds.length > 0) {
     lines.push(`scenario_ids: ${scenarioIds.map(([id, count]) => `${id}=${count}`).join(" ")}`)
   }
+  const exitCriteria = Object.entries(aggregate.exitCriteria ?? {})
+  if (exitCriteria.length > 0) {
+    lines.push(`exit_criteria: ${exitCriteria.map(([status, count]) => `${status}=${count}`).join(" ")}`)
+  }
   const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
@@ -367,10 +386,19 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     }
   }
 
-  if (aggregate.failedScenarios.length === 0 && aggregate.incompleteScenarios.length === 0) {
+  if ((aggregate.incompleteExitCriteria ?? []).length > 0) {
+    lines.push("incomplete exit criteria:")
+    for (const criterion of aggregate.incompleteExitCriteria) {
+      const source = criterion.source ? ` source=${criterion.source}` : ""
+      const reason = criterion.reason ? ` reason=${criterion.reason}` : ""
+      lines.push(`- ${criterion.matrix}/${criterion.scenarioId}/${criterion.id} status=${criterion.status}${reason}${source}: ${criterion.criterion}`)
+    }
+  }
+
+  if (aggregate.failedScenarios.length === 0 && aggregate.incompleteScenarios.length === 0 && (aggregate.incompleteExitCriteria ?? []).length === 0) {
     lines.push("next: all selected matrix scenarios completed without failures")
   } else if (aggregate.failedScenarios.length === 0) {
-    lines.push("next: run incomplete scenarios before treating this matrix set as complete")
+    lines.push("next: run or reconcile incomplete scenarios and criteria before treating this matrix set as complete")
   }
 
   return lines.join("\n")
@@ -383,7 +411,7 @@ export function drillMatrixReportExitCode(reports) {
 export function drillMatrixReportCompletionExitCode(reports) {
   const aggregate = summarizeDrillMatrixReports(reports)
   if (aggregate.status === "failed") return 1
-  return aggregate.incompleteScenarios.length > 0 ? 2 : 0
+  return aggregate.incompleteScenarios.length > 0 || aggregate.incompleteExitCriteria.length > 0 ? 2 : 0
 }
 
 function nextActionForScenario(scenario) {
@@ -423,6 +451,9 @@ function validateDrillMatrixScenario(scenario, source) {
     || !scenario.exitCriteria.every((value) => typeof value === "string")
   )) {
     throw new Error(`${source} has invalid exitCriteria`)
+  }
+  if (scenario.exitCriteriaEvidence !== undefined) {
+    validateExitCriteriaEvidence(scenario, `${source}.exitCriteriaEvidence`)
   }
   if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
@@ -560,6 +591,7 @@ export function validateDrillMatrixAggregate(aggregate) {
   validateCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
   validateCountObject(aggregate.providers ?? {}, "aggregate.providers")
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
+  validateExitCriteriaCountObject(aggregate.exitCriteria ?? {}, "aggregate.exitCriteria")
   validateCountObject(aggregate.runtimeSignals ?? {}, "aggregate.runtimeSignals")
   if (aggregate.runtimeSignalScenarios !== undefined) {
     validateRuntimeSignalEvidenceObject(aggregate.runtimeSignalScenarios, "aggregate.runtimeSignalScenarios", { aggregate: true })
@@ -582,6 +614,12 @@ export function validateDrillMatrixAggregate(aggregate) {
   }
   for (const [index, scenario] of aggregate.incompleteScenarios.entries()) {
     validateMatrixAggregateScenario(scenario, `aggregate.incompleteScenarios[${index}]`)
+  }
+  if (!Array.isArray(aggregate.incompleteExitCriteria ?? [])) {
+    throw new Error("aggregate has invalid incompleteExitCriteria")
+  }
+  for (const [index, criterion] of (aggregate.incompleteExitCriteria ?? []).entries()) {
+    validateMatrixAggregateExitCriterion(criterion, `aggregate.incompleteExitCriteria[${index}]`)
   }
   if (!Array.isArray(aggregate.reports)) {
     throw new Error("aggregate is missing reports")
@@ -612,6 +650,9 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   if (aggregate.totals.skipped + aggregate.totals.dryRun !== aggregate.incompleteScenarios.length) {
     throw new Error("aggregate incomplete total does not match incompleteScenarios")
   }
+  if (incompleteExitCriteriaCount(aggregate.exitCriteria ?? {}) !== (aggregate.incompleteExitCriteria ?? []).length) {
+    throw new Error("aggregate exitCriteria do not match incompleteExitCriteria")
+  }
   const expectedStatus = aggregate.totals.failed > 0
     ? "failed"
     : aggregate.totals.reports > 0 && aggregate.totals.dryRun === aggregate.totals.scenarios
@@ -625,6 +666,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   assertDeploymentPresetCountsMatchReports(aggregate)
   assertProviderCountsMatchReports(aggregate)
   assertScenarioIdCountsMatchReports(aggregate)
+  assertExitCriteriaCountsMatchReports(aggregate)
   assertRuntimeSignalCountsMatchReports(aggregate)
   assertRuntimeSignalScenariosMatchReports(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
@@ -705,6 +747,19 @@ function assertScenarioIdCountsMatchReports(aggregate) {
   }
 }
 
+function assertExitCriteriaCountsMatchReports(aggregate) {
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    for (const [status, count] of Object.entries(report.exitCriteria ?? {})) {
+      expected.set(status, (expected.get(status) ?? 0) + count)
+    }
+  }
+  const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(aggregate.exitCriteria ?? {}) !== JSON.stringify(expectedCounts)) {
+    throw new Error("aggregate exitCriteria do not match reports")
+  }
+}
+
 function assertRuntimeSignalCountsMatchReports(aggregate) {
   const expected = new Map()
   for (const report of aggregate.reports) {
@@ -761,6 +816,7 @@ function validateMatrixAggregateReport(report, source) {
   if (!Array.isArray(report.scenarioIds ?? []) || !(report.scenarioIds ?? []).every(nonEmptyString)) {
     throw new Error(`${source} has invalid scenarioIds`)
   }
+  validateExitCriteriaCountObject(report.exitCriteria ?? {}, `${source}.exitCriteria`)
   validateCountObject(report.runtimeSignals ?? {}, `${source}.runtimeSignals`)
   if (report.runtimeSignalScenarios !== undefined) {
     validateRuntimeSignalEvidenceObject(report.runtimeSignalScenarios, `${source}.runtimeSignalScenarios`, { aggregate: false })
@@ -787,6 +843,18 @@ function validateMatrixAggregateReport(report, source) {
       : "passed"
   if (report.status !== expectedStatus) {
     throw new Error(`${source} status does not match counts`)
+  }
+}
+
+function validateMatrixAggregateExitCriterion(criterion, source) {
+  validateMatrixAggregateScenario({
+    matrix: criterion.matrix,
+    source: criterion.source,
+    id: criterion.scenarioId,
+  }, source)
+  validateExitCriterionEvidence(criterion, source)
+  if (criterion.status === "satisfied") {
+    throw new Error(`${source} must not be satisfied`)
   }
 }
 
@@ -918,6 +986,15 @@ function validateCountObject(value, source) {
   }
 }
 
+function validateExitCriteriaCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const status of Object.keys(value)) {
+    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
+      throw new Error(`${source} has invalid status ${JSON.stringify(status)}`)
+    }
+  }
+}
+
 function validateRuntimeSignalEvidenceObject(value, source, { aggregate }) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${source} is missing`)
@@ -1021,6 +1098,102 @@ function validateProviderList(value, source) {
   if (!Array.isArray(value) || !value.every(nonEmptyString)) {
     throw new Error(`${source} has invalid providers`)
   }
+}
+
+function validateExitCriteriaEvidence(scenario, source) {
+  if (!Array.isArray(scenario.exitCriteriaEvidence)) {
+    throw new Error(`${source} is not an array`)
+  }
+  const criteria = exitCriteriaForScenario(scenario)
+  if (scenario.exitCriteriaEvidence.length !== criteria.length) {
+    throw new Error(`${source} length does not match exitCriteria`)
+  }
+  for (const [index, criterion] of scenario.exitCriteriaEvidence.entries()) {
+    validateExitCriterionEvidence(criterion, `${source}[${index}]`)
+    if (criterion.criterion !== criteria[index]) {
+      throw new Error(`${source}[${index}] criterion does not match exitCriteria`)
+    }
+  }
+}
+
+function validateExitCriterionEvidence(criterion, source) {
+  if (!criterion || typeof criterion !== "object" || Array.isArray(criterion)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!nonEmptyString(criterion.id)) {
+    throw new Error(`${source} is missing id`)
+  }
+  if (!nonEmptyString(criterion.criterion)) {
+    throw new Error(`${source} is missing criterion`)
+  }
+  if (!["satisfied", "failed", "skipped", "dry-run"].includes(criterion.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(criterion.status)}`)
+  }
+  if (criterion.reason !== null && typeof criterion.reason !== "string") {
+    throw new Error(`${source} has invalid reason`)
+  }
+  if (criterion.status === "satisfied" && criterion.reason !== null) {
+    throw new Error(`${source} satisfied criterion must not include reason`)
+  }
+  if (criterion.status !== "satisfied" && !nonEmptyString(criterion.reason)) {
+    throw new Error(`${source} incomplete criterion is missing reason`)
+  }
+}
+
+function countExitCriteriaStatuses(scenarios) {
+  const counts = new Map()
+  for (const scenario of scenarios) {
+    for (const criterion of exitCriteriaEvidenceForScenario(scenario)) {
+      counts.set(criterion.status, (counts.get(criterion.status) ?? 0) + 1)
+    }
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function incompleteExitCriteriaForScenarios(scenarios) {
+  const incomplete = []
+  for (const scenario of scenarios) {
+    for (const criterion of exitCriteriaEvidenceForScenario(scenario)) {
+      if (criterion.status !== "satisfied") {
+        incomplete.push({
+          scenarioId: scenario.id,
+          id: criterion.id,
+          criterion: criterion.criterion,
+          status: criterion.status,
+          reason: criterion.reason ?? null,
+        })
+      }
+    }
+  }
+  return incomplete
+}
+
+function incompleteExitCriteriaCount(exitCriteria) {
+  return Object.entries(exitCriteria)
+    .filter(([status]) => status !== "satisfied")
+    .reduce((total, [, count]) => total + count, 0)
+}
+
+function exitCriteriaEvidenceForScenario(scenario) {
+  if (Array.isArray(scenario.exitCriteriaEvidence)) return scenario.exitCriteriaEvidence
+  return exitCriteriaForScenario(scenario).map((criterion, index) => ({
+    id: `${scenario.id}:exit-${String(index + 1).padStart(2, "0")}`,
+    criterion,
+    status: exitCriteriaStatusForScenario(scenario),
+    reason: exitCriteriaReasonForScenario(scenario),
+  }))
+}
+
+function exitCriteriaStatusForScenario(scenario) {
+  if (scenario.status === "passed") return "satisfied"
+  return scenario.status
+}
+
+function exitCriteriaReasonForScenario(scenario) {
+  if (scenario.status === "passed") return null
+  return scenario.reason ?? (scenario.status === "dry-run"
+    ? "scenario command was selected but not executed"
+    : "scenario did not complete")
 }
 
 function countScenarioStatuses(scenarios) {

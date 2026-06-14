@@ -124,6 +124,48 @@ test("fails incomplete dry-run reports only when complete execution is required"
   }
 })
 
+test("fails unresolved exit criteria only when complete execution is required", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  try {
+    const reportPath = path.join(rootDir, "criteria.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      scenarios: [scenario("projection", "passed", {
+        exitCriteria: ["worker projection acknowledgement is observed"],
+        exitCriteriaEvidence: [{
+          id: "projection:exit-01",
+          criterion: "worker projection acknowledgement is observed",
+          status: "dry-run",
+          reason: "scenario command was selected but not executed",
+        }],
+      })],
+    }))
+
+    const permissive = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions())
+    const strict = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({ requireComplete: true }))
+
+    assert.equal(permissive.status, "passed")
+    assert.equal(strict.status, "failed")
+    assert.deepEqual(strict.aggregate.exitCriteria, { "dry-run": 1 })
+    assert.deepEqual(strict.aggregate.incompleteExitCriteria.map((criterion) => ({
+      matrix: criterion.matrix,
+      id: criterion.id,
+      status: criterion.status,
+    })), [{
+      matrix: "test-matrix",
+      id: "projection:exit-01",
+      status: "dry-run",
+    }])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("reports missing matrix coverage dimensions from otherwise valid evidence", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
   try {

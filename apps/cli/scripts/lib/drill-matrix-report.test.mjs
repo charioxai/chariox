@@ -93,6 +93,65 @@ test("formats dry-run reports without failures", () => {
   assert.equal(drillMatrixReportCompletionExitCode([report]), 2)
 })
 
+test("tracks criterion-level completion evidence", () => {
+  const report = matrixReport({
+    scenarios: [
+      scenario("projection", "passed", {
+        exitCriteria: [
+          "client projection renders authority state",
+          "worker acknowledgement is observed",
+        ],
+        exitCriteriaEvidence: [
+          {
+            id: "projection:exit-01",
+            criterion: "client projection renders authority state",
+            status: "satisfied",
+            reason: null,
+          },
+          {
+            id: "projection:exit-02",
+            criterion: "worker acknowledgement is observed",
+            status: "dry-run",
+            reason: "scenario command was selected but not executed",
+          },
+        ],
+      }),
+    ],
+  })
+
+  const summary = summarizeDrillMatrixReport(report)
+  const aggregate = summarizeDrillMatrixReports([report], { sources: ["/tmp/projection-matrix.json"] })
+
+  assert.equal(summary.status, "passed")
+  assert.deepEqual(summary.exitCriteria, { "dry-run": 1, satisfied: 1 })
+  assert.deepEqual(summary.incompleteExitCriteria, [{
+    matrix: "test-matrix",
+    source: null,
+    scenarioId: "projection",
+    id: "projection:exit-02",
+    criterion: "worker acknowledgement is observed",
+    status: "dry-run",
+    reason: "scenario command was selected but not executed",
+  }])
+  assert.deepEqual(aggregate.exitCriteria, { "dry-run": 1, satisfied: 1 })
+  assert.deepEqual(aggregate.incompleteExitCriteria, [{
+    matrix: "test-matrix",
+    source: "/tmp/projection-matrix.json",
+    scenarioId: "projection",
+    id: "projection:exit-02",
+    criterion: "worker acknowledgement is observed",
+    status: "dry-run",
+    reason: "scenario command was selected but not executed",
+  }])
+  assert.equal(drillMatrixReportExitCode([report]), 0)
+  assert.equal(drillMatrixReportCompletionExitCode([report]), 2)
+
+  const text = formatDrillMatrixAggregateSummary(aggregate)
+  assert.match(text, /exit_criteria: dry-run=1 satisfied=1/)
+  assert.match(text, /incomplete exit criteria:/)
+  assert.match(text, /test-matrix\/projection\/projection:exit-02 status=dry-run reason=scenario command was selected but not executed source=\/tmp\/projection-matrix\.json: worker acknowledgement is observed/)
+})
+
 test("aggregates multiple matrix reports for CI", () => {
   const failed = matrixReport({
     matrix: "remote",
@@ -192,6 +251,7 @@ test("aggregates multiple matrix reports for CI", () => {
     remote: 1,
     tracked: 1,
   })
+  assert.deepEqual(aggregate.exitCriteria, {})
   assert.deepEqual(aggregate.owners, { "provider-account": 1 })
   assert.deepEqual(aggregate.nextActions.map((action) => ({
     owner: action.owner,
@@ -331,6 +391,17 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     scenarioIds: { remote: 2 },
   }), /scenarioIds do not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    exitCriteria: { "dry-run": 1 },
+  }), /exitCriteria do not match incompleteExitCriteria/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      exitCriteria: { "not-real": 1 },
+    }],
+  }), /reports\[0\]\.exitCriteria has invalid status/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     runtimeSignalScenarios: {
@@ -491,6 +562,40 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), exitCriteria: [1] }],
   }), /scenarios\[0\] has invalid exitCriteria/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [scenario("broken", "passed", {
+      exitCriteria: ["criterion"],
+      exitCriteriaEvidence: [],
+    })],
+  }), /scenarios\[0\]\.exitCriteriaEvidence length does not match exitCriteria/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [scenario("broken", "passed", {
+      exitCriteria: ["criterion"],
+      exitCriteriaEvidence: [{
+        id: "broken:exit-01",
+        criterion: "different criterion",
+        status: "satisfied",
+        reason: null,
+      }],
+    })],
+  }), /scenarios\[0\]\.exitCriteriaEvidence\[0\] criterion does not match exitCriteria/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [scenario("broken", "passed", {
+      exitCriteria: ["criterion"],
+      exitCriteriaEvidence: [{
+        id: "broken:exit-01",
+        criterion: "criterion",
+        status: "dry-run",
+        reason: null,
+      }],
+    })],
+  }), /scenarios\[0\]\.exitCriteriaEvidence\[0\] incomplete criterion is missing reason/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
