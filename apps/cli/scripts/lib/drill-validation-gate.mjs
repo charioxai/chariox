@@ -7,6 +7,11 @@ import {
   validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
 import {
+  findDrillArtifactIndexPaths,
+  summarizeDrillArtifactIndexes,
+  verifyDrillArtifactIndex,
+} from "./drill-artifacts.mjs"
+import {
   findDrillFailureManifestPaths,
   readDrillFailureManifest,
   resolveFailureManifestPath,
@@ -106,6 +111,8 @@ export function drillValidationGateAggregateExitCode(aggregate) {
 }
 
 export async function runDrillValidationGate({
+  artifactIndexes = [],
+  artifactRoots = [],
   failureInputs = [],
   failureRoots = [],
   matrixReports = [],
@@ -115,8 +122,17 @@ export async function runDrillValidationGate({
   requireComplete = false,
 } = {}) {
   const checks = {
-    configuration: configurationCheck({ failureInputs, failureRoots, matrixReports, matrixRoots, platformBundleDir }),
+    configuration: configurationCheck({
+      artifactIndexes,
+      artifactRoots,
+      failureInputs,
+      failureRoots,
+      matrixReports,
+      matrixRoots,
+      platformBundleDir,
+    }),
     platformBundle: await platformBundleCheck(platformBundleDir),
+    artifacts: await artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
     matrices: await matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete }),
     failures: await failureCheck({ failureInputs, failureRoots }, { maxDepth }),
   }
@@ -147,6 +163,13 @@ export function formatDrillValidationGateSummary(report) {
 
   const platform = report.checks.platformBundle
   lines.push(`platform_bundle=${platform.status}${platform.dir ? ` dir=${platform.dir}` : ""}${platform.error ? ` error=${platform.error}` : ""}`)
+
+  const artifacts = report.checks.artifacts
+  lines.push(`artifacts=${artifacts.status} roots=${artifacts.roots.length} inputs=${artifacts.inputs.length} indexes=${artifacts.indexPaths.length}`)
+  if (artifacts.error) lines.push(`artifact_error=${artifacts.error}`)
+  if (artifacts.aggregate) {
+    lines.push(`artifact_total=${artifacts.aggregate.totals.artifacts} size_bytes=${artifacts.aggregate.totals.sizeBytes}`)
+  }
 
   const matrices = report.checks.matrices
   lines.push(`matrices=${matrices.status} roots=${matrices.roots.length} inputs=${matrices.inputs.length} reports=${matrices.reportPaths.length} require_complete=${matrices.requireComplete}`)
@@ -190,6 +213,7 @@ export function validateDrillValidationGateReport(report, source = "validation g
   }
   validateConfigurationCheck(report.checks.configuration, `${source}.checks.configuration`)
   validatePlatformBundleCheck(report.checks.platformBundle, `${source}.checks.platformBundle`)
+  validateArtifactIndexCheck(report.checks.artifacts, `${source}.checks.artifacts`)
   validateMatrixCheck(report.checks.matrices, `${source}.checks.matrices`)
   validateFailureCheck(report.checks.failures, `${source}.checks.failures`)
   if (!Array.isArray(report.nextActions)) {
@@ -283,6 +307,19 @@ function validatePlatformBundleCheck(check, source) {
   }
 }
 
+function validateArtifactIndexCheck(check, source) {
+  validateCheckObject(check, source)
+  validateStringArray(check.roots, `${source}.roots`)
+  validateStringArray(check.inputs, `${source}.inputs`)
+  validateStringArray(check.indexPaths, `${source}.indexPaths`)
+  if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
+    throw new Error(`${source} is missing error`)
+  }
+  if (check.aggregate) {
+    validateAggregateSchema(check.aggregate, "arroba.drill.artifact_index.aggregate.v1", `${source}.aggregate`)
+  }
+}
+
 function validateMatrixCheck(check, source) {
   validateCheckObject(check, source)
   validateStringArray(check.roots, `${source}.roots`)
@@ -371,7 +408,7 @@ function validateGateAggregateReportSummary(report, source) {
   if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
     throw new Error(`${source} has invalid checks`)
   }
-  for (const name of ["configuration", "platformBundle", "matrices", "failures"]) {
+  for (const name of ["configuration", "platformBundle", "artifacts", "matrices", "failures"]) {
     if (!["passed", "failed", "skipped"].includes(report.checks[name])) {
       throw new Error(`${source}.checks has invalid ${name}`)
     }
@@ -384,7 +421,7 @@ function validationGateNextActions(checks) {
     countDrillAggregateNextAction(counts, {
       owner: "validation-harness",
       classification: "validation-gate",
-      nextAction: "configure at least one platform bundle, matrix root, or failure root before using the validation gate",
+      nextAction: "configure at least one platform bundle, artifact root, matrix root, or failure root before using the validation gate",
     })
   }
   if (checks.platformBundle.status === "failed") {
@@ -392,6 +429,13 @@ function validationGateNextActions(checks) {
       owner: "validation-harness",
       classification: "platform-bundle",
       nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
+    })
+  }
+  if (checks.artifacts.status === "failed") {
+    countDrillAggregateNextAction(counts, {
+      owner: "validation-harness",
+      classification: "artifact-index",
+      nextAction: "fix missing, unreadable, or tampered artifact indexes before using collected drill evidence",
     })
   }
   if (checks.matrices.status === "failed") {
@@ -428,8 +472,18 @@ function validationGateNextActions(checks) {
   return formatDrillAggregateNextActionCounts(counts)
 }
 
-function configurationCheck({ failureInputs, failureRoots, matrixReports, matrixRoots, platformBundleDir }) {
+function configurationCheck({
+  artifactIndexes,
+  artifactRoots,
+  failureInputs,
+  failureRoots,
+  matrixReports,
+  matrixRoots,
+  platformBundleDir,
+}) {
   const configured = Boolean(platformBundleDir)
+    || artifactRoots.length > 0
+    || artifactIndexes.length > 0
     || matrixRoots.length > 0
     || matrixReports.length > 0
     || failureRoots.length > 0
@@ -440,6 +494,49 @@ function configurationCheck({ failureInputs, failureRoots, matrixReports, matrix
         status: "failed",
         error: "no validation checks configured",
       }
+}
+
+async function artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }) {
+  if (artifactRoots.length === 0 && artifactIndexes.length === 0) {
+    return {
+      status: "skipped",
+      roots: [],
+      inputs: [],
+      indexPaths: [],
+    }
+  }
+  try {
+    const discovered = artifactRoots.length > 0
+      ? await findDrillArtifactIndexPaths(artifactRoots, { maxDepth })
+      : []
+    const indexPaths = [...new Set([...artifactIndexes, ...discovered])].sort()
+    if (indexPaths.length === 0) {
+      return {
+        status: "failed",
+        roots: [...artifactRoots],
+        inputs: [...artifactIndexes],
+        indexPaths,
+        error: "no artifact indexes found",
+      }
+    }
+    const indexes = await Promise.all(indexPaths.map((indexPath) => verifyDrillArtifactIndex(indexPath)))
+    const aggregate = summarizeDrillArtifactIndexes(indexes, { sources: indexPaths })
+    return {
+      status: "passed",
+      roots: [...artifactRoots],
+      inputs: [...artifactIndexes],
+      indexPaths,
+      aggregate,
+    }
+  } catch (error) {
+    return {
+      status: "failed",
+      roots: [...artifactRoots],
+      inputs: [...artifactIndexes],
+      indexPaths: [],
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
 }
 
 async function platformBundleCheck(platformBundleDir) {

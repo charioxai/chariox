@@ -17,6 +17,7 @@ import {
   validateDrillValidationGateAggregate,
   validateDrillValidationGateReport,
 } from "./drill-validation-gate.mjs"
+import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
 test("passes with valid platform bundle and complete matrix reports", async () => {
@@ -150,6 +151,70 @@ test("fails with explicit failure manifest paths", async () => {
     assert.deepEqual(report.checks.failures.inputs, [manifestPath])
     assert.deepEqual(report.checks.failures.manifestPaths, [manifestPath])
     assert.match(formatDrillValidationGateSummary(report), /failures=failed roots=0 inputs=1 manifests=1/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("passes with explicit artifact index paths", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+    })
+    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+
+    const report = await runDrillValidationGate({ artifactIndexes: [indexPath] })
+
+    assert.equal(report.status, "passed")
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.deepEqual(report.checks.artifacts.inputs, [indexPath])
+    assert.deepEqual(report.checks.artifacts.indexPaths, [indexPath])
+    assert.equal(report.checks.artifacts.aggregate.totals.artifacts, 1)
+    assert.match(formatDrillValidationGateSummary(report), /artifacts=passed roots=0 inputs=1 indexes=1/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("fails when configured artifact roots contain no indexes", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const report = await runDrillValidationGate({ artifactRoots: [rootDir] })
+
+    assert.equal(report.status, "failed")
+    assert.equal(report.checks.artifacts.error, "no artifact indexes found")
+    assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+      { owner: "validation-harness", classification: "artifact-index" },
+    ])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("fails when artifact indexes point at tampered artifacts", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+    })
+    await writeFile(reportPath, "{\"schema\":\"tampered\"}\n", "utf8")
+
+    const report = await runDrillValidationGate({
+      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+    })
+
+    assert.equal(report.status, "failed")
+    assert.equal(report.checks.artifacts.status, "failed")
+    assert.match(report.checks.artifacts.error, /sha256 mismatch/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

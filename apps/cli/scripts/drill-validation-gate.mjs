@@ -17,6 +17,8 @@ function printHelp() {
     "",
     "Options:",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
+    "  --artifact-index PATH  Read and verify a specific artifact index; repeatable",
+    "  --artifact-root ROOT   Discover artifact indexes below ROOT; repeatable",
     "  --matrix-report PATH    Read a specific matrix report; repeatable",
     "  --matrix-root ROOT     Discover matrix reports below ROOT; repeatable",
     "  --failure-manifest PATH",
@@ -50,6 +52,8 @@ async function main() {
 
 function parseArgs(argv) {
   const options = {
+    artifactIndexes: [],
+    artifactRoots: [],
     failureRoots: [],
     failureInputs: [],
     help: false,
@@ -66,7 +70,21 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
     else if (arg === "--require-complete") options.requireComplete = true
-    else if (arg === "--platform-bundle") {
+    else if (arg === "--artifact-index") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--artifact-index requires a value")
+      options.artifactIndexes.push(value)
+      index += 1
+    } else if (arg.startsWith("--artifact-index=")) {
+      options.artifactIndexes.push(arg.slice("--artifact-index=".length))
+    } else if (arg === "--artifact-root") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--artifact-root requires a value")
+      options.artifactRoots.push(value)
+      index += 1
+    } else if (arg.startsWith("--artifact-root=")) {
+      options.artifactRoots.push(arg.slice("--artifact-root=".length))
+    } else if (arg === "--platform-bundle") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--platform-bundle requires a value")
       options.platformBundleDir = value

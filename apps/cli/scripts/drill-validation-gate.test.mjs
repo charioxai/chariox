@@ -7,6 +7,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
+import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -55,6 +56,33 @@ test("drill validation gate accepts explicit matrix report paths", async () => {
 
     assert.equal(report.status, "passed")
     assert.deepEqual(report.checks.matrices.inputs, [reportPath])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate accepts artifact roots", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+    })
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-root",
+      rootDir,
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+
+    assert.equal(report.status, "passed")
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.equal(report.checks.artifacts.aggregate.totals.artifacts, 1)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
