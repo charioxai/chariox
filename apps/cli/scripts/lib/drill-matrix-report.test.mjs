@@ -40,20 +40,23 @@ test("formats failed and skipped scenarios with next actions", () => {
         exitCriteria: ["remote worker executes the selected provider turn", "home observes completion"],
         artifactHints: ["/tmp/arroba-drill-remote"],
       }),
-      scenario("cloud", "skipped", { reason: "skipped after previous failure" }),
+      scenario("cloud", "failed", { classification: "cloud-runtime", reason: "deployment did not become ready" }),
+      scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
     ],
   })
 
   const text = formatDrillMatrixReportSummary(report, { source: "/tmp/report.json" })
 
   assert.match(text, /matrix report: test-matrix \(\/tmp\/report\.json\)/)
-  assert.match(text, /status=failed scenarios=2 passed=0 failed=1 skipped=1 dry_run=0/)
-  assert.match(text, /classifications: provider-account=1/)
+  assert.match(text, /status=failed scenarios=3 passed=0 failed=2 skipped=1 dry_run=0/)
+  assert.match(text, /classifications: cloud-runtime=1 provider-account=1/)
   assert.match(text, /- remote classification=provider-account reason=insufficient balance/)
   assert.match(text, /criteria: remote worker executes the selected provider turn; home observes completion/)
   assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
   assert.match(text, /next: check provider quota or billing/)
-  assert.match(text, /skipped scenarios: cloud/)
+  assert.match(text, /- cloud classification=cloud-runtime reason=deployment did not become ready/)
+  assert.match(text, /next: inspect Cloud deployment\/control-plane status/)
+  assert.match(text, /skipped scenarios: hetzner/)
 })
 
 test("formats dry-run reports without failures", () => {

@@ -20,12 +20,55 @@ const PROVIDER_AUTH_PATTERNS = [
   /token refresh failed/i,
 ]
 
+const DOCKER_RUNTIME_PATTERNS = [
+  /\bdocker\b.*(?:not found|not running|daemon|cannot connect)/i,
+  /\bcolima\b/i,
+]
+
+const CLOUD_RUNTIME_PATTERNS = [
+  /\barroba-cloud\b/i,
+  /\bScalingo\b/i,
+  /cloud .*deployment/i,
+  /deployment .*did not become ready/i,
+  /publication deployment/i,
+  /\b(?:502|503|504)\b.*(?:cloud|deployment|gateway|service)/i,
+]
+
+const RELAY_RUNTIME_PATTERNS = [
+  /relay target .*not .*reachable/i,
+  /target daemon disconnected from relay/i,
+  /timed out waiting for relay/i,
+  /relay read failed or ended/i,
+  /websocket protocol error/i,
+  /connection reset/i,
+  /target.*(?:stale|offline)/i,
+]
+
+const TEST_HARNESS_PATTERNS = [
+  /spawn (?:cargo|tar|openssl|pnpm|bun|script|screen) ENOENT/i,
+  /missing built binary/i,
+  /run cargo build/i,
+  /missing built CLI/i,
+]
+
 export function classifyDrillChildFailure(text) {
   if (PROVIDER_ACCOUNT_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'provider-account'
   }
   if (PROVIDER_AUTH_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'provider-auth'
+  }
+  if (DOCKER_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'docker-runtime'
+  }
+  if (CLOUD_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'cloud-runtime'
+  }
+  if (RELAY_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'relay-runtime'
+  }
+  if (TEST_HARNESS_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'test-harness'
   }
   if (/provider_error|OpenCode error|Codex error|Claude error/i.test(text)) {
     return 'provider-error'
@@ -45,6 +88,18 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'provider-auth'
       ? 'Provider authentication blocked validation before the remote runtime behavior could be proven.'
+      : null,
+    classification === 'docker-runtime'
+      ? 'Docker or Colima blocked validation before the runtime behavior could be proven.'
+      : null,
+    classification === 'cloud-runtime'
+      ? 'Cloud control-plane or deployment infrastructure blocked validation before the runtime behavior could be proven.'
+      : null,
+    classification === 'relay-runtime'
+      ? 'Relay transport blocked validation before the runtime behavior could be proven.'
+      : null,
+    classification === 'test-harness'
+      ? 'Local drill prerequisites or build tooling blocked validation before the runtime behavior could be proven.'
       : null,
     tail ? `child output tail:\n${tail}` : null,
   ].filter(Boolean).join('\n')

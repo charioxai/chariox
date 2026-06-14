@@ -124,9 +124,17 @@ test("classifies common drill failure owners and next actions", () => {
     metadata: { drill: "remote-restart", relayUrl: "ws://127.0.0.1:43385" },
     error: { name: "Error", message: "spawn pnpm ENOENT", stack: null },
   })), {
-    kind: "child-process",
-    owner: "drill-or-runtime",
-    nextAction: "inspect preserved artifacts under /tmp/arroba-drill; rerun the drill after addressing the failure",
+    kind: "test-harness",
+    owner: "validation-harness",
+    nextAction: "install or build the missing local drill prerequisite, then rerun the drill",
+  })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "deployment did not become ready: Scalingo 503 service unavailable", stack: null },
+  })), {
+    kind: "cloud-runtime",
+    owner: "cloud-deployment",
+    nextAction: "inspect Cloud deployment/control-plane status and preserved logs, then rerun the drill",
   })
 })
 

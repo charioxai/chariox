@@ -117,6 +117,34 @@ export function classifyDrillFailureManifest(manifest) {
       nextAction: "check provider quota or billing for the account used by this drill, then rerun the drill",
     }
   }
+  if (childClassification === "docker-runtime") {
+    return {
+      kind: "docker-runtime",
+      owner: "local-machine",
+      nextAction: "start Docker or Colima, confirm `docker info` succeeds, then rerun the drill",
+    }
+  }
+  if (childClassification === "cloud-runtime") {
+    return {
+      kind: "cloud-runtime",
+      owner: "cloud-deployment",
+      nextAction: "inspect Cloud deployment/control-plane status and preserved logs, then rerun the drill",
+    }
+  }
+  if (childClassification === "relay-runtime") {
+    return {
+      kind: "relay-runtime",
+      owner: "runtime-network",
+      nextAction: "inspect relay and kernel logs in the preserved artifact root, then rerun the drill",
+    }
+  }
+  if (childClassification === "test-harness") {
+    return {
+      kind: "test-harness",
+      owner: "validation-harness",
+      nextAction: "install or build the missing local drill prerequisite, then rerun the drill",
+    }
+  }
   if (/docker|colima/i.test(errorText)) {
     return {
       kind: "docker-runtime",

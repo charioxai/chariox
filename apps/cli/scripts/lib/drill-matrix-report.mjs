@@ -200,6 +200,18 @@ function nextActionForScenario(scenario) {
   if (scenario.classification === "provider-account") {
     return "check provider quota or billing for the account used by this drill, then rerun the scenario"
   }
+  if (scenario.classification === "docker-runtime") {
+    return "start Docker or Colima, confirm `docker info` succeeds, then rerun the scenario"
+  }
+  if (scenario.classification === "cloud-runtime") {
+    return "inspect Cloud deployment/control-plane status and preserved logs, then rerun the scenario"
+  }
+  if (scenario.classification === "relay-runtime") {
+    return "inspect relay and kernel logs in the preserved artifacts, then rerun the scenario"
+  }
+  if (scenario.classification === "test-harness") {
+    return "install or build the missing local drill prerequisite, then rerun the scenario"
+  }
   if (scenario.classification === "expected-failure") {
     return "inspect the expected-failure assertion; the scenario failed differently than planned"
   }
