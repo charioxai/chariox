@@ -7,7 +7,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -49,6 +49,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
         scenario("ui-projection", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -56,6 +57,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       ossRoot,
       "--cloud-root",
       cloudRoot,
+      "--include-default-artifacts",
       "--platform-bundle",
       bundleDir,
       "--preset",
@@ -77,6 +79,11 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
 
     assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite.v1"], 1)
+    assert.deepEqual(report.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
+      path.join(".artifacts", "validation-suite"),
+    ])
     assert.deepEqual(report.checks.matrices.requiredMatrices, ["slice-runtime-matrix"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
@@ -112,6 +119,45 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.equal(artifactIndex.metadata.drill, "cross-repo-validation-gate")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.runtimeSignals, "agent-lifecycle,client-projection-health,provider-run-lifecycle,session-authority,slice-auth-state,slice-runtime-state")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("cross repo validation gate keeps default artifact roots opt-in", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+
+    const skipped = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--json",
+    ])).stdout)
+    assert.equal(skipped.checks.artifacts.status, "skipped")
+
+    const discovered = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--include-default-artifacts",
+      "--json",
+    ])).stdout)
+    assert.equal(discovered.checks.artifacts.status, "passed")
+    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite.v1"], 1)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -219,6 +265,28 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
     metadata,
     scenarios,
   }, null, 2)}\n`, "utf8")
+}
+
+async function writeValidationSuiteArtifact(rootDir) {
+  const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
+  await mkdir(rootDir, { recursive: true })
+  await writeFile(artifactPath, `${JSON.stringify({
+    schema: "arroba.drill.validation_suite.v1",
+    testCount: 1,
+    command: "node --test scripts/cloud-validation-suite.test.mjs",
+    coverage: [{
+      id: "suite-contract",
+      description: "Cloud validation-suite contract",
+      testCount: 1,
+      testPaths: ["scripts/cloud-validation-suite.test.mjs"],
+    }],
+    testPaths: ["scripts/cloud-validation-suite.test.mjs"],
+  }, null, 2)}\n`, "utf8")
+  await writeDrillArtifactIndex({
+    rootDir,
+    artifacts: ["cloud-validation-suite.json"],
+    metadata: { drill: "cloud-validation-suite", tests: 1 },
+  })
 }
 
 function scenario(id, classification, runtimeSignals = [], overrides = {}) {

@@ -31,6 +31,8 @@ function printHelp() {
     "  --oss-root DIR         OSS repo root; defaults to this script's repo root",
     "  --cloud-root DIR       Cloud repo root; defaults to ../arroba-cloud",
     "  --no-default-roots     Only use matrix roots passed explicitly with --matrix-root",
+    "  --include-default-artifacts",
+    "                         Discover artifact indexes under each repo's .artifacts root",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
     "  --matrix-root ROOT     Discover matrix reports below ROOT; repeatable",
     "  --artifact-root ROOT   Discover artifact indexes below ROOT; repeatable",
@@ -90,6 +92,7 @@ function parseArgs(argv) {
     artifactRoots: [],
     cloudRoot: defaultCloudRoot,
     defaultRoots: true,
+    includeDefaultArtifacts: false,
     failureRoots: [],
     help: false,
     json: false,
@@ -107,6 +110,7 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
     else if (arg === "--no-default-roots") options.defaultRoots = false
+    else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
     else if (arg === "--require-complete") options.requireComplete = true
     else {
       const requirementIndex = parseValidationGateRequirementArg(argv, index, options)
@@ -186,6 +190,12 @@ function gateOptionsFor(options) {
     matrixRoots.push(
       path.join(options.ossRoot, ".artifacts", "drill-matrices"),
       path.join(options.cloudRoot, ".artifacts", "drill-matrices"),
+    )
+  }
+  if (options.includeDefaultArtifacts) {
+    artifactRoots.push(
+      path.join(options.ossRoot, ".artifacts"),
+      path.join(options.cloudRoot, ".artifacts"),
     )
   }
   return {
