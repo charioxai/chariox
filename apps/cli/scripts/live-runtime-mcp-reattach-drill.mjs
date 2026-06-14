@@ -3,6 +3,12 @@ import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promise
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import {
+  applyProviderModelOverride,
+  parseProviderList,
+  providerProfileMetadata,
+  resolveProviderModel,
+} from './lib/drill-provider-profiles.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -47,14 +53,10 @@ function parseArgs(argv) {
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--provider') options.providers = [argv[++i]]
-    else if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
+    if (arg === '--provider') options.providers = parseProviderList(argv[++i])
+    else if (arg === '--providers') options.providers = parseProviderList(argv[++i])
     else if (arg === '--model') options.model = argv[++i]
-    else if (arg === '--provider-model') {
-      const [provider, model] = argv[++i].split('=', 2)
-      if (!provider || !model) throw new Error('--provider-model must use provider=model')
-      options.providerModels[provider] = model
-    }
+    else if (arg === '--provider-model') applyProviderModelOverride(options.providerModels, argv[++i])
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
@@ -92,17 +94,10 @@ function makePorts() {
 }
 
 function modelForProvider(provider, options) {
-  const explicit = options.providerModels[provider]
-  if (explicit) return explicit
-  if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
-  if (provider === 'codex' && !options.model.includes('/')) return opencodeCodexModel(options.model)
-  return options.model
-}
-
-function opencodeCodexModel(model) {
-  if (model.endsWith('-codex')) return model
-  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
-  return model
+  return resolveProviderModel(provider, {
+    defaultModel: options.model,
+    providerModels: options.providerModels,
+  })
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -444,8 +439,11 @@ async function main() {
       failure,
       metadata: {
         drill: 'runtime-mcp-reattach',
-        providers: options.providers.join(','),
-        model: options.model,
+        ...providerProfileMetadata({
+          providers: options.providers,
+          defaultModel: options.model,
+          providerModels: options.providerModels,
+        }),
         providerModels: options.providerModels,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
