@@ -144,6 +144,16 @@ test('classifies slice provider auth failures separately', () => {
   )
 })
 
+test('classifies slice runtime failures separately from auth and Docker', () => {
+  const text = 'slice_lifecycle.launch_timeout: slice slice-1 did not become ready after container start'
+
+  assert.equal(classifyDrillChildFailure(text), 'slice-runtime')
+  assert.match(
+    formatDrillChildFailure('slice drill', 1, null, '', text),
+    /Slice runtime failed/,
+  )
+})
+
 test('keeps relay timeouts classified as relay runtime', () => {
   assert.equal(classifyDrillChildFailure('timed out waiting for relay target worker'), 'relay-runtime')
 })

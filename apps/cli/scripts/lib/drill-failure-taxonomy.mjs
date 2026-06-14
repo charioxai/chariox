@@ -64,6 +64,11 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect slice provider auth summaries, login/import the intended account in the slice, then rerun the drill",
     scenarioNextAction: "inspect slice provider auth summaries, login/import the intended account in the slice, then rerun the scenario",
   },
+  "slice-runtime": {
+    owner: "worker-kernel",
+    drillNextAction: "inspect slice lifecycle events, container logs, and worker kernel state; recreate the slice if needed, then rerun the drill",
+    scenarioNextAction: "inspect slice lifecycle events, container logs, and worker kernel state; recreate the slice if needed, then rerun the scenario",
+  },
   "test-harness": {
     owner: "validation-harness",
     drillNextAction: "install or build the missing local drill prerequisite, then rerun the drill",

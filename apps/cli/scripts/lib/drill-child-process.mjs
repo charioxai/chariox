@@ -28,6 +28,14 @@ const SLICE_AUTH_PATTERNS = [
   /slice .*not_configured/i,
 ]
 
+const SLICE_RUNTIME_PATTERNS = [
+  /slice_lifecycle\.(?:launch_failed|launch_timeout|container_failed|stuck)/i,
+  /slice .*failed to launch/i,
+  /slice .*launch timed out/i,
+  /slice .*stuck (?:launching|starting)/i,
+  /slice .*did not become ready/i,
+]
+
 const DOCKER_RUNTIME_PATTERNS = [
   /\bdocker\b.*(?:not found|not running|daemon|cannot connect)/i,
   /\bcolima\b/i,
@@ -118,6 +126,9 @@ export function classifyDrillChildFailure(text) {
   if (SLICE_AUTH_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'slice-auth'
   }
+  if (SLICE_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'slice-runtime'
+  }
   if (PROVIDER_AUTH_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'provider-auth'
   }
@@ -202,6 +213,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'slice-auth'
       ? 'Slice provider authentication is missing or configured for the wrong account.'
+      : null,
+    classification === 'slice-runtime'
+      ? 'Slice runtime failed; inspect slice lifecycle events, container logs, and worker kernel state.'
       : null,
     tail ? `child output tail:\n${tail}` : null,
   ].filter(Boolean).join('\n')

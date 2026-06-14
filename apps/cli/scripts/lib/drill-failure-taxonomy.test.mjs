@@ -19,6 +19,7 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("ui-client-projection"), "ui-client")
   assert.equal(drillFailureOwnerForClassification("workspace-live-sync-conflict"), "runtime-state")
   assert.equal(drillFailureOwnerForClassification("slice-auth"), "provider-account")
+  assert.equal(drillFailureOwnerForClassification("slice-runtime"), "worker-kernel")
   assert.equal(drillFailureOwnerForClassification("test-harness"), "validation-harness")
   assert.equal(drillFailureOwnerForClassification("unknown"), "drill-or-runtime")
 })
@@ -81,5 +82,10 @@ test("builds stable failure taxonomy manifest", () => {
     entry.kind === "workspace-live-sync-conflict"
       && entry.owner === "runtime-state"
       && entry.nextAction.includes("workspace live sync")
+  )))
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "slice-runtime"
+      && entry.owner === "worker-kernel"
+      && entry.nextAction.includes("slice lifecycle events")
   )))
 })
