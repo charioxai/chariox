@@ -14,7 +14,7 @@ They may still:
 
 - Install/register MCPs for the session.
 - Grant and revoke MCPs/skills for owned regular agents.
-- Create/update/remove vault credential handles and set/delete secret values
+- Create/update/remove vault credential handles and manage vault unlock/status
   through kernel-owned flows.
 - Confirm or deny capability/credential use for owned regular agents.
 - Spawn, prompt, and supervise owned regular agents.
@@ -172,11 +172,18 @@ Allowed capability provisioning commands:
 
 - `mcp list`
 - `mcp show`
-- `mcp install` or `mcp register`, using the existing registry/install path
+- `mcp install-json` and `mcp update-json`, using the existing
+  registry/install path
+- `mcp uninstall`
+- `mcp import`
 - `mcp grant <owned-regular-agent> <mcp>`
 - `mcp revoke <owned-regular-agent> <mcp>`
 - `skill list`
 - `skill show`
+- `skill install`
+- `skill update`
+- `skill uninstall`
+- `skill import`
 - `skill grant <owned-regular-agent> <skill>`
 - `skill revoke <owned-regular-agent> <skill>`
 
@@ -184,15 +191,17 @@ Allowed vault provisioning commands:
 
 - `credential list`
 - `credential get` for handle metadata only
-- `credential upsert` or equivalent handle creation/update
+- `credential upsert-json` for handle creation/update
 - `credential remove`
-- `credential set-secret`
-- `credential delete-secret`
+- `credential vault status`
+- `credential vault manage`
 
 Vault rules:
 
+- Secret values are not accepted through `arroba.meta.run_command`.
 - Secret values may be accepted as user/provider input only through a
-  kernel-owned secure path.
+  kernel-owned secure path, usually a worker credential interaction that the
+  metaagent can approve without seeing the secret.
 - Metaagent responses and tool payloads must never include raw secret values.
 - Worker credential use should surface as a runtime interaction that a
   metaagent may resolve only for an owned regular agent.
@@ -204,6 +213,7 @@ Denied commands:
 - session create/attach/use/delete
 - slice start/stop/save/status/backup or other slice management
 - any shell/script/connector execution command
+- `credential set`, `credential set-secret`, and `credential delete-secret`
 - any capability or credential action targeting a metaagent
 - any action targeting another user's agent
 
@@ -259,8 +269,9 @@ temporary workspace.
 10. Register or install a fake MCP, grant it to a worker, and verify the worker
     sees it while the metaagent does not.
 11. Grant a fake skill to a worker and verify self-grants are denied.
-12. Create/update a vault credential handle and secret through meta-owned
-    provisioning, then verify no tool output contains the secret payload.
+12. Create/update a vault credential handle, inspect vault status, verify
+    secret-value command text is denied, and verify no tool output contains a
+    secret payload.
 13. Trigger a worker credential/capability-use interaction and resolve it from
     the metaagent.
 14. Verify self and foreign interaction resolution attempts fail.
@@ -377,8 +388,10 @@ Drill gate order:
 
 - Metaagents always run in plan mode.
 - Metaagents cannot directly execute implementation work.
-- Metaagents can provision MCPs, skills, vault handles, and secrets for owned
-  regular workers through kernel-owned surfaces.
+- Metaagents can provision MCPs, skills, and vault-backed credential handles for
+  owned regular workers through kernel-owned surfaces.
+- Metaagents can approve worker credential interactions without seeing raw
+  secret values.
 - Metaagents can approve owned worker runtime interactions.
 - Metaagent runtime MCP exposure and dispatch enforcement match.
 - The isolated capability drill proves every meta authority in isolation.

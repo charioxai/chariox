@@ -111,29 +111,48 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     },
     MetaCommandDoc {
         name: "mcp",
-        aliases: &["mcp grant", "mcp revoke", "mcp list"],
-        usage: "mcp <list|show|grant|revoke> ...",
-        examples: &["mcp grant agent-2 playwright"],
+        aliases: &[
+            "mcp install-json",
+            "mcp update-json",
+            "mcp uninstall",
+            "mcp import",
+            "mcp grant",
+            "mcp revoke",
+            "mcp list",
+        ],
+        usage: "mcp <list|show|install-json|update-json|uninstall|import|grant|revoke> ...",
+        examples: &[
+            "mcp install-json '{\"name\":\"playwright\",\"transport\":{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"@playwright/mcp\"],\"env\":{},\"env_vars\":[]},\"enabled\":true,\"required\":false}'",
+            "mcp grant agent-2 playwright",
+        ],
         tags: &["extension", "mcp", "capability"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Manage MCP extension grants for this user's agents through existing kernel extension policy.",
+        description: "Install MCP definitions and manage MCP extension grants for this user's agents through existing kernel extension policy.",
     },
     MetaCommandDoc {
         name: "skill",
-        aliases: &["skill grant", "skill list", "skills"],
-        usage: "skill <list|show|grant|revoke> ...",
-        examples: &["skill grant agent-2 browser-qa"],
+        aliases: &[
+            "skill install",
+            "skill update",
+            "skill uninstall",
+            "skill import",
+            "skill grant",
+            "skill list",
+            "skills",
+        ],
+        usage: "skill <list|show|install|update|uninstall|import|grant|revoke> ...",
+        examples: &["skill install ./skills/browser-qa", "skill grant agent-2 browser-qa"],
         tags: &["extension", "skill", "capability"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Manage skill grants for this user's agents through existing kernel extension policy.",
+        description: "Install skills and manage skill grants for this user's agents through existing kernel extension policy.",
     },
     MetaCommandDoc {
         name: "slice",
@@ -143,41 +162,48 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         tags: &["slice", "environment"],
         scope: "session",
         mutates: true,
-        policy: MetaCommandPolicy::Allow,
-        authority: "authorized slices",
-        routed: true,
-        description: "Inspect and manage slices. Metaagents cannot run inside a slice but can manage authorized slices.",
+        policy: MetaCommandPolicy::Deny,
+        authority: "denied",
+        routed: false,
+        description: "Denied for metaagents. Slice placement and management are execution-environment operations, not delegation commands.",
     },
     MetaCommandDoc {
         name: "credential",
-        aliases: &["credential list", "credential get"],
-        usage: "credential <list|get> ...",
-        examples: &["credential list", "credential get credential-1"],
+        aliases: &[
+            "credential list",
+            "credential get",
+            "credential upsert-json",
+            "credential remove",
+            "credential vault status",
+            "credential vault manage",
+        ],
+        usage: "credential <list|get|upsert-json|remove|vault status|vault manage> ...",
+        examples: &[
+            "credential list",
+            "credential get credential-1",
+            "credential upsert-json '{\"id\":\"github-token\",\"source\":{\"type\":\"vault\",\"key\":\"github-token\"},\"allowed_uses\":[\"http\"],\"injection\":{\"kind\":\"header\",\"name\":\"authorization\",\"value\":\"Bearer ${secret}\"}}'",
+            "credential vault manage",
+        ],
         tags: &["credential", "vault", "sensitive"],
         scope: "global",
-        mutates: false,
+        mutates: true,
         policy: MetaCommandPolicy::Allow,
-        authority: "credential handle metadata only",
+        authority: "credential handle metadata and vault unlock only",
         routed: true,
-        description: "List and inspect credential handles. Sensitive credential mutations are not routed by metaagent command execution.",
+        description: "List, inspect, and mutate credential handles, and request vault management. Secret values are never accepted as metaagent command arguments.",
     },
     MetaCommandDoc {
-        name: "credential mutation",
-        aliases: &[
-            "credential upsert",
-            "credential remove",
-            "credential set-secret",
-            "credential delete-secret",
-        ],
-        usage: "credential upsert|remove|set-secret|delete-secret ...",
+        name: "credential secret mutation",
+        aliases: &["credential set", "credential set-secret", "credential delete-secret"],
+        usage: "credential set|set-secret|delete-secret ...",
         examples: &[],
         tags: &["credential", "vault", "sensitive"],
         scope: "global",
         mutates: true,
-        policy: MetaCommandPolicy::Approval,
-        authority: "configured user approval",
+        policy: MetaCommandPolicy::Deny,
+        authority: "denied",
         routed: false,
-        description: "Credential mutations require explicit approval policy and are not routed by metaagent command execution.",
+        description: "Denied for metaagents. Secret values must be entered through user or worker credential interactions, not metaagent command text.",
     },
     MetaCommandDoc {
         name: "session new",
@@ -401,34 +427,40 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         "mcp" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "ls" | "show" | "get" | "grant" | "revoke") => {
-                Some(MetaCommandExecutionPolicy::Routed)
-            }
+            Some(
+                "list" | "ls" | "show" | "get" | "install-json" | "update-json"
+                | "uninstall" | "remove" | "import" | "grant" | "revoke",
+            ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `mcp list`, `mcp show`, `mcp grant`, and `mcp revoke` are routed for metaagent command execution yet".to_string(),
+                message: "only `mcp list`, `mcp show`, `mcp install-json`, `mcp update-json`, `mcp uninstall`, `mcp import`, `mcp grant`, and `mcp revoke` are routed for metaagent command execution yet".to_string(),
             }),
         },
         "skill" | "skills" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "ls" | "show" | "get" | "grant" | "revoke") => {
-                Some(MetaCommandExecutionPolicy::Routed)
-            }
-            _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `skill list`, `skill show`, `skill grant`, and `skill revoke` are routed for metaagent command execution yet".to_string(),
-            }),
-        },
-        "slice" => match tokens.get(1).map(String::as_str) {
             Some(
-                "list" | "ls" | "show" | "get" | "start" | "stop" | "save" | "save-state"
-                | "status" | "state-status" | "backup",
+                "list" | "ls" | "show" | "get" | "install" | "update" | "uninstall"
+                | "remove" | "import" | "grant" | "revoke",
             ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `slice list`, `slice show`, `slice start`, `slice stop`, `slice save-state`, `slice status`, and `slice backup` are routed for metaagent command execution yet".to_string(),
+                message: "only `skill list`, `skill show`, `skill install`, `skill update`, `skill uninstall`, `skill import`, `skill grant`, and `skill revoke` are routed for metaagent command execution yet".to_string(),
             }),
         },
+        "slice" => Some(MetaCommandExecutionPolicy::Denied {
+            message: "metaagents cannot manage slices or choose slice placement; delegate environment work to regular agents",
+        }),
         "credential" | "credentials" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "ls" | "get" | "show") => Some(MetaCommandExecutionPolicy::Routed),
+            Some("list" | "ls" | "get" | "show" | "upsert-json" | "remove") => {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
+            Some("vault") if matches!(tokens.get(2).map(String::as_str), Some("status" | "manage")) => {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
+            Some("set" | "set-secret" | "delete" | "delete-secret") => {
+                Some(MetaCommandExecutionPolicy::Denied {
+                    message: "metaagents cannot pass credential secret values through run_command; use worker credential interactions and resolve them explicitly",
+                })
+            }
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `credential list` and `credential get` are routed for metaagent command execution; credential mutations require approval policy".to_string(),
+                message: "only `credential list`, `credential get`, `credential upsert-json`, `credential remove`, `credential vault status`, and `credential vault manage` are routed for metaagent command execution".to_string(),
             }),
         },
         _ => None,
@@ -464,31 +496,34 @@ const ROUTED_COMMAND_CASES: &[&str] = &[
     "mcp ls",
     "mcp show playwright",
     "mcp get playwright",
+    "mcp install-json {\"name\":\"playwright\"}",
+    "mcp update-json {\"name\":\"playwright\"}",
+    "mcp uninstall playwright",
+    "mcp remove playwright",
+    "mcp import codex playwright",
     "mcp grant reviewer playwright",
     "mcp revoke reviewer playwright",
     "skill list",
     "skill ls",
     "skill show browser-qa",
     "skill get browser-qa",
+    "skill install ./skills/browser-qa",
+    "skill update ./skills/browser-qa",
+    "skill uninstall browser-qa",
+    "skill remove browser-qa",
+    "skill import codex browser-qa",
     "skill grant reviewer browser-qa",
     "skill revoke reviewer browser-qa",
     "skills list",
     "skills grant reviewer browser-qa",
-    "slice list",
-    "slice ls",
-    "slice show dev",
-    "slice get dev",
-    "slice start dev",
-    "slice stop dev",
-    "slice save dev",
-    "slice save-state dev",
-    "slice status dev",
-    "slice state-status dev",
-    "slice backup dev",
     "credential list",
     "credential ls",
     "credential get credential-1",
     "credential show credential-1",
+    "credential upsert-json {\"id\":\"credential-1\"}",
+    "credential remove credential-1",
+    "credential vault status",
+    "credential vault manage",
     "credentials list",
     "credentials get credential-1",
 ];
@@ -603,7 +638,7 @@ mod tests {
         let commands = list_commands(MetaCommandListArgs {
             tag: Some("credential".to_string()),
             scope: Some("global".to_string()),
-            mutates: Some(false),
+            mutates: Some(true),
             policy: Some("allow".to_string()),
             limit: Some(10),
         });
@@ -617,7 +652,7 @@ mod tests {
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some("credential")))
                 && command.get("scope").and_then(serde_json::Value::as_str) == Some("global")
-                && command.get("mutates").and_then(serde_json::Value::as_bool) == Some(false)
+                && command.get("mutates").and_then(serde_json::Value::as_bool) == Some(true)
                 && command
                     .get("metaagent_policy")
                     .and_then(serde_json::Value::as_str)
@@ -655,13 +690,10 @@ mod tests {
     fn command_docs_do_not_advertise_unrouted_subcommands() {
         let forbidden = [
             ("workflow", &["show", "edit"][..]),
-            ("mcp", &["install", "import", "grants"][..]),
-            ("skill", &["install", "import", "grants"][..]),
+            ("mcp", &["test", "adapter", "connector"][..]),
+            ("skill", &["grants", "script", "connector"][..]),
             ("slice", &["reset-state"][..]),
-            (
-                "credential",
-                &["upsert", "remove", "set-secret", "delete-secret"][..],
-            ),
+            ("credential", &["set-secret", "delete-secret"][..]),
         ];
 
         for (command, terms) in forbidden {
@@ -685,20 +717,20 @@ mod tests {
     }
 
     #[test]
-    fn command_docs_prefer_specific_approval_policy_entries() {
+    fn command_docs_prefer_specific_denial_policy_entries() {
         let docs = command_docs(MetaCommandDocsArgs {
-            command: "credential upsert".to_string(),
+            command: "credential set-secret".to_string(),
         })
-        .expect("credential mutation docs should exist");
+        .expect("credential secret mutation docs should exist");
 
         assert_eq!(
             docs.get("name").and_then(serde_json::Value::as_str),
-            Some("credential mutation")
+            Some("credential secret mutation")
         );
         assert_eq!(
             docs.get("metaagent_policy")
                 .and_then(serde_json::Value::as_str),
-            Some("approval")
+            Some("deny")
         );
         assert_eq!(
             docs.get("routed").and_then(serde_json::Value::as_bool),

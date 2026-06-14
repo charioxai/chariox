@@ -2,14 +2,15 @@ use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
     AddWorkflowNodeRequest, AliasAgentRequest, AttachToSessionRequest, CancelWorkflowRunRequest,
-    CreateSliceBackupRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-    DestroyAgentRequest, ExtensionKind, FocusAgentRequest, GetCredentialRequest,
-    GetMcpServerRequest, GetSkillRequest, GrantAgentExtensionRequest,
-    InvokeWorkflowEndpointRequest, ListAgentsRequest, ListCredentialsRequest,
-    ListMcpServersRequest, ListSkillsRequest, ListSlicesRequest, ListWorkflowRunsRequest,
-    ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ResumeWorkflowRunRequest,
-    RevokeAgentExtensionRequest, SliceRefRequest, SliceStateSaveMode, SliceStateSaveRequest,
-    SliceStateStatusRequest, SpawnAgentRequest,
+    CreateWorkflowEndpointRequest, CreateWorkflowRequest, DestroyAgentRequest, ExtensionKind,
+    FocusAgentRequest, GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest,
+    GetSkillRequest, GrantAgentExtensionRequest, ImportMcpServersRequest, ImportSkillsRequest,
+    InstallMcpServerRequest, InstallSkillRequest, InvokeWorkflowEndpointRequest, ListAgentsRequest,
+    ListCredentialsRequest, ListMcpServersRequest, ListSkillsRequest, ListWorkflowRunsRequest,
+    ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ManageCredentialVaultRequest,
+    RemoveCredentialRequest, ResumeWorkflowRunRequest, RevokeAgentExtensionRequest,
+    SpawnAgentRequest, UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest,
+    UpdateSkillRequest, UpsertCredentialRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -454,8 +455,9 @@ impl CommandRouter {
                     &agents,
                 )
             }
-            "slice" => meta_slice_request(&tokens[1..]),
-            "credential" | "credentials" => meta_credential_request(&tokens[1..]),
+            "credential" | "credentials" => {
+                meta_credential_request(session, metaagent, &tokens[1..])
+            }
             other => Err(meta_command_error(format!(
                 "`{other}` is registered but not implemented by the metaagent command router"
             ))),
@@ -802,6 +804,117 @@ fn meta_extension_request(
                 ))),
             }
         }
+        Some("install-json" | "update-json") if kind == ExtensionKind::Mcp => {
+            let Some(json) = args.get(1) else {
+                return Err(meta_command_error(format!(
+                    "usage: {family} install-json <mcp-json>"
+                )));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error(format!(
+                    "usage: {family} install-json <mcp-json>"
+                )));
+            }
+            let config = serde_json::from_str::<crate::mcp::ArrobaMcpServerConfig>(json)
+                .map_err(|error| meta_command_error(format!("invalid MCP JSON config: {error}")))?;
+            if args.first().map(String::as_str) == Some("install-json") {
+                Ok(LocalDaemonRequest::InstallMcpServer(
+                    InstallMcpServerRequest {
+                        workspace_id: Some(session.workspace_id().to_string()),
+                        config,
+                    },
+                ))
+            } else {
+                Ok(LocalDaemonRequest::UpdateMcpServer(
+                    UpdateMcpServerRequest {
+                        workspace_id: Some(session.workspace_id().to_string()),
+                        config,
+                    },
+                ))
+            }
+        }
+        Some("install" | "update") if kind == ExtensionKind::Skill => {
+            let Some(source_path) = args.get(1) else {
+                return Err(meta_command_error(format!(
+                    "usage: {family} install <path>"
+                )));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error(format!(
+                    "usage: {family} install <path>"
+                )));
+            }
+            let source_path = std::path::PathBuf::from(source_path);
+            if args.first().map(String::as_str) == Some("install") {
+                Ok(LocalDaemonRequest::InstallSkill(InstallSkillRequest {
+                    workspace_id: Some(session.workspace_id().to_string()),
+                    source_path,
+                }))
+            } else {
+                Ok(LocalDaemonRequest::UpdateSkill(UpdateSkillRequest {
+                    workspace_id: Some(session.workspace_id().to_string()),
+                    source_path,
+                }))
+            }
+        }
+        Some("uninstall" | "remove") => {
+            let Some(name) = args.get(1) else {
+                return Err(meta_command_error(format!(
+                    "usage: {family} uninstall <name>"
+                )));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error(format!(
+                    "usage: {family} uninstall <name>"
+                )));
+            }
+            match kind {
+                ExtensionKind::Mcp => Ok(LocalDaemonRequest::UninstallMcpServer(
+                    UninstallMcpServerRequest {
+                        workspace_id: Some(session.workspace_id().to_string()),
+                        name: name.clone(),
+                    },
+                )),
+                ExtensionKind::Skill => {
+                    Ok(LocalDaemonRequest::UninstallSkill(UninstallSkillRequest {
+                        workspace_id: Some(session.workspace_id().to_string()),
+                        name: name.clone(),
+                    }))
+                }
+                _ => Err(meta_command_error(format!(
+                    "`{family} uninstall` is not supported by metaagent run_command"
+                ))),
+            }
+        }
+        Some("import") => {
+            let Some(provider) = args.get(1) else {
+                return Err(meta_command_error(format!(
+                    "usage: {family} import <provider> [name]"
+                )));
+            };
+            if args.len() > 3 {
+                return Err(meta_command_error(format!(
+                    "usage: {family} import <provider> [name]"
+                )));
+            }
+            match kind {
+                ExtensionKind::Mcp => Ok(LocalDaemonRequest::ImportMcpServers(
+                    ImportMcpServersRequest {
+                        workspace_id: Some(session.workspace_id().to_string()),
+                        provider: provider.clone(),
+                        name: args.get(2).cloned(),
+                    },
+                )),
+                ExtensionKind::Skill => Ok(LocalDaemonRequest::ImportSkills(ImportSkillsRequest {
+                    workspace_id: Some(session.workspace_id().to_string()),
+                    provider: provider.clone(),
+                    name: args.get(2).cloned(),
+                })),
+                _ => Err(meta_command_error(format!(
+                    "`{family} import` is not supported by metaagent run_command"
+                ))),
+            }
+        }
         Some("grant") => {
             if args.len() != 3 {
                 return Err(meta_command_error(format!(
@@ -837,82 +950,16 @@ fn meta_extension_request(
             ))
         }
         _ => Err(meta_command_error(format!(
-            "usage: {family} <list|show|grant|revoke> ..."
+            "usage: {family} <list|show|install|update|uninstall|import|grant|revoke> ..."
         ))),
     }
 }
 
-fn meta_slice_request(args: &[String]) -> Result<LocalDaemonRequest, DaemonError> {
-    match args.first().map(String::as_str) {
-        Some("list" | "ls") | None => Ok(LocalDaemonRequest::ListSlices(ListSlicesRequest)),
-        Some("show" | "get") => {
-            let slice_ref = single_ref_arg("slice show", args)?;
-            Ok(LocalDaemonRequest::GetSlice(SliceRefRequest { slice_ref }))
-        }
-        Some("start") => {
-            let slice_ref = single_ref_arg("slice start", args)?;
-            Ok(LocalDaemonRequest::StartSlice(SliceRefRequest {
-                slice_ref,
-            }))
-        }
-        Some("stop") => {
-            let slice_ref = single_ref_arg("slice stop", args)?;
-            Ok(LocalDaemonRequest::StopSlice(SliceRefRequest { slice_ref }))
-        }
-        Some("save" | "save-state") => {
-            let Some(slice_ref) = args.get(1) else {
-                return Err(meta_command_error("usage: slice save-state <slice-ref>"));
-            };
-            if args.len() > 3 {
-                return Err(meta_command_error(
-                    "usage: slice save-state <slice-ref> [--restart-agents|--shutdown]",
-                ));
-            }
-            let mode = match args.get(2).map(String::as_str) {
-                None => None,
-                Some("--restart-agents" | "restart-agents") => {
-                    Some(SliceStateSaveMode::RestartAgents)
-                }
-                Some("--shutdown" | "shutdown") => Some(SliceStateSaveMode::Shutdown),
-                Some(_) => {
-                    return Err(meta_command_error(
-                        "usage: slice save-state <slice-ref> [--restart-agents|--shutdown]",
-                    ));
-                }
-            };
-            Ok(LocalDaemonRequest::SaveSliceState(SliceStateSaveRequest {
-                slice_ref: slice_ref.clone(),
-                mode,
-                scope: None,
-            }))
-        }
-        Some("status" | "state-status") => {
-            let slice_ref = single_ref_arg("slice status", args)?;
-            Ok(LocalDaemonRequest::GetSliceStateStatus(
-                SliceStateStatusRequest { slice_ref },
-            ))
-        }
-        Some("backup") => {
-            let Some(slice_ref) = args.get(1) else {
-                return Err(meta_command_error("usage: slice backup <slice-ref> [name]"));
-            };
-            if args.len() > 3 {
-                return Err(meta_command_error("usage: slice backup <slice-ref> [name]"));
-            }
-            Ok(LocalDaemonRequest::CreateSliceBackup(
-                CreateSliceBackupRequest {
-                    slice_ref: slice_ref.clone(),
-                    name: args.get(2).cloned(),
-                },
-            ))
-        }
-        _ => Err(meta_command_error(
-            "usage: slice <list|show|start|stop|save-state|status|backup> ...",
-        )),
-    }
-}
-
-fn meta_credential_request(args: &[String]) -> Result<LocalDaemonRequest, DaemonError> {
+fn meta_credential_request(
+    session: &crate::session::RuntimeSession,
+    metaagent: &crate::agent::AgentInstance,
+    args: &[String],
+) -> Result<LocalDaemonRequest, DaemonError> {
     match args.first().map(String::as_str) {
         Some("list" | "ls") | None => {
             Ok(LocalDaemonRequest::ListCredentials(ListCredentialsRequest))
@@ -928,18 +975,54 @@ fn meta_credential_request(args: &[String]) -> Result<LocalDaemonRequest, Daemon
                 id: id.clone(),
             }))
         }
-        _ => Err(meta_command_error("usage: credential <list|get> ...")),
+        Some("upsert-json") => {
+            let Some(json) = args.get(1) else {
+                return Err(meta_command_error(
+                    "usage: credential upsert-json <credential-json>",
+                ));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error(
+                    "usage: credential upsert-json <credential-json>",
+                ));
+            }
+            let credential = serde_json::from_str::<crate::config::UserCredentialConfig>(json)
+                .map_err(|error| {
+                    meta_command_error(format!("invalid credential JSON config: {error}"))
+                })?;
+            Ok(LocalDaemonRequest::UpsertCredential(
+                UpsertCredentialRequest { credential },
+            ))
+        }
+        Some("remove") => {
+            let Some(id) = args.get(1) else {
+                return Err(meta_command_error("usage: credential remove <id>"));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: credential remove <id>"));
+            }
+            Ok(LocalDaemonRequest::RemoveCredential(
+                RemoveCredentialRequest { id: id.clone() },
+            ))
+        }
+        Some("vault") => match args.get(1).map(String::as_str) {
+            Some("status") => Ok(LocalDaemonRequest::GetCredentialVaultStatus(
+                GetCredentialVaultStatusRequest,
+            )),
+            Some("manage") => Ok(LocalDaemonRequest::ManageCredentialVault(
+                ManageCredentialVaultRequest {
+                    session_id: session.id().to_string(),
+                    agent_id: Some(metaagent.id().to_string()),
+                },
+            )),
+            _ => Err(meta_command_error(
+                "usage: credential vault <status|manage>",
+            )),
+        },
+        _ => Err(meta_command_error(
+            "usage: credential <list|get|upsert-json|remove|vault> ...",
+        )),
     }
-}
-
-fn single_ref_arg(usage: &'static str, args: &[String]) -> Result<String, DaemonError> {
-    let Some(reference) = args.get(1) else {
-        return Err(meta_command_error(format!("usage: {usage} <ref>")));
-    };
-    if args.len() > 2 {
-        return Err(meta_command_error(format!("usage: {usage} <ref>")));
-    }
-    Ok(reference.clone())
 }
 
 fn meta_kernel_command(

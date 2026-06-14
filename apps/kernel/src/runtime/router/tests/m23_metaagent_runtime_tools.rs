@@ -458,11 +458,9 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(
-        owned_agents.iter().any(|agent| {
-            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
-        })
-    );
+    assert!(owned_agents
+        .iter()
+        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -1030,16 +1028,14 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(
-        session
-            .agents()
-            .iter()
-            .all(|agent| agent.id() != worker.id())
-    );
+    assert!(session
+        .agents()
+        .iter()
+        .all(|agent| agent.id() != worker.id()));
 }
 
 #[tokio::test]
-async fn metaagent_run_command_denies_slice_placement_but_routes_slice_management_policy() {
+async fn metaagent_run_command_denies_slice_placement_and_slice_management_policy() {
     let env = TestMetaRuntimeEnv::new("run-command-slice-policy");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -1100,10 +1096,16 @@ async fn metaagent_run_command_denies_slice_placement_but_routes_slice_managemen
             serde_json::json!({ "command": "slice list" }),
         )
         .await
-        .expect("slice list should dispatch through meta run_command");
-    assert!(slice_list.ok, "{:?}", slice_list.payload);
+        .expect("slice list should return a structured denial");
+    assert!(!slice_list.ok, "{:?}", slice_list.payload);
     assert!(
-        slice_list.payload.get("response").is_some(),
+        slice_list
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| {
+                message.contains("cannot manage slices") && message.contains("regular agents")
+            }),
         "{:?}",
         slice_list.payload
     );
@@ -1122,10 +1124,7 @@ async fn metaagent_run_command_denies_slice_placement_but_routes_slice_managemen
             .payload
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| {
-                message.contains("only `slice list`, `slice show`, `slice start`")
-                    && message.contains("slice backup")
-            }),
+            .is_some_and(|message| message.contains("cannot manage slices")),
         "{:?}",
         reset_state.payload
     );
@@ -1158,12 +1157,11 @@ async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
     app.sessions_mut()
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("collaborator should join session");
-    assert!(
-        app.sessions()
-            .get_session(&session_id)
-            .expect("session should remain")
-            .has_member("user-2")
-    );
+    assert!(app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should remain")
+        .has_member("user-2"));
 
     let owner_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-worker"))
@@ -1619,7 +1617,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         Some(true)
     );
 
-    for command in ["mcp list", "skill list", "credential list", "slice list"] {
+    for command in ["mcp list", "skill list", "credential list"] {
         let routed = router
             .dispatch_authenticated_runtime_tool_call(
                 &meta_auth_token,
@@ -1632,6 +1630,27 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .expect("safe registered commands should dispatch");
         assert!(routed.ok, "{command}: {:?}", routed.payload);
     }
+
+    let slice_denied = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "slice list"
+            }),
+        )
+        .await
+        .expect("slice commands should return structured denials");
+    assert!(!slice_denied.ok);
+    assert!(
+        slice_denied
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("cannot manage slices")),
+        "{:?}",
+        slice_denied.payload
+    );
 
     let not_routed = router
         .dispatch_authenticated_runtime_tool_call(
@@ -1649,7 +1668,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .payload
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("only `mcp list`")),
+            .is_some_and(|message| message.contains("mcp install-json")),
         "{:?}",
         not_routed.payload
     );
