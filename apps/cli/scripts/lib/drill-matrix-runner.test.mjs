@@ -233,6 +233,9 @@ test("writes artifact index for matrix reports", async () => {
 
   const index = await verifyDrillArtifactIndex(artifactIndexPath)
   assert.equal(index.metadata.matrix, "test-matrix")
+  assert.equal(index.metadata.status, "passed")
+  assert.equal(index.metadata.dryRun, false)
+  assert.equal(index.metadata.scenarios, 1)
   assert.deepEqual(index.artifacts.map((artifact) => ({
     path: artifact.path,
     schema: artifact.schema,

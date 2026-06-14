@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process"
-import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
+import { writeDrillJsonArtifactOutput } from "./drill-artifacts.mjs"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
@@ -312,16 +311,17 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     })),
   }
   validateDrillMatrixReport(report, reportPath)
-  await mkdir(path.dirname(reportPath), { recursive: true })
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
-  if (artifactIndexPath) {
-    await writeDrillArtifactIndex({
-      rootDir: path.dirname(reportPath),
-      artifacts: [path.basename(reportPath)],
-      indexPath: artifactIndexPath,
-      metadata: { matrix: matrixName },
-    })
-  }
+  await writeDrillJsonArtifactOutput({
+    outputPath: reportPath,
+    artifactIndexPath,
+    value: report,
+    metadata: {
+      matrix: matrixName,
+      status: report.status,
+      dryRun: report.dryRun,
+      scenarios: report.scenarios.length,
+    },
+  })
   console.log(`[${matrixName}] report ${reportPath}`)
 }
 
