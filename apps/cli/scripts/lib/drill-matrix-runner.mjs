@@ -17,6 +17,7 @@ export function selectDrillMatrixScenarios({
   enabledRequirements = new Set(),
   requirementLabels = {},
 }) {
+  validateDrillMatrixScenarioDefinitions(scenarios, { requireDescription: false })
   const known = new Map(scenarios.map((scenario) => [scenario.id, scenario]))
   const selected = requestedIds
     ? requestedIds.map((id) => {
@@ -71,12 +72,15 @@ export async function runDrillMatrix({
   reportPath = null,
   metadata = {},
 }) {
+  validateDrillMatrixScenarioDefinitions(scenarios)
+  validateCommandFactory(commandForScenario)
   const startedAt = new Date()
   console.log(`[${matrixName}] selected ${scenarios.map((scenario) => scenario.id).join(", ")}`)
   if (dryRun) {
     const results = []
     for (const scenario of scenarios) {
       const { command, args } = commandForScenario(scenario)
+      validateMatrixScenarioCommand({ command, args }, `${scenario.id} command`)
       console.log(`[${matrixName}] dry-run ${scenario.id}: ${quoteDrillCommand(command, args)}`)
       results.push({
         scenario,
@@ -132,6 +136,7 @@ export async function runDrillMatrix({
 async function runMatrixScenario({ matrixName, scenario, commandForScenario, cwd }) {
   const start = Date.now()
   const { command, args } = commandForScenario(scenario)
+  validateMatrixScenarioCommand({ command, args }, `${scenario.id} command`)
   console.log(`[${matrixName}] start ${scenario.id}: ${scenario.description}`)
   console.log(`[${matrixName}] command ${quoteDrillCommand(command, args)}`)
 
@@ -181,8 +186,76 @@ async function runMatrixScenario({ matrixName, scenario, commandForScenario, cwd
   return { scenario, ok: false, durationMs, reason, classification, command, args, artifactHints: extractDrillArtifactHints(failureOutput) }
 }
 
+export function validateDrillMatrixScenarioDefinitions(scenarios, { requireDescription = true } = {}) {
+  if (!Array.isArray(scenarios)) {
+    throw new Error("matrix scenarios must be an array")
+  }
+  if (scenarios.length === 0) {
+    throw new Error("matrix scenarios must not be empty")
+  }
+  const seen = new Set()
+  for (const [index, scenario] of scenarios.entries()) {
+    const source = `matrix scenarios[${index}]`
+    if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) {
+      throw new Error(`${source} is not an object`)
+    }
+    if (!nonEmptyString(scenario.id)) {
+      throw new Error(`${source} is missing id`)
+    }
+    if (seen.has(scenario.id)) {
+      throw new Error(`duplicate matrix scenario id: ${scenario.id}`)
+    }
+    seen.add(scenario.id)
+    if (requireDescription && !nonEmptyString(scenario.description)) {
+      throw new Error(`${source} is missing description`)
+    }
+    if (scenario.requires !== undefined && (
+      !Array.isArray(scenario.requires)
+      || !scenario.requires.every((requirement) => nonEmptyString(requirement))
+    )) {
+      throw new Error(`${source} has invalid requires`)
+    }
+    if (scenario.exitCriteria !== undefined && !validExitCriteriaDefinition(scenario.exitCriteria)) {
+      throw new Error(`${source} has invalid exitCriteria`)
+    }
+    if (scenario.expectedFailure !== undefined && typeof scenario.expectedFailure !== "boolean") {
+      throw new Error(`${source} has invalid expectedFailure`)
+    }
+    if (scenario.expectedOutputIncludes !== undefined && !nonEmptyString(scenario.expectedOutputIncludes)) {
+      throw new Error(`${source} has invalid expectedOutputIncludes`)
+    }
+  }
+}
+
+function validateCommandFactory(commandForScenario) {
+  if (typeof commandForScenario !== "function") {
+    throw new Error("matrix commandForScenario must be a function")
+  }
+}
+
+function validateMatrixScenarioCommand(commandSpec, source) {
+  if (!commandSpec || typeof commandSpec !== "object" || Array.isArray(commandSpec)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!nonEmptyString(commandSpec.command)) {
+    throw new Error(`${source} is missing command`)
+  }
+  if (!Array.isArray(commandSpec.args) || !commandSpec.args.every((arg) => typeof arg === "string")) {
+    throw new Error(`${source} has invalid args`)
+  }
+}
+
 function requirementsFor(scenario) {
   return Array.isArray(scenario.requires) ? scenario.requires : []
+}
+
+function validExitCriteriaDefinition(value) {
+  if (typeof value === "string") return value.trim().length > 0
+  return Array.isArray(value) && value.every((criterion) => nonEmptyString(criterion))
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0
 }
 
 function exitCriteriaFor(scenario) {

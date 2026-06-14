@@ -60,6 +60,8 @@ Required scenario fields:
 - `command`, `args`.
 - `artifactHints`: optional paths to preserved artifact roots or failure manifests discovered from child drill output.
 
+Matrix runners preflight selected scenario definitions before spawning child drills. Scenario ids must be unique and non-empty, selected scenarios must include descriptions, `requires` and `exitCriteria` must be string arrays or valid strings where supported, and `commandForScenario` must return a non-empty command with string args.
+
 Scenario outcome fields must be internally consistent. Failed scenarios require a non-empty `reason` and `classification` so CI can route the failure. Skipped scenarios require a non-empty `reason` and zero `durationMs`. Dry-run scenarios require zero `durationMs` and must not include a `reason` or `classification`. Passed scenarios must not include a `reason`.
 
 Reports must not include credentials, relay tokens, provider tokens, prompt bodies, file contents, or unredacted connector payloads. If a drill needs detailed failure output, preserve the artifact directory and record a pointer in the failure manifest instead of embedding sensitive logs in the matrix report.

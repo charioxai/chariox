@@ -11,6 +11,7 @@ import {
   quoteDrillCommand,
   runDrillMatrix,
   selectDrillMatrixScenarios,
+  validateDrillMatrixScenarioDefinitions,
 } from "./drill-matrix-runner.mjs"
 
 test("parses comma-separated scenario ids", () => {
@@ -43,6 +44,71 @@ test("selects default scenarios by enabled requirements", () => {
     }),
     /hetzner requires --include-hetzner/,
   )
+})
+
+test("validates matrix scenario definitions", () => {
+  validateDrillMatrixScenarioDefinitions([{
+    id: "local",
+    description: "local scenario",
+    requires: ["remote"],
+    exitCriteria: ["runtime path is exercised"],
+    expectedFailure: false,
+  }])
+
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([]), /must not be empty/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "one", description: "first" }, { id: "one", description: "second" }]), /duplicate matrix scenario id/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "", description: "missing id" }]), /missing id/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local" }]), /missing description/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad requires", requires: [1] }]), /invalid requires/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad criteria", exitCriteria: [""] }]), /invalid exitCriteria/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad expected failure", expectedFailure: "yes" }]), /invalid expectedFailure/)
+  assert.throws(() => validateDrillMatrixScenarioDefinitions([{ id: "local", description: "bad expected output", expectedOutputIncludes: "" }]), /invalid expectedOutputIncludes/)
+
+  assert.doesNotThrow(() => validateDrillMatrixScenarioDefinitions([{ id: "selection-only" }], { requireDescription: false }))
+})
+
+test("rejects malformed selected matrix scenarios before running", async () => {
+  const dir = await fixtureDir()
+  let called = false
+
+  await assert.rejects(
+    () => runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{ id: "bad" }],
+      commandForScenario: () => {
+        called = true
+        return { command: process.execPath, args: ["should-not-run.mjs"] }
+      },
+      cwd: dir,
+    }),
+    /missing description/,
+  )
+  assert.equal(called, false)
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("rejects malformed matrix commands before spawning", async () => {
+  const dir = await fixtureDir()
+
+  await assert.rejects(
+    () => runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{ id: "bad-command", description: "bad command" }],
+      commandForScenario: () => ({ command: "", args: [] }),
+      cwd: dir,
+    }),
+    /bad-command command is missing command/,
+  )
+  await assert.rejects(
+    () => runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{ id: "bad-args", description: "bad args" }],
+      commandForScenario: () => ({ command: process.execPath, args: [1] }),
+      cwd: dir,
+    }),
+    /bad-args command has invalid args/,
+  )
+  await rm(dir, { recursive: true, force: true })
 })
 
 test("quotes commands consistently", () => {
