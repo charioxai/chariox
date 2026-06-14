@@ -165,7 +165,7 @@ function parseArgs(argv) {
       options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
     } else if (arg.startsWith("--")) {
       const requirementIndex = parseValidationGateRequirementArg(argv, index, options, {
-        presetFlag: "--distributed-runtime-gate-does-not-accept-preset",
+        presetFlag: null,
       })
       if (requirementIndex !== null) {
         index = requirementIndex

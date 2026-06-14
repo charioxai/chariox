@@ -52,6 +52,21 @@ test("parses aggregate preset requirements with custom key", () => {
   assert.deepEqual(options.requiredProviders, [])
 })
 
+test("parses requirement arguments without accepting a preset flag", () => {
+  const options = validationGateRequirementOptionDefaults()
+  let index = parseValidationGateRequirementArg(
+    ["--require-runtime-signal", "session-authority"],
+    0,
+    options,
+    { presetFlag: null },
+  )
+  assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--preset", "workspace-live-sync"], 0, options, { presetFlag: null })
+  assert.equal(index, null)
+  assert.deepEqual(options.presets, [])
+  assert.deepEqual(options.requiredRuntimeSignals, ["session-authority"])
+})
+
 test("rejects missing validation gate requirement values", () => {
   const options = validationGateRequirementOptionDefaults()
   assert.throws(

@@ -32,11 +32,11 @@ export function parseValidationGateRequirementArg(
   { presetFlag = "--preset", presetKey = "presets" } = {},
 ) {
   const arg = argv[index]
-  if (arg === presetFlag) {
+  if (presetFlag && arg === presetFlag) {
     options[presetKey].push(requiredArgValue(argv, index, presetFlag))
     return index + 1
   }
-  if (arg.startsWith(`${presetFlag}=`)) {
+  if (presetFlag && arg.startsWith(`${presetFlag}=`)) {
     options[presetKey].push(arg.slice(`${presetFlag}=`.length))
     return index
   }
