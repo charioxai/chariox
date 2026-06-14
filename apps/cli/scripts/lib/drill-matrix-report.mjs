@@ -68,6 +68,7 @@ export function validateDrillMatrixReport(report, source = "report") {
     validateDrillMatrixScenario(scenario, `${source}.scenarios[${index}]`)
   }
   validateDrillMatrixReportConsistency(report, source)
+  validateScenarioProviderMetadataConsistency(report, source)
 }
 
 function validateDrillMatrixReportConsistency(report, source) {
@@ -483,6 +484,9 @@ function validateDrillMatrixScenario(scenario, source) {
   if (scenario.runtimeSignals !== undefined) {
     validateRuntimeSignals(scenario.runtimeSignals, `${source}.runtimeSignals`)
   }
+  if (scenario.providers !== undefined) {
+    validateProviderList(scenario.providers, `${source}.providers`)
+  }
   validateDrillMatrixScenarioOutcome(scenario, source)
 }
 
@@ -863,6 +867,16 @@ function validateProviderMetadata(metadata, source) {
   }
 }
 
+function validateScenarioProviderMetadataConsistency(report, source) {
+  if (!report.scenarios.some((scenario) => scenario.providers !== undefined)) return
+  const metadataProviders = providersForReport(report)
+  if (metadataProviders.length === 0) return
+  const scenarioProviders = [...new Set(report.scenarios.flatMap((scenario) => scenario.providers ?? []))].sort()
+  if (JSON.stringify(metadataProviders) !== JSON.stringify(scenarioProviders)) {
+    throw new Error(`${source}.metadata.providers do not match scenario providers`)
+  }
+}
+
 function validateMatrixAggregateReportCounts(counts, source) {
   if (!counts || typeof counts !== "object" || Array.isArray(counts)) {
     throw new Error(`${source} is missing`)
@@ -1000,6 +1014,12 @@ function validateRuntimeSignals(value, source) {
     if (!isKnownDrillRuntimeSignal(signal)) {
       throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
     }
+  }
+}
+
+function validateProviderList(value, source) {
+  if (!Array.isArray(value) || !value.every(nonEmptyString)) {
+    throw new Error(`${source} has invalid providers`)
   }
 }
 

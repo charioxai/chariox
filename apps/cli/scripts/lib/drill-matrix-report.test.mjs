@@ -601,6 +601,20 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     metadata: { providers: "codex", providerModelOverrides: "opencode" },
   }), /metadata\.providerModelOverrides includes provider not in providers/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      metadata: { providers: "codex,opencode", providerCount: 2 },
+      scenarios: [scenario("local", "passed", { providers: ["codex", ""] })],
+    }),
+  }), /scenarios\[0\]\.providers has invalid providers/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      metadata: { providers: "codex,opencode", providerCount: 2 },
+      scenarios: [scenario("local", "passed", { providers: ["codex"] })],
+    }),
+  }), /metadata\.providers do not match scenario providers/)
 })
 
 function matrixReport(overrides = {}) {
