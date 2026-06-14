@@ -487,6 +487,12 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   if (aggregate.totals.reports !== aggregate.reports.length) {
     throw new Error("aggregate report total does not match reports")
   }
+  const reportTotals = sumMatrixAggregateReportEntries(aggregate.reports)
+  for (const key of ["scenarios", "passed", "failed", "skipped", "dryRun", "durationMs"]) {
+    if (aggregate.totals[key] !== reportTotals[key]) {
+      throw new Error(`aggregate totals.${key} does not match reports`)
+    }
+  }
   if (aggregate.totals.failed !== aggregate.failedScenarios.length) {
     throw new Error("aggregate failed total does not match failedScenarios")
   }
@@ -540,6 +546,28 @@ function validateMatrixAggregateReport(report, source) {
   if (report.source !== null && report.source !== undefined && !nonEmptyString(report.source)) {
     throw new Error(`${source} has invalid source`)
   }
+  if (!["passed", "failed", "dry-run"].includes(report.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
+  }
+  if (!Number.isFinite(report.scenarioCount) || report.scenarioCount < 0) {
+    throw new Error(`${source} has invalid scenarioCount`)
+  }
+  validateMatrixAggregateReportCounts(report.counts, `${source}.counts`)
+  if (!Number.isFinite(report.durationMs) || report.durationMs < 0) {
+    throw new Error(`${source} has invalid durationMs`)
+  }
+  const scenarioCount = report.counts.passed + report.counts.failed + report.counts.skipped + report.counts.dryRun
+  if (report.scenarioCount !== scenarioCount) {
+    throw new Error(`${source} scenarioCount does not match counts`)
+  }
+  const expectedStatus = report.counts.failed > 0
+    ? "failed"
+    : report.scenarioCount > 0 && report.counts.dryRun === report.scenarioCount
+      ? "dry-run"
+      : "passed"
+  if (report.status !== expectedStatus) {
+    throw new Error(`${source} status does not match counts`)
+  }
 }
 
 function validateMatrixAggregateScenario(scenario, source) {
@@ -568,6 +596,36 @@ function validateReportMetadata(value, source) {
     throw new Error(`${source} must be an object`)
   }
   validateReportMetadataValue(value, source)
+}
+
+function validateMatrixAggregateReportCounts(counts, source) {
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) {
+    throw new Error(`${source} is missing`)
+  }
+  for (const key of ["passed", "failed", "skipped", "dryRun"]) {
+    if (!Number.isFinite(counts[key]) || counts[key] < 0) {
+      throw new Error(`${source} has invalid ${key}`)
+    }
+  }
+}
+
+function sumMatrixAggregateReportEntries(reports) {
+  return reports.reduce((totals, report) => {
+    totals.scenarios += report.scenarioCount
+    totals.passed += report.counts.passed
+    totals.failed += report.counts.failed
+    totals.skipped += report.counts.skipped
+    totals.dryRun += report.counts.dryRun
+    totals.durationMs += report.durationMs
+    return totals
+  }, {
+    scenarios: 0,
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    dryRun: 0,
+    durationMs: 0,
+  })
 }
 
 function validateReportMetadataValue(value, source, key = "") {

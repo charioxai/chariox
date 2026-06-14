@@ -191,6 +191,31 @@ test("rejects inconsistent matrix aggregates", () => {
   }), /scenario total does not match status counts/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
+    totals: { ...aggregate.totals, scenarios: 2, failed: 2 },
+  }), /totals.scenarios does not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      counts: { ...aggregate.reports[0].counts, failed: 2 },
+    }],
+  }), /reports\[0\] scenarioCount does not match counts/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      status: "passed",
+    }],
+  }), /reports\[0\] status does not match counts/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      counts: { ...aggregate.reports[0].counts, failed: -1 },
+    }],
+  }), /reports\[0\]\.counts has invalid failed/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
     owners: { "runtime-network": 1 },
   }), /owners do not match failedScenarios/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
