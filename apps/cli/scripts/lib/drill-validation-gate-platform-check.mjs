@@ -73,6 +73,11 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
       id: area.id,
       testCount: area.testCount,
     })),
+    validationPresets: (suite.validationPresets ?? []).map((preset) => ({
+      name: preset.name,
+      requiredMatrices: [...(preset.requiredMatrices ?? [])],
+      requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
+    })),
   }
 }
 

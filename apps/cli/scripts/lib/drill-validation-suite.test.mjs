@@ -8,6 +8,7 @@ import {
   drillValidationSuiteCommand,
   drillValidationSuiteManifest,
   findMissingDrillValidationSuitePaths,
+  normalizeValidationSuitePresetContracts,
   validateValidationSuiteCoverage,
   validationSuiteCoverage,
 } from "./drill-validation-suite.mjs"
@@ -81,6 +82,11 @@ test("builds shared drill validation suite manifest", () => {
       description: "sample coverage",
       testPaths: ["one.test.mjs", "two words.test.mjs"],
     }],
+    validationPresets: [{
+      name: "sample-preset",
+      description: "sample preset",
+      requiredMatrices: ["sample-matrix"],
+    }],
   }), {
     schema: "arroba.drill.validation_suite.v1",
     testCount: 2,
@@ -91,8 +97,43 @@ test("builds shared drill validation suite manifest", () => {
       testCount: 2,
       testPaths: ["one.test.mjs", "two words.test.mjs"],
     }],
+    validationPresets: [{
+      name: "sample-preset",
+      description: "sample preset",
+      requiredPlatformCoverageAreas: [],
+      requiredFailureClassifications: [],
+      requiredMatrices: ["sample-matrix"],
+      requiredMatrixClassifications: [],
+      requiredDeploymentPresets: [],
+      requiredProviders: [],
+      requiredScenarios: [],
+    }],
     testPaths: ["one.test.mjs", "two words.test.mjs"],
   })
+})
+
+test("normalizes validation suite preset contracts", () => {
+  assert.deepEqual(normalizeValidationSuitePresetContracts([{
+    name: "workspace-live-sync",
+    description: "Workspace Live Sync",
+    requiredPlatformCoverageAreas: ["runtime-fixtures", "matrix-validation", "matrix-validation"],
+    requiredMatrices: ["workspace-live-sync-matrix"],
+  }]), [{
+    name: "workspace-live-sync",
+    description: "Workspace Live Sync",
+    requiredPlatformCoverageAreas: ["matrix-validation", "runtime-fixtures"],
+    requiredFailureClassifications: [],
+    requiredMatrices: ["workspace-live-sync-matrix"],
+    requiredMatrixClassifications: [],
+    requiredDeploymentPresets: [],
+    requiredProviders: [],
+    requiredScenarios: [],
+  }])
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad",
+    description: "bad",
+    requiredMatrices: "matrix",
+  }]), /requiredMatrices must be an array/)
 })
 
 test("finds missing shared drill validation suite paths", async () => {

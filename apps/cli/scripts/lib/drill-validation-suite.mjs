@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises"
 import path from "node:path"
+import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/drill-artifact-index-summary.test.mjs",
@@ -128,6 +129,7 @@ export function drillValidationSuiteManifest({
   schema = "arroba.drill.validation_suite.v1",
   testPaths = SHARED_DRILL_TEST_PATHS,
   coverageAreas = DRILL_VALIDATION_COVERAGE_AREAS,
+  validationPresets = describeDrillValidationGatePresets(),
 } = {}) {
   const coverage = validationSuiteCoverage({ coverageAreas, testPaths })
   return {
@@ -135,6 +137,7 @@ export function drillValidationSuiteManifest({
     testCount: testPaths.length,
     command: drillValidationSuiteCommand({ nodeCommand, testPaths }),
     coverage,
+    validationPresets: normalizeValidationSuitePresetContracts(validationPresets),
     testPaths: [...testPaths],
   }
 }
@@ -184,6 +187,50 @@ export function validateValidationSuiteCoverage({
   if (missingCoverage.length > 0) {
     throw new Error(`validation suite tests missing coverage areas: ${missingCoverage.join(", ")}`)
   }
+}
+
+export function normalizeValidationSuitePresetContracts(validationPresets) {
+  if (!Array.isArray(validationPresets)) {
+    throw new Error("validation suite presets must be an array")
+  }
+  return validationPresets.map((preset, index) => normalizeValidationSuitePresetContract(preset, index))
+    .sort((left, right) => left.name.localeCompare(right.name))
+}
+
+function normalizeValidationSuitePresetContract(preset, index) {
+  if (!preset || typeof preset !== "object" || Array.isArray(preset)) {
+    throw new Error(`validation suite preset ${index} is not an object`)
+  }
+  if (typeof preset.name !== "string" || preset.name.length === 0) {
+    throw new Error(`validation suite preset ${index} has invalid name`)
+  }
+  if (typeof preset.description !== "string" || preset.description.length === 0) {
+    throw new Error(`validation suite preset ${preset.name} has invalid description`)
+  }
+  return {
+    name: preset.name,
+    description: preset.description,
+    requiredPlatformCoverageAreas: sortedStringArray(preset.requiredPlatformCoverageAreas, `${preset.name}.requiredPlatformCoverageAreas`),
+    requiredFailureClassifications: sortedStringArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
+    requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
+    requiredMatrixClassifications: sortedStringArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),
+    requiredDeploymentPresets: sortedStringArray(preset.requiredDeploymentPresets, `${preset.name}.requiredDeploymentPresets`),
+    requiredProviders: sortedStringArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
+    requiredScenarios: sortedStringArray(preset.requiredScenarios, `${preset.name}.requiredScenarios`),
+  }
+}
+
+function sortedStringArray(value, source) {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    throw new Error(`validation suite preset ${source} must be an array`)
+  }
+  for (const item of value) {
+    if (typeof item !== "string" || item.length === 0) {
+      throw new Error(`validation suite preset ${source} has invalid entry`)
+    }
+  }
+  return [...new Set(value)].sort()
 }
 
 export async function findMissingDrillValidationSuitePaths({

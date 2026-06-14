@@ -52,6 +52,14 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
     assert.deepEqual(check.missingCoverageAreas, [])
     assert.deepEqual(check.missingFailureClassifications, [])
     assert.equal(check.validationSuite.coverageAreas.some((area) => area.id === "matrix-validation"), true)
+    assert.deepEqual(check.validationSuite.validationPresets.map((preset) => preset.name), [
+      "remote-home-extension",
+      "workspace-live-sync",
+    ])
+    assert.deepEqual(
+      check.validationSuite.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,
+      ["workspace-live-sync-matrix"],
+    )
     assert.equal(check.failureTaxonomy.drill.includes("kernel-authority"), true)
     assert.equal(check.failureTaxonomy.scenario.includes("workspace-live-sync-conflict"), true)
     assert.equal(check.artifacts.length > 0, true)

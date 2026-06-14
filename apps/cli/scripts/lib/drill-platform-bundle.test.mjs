@@ -49,6 +49,14 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       "runtime-fixtures",
       "suite-contract",
     ])
+    assert.deepEqual(validationSuite.validationPresets.map((preset) => preset.name), [
+      "remote-home-extension",
+      "workspace-live-sync",
+    ])
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "remote-home-extension").requiredMatrices,
+      ["remote-home-extension-matrix"],
+    )
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -172,6 +180,28 @@ test("rejects validation suite coverage count drift", async () => {
     await assert.rejects(
       verifyDrillPlatformBundle(rootDir),
       /testCount does not match testPaths/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects validation suite preset contract drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const suitePath = path.join(rootDir, "validation-suite.json")
+    const suite = JSON.parse(await readFile(suitePath, "utf8"))
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "workspace-live-sync"
+        ? { ...preset, requiredMatrices: "workspace-live-sync-matrix" }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredMatrices must be an array/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })

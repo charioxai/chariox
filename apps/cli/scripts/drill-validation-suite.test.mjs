@@ -42,6 +42,14 @@ test("drill validation suite prints coverage manifest", async () => {
     "runtime-fixtures",
     "suite-contract",
   ])
+  assert.deepEqual(manifest.validationPresets.map((preset) => preset.name), [
+    "remote-home-extension",
+    "workspace-live-sync",
+  ])
+  assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,
+    ["workspace-live-sync-matrix"],
+  )
   assert.match(manifest.command, /^node --test /)
 })
 

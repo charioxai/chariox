@@ -11,6 +11,7 @@ import {
 import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import {
   drillValidationSuiteManifest,
+  normalizeValidationSuitePresetContracts,
   validateValidationSuiteCoverage,
 } from "./drill-validation-suite.mjs"
 
@@ -148,6 +149,7 @@ function validateValidationSuiteArtifact(contents) {
   if (!Array.isArray(contents.coverage) || contents.coverage.length === 0) {
     throw new Error("validation-suite.json has invalid coverage")
   }
+  normalizeValidationSuitePresetContracts(contents.validationPresets)
   validateValidationSuiteCoverage({
     coverageAreas: contents.coverage.map((area) => ({
       id: area?.id,

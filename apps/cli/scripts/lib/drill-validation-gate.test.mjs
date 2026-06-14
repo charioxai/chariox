@@ -62,6 +62,18 @@ test("passes with valid platform bundle and complete matrix reports", async () =
         { id: "runtime-fixtures", testCount: 7 },
         { id: "suite-contract", testCount: 2 },
       ],
+      validationPresets: [
+        {
+          name: "remote-home-extension",
+          requiredMatrices: ["remote-home-extension-matrix"],
+          requiredFailureClassifications: ["kernel-authority", "remote-extension-sync", "worker-execution"],
+        },
+        {
+          name: "workspace-live-sync",
+          requiredMatrices: ["workspace-live-sync-matrix"],
+          requiredFailureClassifications: ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
+        },
+      ],
     })
     assert.equal(report.checks.platformBundle.failureTaxonomy.drill.includes("kernel-authority"), true)
     assert.equal(report.checks.platformBundle.failureTaxonomy.scenario.includes("remote-extension-sync"), true)
