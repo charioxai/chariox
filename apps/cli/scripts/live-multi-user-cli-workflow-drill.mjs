@@ -6,6 +6,7 @@ import { access, mkdir, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -17,6 +18,10 @@ const RELAY_SECRET = 'arroba-multi-user-cli-workflow-drill-secret'
 const RELAY_REALM = 'multi-user-cli-workflow-drill'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
@@ -196,6 +201,17 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
+function spawnObserved(label, command, args, options) {
+  const child = spawn(command, args, options)
+  const startupError = new Promise((_, reject) => {
+    child.once('error', (error) => {
+      reject(new Error(`${label} failed to start: ${error.message}`))
+    })
+  })
+  startupError.catch(() => {})
+  return { child, startupError }
+}
+
 async function waitForSocket(socketPath) {
   const deadline = Date.now() + 25_000
   let lastError = null
@@ -308,12 +324,12 @@ function startCli({ cliPath, env, relayUrl, relayToken, daemonAlias, socketPath,
   }
   if (createSession) args.push('--create-session')
   if (sessionId) args.push('--session', sessionId)
-  const child = spawn('script', args, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const { child, startupError } = spawnObserved('cli', 'script', args, { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
   child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
-  return { child, stdout: () => stdout, stderr: () => stderr }
+  return { child, startupError, stdout: () => stdout, stderr: () => stderr }
 }
 
 async function waitForWorkflowGraph(automation, workflowId, alias, expectedNodes, expectedEdges, label, expectedEndpoints = null) {
@@ -363,25 +379,21 @@ async function expectAutomationReject(promise, label, expectedText) {
 
 async function main() {
   const options = parseArgs()
-  const rootDir = path.join(os.tmpdir(), `arroba-multi-user-cli-workflow-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-multi-user-cli-workflow-drill', nowStamp())
   const workspace = path.join(rootDir, 'workspace')
   const home1 = path.join(rootDir, 'home-user-1')
   const home2 = path.join(rootDir, 'home-user-2')
   const socket1 = path.join(os.tmpdir(), `arroba-cli-user1-${process.pid}-${Date.now()}.sock`)
   const socket2 = path.join(os.tmpdir(), `arroba-cli-user2-${process.pid}-${Date.now()}.sock`)
-  await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+  await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
   await mkdir(home1, { recursive: true })
   await mkdir(home2, { recursive: true })
 
-  const [{ LocalIpcClient }, requests] = await Promise.all([
-    import('../../../packages/kernel-client/dist/ipc.js'),
-    import('../../../packages/kernel-client/dist/ipc-requests.js'),
-  ])
-  const cliPath = await requireBuiltCli()
-  const kernelPath = await buildKernelIfNeeded()
   const ports = makePorts()
   const envs = makeEnv(ports, rootDir)
+  let LocalIpcClient = null
+  let requests = null
   let relay = null
   let relayTunnel = null
   let daemon = null
@@ -392,7 +404,25 @@ async function main() {
   let apiClient = null
   let joinClient = null
   let sessionId = null
+  let passed = false
+  let failure = null
+  let workflowId = null
+  let node1Id = null
+  let node2Id = null
+  let edgeId = null
+  let endpointId = null
+  let workflowRunId = null
+  let final1 = null
+  let final2 = null
+  let resolved = null
   try {
+    ;([{ LocalIpcClient }, requests] = await Promise.all([
+      import('../../../packages/kernel-client/dist/ipc.js'),
+      import('../../../packages/kernel-client/dist/ipc-requests.js'),
+    ]))
+    const cliPath = await requireBuiltCli()
+    const kernelPath = await buildKernelIfNeeded()
+    const startupChecks = []
     if (options.hetznerRelay) {
       const remoteRelayCheck = await runCommand('ssh', sshArgs(options, [
         `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
@@ -400,7 +430,7 @@ async function main() {
       if (remoteRelayCheck.code !== 0) {
         throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
       }
-      relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
+      const relayProcess = spawnObserved('hetzner relay', 'ssh', sshArgs(options, remoteEnvCommand({
         ARROBA_REMOTE_REPO: options.hetznerRepo,
         ARROBA_RELAY_HOST: '127.0.0.1',
         ARROBA_RELAY_PORT: String(ports.relayPort),
@@ -409,7 +439,9 @@ async function main() {
       }, './apps/relay/target/debug/arroba-relay')), {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
-      relayTunnel = spawn('ssh', [
+      relay = relayProcess.child
+      startupChecks.push(relayProcess.startupError)
+      const tunnelProcess = spawnObserved('relay tunnel', 'ssh', [
         '-i',
         options.hetznerKey,
         '-o',
@@ -423,15 +455,24 @@ async function main() {
       ], {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
+      relayTunnel = tunnelProcess.child
+      startupChecks.push(tunnelProcess.startupError)
     } else {
-      relay = spawn('cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
+      const relayProcess = spawnObserved('relay', 'cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
         cwd: repoRoot,
         env: envs.relayEnv,
         stdio: ['ignore', 'ignore', 'inherit'],
       })
+      relay = relayProcess.child
+      startupChecks.push(relayProcess.startupError)
     }
-    daemon = spawn(kernelPath, [], { cwd: repoRoot, env: envs.daemonEnv, stdio: ['ignore', 'ignore', 'inherit'] })
-    await waitForRelayTarget(LocalIpcClient, requests, envs.relayUrl, envs.daemonAlias)
+    const daemonProcess = spawnObserved('kernel', kernelPath, [], { cwd: repoRoot, env: envs.daemonEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+    daemon = daemonProcess.child
+    startupChecks.push(daemonProcess.startupError)
+    await Promise.race([
+      waitForRelayTarget(LocalIpcClient, requests, envs.relayUrl, envs.daemonAlias),
+      ...startupChecks,
+    ])
     log('relay-target-ready', { relayUrl: envs.relayUrl, daemonAlias: envs.daemonAlias })
 
     cli1 = startCli({
@@ -445,7 +486,10 @@ async function main() {
       clientId: `cli-user-1-${process.pid}`,
       createSession: true,
     })
-    await waitForSocket(socket1).catch((error) => {
+    await Promise.race([
+      waitForSocket(socket1),
+      cli1.startupError,
+    ]).catch((error) => {
       throw new Error(`${error.message}\n--- cli1 stdout ---\n${cli1.stdout().slice(-4000)}\n--- cli1 stderr ---\n${cli1.stderr().slice(-4000)}`)
     })
     auto1 = automationClient(socket1)
@@ -482,11 +526,11 @@ async function main() {
     assert(agent1.result?.ok === true, 'user-1 CLI failed to spawn agent', agent1)
     const workflow = await auto1.send('workspace_shell_exec', { command: 'workflow new two-cli-flow as wf' })
     assert(workflow.result?.ok === true, 'user-1 CLI failed to create workflow', workflow)
-    const workflowId = workflow.result?.data?.workflow?.id ?? workflow.snapshot?.selectedWorkflowId
+    workflowId = workflow.result?.data?.workflow?.id ?? workflow.snapshot?.selectedWorkflowId
     assert(workflowId, 'workflow id missing after CLI workflow creation', workflow)
     const node1 = await auto1.send('workspace_shell_exec', { command: 'workflow node add $wf $u1 as n1' })
     assert(node1.result?.ok === true, 'user-1 CLI failed to add workflow node', node1)
-    const node1Id = node1.result?.data?.node?.id ?? node1.result?.context?.variables?.n1
+    node1Id = node1.result?.data?.node?.id ?? node1.result?.context?.variables?.n1
     assert(node1Id, 'user-1 node id missing', node1)
 
     cli2 = startCli({
@@ -501,7 +545,10 @@ async function main() {
       sessionId,
       launchProvider: false,
     })
-    await waitForSocket(socket2).catch((error) => {
+    await Promise.race([
+      waitForSocket(socket2),
+      cli2.startupError,
+    ]).catch((error) => {
       throw new Error(`${error.message}\n--- cli2 stdout ---\n${cli2.stdout().slice(-4000)}\n--- cli2 stderr ---\n${cli2.stderr().slice(-4000)}`)
     })
     auto2 = automationClient(socket2)
@@ -512,11 +559,11 @@ async function main() {
     assert(agent2.result?.ok === true, 'user-2 CLI failed to spawn agent', agent2)
     const node2 = await auto2.send('workspace_shell_exec', { command: `workflow node add ${workflowId} $u2 as n2` })
     assert(node2.result?.ok === true, 'user-2 CLI failed to add own workflow node to shared workflow', node2)
-    const node2Id = node2.result?.data?.node?.id ?? node2.result?.context?.variables?.n2
+    node2Id = node2.result?.data?.node?.id ?? node2.result?.context?.variables?.n2
     assert(node2Id, 'user-2 node id missing', node2)
     const edge = await auto2.send('workspace_shell_exec', { command: `workflow edge add ${workflowId} ${node1Id} ${node2Id}` })
     assert(edge.result?.ok === true, 'user-2 CLI failed to add cross-owner edge', edge)
-    const edgeId = edge.result?.data?.edge?.id ?? edge.result?.output?.match(/added workflow edge\s+(\S+)/)?.[1] ?? null
+    edgeId = edge.result?.data?.edge?.id ?? edge.result?.output?.match(/added workflow edge\s+(\S+)/)?.[1] ?? null
     assert(edgeId, 'edge id missing after user-2 cross-owner edge add', edge)
 
     const user1Api = new LocalIpcClient(envs.relayUrl, {
@@ -533,8 +580,8 @@ async function main() {
       edges: user1ApiWorkflow?.edges?.length ?? 0,
     })
 
-    const { snapshot: final1 } = await waitForWorkflowGraph(auto1, workflowId, 'two-cli-flow', 2, 1, 'user-1 CLI')
-    const { snapshot: final2 } = await waitForWorkflowGraph(auto2, workflowId, 'two-cli-flow', 2, 1, 'user-2 CLI')
+    ;({ snapshot: final1 } = await waitForWorkflowGraph(auto1, workflowId, 'two-cli-flow', 2, 1, 'user-1 CLI'))
+    ;({ snapshot: final2 } = await waitForWorkflowGraph(auto2, workflowId, 'two-cli-flow', 2, 1, 'user-2 CLI'))
 
     const removeEdge = await auto1.send('workspace_shell_exec', { command: `workflow edge remove ${workflowId} ${edgeId}` })
     assert(removeEdge.result?.ok === true, 'user-1 CLI failed to remove edge incident to its node', removeEdge)
@@ -543,7 +590,7 @@ async function main() {
 
     const endpoint = await auto1.send('workspace_shell_exec', { command: `workflow endpoint new ${workflowId} ${node1Id} user-one-entry` })
     assert(endpoint.result?.ok === true, 'user-1 CLI failed to create endpoint on its own node', endpoint)
-    const endpointId = endpoint.result?.data?.endpoint?.id ?? endpoint.result?.output?.match(/created workflow endpoint\s+(\S+)/)?.[1] ?? null
+    endpointId = endpoint.result?.data?.endpoint?.id ?? endpoint.result?.output?.match(/created workflow endpoint\s+(\S+)/)?.[1] ?? null
     assert(endpointId, 'endpoint id missing after user-1 endpoint create', endpoint)
     await waitForWorkflowGraph(auto1, workflowId, 'two-cli-flow', 2, 0, 'user-1 CLI after endpoint create', 1)
     await waitForWorkflowGraph(auto2, workflowId, 'two-cli-flow', 2, 0, 'user-2 CLI after endpoint create', 1)
@@ -556,7 +603,7 @@ async function main() {
 
     const run = await auto1.send('workspace_shell_exec', { command: `workflow run ${workflowId} ${endpointId} live-run-from-user-1` })
     assert(run.result?.ok === true, 'user-1 CLI failed to invoke its endpoint', run)
-    const workflowRunId = run.result?.data?.workflow_run?.id ?? run.result?.output?.match(/started workflow run\s+(\S+)/)?.[1] ?? null
+    workflowRunId = run.result?.data?.workflow_run?.id ?? run.result?.output?.match(/started workflow run\s+(\S+)/)?.[1] ?? null
     assert(workflowRunId, 'workflow run id missing after endpoint invocation', run)
     await waitForWorkflowRun(auto1, workflowId, 'user-1 CLI')
     await waitForWorkflowRun(auto2, workflowId, 'user-2 CLI')
@@ -568,7 +615,7 @@ async function main() {
       kernelMaxMissedPongs: 10,
     })
     const state = unwrap(await apiClient.send(requests.getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState').session
-    const resolved = state.workflows?.find((entry) => entry.id === workflowId)
+    resolved = state.workflows?.find((entry) => entry.id === workflowId)
     assert(resolved?.nodes?.length === 2 && resolved?.edges?.length === 0, 'API projection did not match CLI-created graph after edge removal', state)
 
     console.log(JSON.stringify({
@@ -594,12 +641,16 @@ async function main() {
         'endpoint owner invocation live-updates workflow run visibility in both CLIs',
       ],
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     await auto1?.send('exit').catch(() => {})
     await auto2?.send('exit').catch(() => {})
     auto1?.close()
     auto2?.close()
-    if (apiClient && sessionId) await apiClient.send(requests.endSessionRequest(sessionId)).catch(() => {})
+    if (apiClient && sessionId && requests) await apiClient.send(requests.endSessionRequest(sessionId)).catch(() => {})
     await apiClient?.close().catch(() => {})
     await joinClient?.close().catch(() => {})
     await terminateChild(cli1?.child)
@@ -607,7 +658,39 @@ async function main() {
     await terminateChild(daemon)
     await terminateChild(relay)
     await terminateChild(relayTunnel)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-multi-user-cli-workflow',
+        mode: options.hetznerRelay ? 'multi-user-cli-workflow-hetzner-relay' : 'multi-user-cli-workflow-relay',
+        relayUrl: envs.relayUrl,
+        daemonAlias: envs.daemonAlias,
+        sessionId,
+        workflowId,
+        nodeIds: [node1Id, node2Id].filter(Boolean),
+        removedEdgeId: edgeId,
+        endpointId,
+        workflowRunId,
+        finalSnapshots: {
+          user1WorkflowCount: final1?.workflows?.length ?? null,
+          user2WorkflowCount: final2?.workflows?.length ?? null,
+        },
+        resolvedWorkflow: resolved ? {
+          nodeCount: resolved.nodes?.length ?? 0,
+          edgeCount: resolved.edges?.length ?? 0,
+          endpointCount: resolved.endpoint_count ?? resolved.endpointCount ?? null,
+        } : null,
+        cliOutputTail: {
+          user1Stdout: cli1?.stdout().slice(-4000) ?? '',
+          user1Stderr: cli1?.stderr().slice(-4000) ?? '',
+          user2Stdout: cli2?.stdout().slice(-4000) ?? '',
+          user2Stderr: cli2?.stderr().slice(-4000) ?? '',
+        },
+      },
+    })
     await rm(socket1, { force: true }).catch(() => {})
     await rm(socket2, { force: true }).catch(() => {})
   }
