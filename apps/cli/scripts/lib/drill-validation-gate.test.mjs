@@ -1071,6 +1071,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactSchemas: {},
       requiredArtifactKinds: {},
       missingArtifactKinds: {},
+      requiredArtifactGeneratedEvidenceKinds: {},
+      missingArtifactGeneratedEvidenceKinds: {},
       requiredArtifactEvidenceRepos: {},
       missingArtifactEvidenceRepos: {},
       requiredArtifactRuntimeSignals: {},
@@ -1088,6 +1090,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       artifactOwners: {},
       artifactClassifications: {},
       artifactKinds: {},
+      artifactGeneratedEvidenceKinds: {},
       artifactEvidenceRepos: {},
       failureRuntimeSignals: {},
       failureRuntimeSignalOwners: {},
@@ -1132,8 +1135,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, generatedEvidenceKinds: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, generatedEvidenceKinds: {}, evidenceRepos: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },

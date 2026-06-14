@@ -288,6 +288,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactCoverageAreas: sortedStringArray(preset.requiredArtifactCoverageAreas, `${preset.name}.requiredArtifactCoverageAreas`),
     requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
     requiredArtifactKinds: sortedStringArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
+    requiredArtifactGeneratedEvidenceKinds: sortedStringArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
     requiredArtifactEvidenceRepos: sortedStringArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactRuntimeSignals: sortedStringArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
     requiredArtifactRuntimeSignalOwners: sortedStringArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),

@@ -88,6 +88,8 @@ node apps/cli/scripts/drill-validation-gate-summary.mjs \
   --require-generated-evidence-kind matrix-report
 ```
 
+When the evidence is consumed through artifact indexes instead of validation-gate reports, gate the same provenance at the artifact layer with `--require-artifact-generated-evidence-kind validation-suite-run --require-artifact-generated-evidence-kind matrix-report`.
+
 ## Cleanup
 
 Live drills should own their daemon/session/port/artifact lifecycle and clean up generated files on success. If a drill supports `--keep-artifacts-on-failure`, only leave artifacts behind on failure for debugging.

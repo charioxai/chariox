@@ -10,6 +10,7 @@ export function configurationValidationGateCheck({
   requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
+  requiredArtifactGeneratedEvidenceKinds = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
@@ -33,6 +34,7 @@ export function configurationValidationGateCheck({
     || requiredArtifactCoverageAreas.length > 0
     || requiredArtifactSchemas.length > 0
     || requiredArtifactKinds.length > 0
+    || requiredArtifactGeneratedEvidenceKinds.length > 0
     || requiredArtifactEvidenceRepos.length > 0
     || requiredArtifactRuntimeSignals.length > 0
     || requiredArtifactRuntimeSignalOwners.length > 0

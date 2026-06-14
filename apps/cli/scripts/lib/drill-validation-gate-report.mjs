@@ -111,6 +111,8 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactSchemas ?? [], `${source}.missingArtifactSchemas`)
   validateStringArray(check.requiredArtifactKinds ?? [], `${source}.requiredArtifactKinds`)
   validateStringArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
+  validateStringArray(check.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
+  validateStringArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateStringArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateStringArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateStringArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)

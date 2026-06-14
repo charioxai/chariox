@@ -205,6 +205,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactCoverageAreas: [...(preset.requiredArtifactCoverageAreas ?? [])],
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
+      requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
       requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
@@ -229,6 +230,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
+  requiredArtifactGeneratedEvidenceKinds = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
@@ -249,6 +251,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
     requiredArtifactSchemas: [...requiredArtifactSchemas],
     requiredArtifactKinds: [...requiredArtifactKinds],
+    requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
     requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -270,6 +273,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactCoverageAreas.push(...(preset.requiredArtifactCoverageAreas ?? []))
     expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
     expanded.requiredArtifactKinds.push(...(preset.requiredArtifactKinds ?? []))
+    expanded.requiredArtifactGeneratedEvidenceKinds.push(...(preset.requiredArtifactGeneratedEvidenceKinds ?? []))
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
     expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
@@ -347,6 +351,19 @@ export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenc
   for (const kind of kinds) {
     if (!GENERATED_EVIDENCE_KINDS.includes(kind)) {
       throw new Error(`unknown required generated evidence kind: ${kind}`)
+    }
+  }
+  return kinds
+}
+
+export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifactGeneratedEvidenceKinds) {
+  const kinds = normalizeCommaSeparatedStrings(requiredArtifactGeneratedEvidenceKinds, {
+    fieldName: "requiredArtifactGeneratedEvidenceKinds",
+    itemName: "kind",
+  })
+  for (const kind of kinds) {
+    if (!GENERATED_EVIDENCE_KINDS.includes(kind)) {
+      throw new Error(`unknown required artifact generated evidence kind: ${kind}`)
     }
   }
   return kinds

@@ -9,6 +9,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactCoverageAreas = [],
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
+  requiredArtifactGeneratedEvidenceKinds = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
@@ -19,6 +20,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     if (requiredArtifactSchemas.length > 0
       || requiredArtifactCoverageAreas.length > 0
       || requiredArtifactKinds.length > 0
+      || requiredArtifactGeneratedEvidenceKinds.length > 0
       || requiredArtifactEvidenceRepos.length > 0
       || requiredArtifactRuntimeSignals.length > 0
       || requiredArtifactRuntimeSignalOwners.length > 0
@@ -35,6 +37,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactSchemas: [...requiredArtifactSchemas],
         requiredArtifactKinds: [...requiredArtifactKinds],
         missingArtifactKinds: [...requiredArtifactKinds],
+        requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+        missingArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
@@ -49,6 +53,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactCoverageAreas: requiredArtifactCoverageAreas,
           missingArtifactSchemas: requiredArtifactSchemas,
           missingArtifactKinds: requiredArtifactKinds,
+          missingArtifactGeneratedEvidenceKinds: requiredArtifactGeneratedEvidenceKinds,
           missingArtifactEvidenceRepos: requiredArtifactEvidenceRepos,
           missingArtifactRuntimeSignals: requiredArtifactRuntimeSignals,
           missingArtifactRuntimeSignalOwners: requiredArtifactRuntimeSignalOwners,
@@ -68,6 +73,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactSchemas: [],
       requiredArtifactKinds: [],
       missingArtifactKinds: [],
+      requiredArtifactGeneratedEvidenceKinds: [],
+      missingArtifactGeneratedEvidenceKinds: [],
       requiredArtifactEvidenceRepos: [],
       missingArtifactEvidenceRepos: [],
       requiredArtifactRuntimeSignals: [],
@@ -97,6 +104,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactSchemas: [...requiredArtifactSchemas],
         requiredArtifactKinds: [...requiredArtifactKinds],
         missingArtifactKinds: [...requiredArtifactKinds],
+        requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+        missingArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
@@ -115,6 +124,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactCoverageAreas = requiredArtifactCoverageAreas.filter((area) => !Object.prototype.hasOwnProperty.call(aggregate.coverageAreas ?? {}, area))
     const missingArtifactSchemas = requiredArtifactSchemas.filter((schema) => !Object.prototype.hasOwnProperty.call(aggregate.schemas, schema))
     const missingArtifactKinds = requiredArtifactKinds.filter((kind) => !Object.prototype.hasOwnProperty.call(aggregate.artifactKinds ?? {}, kind))
+    const missingArtifactGeneratedEvidenceKinds = requiredArtifactGeneratedEvidenceKinds.filter((kind) => !Object.prototype.hasOwnProperty.call(aggregate.generatedEvidenceKinds ?? {}, kind))
     const missingArtifactEvidenceRepos = requiredArtifactEvidenceRepos.filter((repo) => !Object.prototype.hasOwnProperty.call(aggregate.evidenceRepos ?? {}, repo))
     const missingArtifactRuntimeSignals = requiredArtifactRuntimeSignals.filter((signal) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignals ?? {}, signal))
     const missingArtifactRuntimeSignalOwners = requiredArtifactRuntimeSignalOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignalOwners ?? {}, owner))
@@ -123,6 +133,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingRequirements = missingArtifactCoverageAreas.length
       + missingArtifactSchemas.length
       + missingArtifactKinds.length
+      + missingArtifactGeneratedEvidenceKinds.length
       + missingArtifactEvidenceRepos.length
       + missingArtifactRuntimeSignals.length
       + missingArtifactRuntimeSignalOwners.length
@@ -139,6 +150,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactSchemas,
       requiredArtifactKinds: [...requiredArtifactKinds],
       missingArtifactKinds,
+      requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+      missingArtifactGeneratedEvidenceKinds,
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
       missingArtifactEvidenceRepos,
       requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
@@ -156,6 +169,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactCoverageAreas,
             missingArtifactSchemas,
             missingArtifactKinds,
+            missingArtifactGeneratedEvidenceKinds,
             missingArtifactEvidenceRepos,
             missingArtifactRuntimeSignals,
             missingArtifactRuntimeSignalOwners,
@@ -177,6 +191,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactSchemas: [...requiredArtifactSchemas],
       requiredArtifactKinds: [...requiredArtifactKinds],
       missingArtifactKinds: [...requiredArtifactKinds],
+      requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+      missingArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
       missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
       requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
@@ -196,6 +212,7 @@ function artifactRequirementError({
   missingArtifactCoverageAreas,
   missingArtifactSchemas,
   missingArtifactKinds,
+  missingArtifactGeneratedEvidenceKinds,
   missingArtifactEvidenceRepos,
   missingArtifactRuntimeSignals,
   missingArtifactRuntimeSignalOwners,
@@ -211,6 +228,9 @@ function artifactRequirementError({
   }
   if (missingArtifactKinds.length > 0) {
     messages.push(`missing required artifact kinds: ${missingArtifactKinds.join(", ")}`)
+  }
+  if (missingArtifactGeneratedEvidenceKinds.length > 0) {
+    messages.push(`missing required artifact generated evidence kinds: ${missingArtifactGeneratedEvidenceKinds.join(", ")}`)
   }
   if (missingArtifactEvidenceRepos.length > 0) {
     messages.push(`missing required artifact evidence repos: ${missingArtifactEvidenceRepos.join(", ")}`)

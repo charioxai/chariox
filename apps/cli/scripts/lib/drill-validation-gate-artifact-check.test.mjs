@@ -24,6 +24,8 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactSchemas: [],
     requiredArtifactKinds: [],
     missingArtifactKinds: [],
+    requiredArtifactGeneratedEvidenceKinds: [],
+    missingArtifactGeneratedEvidenceKinds: [],
     requiredArtifactEvidenceRepos: [],
     missingArtifactEvidenceRepos: [],
     requiredArtifactRuntimeSignals: [],
@@ -102,6 +104,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
       artifacts: ["reports/gate.json"],
       metadata: {
         artifactKinds: "validation-gate,artifact-index",
+        generatedEvidenceKinds: "validation-suite-run",
         evidenceRepos: "oss",
       },
     })
@@ -112,11 +115,14 @@ test("gates required artifact kinds and evidence repos from artifact index metad
     }, {
       maxDepth: 8,
       requiredArtifactKinds: ["validation-gate"],
+      requiredArtifactGeneratedEvidenceKinds: ["validation-suite-run"],
       requiredArtifactEvidenceRepos: ["oss"],
     })
     assert.equal(pass.status, "passed")
     assert.deepEqual(pass.requiredArtifactKinds, ["validation-gate"])
     assert.deepEqual(pass.missingArtifactKinds, [])
+    assert.deepEqual(pass.requiredArtifactGeneratedEvidenceKinds, ["validation-suite-run"])
+    assert.deepEqual(pass.missingArtifactGeneratedEvidenceKinds, [])
     assert.deepEqual(pass.requiredArtifactEvidenceRepos, ["oss"])
     assert.deepEqual(pass.missingArtifactEvidenceRepos, [])
     assert.deepEqual(pass.aggregate.artifactKinds, {
@@ -131,12 +137,15 @@ test("gates required artifact kinds and evidence repos from artifact index metad
     }, {
       maxDepth: 8,
       requiredArtifactKinds: ["validation-suite-run"],
+      requiredArtifactGeneratedEvidenceKinds: ["matrix-report"],
       requiredArtifactEvidenceRepos: ["cloud"],
     })
     assert.equal(fail.status, "failed")
     assert.deepEqual(fail.missingArtifactKinds, ["validation-suite-run"])
+    assert.deepEqual(fail.missingArtifactGeneratedEvidenceKinds, ["matrix-report"])
     assert.deepEqual(fail.missingArtifactEvidenceRepos, ["cloud"])
     assert.match(fail.error, /missing required artifact kinds: validation-suite-run/)
+    assert.match(fail.error, /missing required artifact generated evidence kinds: matrix-report/)
     assert.match(fail.error, /missing required artifact evidence repos: cloud/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
