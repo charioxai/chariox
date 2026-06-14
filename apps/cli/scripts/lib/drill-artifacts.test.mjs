@@ -23,6 +23,7 @@ import {
   writeDrillArtifactIndex,
   writeDrillJsonArtifactOutput,
 } from "./drill-artifacts.mjs"
+import { drillRuntimeSignalsManifest } from "./drill-runtime-signals.mjs"
 
 test("drill artifacts are removed after a passing run", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-pass-"))
@@ -105,6 +106,63 @@ test("writes and verifies drill artifact indexes", async () => {
       null,
     ])
     assert.doesNotMatch(JSON.stringify(index), /should-not-persist/)
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("verifies runtime signal manifests embedded in validation artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify({
+      schema: "arroba.drill.validation_suite_run.v1",
+      status: "passed",
+      ok: true,
+      manifest: {
+        schema: "arroba.drill.validation_suite.v1",
+        runtimeSignalsManifest: drillRuntimeSignalsManifest(),
+      },
+    }, null, 2)}\n`, "utf8")
+
+    const index = await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+    })
+
+    assert.deepEqual(await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")), index)
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects validation artifacts with malformed runtime signal manifests", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    const manifest = drillRuntimeSignalsManifest()
+    await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify({
+      schema: "arroba.drill.validation_suite_run.v1",
+      status: "passed",
+      ok: true,
+      manifest: {
+        schema: "arroba.drill.validation_suite.v1",
+        runtimeSignalsManifest: {
+          ...manifest,
+          signals: manifest.signals.filter((signal) => signal.id !== "lease-health"),
+        },
+      },
+    }, null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /suite-run\.json\.manifest\.runtimeSignalsManifest does not match required runtime signals/,
+    )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }

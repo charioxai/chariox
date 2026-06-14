@@ -7,7 +7,10 @@ import {
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
-import { drillRuntimeSignalOwnersFor } from "./drill-runtime-signals.mjs"
+import {
+  drillRuntimeSignalOwnersFor,
+  validateDrillRuntimeSignalsManifest,
+} from "./drill-runtime-signals.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
 export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
@@ -144,6 +147,7 @@ export async function verifyDrillArtifactIndex(indexPath) {
     if (schema !== artifact.schema) {
       throw new Error(`drill artifact ${artifact.path} schema mismatch`)
     }
+    validateKnownArtifactContents(contents, artifact.path)
   }
   return index
 }
@@ -462,6 +466,21 @@ function schemaForArtifact(contents) {
     return nonEmptyString(parsed?.schema) ? parsed.schema : null
   } catch {
     return null
+  }
+}
+
+function validateKnownArtifactContents(contents, artifactPath) {
+  let parsed
+  try {
+    parsed = JSON.parse(contents.toString("utf8"))
+  } catch {
+    return
+  }
+  if (parsed?.schema === "arroba.drill.validation_suite.v1" && parsed.runtimeSignalsManifest !== undefined) {
+    validateDrillRuntimeSignalsManifest(parsed.runtimeSignalsManifest, `${artifactPath}.runtimeSignalsManifest`)
+  }
+  if (parsed?.schema === "arroba.drill.validation_suite_run.v1" && parsed.manifest?.runtimeSignalsManifest !== undefined) {
+    validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
   }
 }
 
