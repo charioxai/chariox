@@ -95,7 +95,7 @@ export async function runDrillMatrix({
   console.log(`[${matrixName}] selected ${scenarios.map((scenario) => scenario.id).join(", ")}`)
   if (dryRun) {
     const results = []
-    for (const { scenario, command, args } of preparedScenarios) {
+    for (const { scenario, command, args, env } of preparedScenarios) {
       const classification = scenario.classification ? ` classification=${scenario.classification}` : ""
       console.log(`[${matrixName}] dry-run ${scenario.id}${classification}: ${quoteDrillCommand(command, args)}`)
       results.push({
@@ -104,6 +104,7 @@ export async function runDrillMatrix({
         dryRun: true,
         command,
         args,
+        env,
         durationMs: 0,
       })
     }
@@ -124,6 +125,7 @@ export async function runDrillMatrix({
           skipped: true,
           command: skipped.command,
           args: skipped.args,
+          env: skipped.env,
           durationMs: 0,
           reason: "skipped after previous failure",
         })
@@ -148,7 +150,7 @@ export async function runDrillMatrix({
   return results
 }
 
-async function runMatrixScenario({ matrixName, scenario, command, args, cwd }) {
+async function runMatrixScenario({ matrixName, scenario, command, args, env, cwd }) {
   const start = Date.now()
   console.log(`[${matrixName}] start ${scenario.id}: ${scenario.description}`)
   console.log(`[${matrixName}] command ${quoteDrillCommand(command, args)}`)
@@ -162,7 +164,7 @@ async function runMatrixScenario({ matrixName, scenario, command, args, cwd }) {
   }
 
   const status = await new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(command, args, { cwd, env: env ? { ...process.env, ...env } : process.env, stdio: ["ignore", "pipe", "pipe"] })
     child.stdout.on("data", (chunk) => appendOutput(chunk, process.stdout))
     child.stderr.on("data", (chunk) => appendOutput(chunk, process.stderr))
     child.on("exit", (code, signal) => resolve({ code, signal }))
@@ -174,36 +176,36 @@ async function runMatrixScenario({ matrixName, scenario, command, args, cwd }) {
     if (scenario.expectedFailure) {
       const reason = "expected unsupported failure but scenario exited successfully"
       console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} ${reason}`)
-      return { scenario, ok: false, durationMs, reason, command, args }
+      return { scenario, ok: false, durationMs, reason, command, args, env }
     }
     console.log(`[${matrixName}] pass ${scenario.id} duration_ms=${durationMs}`)
-    return { scenario, ok: true, durationMs, classification: scenario.classification ?? null, command, args }
+    return { scenario, ok: true, durationMs, classification: scenario.classification ?? null, command, args, env }
   }
 
   if (scenario.expectedFailure) {
     const expected = scenario.expectedOutputIncludes
     if (!expected || output.includes(expected)) {
       console.log(`[${matrixName}] pass ${scenario.id} expected_failure duration_ms=${durationMs}`)
-      return { scenario, ok: true, durationMs, expectedFailure: true, classification: "expected-failure", command, args, artifactHints: extractDrillArtifactHints(output) }
+      return { scenario, ok: true, durationMs, expectedFailure: true, classification: "expected-failure", command, args, env, artifactHints: extractDrillArtifactHints(output) }
     }
     const reason = `expected failure output to include ${JSON.stringify(expected)}`
     const classification = classifyDrillChildFailure(output)
     console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
-    return { scenario, ok: false, durationMs, reason, classification, command, args, artifactHints: extractDrillArtifactHints(output) }
+    return { scenario, ok: false, durationMs, reason, classification, command, args, env, artifactHints: extractDrillArtifactHints(output) }
   }
 
   const reason = status.error?.message ?? `code=${status.code} signal=${status.signal ?? "none"}`
   const failureOutput = `${output}\n${status.error?.message ?? ""}`
   const classification = classifyDrillChildFailure(failureOutput)
   console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
-  return { scenario, ok: false, durationMs, reason, classification, command, args, artifactHints: extractDrillArtifactHints(failureOutput) }
+  return { scenario, ok: false, durationMs, reason, classification, command, args, env, artifactHints: extractDrillArtifactHints(failureOutput) }
 }
 
 function prepareMatrixScenarioCommands(scenarios, commandForScenario) {
   return scenarios.map((scenario) => {
     const commandSpec = commandForScenario(scenario)
     validateMatrixScenarioCommand(commandSpec, `${scenario.id} command`)
-    return { scenario, command: commandSpec.command, args: commandSpec.args }
+    return { scenario, command: commandSpec.command, args: commandSpec.args, env: commandSpec.env ?? null }
   })
 }
 
@@ -271,6 +273,16 @@ function validateMatrixScenarioCommand(commandSpec, source) {
   }
   if (!Array.isArray(commandSpec.args) || !commandSpec.args.every((arg) => typeof arg === "string")) {
     throw new Error(`${source} has invalid args`)
+  }
+  if (commandSpec.env !== undefined) {
+    if (!commandSpec.env || typeof commandSpec.env !== "object" || Array.isArray(commandSpec.env)) {
+      throw new Error(`${source} has invalid env`)
+    }
+    for (const [key, value] of Object.entries(commandSpec.env)) {
+      if (!nonEmptyString(key) || typeof value !== "string") {
+        throw new Error(`${source} has invalid env`)
+      }
+    }
   }
 }
 

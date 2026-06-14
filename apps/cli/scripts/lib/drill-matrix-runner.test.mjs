@@ -130,6 +130,15 @@ test("rejects malformed matrix commands before spawning", async () => {
     }),
     /bad-args command has invalid args/,
   )
+  await assert.rejects(
+    () => runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [{ id: "bad-env", description: "bad env" }],
+      commandForScenario: () => ({ command: process.execPath, args: [], env: { ARROBA_TEST: 42 } }),
+      cwd: dir,
+    }),
+    /bad-env command has invalid env/,
+  )
   await rm(dir, { recursive: true, force: true })
 })
 
@@ -216,6 +225,36 @@ test("runs a passing matrix scenario", async () => {
   assert.equal(report.scenarios[0].id, "pass")
   assert.deepEqual(report.scenarios[0].exitCriteria, ["child command exits zero"])
   assert.equal(report.scenarios[0].command, process.execPath)
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("passes per-scenario environment to matrix commands", async () => {
+  const dir = await fixtureDir()
+  const marker = path.join(dir, "env-marker.txt")
+  const script = await writeFixtureScript(dir, "env.mjs", [
+    'import { writeFileSync } from "node:fs"',
+    `writeFileSync(${JSON.stringify(marker)}, process.env.ARROBA_MATRIX_ENV_MARKER ?? "")`,
+  ].join("\n"))
+  const reportPath = path.join(dir, "env-report.json")
+
+  const results = await runDrillMatrix({
+    matrixName: "test-matrix",
+    scenarios: [{ id: "env", description: "env scenario", script }],
+    commandForScenario: (scenario) => ({
+      command: process.execPath,
+      args: [scenario.script],
+      env: { ARROBA_MATRIX_ENV_MARKER: "from-scenario" },
+    }),
+    cwd: dir,
+    reportPath,
+  })
+
+  assert.equal(results[0].ok, true)
+  assert.equal(await readFile(marker, "utf8"), "from-scenario")
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.equal(report.scenarios[0].command, process.execPath)
+  assert.deepEqual(report.scenarios[0].args, [script])
+  assert.equal(Object.hasOwn(report.scenarios[0], "env"), false)
   await rm(dir, { recursive: true, force: true })
 })
 
