@@ -132,6 +132,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const coverageAreas = new Map()
   const owners = new Map()
   const classifications = new Map()
+  const artifactKinds = new Map()
+  const evidenceRepos = new Map()
   const summaries = indexes.map((index, indexPosition) => {
     validateDrillArtifactIndex(index, sources[indexPosition] ?? "drill artifact index")
     const indexTotals = {
@@ -144,11 +146,15 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
+    const indexArtifactKinds = metadataListFromMetadata(index.metadata, "artifactKinds")
+    const indexEvidenceRepos = metadataListFromMetadata(index.metadata, "evidenceRepos")
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
     countValues(indexCoverageAreas, coverageAreas)
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
+    countValues(indexArtifactKinds, artifactKinds)
+    countValues(indexEvidenceRepos, evidenceRepos)
     for (const artifact of index.artifacts) {
       totals.artifacts += 1
       totals.sizeBytes += artifact.sizeBytes
@@ -168,6 +174,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       coverageAreas: countValues(indexCoverageAreas),
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
+      artifactKinds: countValues(indexArtifactKinds),
+      evidenceRepos: countValues(indexEvidenceRepos),
     }
   })
   const aggregate = {
@@ -179,6 +187,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     coverageAreas: sortedCountObject(coverageAreas),
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
+    artifactKinds: sortedCountObject(artifactKinds),
+    evidenceRepos: sortedCountObject(evidenceRepos),
     indexes: summaries,
   }
   validateDrillArtifactIndexAggregate(aggregate)
@@ -201,6 +211,12 @@ export function diagnosticMetadataForDrillArtifactIndexAggregate(aggregate) {
       : {}),
     ...(Object.keys(aggregate.classifications ?? {}).length > 0
       ? { classifications: Object.keys(aggregate.classifications).sort().join(",") }
+      : {}),
+    ...(Object.keys(aggregate.artifactKinds ?? {}).length > 0
+      ? { artifactKinds: Object.keys(aggregate.artifactKinds).sort().join(",") }
+      : {}),
+    ...(Object.keys(aggregate.evidenceRepos ?? {}).length > 0
+      ? { evidenceRepos: Object.keys(aggregate.evidenceRepos).sort().join(",") }
       : {}),
   }
 }
@@ -234,6 +250,14 @@ export function formatDrillArtifactIndexAggregateSummary(aggregate) {
   const classifications = Object.entries(aggregate.classifications ?? {})
   if (classifications.length > 0) {
     lines.push(`classifications: ${classifications.map(([classification, count]) => `${classification}=${count}`).join(" ")}`)
+  }
+  const artifactKinds = Object.entries(aggregate.artifactKinds ?? {})
+  if (artifactKinds.length > 0) {
+    lines.push(`artifact_kinds: ${artifactKinds.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
+  }
+  const evidenceRepos = Object.entries(aggregate.evidenceRepos ?? {})
+  if (evidenceRepos.length > 0) {
+    lines.push(`evidence_repos: ${evidenceRepos.map(([repo, count]) => `${repo}=${count}`).join(" ")}`)
   }
   lines.push("next: verify indexed artifacts before using them as validation evidence")
   return lines.join("\n")
@@ -285,6 +309,8 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   validateCountObject(aggregate.coverageAreas ?? {}, `${source}.coverageAreas`)
   validateCountObject(aggregate.owners ?? {}, `${source}.owners`)
   validateCountObject(aggregate.classifications ?? {}, `${source}.classifications`)
+  validateCountObject(aggregate.artifactKinds ?? {}, `${source}.artifactKinds`)
+  validateCountObject(aggregate.evidenceRepos ?? {}, `${source}.evidenceRepos`)
   if (!Array.isArray(aggregate.indexes)) {
     throw new Error(`${source} has invalid indexes`)
   }
@@ -301,6 +327,8 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   const expectedCoverageAreas = new Map()
   const expectedOwners = new Map()
   const expectedClassifications = new Map()
+  const expectedArtifactKinds = new Map()
+  const expectedEvidenceRepos = new Map()
   for (const index of aggregate.indexes) {
     for (const [signal, count] of Object.entries(index.runtimeSignals ?? {})) {
       expectedRuntimeSignals.set(signal, (expectedRuntimeSignals.get(signal) ?? 0) + count)
@@ -316,6 +344,12 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
     }
     for (const [classification, count] of Object.entries(index.classifications ?? {})) {
       expectedClassifications.set(classification, (expectedClassifications.get(classification) ?? 0) + count)
+    }
+    for (const [kind, count] of Object.entries(index.artifactKinds ?? {})) {
+      expectedArtifactKinds.set(kind, (expectedArtifactKinds.get(kind) ?? 0) + count)
+    }
+    for (const [repo, count] of Object.entries(index.evidenceRepos ?? {})) {
+      expectedEvidenceRepos.set(repo, (expectedEvidenceRepos.get(repo) ?? 0) + count)
     }
   }
   if (aggregate.totals.artifacts !== expectedArtifacts || aggregate.totals.sizeBytes !== expectedSizeBytes) {
@@ -335,6 +369,12 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   }
   if (JSON.stringify(aggregate.classifications ?? {}) !== JSON.stringify(sortedCountObject(expectedClassifications))) {
     throw new Error(`${source} classifications do not match indexes`)
+  }
+  if (JSON.stringify(aggregate.artifactKinds ?? {}) !== JSON.stringify(sortedCountObject(expectedArtifactKinds))) {
+    throw new Error(`${source} artifactKinds do not match indexes`)
+  }
+  if (JSON.stringify(aggregate.evidenceRepos ?? {}) !== JSON.stringify(sortedCountObject(expectedEvidenceRepos))) {
+    throw new Error(`${source} evidenceRepos do not match indexes`)
   }
 }
 
@@ -408,6 +448,8 @@ function validateArtifactIndexSummary(summary, source) {
   validateCountObject(summary.coverageAreas ?? {}, `${source}.coverageAreas`)
   validateCountObject(summary.owners ?? {}, `${source}.owners`)
   validateCountObject(summary.classifications ?? {}, `${source}.classifications`)
+  validateCountObject(summary.artifactKinds ?? {}, `${source}.artifactKinds`)
+  validateCountObject(summary.evidenceRepos ?? {}, `${source}.evidenceRepos`)
 }
 
 function validateCountObject(value, source) {

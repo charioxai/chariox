@@ -51,6 +51,15 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       "kernel-authority": 2,
       "runtime-state": 1,
     })
+    assert.deepEqual(stdoutAggregate.artifactKinds, {
+      "artifact-index": 1,
+      "matrix-report": 1,
+      "validation-gate": 1,
+    })
+    assert.deepEqual(stdoutAggregate.evidenceRepos, {
+      cloud: 1,
+      oss: 2,
+    })
     assert.deepEqual(stdoutAggregate.indexes.map((index) => index.source), [
       firstIndexPath,
       secondIndexPath,
@@ -61,6 +70,8 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,runtime-state")
     assert.equal(artifactIndex.metadata.owners, "runtime-network,validation-harness")
     assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
+    assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,matrix-report,validation-gate")
+    assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -151,6 +162,12 @@ async function writeIndexedReport(rootDir, name, schema) {
       runtimeSignals: name === "one"
         ? "session-authority,lease-health"
         : "session-authority,workspace-live-sync-state",
+      artifactKinds: name === "one"
+        ? "validation-gate,artifact-index"
+        : "matrix-report",
+      evidenceRepos: name === "one"
+        ? "oss"
+        : "oss,cloud",
     },
   })
   return path.join(drillRoot, "arroba-drill-artifacts.json")
