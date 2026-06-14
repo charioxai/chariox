@@ -238,6 +238,12 @@ test("runs a passing matrix scenario", async () => {
   assert.equal(report.status, "passed")
   assert.equal(report.scenarios[0].id, "pass")
   assert.deepEqual(report.scenarios[0].exitCriteria, ["child command exits zero"])
+  assert.deepEqual(report.scenarios[0].exitCriteriaEvidence, [{
+    id: "pass:exit-01",
+    criterion: "child command exits zero",
+    status: "satisfied",
+    reason: null,
+  }])
   assert.deepEqual(report.scenarios[0].runtimeSignals, ["provider-run-lifecycle", "session-authority"])
   assert.equal(report.metadata.runtimeSignals, "provider-run-lifecycle,session-authority")
   assert.equal(report.scenarios[0].command, process.execPath)
@@ -351,7 +357,7 @@ test("writes dry-run report without executing scenarios", async () => {
   try {
     results = await runDrillMatrix({
       matrixName: "test-matrix",
-      scenarios: [{ id: "dry", description: "dry-run scenario", script, classification: "kernel-authority" }],
+      scenarios: [{ id: "dry", description: "dry-run scenario", script, classification: "kernel-authority", exitCriteria: "dry command is selected" }],
       commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
       cwd: dir,
       dryRun: true,
@@ -367,6 +373,12 @@ test("writes dry-run report without executing scenarios", async () => {
   assert.equal(report.status, "dry-run")
   assert.equal(report.scenarios[0].status, "dry-run")
   assert.equal(report.scenarios[0].classification, null)
+  assert.deepEqual(report.scenarios[0].exitCriteriaEvidence, [{
+    id: "dry:exit-01",
+    criterion: "dry command is selected",
+    status: "dry-run",
+    reason: "scenario command was selected but not executed",
+  }])
   await rm(dir, { recursive: true, force: true })
 })
 
@@ -422,8 +434,8 @@ test("stops after the first unexpected failure unless configured otherwise", asy
   const results = await runDrillMatrix({
     matrixName: "test-matrix",
     scenarios: [
-      { id: "fail", description: "failing scenario", script: fail },
-      { id: "pass", description: "passing scenario", script: pass },
+      { id: "fail", description: "failing scenario", script: fail, exitCriteria: ["failing command exits zero"] },
+      { id: "pass", description: "passing scenario", script: pass, exitCriteria: ["passing command runs after failure"] },
     ],
     commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
     cwd: dir,
@@ -439,6 +451,18 @@ test("stops after the first unexpected failure unless configured otherwise", asy
   assert.equal(report.scenarios[1].status, "skipped")
   assert.equal(report.scenarios[0].owner, "provider-account")
   assert.equal(report.scenarios[0].nextAction, "refresh provider login for the profile used by this drill, then rerun the scenario")
+  assert.deepEqual(report.scenarios[0].exitCriteriaEvidence, [{
+    id: "fail:exit-01",
+    criterion: "failing command exits zero",
+    status: "failed",
+    reason: "code=3 signal=none",
+  }])
+  assert.deepEqual(report.scenarios[1].exitCriteriaEvidence, [{
+    id: "pass:exit-01",
+    criterion: "passing command runs after failure",
+    status: "skipped",
+    reason: "skipped after previous failure",
+  }])
   assert.deepEqual(report.scenarios[0].artifactHints, [])
   await rm(dir, { recursive: true, force: true })
 })

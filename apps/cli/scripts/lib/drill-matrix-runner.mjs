@@ -351,6 +351,7 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
       description: result.scenario.description,
       requires: requirementsFor(result.scenario),
       exitCriteria: exitCriteriaFor(result.scenario),
+      exitCriteriaEvidence: exitCriteriaEvidenceForResult(result),
       runtimeSignals: runtimeSignalsForScenario(result.scenario),
       status: result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed",
       expectedFailure: Boolean(result.expectedFailure),
@@ -391,6 +392,32 @@ function nextActionForResult(result) {
   return result.classification
     ? drillFailureNextActionForClassification(result.classification, { target: "scenario" })
     : null
+}
+
+function exitCriteriaEvidenceForResult(result) {
+  return exitCriteriaFor(result.scenario).map((criterion, index) => {
+    const status = exitCriterionStatusForResult(result)
+    return {
+      id: `${result.scenario.id}:exit-${String(index + 1).padStart(2, "0")}`,
+      criterion,
+      status,
+      reason: exitCriterionReasonForResult(result, status),
+    }
+  })
+}
+
+function exitCriterionStatusForResult(result) {
+  if (result.dryRun) return "dry-run"
+  if (result.skipped) return "skipped"
+  if (result.ok) return "satisfied"
+  return "failed"
+}
+
+function exitCriterionReasonForResult(result, status) {
+  if (status === "satisfied") return null
+  if (status === "dry-run") return "scenario command was selected but not executed"
+  if (status === "skipped") return result.reason ?? "scenario was skipped"
+  return result.reason ?? "scenario failed"
 }
 
 function runtimeSignalCountsForResults(results) {
