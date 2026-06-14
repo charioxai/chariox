@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runNodeDrillChild } from './lib/drill-child-process.mjs'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -44,6 +45,10 @@ const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_POLL_LIMIT = 120
 const DEFAULT_POLL_INTERVAL_MS = 2000
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 function parseArgs(argv) {
   const options = {
@@ -361,31 +366,13 @@ async function main() {
   }
 
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-workflow-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-remote-workflow-runtime-drill', nowStamp())
   const cliRuntimeDir = path.join(cliRoot, '.tmp-live-remote-workflow-runtime-drill')
-  await mkdir(rootDir, { recursive: true })
+  await prepareDrillArtifacts(rootDir)
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(cliRuntimeDir, { recursive: true })
 
-  await buildKernelClient()
-  ;({ LocalIpcClient, requests: {
-    createSessionRequest,
-    endSessionRequest,
-    listRemoteMachinesRequest,
-    installMcpServerRequest,
-  } } = await loadCliModules(cliRuntimeDir))
-
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
-  const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
-    path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
-  )
-  const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
-  )
   const relayEnv = {
     ...process.env,
     ARROBA_RELAY_HOST: '127.0.0.1',
@@ -401,8 +388,30 @@ async function main() {
   let homeChild = null
   let workerChild = null
   let localClient = null
+  let passed = false
+  let failure = null
+  let workerKernel = null
+  let workflowResult = null
+  let childStdout = ''
 
   try {
+    await buildKernelClient()
+    ;({ LocalIpcClient, requests: {
+      createSessionRequest,
+      endSessionRequest,
+      listRemoteMachinesRequest,
+      installMcpServerRequest,
+    } } = await loadCliModules(cliRuntimeDir))
+    const relayBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/Cargo.toml'),
+      'arroba-relay',
+    )
+    const daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'arroba-kernel',
+    )
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     await waitForTcpPort(ports.relayPort)
     homeChild = spawnProcess(daemonBinary, [], {
@@ -455,7 +464,7 @@ async function main() {
       kernelMaxMissedPongs: 10,
     })
     await waitForRemoteMachine(localClient, workerMachineId)
-    const workerKernel = await waitForRemoteKernel(localClient, workerMachineId, Array.from(new Set(options.providers)))
+    workerKernel = await waitForRemoteKernel(localClient, workerMachineId, Array.from(new Set(options.providers)))
 
     const workflowArgs = [
       path.join('apps', 'cli', 'scripts', 'live-workflow-runtime-drill.mjs'),
@@ -473,14 +482,14 @@ async function main() {
       '--poll-interval-ms', String(options.pollIntervalMs),
     ]
     if (options.noEarlyPass) workflowArgs.push('--no-early-pass')
-    const stdout = await runNodeDrillChild(workflowArgs, repoRoot, {
+    childStdout = await runNodeDrillChild(workflowArgs, repoRoot, {
       label: 'remote workflow runtime drill',
     })
 
-    const trimmed = stdout.trim()
+    const trimmed = childStdout.trim()
     const lastJsonIndex = trimmed.lastIndexOf('\n{')
     const jsonText = lastJsonIndex >= 0 ? trimmed.slice(lastJsonIndex + 1) : trimmed
-    const result = JSON.parse(jsonText)
+    workflowResult = JSON.parse(jsonText)
     console.log(JSON.stringify({
       status: 'ok',
       relayUrl,
@@ -496,14 +505,46 @@ async function main() {
       providers: options.providers,
       model: options.model,
       providerModels: options.providerModels,
-      workflow: result,
+      workflow: workflowResult,
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     if (localClient) await localClient.close().catch(() => {})
     await terminateChild(homeChild)
     await terminateChild(workerChild)
     await terminateChild(relayChild)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-remote-workflow-runtime',
+        scenario: options.scenario,
+        providers: options.providers,
+        model: options.model,
+        providerModels: options.providerModels,
+        pollLimit: options.pollLimit,
+        pollIntervalMs: options.pollIntervalMs,
+        noEarlyPass: options.noEarlyPass,
+        ports,
+        relayUrl,
+        homeKernelUrl,
+        workerKernelUrl: `ws://127.0.0.1:${ports.workerKernelPort}`,
+        workerMachineId,
+        workerMachineAlias,
+        workerKernel: workerKernel ? {
+          kernelId: workerKernel.kernel_id,
+          machineId: workerKernel.machine_id,
+          providers: workerKernel.available_providers,
+        } : null,
+        workflow: workflowResult,
+        childStdoutTail: childStdout.slice(-8000),
+      },
+    })
     await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
   }
 }
