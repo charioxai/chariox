@@ -37,6 +37,14 @@ node apps/cli/scripts/drill-failure-taxonomy.mjs
 node apps/cli/scripts/drill-failure-taxonomy.mjs --target drill --output .artifacts/drill-failure-taxonomy.json
 ```
 
+Collect the shared platform contracts as one artifact bundle with:
+
+```bash
+node apps/cli/scripts/drill-platform-bundle.mjs --output-dir .artifacts/drill-platform
+```
+
+The bundle writes `index.json`, `validation-suite.json`, `failure-taxonomy-scenario.json`, and `failure-taxonomy-drill.json`.
+
 ## Matrix Reports
 
 Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.
