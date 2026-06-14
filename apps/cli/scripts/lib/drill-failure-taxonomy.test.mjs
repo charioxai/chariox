@@ -15,6 +15,8 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("cloud-runtime"), "cloud-deployment")
   assert.equal(drillFailureOwnerForClassification("relay-runtime"), "runtime-network")
   assert.equal(drillFailureOwnerForClassification("relay-target-freshness"), "runtime-network")
+  assert.equal(drillFailureOwnerForClassification("remote-worker-version"), "worker-kernel")
+  assert.equal(drillFailureOwnerForClassification("remote-host-capacity"), "remote-machine")
   assert.equal(drillFailureOwnerForClassification("runtime-timeout"), "runtime-state")
   assert.equal(drillFailureOwnerForClassification("kernel-authority"), "kernel-authority")
   assert.equal(drillFailureOwnerForClassification("remote-extension-sync"), "kernel-authority")
@@ -30,6 +32,8 @@ test("maps classifications to owners", () => {
 test("exposes known classifications", () => {
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("kernel-authority"))
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("relay-target-freshness"))
+  assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("remote-worker-version"))
+  assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("remote-host-capacity"))
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("slice-runtime"))
   assert.deepEqual(DRILL_FAILURE_CLASSIFICATION_KINDS, [...DRILL_FAILURE_CLASSIFICATION_KINDS].sort())
   assert.equal(isKnownDrillFailureClassification("slice-runtime"), true)
@@ -65,6 +69,14 @@ test("formats target-specific next actions", () => {
     drillFailureNextActionForClassification("relay-target-freshness", { target: "scenario" }),
     "inspect relay target heartbeat freshness, selected kernel id/alias, and kernel presence logs, then rerun the scenario",
   )
+  assert.equal(
+    drillFailureNextActionForClassification("remote-worker-version", { target: "scenario" }),
+    "upgrade/rebuild the remote worker checkout, restart the worker kernel, verify relay peer protocol compatibility, then rerun the scenario",
+  )
+  assert.equal(
+    drillFailureNextActionForClassification("remote-host-capacity", { target: "scenario" }),
+    "free disk on the remote host or choose a clean worker checkout/artifact root, then rerun the scenario",
+  )
 })
 
 test("builds manifest classification records from taxonomy", () => {
@@ -93,6 +105,16 @@ test("builds stable failure taxonomy manifest", () => {
     entry.kind === "relay-target-freshness"
       && entry.owner === "runtime-network"
       && entry.nextAction.includes("heartbeat freshness")
+  )))
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "remote-worker-version"
+      && entry.owner === "worker-kernel"
+      && entry.nextAction.includes("relay peer protocol compatibility")
+  )))
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "remote-host-capacity"
+      && entry.owner === "remote-machine"
+      && entry.nextAction.includes("free disk")
   )))
   assert(manifest.classifications.some((entry) => (
     entry.kind === "remote-extension-sync"

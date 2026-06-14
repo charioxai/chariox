@@ -34,6 +34,16 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect relay target heartbeat freshness, selected kernel id/alias, and kernel presence logs, then rerun the drill",
     scenarioNextAction: "inspect relay target heartbeat freshness, selected kernel id/alias, and kernel presence logs, then rerun the scenario",
   },
+  "remote-worker-version": {
+    owner: "worker-kernel",
+    drillNextAction: "upgrade/rebuild the remote worker checkout, restart the worker kernel, verify relay peer protocol compatibility, then rerun the drill",
+    scenarioNextAction: "upgrade/rebuild the remote worker checkout, restart the worker kernel, verify relay peer protocol compatibility, then rerun the scenario",
+  },
+  "remote-host-capacity": {
+    owner: "remote-machine",
+    drillNextAction: "free disk on the remote host or choose a clean worker checkout/artifact root, then rerun the drill",
+    scenarioNextAction: "free disk on the remote host or choose a clean worker checkout/artifact root, then rerun the scenario",
+  },
   "runtime-timeout": {
     owner: "runtime-state",
     drillNextAction: "inspect preserved runtime state, provider run lifecycle, and drill timeout diagnostics, then rerun the drill",

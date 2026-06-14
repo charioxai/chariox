@@ -78,6 +78,26 @@ test('classifies relay target heartbeat freshness failures', () => {
   )
 })
 
+test('classifies remote worker protocol version skew', () => {
+  const text = 'remote worker `worker-1` uses relay peer protocol 2, but this home kernel requires 3. Upgrade and restart the worker kernel, then retry the remote agent.'
+
+  assert.equal(classifyDrillChildFailure(text), 'remote-worker-version')
+  assert.match(
+    formatDrillChildFailure('hetzner remote agent drill', 1, null, '', text),
+    /Remote worker kernel version\/protocol skew blocked validation/,
+  )
+})
+
+test('classifies remote host disk capacity failures', () => {
+  const text = 'fatal: cannot create directory at apps/kernel/target: No space left on device'
+
+  assert.equal(classifyDrillChildFailure(text), 'remote-host-capacity')
+  assert.match(
+    formatDrillChildFailure('hetzner remote agent drill', 1, null, '', text),
+    /Remote host disk or filesystem capacity blocked validation/,
+  )
+})
+
 test('classifies runtime state timeouts', () => {
   const text = 'timed out waiting for agents to become idle: agent-1\nlast_observation=[{"agentState":"Working"}]'
 
