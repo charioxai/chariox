@@ -118,20 +118,24 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
   const owners = new Map()
   const classifications = new Map()
   const nextActions = new Map()
+  const runtimeSignals = new Map()
   const failures = []
   for (const summary of summaries) {
     const owner = summary.classification.owner
     const kind = summary.classification.kind
     const nextAction = summary.classification.nextAction
+    const failureRuntimeSignals = runtimeSignalsFromMetadata(summary.metadata)
     owners.set(owner, (owners.get(owner) ?? 0) + 1)
     classifications.set(kind, (classifications.get(kind) ?? 0) + 1)
     countDrillAggregateNextAction(nextActions, { owner, classification: kind, nextAction })
+    countRuntimeSignals(runtimeSignals, failureRuntimeSignals)
     failures.push({
       drill: summary.metadata.drill ?? "unknown",
       source: summary.source,
       rootDir: summary.rootDir,
       owner,
       classification: kind,
+      runtimeSignals: failureRuntimeSignals,
       nextAction,
     })
   }
@@ -140,6 +144,7 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
     total: summaries.length,
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    runtimeSignals: Object.fromEntries([...runtimeSignals.entries()].sort(([left], [right]) => left.localeCompare(right))),
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     failures,
   }
@@ -159,6 +164,10 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
   if (classifications.length > 0) {
     lines.push(`classifications: ${classifications.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
   }
+  const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
+  if (runtimeSignals.length > 0) {
+    lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
+  }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {
@@ -169,7 +178,10 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
     lines.push("failures:")
     for (const failure of aggregate.failures) {
       const source = failure.source ? ` source=${failure.source}` : ""
-      lines.push(`- ${failure.drill} owner=${failure.owner} classification=${failure.classification} root=${failure.rootDir}${source}`)
+      const runtimeSignals = failure.runtimeSignals?.length > 0
+        ? ` runtime_signals=${failure.runtimeSignals.join(",")}`
+        : ""
+      lines.push(`- ${failure.drill} owner=${failure.owner} classification=${failure.classification}${runtimeSignals} root=${failure.rootDir}${source}`)
       lines.push(`  next: ${failure.nextAction}`)
     }
   }
@@ -211,6 +223,9 @@ function validateDrillFailureManifestAggregate(aggregate) {
   if (!aggregate.classifications || typeof aggregate.classifications !== "object" || Array.isArray(aggregate.classifications)) {
     throw new Error("aggregate has invalid classifications")
   }
+  if (!aggregate.runtimeSignals || typeof aggregate.runtimeSignals !== "object" || Array.isArray(aggregate.runtimeSignals)) {
+    throw new Error("aggregate has invalid runtimeSignals")
+  }
   if (!Array.isArray(aggregate.failures)) {
     throw new Error("aggregate has invalid failures")
   }
@@ -232,6 +247,7 @@ function validateDrillFailureAggregateConsistency(aggregate) {
   }
   assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failures, "owner")
   assertObjectCountsMatchEntries("aggregate classifications", aggregate.classifications, aggregate.failures, "classification")
+  assertRuntimeSignalCountsMatchFailures(aggregate)
   assertNextActionCountsMatchFailures(aggregate)
 }
 
@@ -257,6 +273,17 @@ function assertNextActionCountsMatchFailures(aggregate) {
   }
 }
 
+function assertRuntimeSignalCountsMatchFailures(aggregate) {
+  const expected = new Map()
+  for (const failure of aggregate.failures) {
+    countRuntimeSignals(expected, failure.runtimeSignals ?? [])
+  }
+  const expectedSignals = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(aggregate.runtimeSignals ?? {}) !== JSON.stringify(expectedSignals)) {
+    throw new Error("aggregate runtimeSignals do not match failures")
+  }
+}
+
 function validateDrillFailureAggregateEntry(failure, source) {
   if (!failure || typeof failure !== "object" || Array.isArray(failure)) {
     throw new Error(`${source} is not an object`)
@@ -279,6 +306,14 @@ function validateDrillFailureAggregateEntry(failure, source) {
   }
   if (failure.source !== null && failure.source !== undefined && !nonEmptyString(failure.source)) {
     throw new Error(`${source} has invalid source`)
+  }
+  if (!Array.isArray(failure.runtimeSignals)) {
+    throw new Error(`${source} has invalid runtimeSignals`)
+  }
+  for (const [index, signal] of failure.runtimeSignals.entries()) {
+    if (!nonEmptyString(signal)) {
+      throw new Error(`${source}.runtimeSignals[${index}] is invalid`)
+    }
   }
 }
 
@@ -333,6 +368,18 @@ function summarizeMetadataValue(key, value) {
   if (typeof value === "number" || typeof value === "boolean") return String(value)
   if (value === null) return "null"
   return null
+}
+
+function runtimeSignalsFromMetadata(metadata) {
+  const value = metadata.runtimeSignals
+  if (typeof value !== "string") return []
+  return [...new Set(value.split(",").map((signal) => signal.trim()).filter(nonEmptyString))].sort()
+}
+
+function countRuntimeSignals(target, signals) {
+  for (const signal of signals) {
+    target.set(signal, (target.get(signal) ?? 0) + 1)
+  }
 }
 
 function nonEmptyString(value) {

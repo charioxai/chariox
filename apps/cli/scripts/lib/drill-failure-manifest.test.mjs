@@ -30,6 +30,7 @@ test("reads and summarizes a preserved drill failure directory", async () => {
     metadata: {
       drill: "hosted-cloud-relay",
       provider: "opencode-zen",
+      runtimeSignals: "relay-target-freshness,lease-health",
       token: "should-not-print",
       nested: { ignored: true },
     },
@@ -43,6 +44,7 @@ test("reads and summarizes a preserved drill failure directory", async () => {
   assert.equal(summary.schema, "arroba.drill.failure.v1")
   assert.equal(summary.metadata.drill, "hosted-cloud-relay")
   assert.equal(summary.metadata.provider, "opencode-zen")
+  assert.equal(summary.metadata.runtimeSignals, "relay-target-freshness,lease-health")
   assert.equal(summary.metadata.token, "<redacted>")
   assert.equal(summary.metadata.nested, undefined)
   assert.equal(summary.error.name, "Error")
@@ -50,7 +52,7 @@ test("reads and summarizes a preserved drill failure directory", async () => {
   assert.equal(summary.classification.kind, "relay-runtime")
   assert.equal(summary.classification.owner, "runtime-network")
   assert.match(text, /drill failure: hosted-cloud-relay/)
-  assert.match(text, /metadata: provider=opencode-zen token=<redacted>/)
+  assert.match(text, /metadata: provider=opencode-zen runtimeSignals=relay-target-freshness,lease-health token=<redacted>/)
   assert.match(text, /error=Error: relay target was stale/)
   assert.match(text, /owner=runtime-network classification=relay-runtime/)
   assert.doesNotMatch(text, /should-not-print/)
@@ -200,12 +202,12 @@ test("classifies common drill failure owners and next actions", () => {
 test("aggregates preserved drill failure summaries", () => {
   const relay = validManifest({
     rootDir: "/tmp/relay",
-    metadata: { drill: "relay-drill" },
+    metadata: { drill: "relay-drill", runtimeSignals: "relay-target-freshness,lease-health" },
     error: { name: "Error", message: "relay target stale", stack: null },
   })
   const provider = validManifest({
     rootDir: "/tmp/provider",
-    metadata: { drill: "provider-drill" },
+    metadata: { drill: "provider-drill", runtimeSignals: "provider-run-lifecycle,lease-health" },
     error: { name: "Error", message: "Token refresh failed: 401", stack: null },
   })
 
@@ -217,6 +219,11 @@ test("aggregates preserved drill failure summaries", () => {
   assert.equal(aggregate.total, 2)
   assert.deepEqual(aggregate.owners, { "provider-account": 1, "runtime-network": 1 })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1, "relay-runtime": 1 })
+  assert.deepEqual(aggregate.runtimeSignals, {
+    "lease-health": 2,
+    "provider-run-lifecycle": 1,
+    "relay-target-freshness": 1,
+  })
   assert.deepEqual(aggregate.nextActions.map((action) => ({
     owner: action.owner,
     classification: action.classification,
@@ -230,18 +237,21 @@ test("aggregates preserved drill failure summaries", () => {
     source: failure.source,
     owner: failure.owner,
     classification: failure.classification,
+    runtimeSignals: failure.runtimeSignals,
   })), [
     {
       drill: "relay-drill",
       source: "/tmp/relay/arroba-drill-failure.json",
       owner: "runtime-network",
       classification: "relay-runtime",
+      runtimeSignals: ["lease-health", "relay-target-freshness"],
     },
     {
       drill: "provider-drill",
       source: "/tmp/provider/arroba-drill-failure.json",
       owner: "provider-account",
       classification: "provider-auth",
+      runtimeSignals: ["lease-health", "provider-run-lifecycle"],
     },
   ])
 
@@ -249,9 +259,10 @@ test("aggregates preserved drill failure summaries", () => {
   assert.match(text, /drill failure aggregate:/)
   assert.match(text, /owners: provider-account=1 runtime-network=1/)
   assert.match(text, /classifications: provider-auth=1 relay-runtime=1/)
+  assert.match(text, /runtime_signals: lease-health=2 provider-run-lifecycle=1 relay-target-freshness=1/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
-  assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime root=\/tmp\/relay source=\/tmp\/relay\/arroba-drill-failure.json/)
+  assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime runtime_signals=lease-health,relay-target-freshness root=\/tmp\/relay source=\/tmp\/relay\/arroba-drill-failure.json/)
   assert.match(text, /next: inspect relay and kernel logs/)
 })
 
@@ -292,6 +303,10 @@ test("rejects inconsistent failure aggregates", () => {
       count: 1,
     }],
   }), /failures\[0\] has unknown classification "typo-runtime"/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    runtimeSignals: { "lease-health": 2 },
+  }), /runtimeSignals do not match failures/)
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
     ...aggregate,
     owners: { "runtime-state": 1 },

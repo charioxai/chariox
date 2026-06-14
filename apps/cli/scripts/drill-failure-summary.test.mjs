@@ -43,7 +43,11 @@ test("failure summary writes artifact index for output", async () => {
     const manifestPath = path.join(dir, "arroba-drill-failure.json")
     const outputPath = path.join(dir, "aggregate.json")
     const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
-    await writeManifest(manifestPath, failureManifest({ rootDir: dir, drill: "root" }))
+    await writeManifest(manifestPath, failureManifest({
+      rootDir: dir,
+      drill: "root",
+      runtimeSignals: "lease-health,session-authority",
+    }))
 
     const aggregate = await runSummary([
       "--json",
@@ -60,6 +64,7 @@ test("failure summary writes artifact index for output", async () => {
     assert.deepEqual(fileAggregate, aggregate)
     assert.equal(artifactIndex.metadata.drill, "failure-summary")
     assert.equal(artifactIndex.metadata.total, 1)
+    assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,session-authority")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -93,12 +98,15 @@ async function writeManifest(file, manifest) {
   await writeFile(file, `${JSON.stringify(manifest)}\n`, "utf8")
 }
 
-function failureManifest({ rootDir, drill }) {
+function failureManifest({ rootDir, drill, runtimeSignals = null }) {
   return {
     schema: "arroba.drill.failure.v1",
     rootDir,
     failedAt: "2026-06-13T00:00:00.000Z",
-    metadata: { drill },
+    metadata: {
+      drill,
+      ...(runtimeSignals ? { runtimeSignals } : {}),
+    },
     error: {
       name: "Error",
       message: "relay target stale",

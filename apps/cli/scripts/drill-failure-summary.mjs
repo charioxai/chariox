@@ -67,6 +67,9 @@ async function main() {
       metadata: {
         drill: "failure-summary",
         total: aggregate.total,
+        ...(Object.keys(aggregate.runtimeSignals).length > 0
+          ? { runtimeSignals: Object.keys(aggregate.runtimeSignals).sort().join(",") }
+          : {}),
       },
     })
   }
@@ -135,6 +138,7 @@ function emptyAggregate() {
     total: 0,
     owners: {},
     classifications: {},
+    runtimeSignals: {},
     nextActions: [],
     failures: [],
   }
