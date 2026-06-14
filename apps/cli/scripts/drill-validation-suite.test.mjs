@@ -105,6 +105,7 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(artifactIndex.metadata.coverageAreas, "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract")
     assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync")
     assert.equal(artifactIndex.metadata.runtimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))
+    assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -158,6 +159,7 @@ test("drill validation suite writes passing run report artifact output", async (
     assert.equal(artifactIndex.metadata.classifications, "validation-suite")
     assert.equal(artifactIndex.metadata.coverageAreas, "custom-suite")
     assert.equal(artifactIndex.metadata.runtimeSignals, undefined)
+    assert.equal(artifactIndex.metadata.runtimeSignalOwners, undefined)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

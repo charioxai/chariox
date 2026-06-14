@@ -135,6 +135,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     coverageAreas: "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract",
     validationPresets: "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync",
     runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
+    runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
   })
   assert.deepEqual(drillValidationSuiteArtifactMetadata({
     schema: "arroba.drill.validation_suite_run.v1",
@@ -149,6 +150,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     coverageAreas: "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract",
     validationPresets: "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync",
     runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
+    runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
   })
   assert.throws(() => drillValidationSuiteArtifactMetadata(null), /requires a manifest or run report/)
 })

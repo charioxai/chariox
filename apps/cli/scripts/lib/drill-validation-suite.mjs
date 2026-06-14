@@ -1,5 +1,6 @@
 import { access, readdir } from "node:fs/promises"
 import path from "node:path"
+import { drillRuntimeSignalOwnersFor } from "./drill-runtime-signals.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -200,7 +201,12 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     classifications: "validation-suite",
     ...(coverageAreas.length > 0 ? { coverageAreas: coverageAreas.join(",") } : {}),
     ...(validationPresets.length > 0 ? { validationPresets: validationPresets.join(",") } : {}),
-    ...(runtimeSignals.length > 0 ? { runtimeSignals: runtimeSignals.join(",") } : {}),
+    ...(runtimeSignals.length > 0
+      ? {
+        runtimeSignals: runtimeSignals.join(","),
+        runtimeSignalOwners: drillRuntimeSignalOwnersFor(runtimeSignals).join(","),
+      }
+      : {}),
   }
 }
 
