@@ -568,6 +568,17 @@ test("distributed runtime gate rejects requirement flags without values", async 
   )
 })
 
+test("distributed runtime gate rejects aggregate-only generated evidence requirements", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-evidence-kind", "matrix-report", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-evidence-kind is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+})
+
 async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud }) {
   const ossMatrixRoot = path.join(ossRoot, ".artifacts", "drill-matrices")
   await writeMatrixReport(path.join(ossMatrixRoot, "native-provider-tui.json"), {

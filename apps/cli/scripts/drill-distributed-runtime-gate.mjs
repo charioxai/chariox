@@ -290,6 +290,9 @@ function parseArgs(argv) {
   if (options.outputArtifactIndexPath && !options.outputPath) {
     throw new Error("--output-artifact-index requires --output")
   }
+  if (options.requiredGeneratedEvidenceKinds.length > 0) {
+    throw new Error("--require-generated-evidence-kind is supported by drill-validation-gate-summary.mjs after a distributed gate report is written")
+  }
   return options
 }
 
