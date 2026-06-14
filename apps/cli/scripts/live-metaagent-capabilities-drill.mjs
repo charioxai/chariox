@@ -18,7 +18,8 @@ function parseArgs(argv) {
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
-    if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    if (arg === '--') continue
+    else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++index])
     else if (arg === '--help' || arg === '-h') {
