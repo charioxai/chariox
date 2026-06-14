@@ -118,6 +118,14 @@ test("rejects malformed failure manifests", () => {
   }), /invalid metadata/)
   assert.throws(() => validateDrillFailureManifest({
     ...validManifest(),
+    metadata: { provider: "Bearer abcdefghijklmnopqrstuvwxyz" },
+  }), /secret-looking metadata value/)
+  assert.throws(() => validateDrillFailureManifest({
+    ...validManifest(),
+    metadata: { nested: { provider: "sk-ant-abcdefghijklmnopqrstuvwxyz123456" } },
+  }), /secret-looking metadata value/)
+  assert.throws(() => validateDrillFailureManifest({
+    ...validManifest(),
     error: { name: "Error", message: "failed", stack: 1 },
   }), /invalid stack/)
 })

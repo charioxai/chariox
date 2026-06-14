@@ -10,6 +10,7 @@ import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import { drillFailureClassificationForKind } from "./drill-failure-taxonomy.mjs"
 import {
   isSensitiveDrillKey,
+  looksLikeDrillSecretValue,
   redactDrillSecretText,
 } from "./drill-secrets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
@@ -55,6 +56,7 @@ export function validateDrillFailureManifest(manifest, source = "manifest") {
   if (!manifest.metadata || typeof manifest.metadata !== "object" || Array.isArray(manifest.metadata)) {
     throw new Error(`${source} has invalid metadata`)
   }
+  validateFailureMetadataValue(manifest.metadata, `${source}.metadata`)
   if (manifest.error !== null) {
     validateFailureError(manifest.error, `${source}.error`)
   }
@@ -277,6 +279,28 @@ function validateFailureError(error, source) {
   }
   if (error.stack !== null && typeof error.stack !== "string") {
     throw new Error(`${source} has invalid stack`)
+  }
+}
+
+function validateFailureMetadataValue(value, source) {
+  if (typeof value === "string") {
+    if (looksLikeDrillSecretValue(value)) {
+      throw new Error(`${source} includes secret-looking metadata value`)
+    }
+    return
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") return
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      validateFailureMetadataValue(item, `${source}[${index}]`)
+    }
+    return
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error(`${source} has unsupported metadata value`)
+  }
+  for (const [key, childValue] of Object.entries(value)) {
+    validateFailureMetadataValue(childValue, `${source}.${key}`)
   }
 }
 

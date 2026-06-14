@@ -84,7 +84,7 @@ Required top-level fields:
 - `metadata`: non-secret drill context such as drill name, provider profile, relay mode, or scenario id.
 - `error`: error name, message, and optional stack.
 
-Failure manifests redact sensitive metadata keys, token-shaped metadata values, and token-shaped error text before writing. Failure summaries also redact sensitive metadata keys, token-shaped error messages, and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
+Failure manifests redact sensitive metadata keys, token-shaped metadata values, and token-shaped error text before writing. The validator rejects token-shaped metadata values, including nested values, so externally supplied manifests cannot pass with credentials embedded. Failure summaries also redact sensitive metadata keys, token-shaped error messages, and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
 When more than one failure manifest is selected, the summary command prints an aggregate owner/classification section so preserved failure batches can be routed quickly.
 The `--json`/`--output` aggregate schema is `arroba.drill.failure.aggregate.v1`.
 Its `nextActions` entries group repeated owner/classification/action pairs so CI and humans can route a failure batch without scanning every manifest.
