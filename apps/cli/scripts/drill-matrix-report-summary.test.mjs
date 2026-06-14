@@ -63,6 +63,7 @@ test("matrix report summary writes artifact index for output", async () => {
     assert.equal(artifactIndex.metadata.owners, "")
     assert.equal(artifactIndex.metadata.classifications, "")
     assert.equal(artifactIndex.metadata.runtimeSignals, "")
+    assert.equal(artifactIndex.metadata.runtimeSignalOwners, "")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -124,6 +125,7 @@ test("matrix report summary indexes failure owner and classification metadata", 
     assert.equal(artifactIndex.metadata.owners, "provider-account")
     assert.equal(artifactIndex.metadata.classifications, "provider-auth")
     assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,provider-run-lifecycle")
+    assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,provider-runtime")
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

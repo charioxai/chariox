@@ -8,6 +8,7 @@ import {
 } from "./lib/drill-failure-manifest.mjs"
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
+import { drillRuntimeSignalOwner } from "./lib/drill-runtime-signals.mjs"
 
 function printHelp() {
   console.log([
@@ -60,6 +61,8 @@ async function main() {
   }
   const aggregate = summarizeDrillFailureManifests(manifests, { sources: inputs })
   if (options.outputPath) {
+    const runtimeSignals = Object.keys(aggregate.runtimeSignals).sort()
+    const runtimeSignalOwners = runtimeSignalOwnersFor(runtimeSignals)
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
       artifactIndexPath: options.outputArtifactIndexPath,
@@ -69,8 +72,11 @@ async function main() {
         total: aggregate.total,
         owners: Object.keys(aggregate.owners).join(","),
         classifications: Object.keys(aggregate.classifications).join(","),
-        ...(Object.keys(aggregate.runtimeSignals).length > 0
-          ? { runtimeSignals: Object.keys(aggregate.runtimeSignals).sort().join(",") }
+        ...(runtimeSignals.length > 0
+          ? {
+            runtimeSignals: runtimeSignals.join(","),
+            runtimeSignalOwners: runtimeSignalOwners.join(","),
+          }
           : {}),
       },
     })
@@ -83,6 +89,10 @@ async function main() {
     console.log("")
     console.log(formatDrillFailureManifestAggregateSummary(aggregate))
   }
+}
+
+function runtimeSignalOwnersFor(runtimeSignals) {
+  return [...new Set(runtimeSignals.map((signal) => drillRuntimeSignalOwner(signal)))].sort()
 }
 
 function parseArgs(argv) {

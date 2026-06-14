@@ -67,6 +67,7 @@ test("failure summary writes artifact index for output", async () => {
     assert.equal(artifactIndex.metadata.owners, "runtime-network")
     assert.equal(artifactIndex.metadata.classifications, "relay-runtime")
     assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,session-authority")
+    assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
