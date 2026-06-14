@@ -2,6 +2,7 @@ import { access } from "node:fs/promises"
 import path from "node:path"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
+  "apps/cli/scripts/drill-artifact-index-summary.test.mjs",
   "apps/cli/scripts/drill-failure-summary.test.mjs",
   "apps/cli/scripts/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/drill-matrix-report-summary.test.mjs",
