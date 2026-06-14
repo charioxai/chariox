@@ -8,6 +8,7 @@ import {
   drillMatrixReportCompletionExitCode,
   drillMatrixReportExitCode,
   findDrillMatrixReportPaths,
+  formatDrillMatrixAggregateSummary,
   formatDrillMatrixReportSummary,
   readDrillMatrixReport,
   summarizeDrillMatrixReport,
@@ -122,6 +123,15 @@ test("aggregates multiple matrix reports for CI", () => {
     { matrix: "remote", id: "hetzner", status: "skipped", reason: "skipped after previous failure" },
     { matrix: "workspace", id: "tracked", status: "dry-run", reason: null },
   ])
+
+  const text = formatDrillMatrixAggregateSummary(aggregate)
+  assert.match(text, /matrix aggregate:/)
+  assert.match(text, /status=failed reports=2 scenarios=4 passed=1 failed=1 skipped=1 dry_run=1/)
+  assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token/)
+  assert.match(text, /next: refresh provider login/)
+  assert.match(text, /incomplete scenarios:/)
+  assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure/)
+  assert.match(text, /- workspace\/tracked status=dry-run/)
 })
 
 test("reads and validates report files", async () => {

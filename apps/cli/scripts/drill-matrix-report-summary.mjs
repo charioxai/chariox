@@ -5,6 +5,7 @@ import {
   drillMatrixReportExitCode,
   drillMatrixReportCompletionExitCode,
   findDrillMatrixReportPaths,
+  formatDrillMatrixAggregateSummary,
   formatDrillMatrixReportSummary,
   readDrillMatrixReport,
   summarizeDrillMatrixReports,
@@ -56,6 +57,8 @@ async function main() {
   }
   if (options.json) {
     console.log(JSON.stringify(aggregate, null, 2))
+  } else if (reports.length > 1) {
+    console.log(formatDrillMatrixAggregateSummary(aggregate))
   }
   process.exitCode = options.requireComplete
     ? drillMatrixReportCompletionExitCode(reports)

@@ -189,6 +189,45 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
   return lines.join("\n")
 }
 
+export function formatDrillMatrixAggregateSummary(aggregate) {
+  validateDrillMatrixAggregate(aggregate)
+  const lines = [
+    "matrix aggregate:",
+    `status=${aggregate.status} reports=${aggregate.totals.reports} scenarios=${aggregate.totals.scenarios} passed=${aggregate.totals.passed} failed=${aggregate.totals.failed} skipped=${aggregate.totals.skipped} dry_run=${aggregate.totals.dryRun} duration_ms=${aggregate.totals.durationMs ?? "-"}`,
+  ]
+
+  const classifications = Object.entries(aggregate.classifications)
+  if (classifications.length > 0) {
+    lines.push(`classifications: ${classifications.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
+  }
+
+  if (aggregate.failedScenarios.length > 0) {
+    lines.push("failed scenarios:")
+    for (const scenario of aggregate.failedScenarios) {
+      const classification = scenario.classification ? ` classification=${scenario.classification}` : ""
+      const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
+      lines.push(`- ${scenario.matrix}/${scenario.id}${classification} owner=${scenario.owner}${reason}`)
+      lines.push(`  next: ${scenario.nextAction}`)
+    }
+  }
+
+  if (aggregate.incompleteScenarios.length > 0) {
+    lines.push("incomplete scenarios:")
+    for (const scenario of aggregate.incompleteScenarios) {
+      const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
+      lines.push(`- ${scenario.matrix}/${scenario.id} status=${scenario.status}${reason}`)
+    }
+  }
+
+  if (aggregate.failedScenarios.length === 0 && aggregate.incompleteScenarios.length === 0) {
+    lines.push("next: all selected matrix scenarios completed without failures")
+  } else if (aggregate.failedScenarios.length === 0) {
+    lines.push("next: run incomplete scenarios before treating this matrix set as complete")
+  }
+
+  return lines.join("\n")
+}
+
 export function drillMatrixReportExitCode(reports) {
   return reports.some((report) => report.status === "failed") ? 1 : 0
 }
@@ -282,6 +321,32 @@ function validateDrillMatrixScenario(scenario, source) {
     || !scenario.artifactHints.every((value) => typeof value === "string")
   )) {
     throw new Error(`${source} has invalid artifactHints`)
+  }
+}
+
+function validateDrillMatrixAggregate(aggregate) {
+  if (!aggregate || typeof aggregate !== "object") {
+    throw new Error("aggregate is not an object")
+  }
+  if (aggregate.schema !== "arroba.drill.matrix.aggregate.v1") {
+    throw new Error(`aggregate has unsupported schema ${JSON.stringify(aggregate.schema)}`)
+  }
+  if (!["passed", "failed", "dry-run"].includes(aggregate.status)) {
+    throw new Error(`aggregate has invalid status ${JSON.stringify(aggregate.status)}`)
+  }
+  if (!aggregate.totals || typeof aggregate.totals !== "object") {
+    throw new Error("aggregate is missing totals")
+  }
+  for (const key of ["reports", "scenarios", "passed", "failed", "skipped", "dryRun", "durationMs"]) {
+    if (!Number.isFinite(aggregate.totals[key]) || aggregate.totals[key] < 0) {
+      throw new Error(`aggregate totals has invalid ${key}`)
+    }
+  }
+  if (!Array.isArray(aggregate.failedScenarios)) {
+    throw new Error("aggregate is missing failedScenarios")
+  }
+  if (!Array.isArray(aggregate.incompleteScenarios)) {
+    throw new Error("aggregate is missing incompleteScenarios")
   }
 }
 
