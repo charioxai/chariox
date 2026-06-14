@@ -111,6 +111,29 @@ test("rejects malformed matrix commands before spawning", async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+test("rejects later malformed matrix commands before spawning earlier scenarios", async () => {
+  const dir = await fixtureDir()
+  const marker = path.join(dir, "should-not-exist")
+  const script = await writeFixtureScript(dir, "mark.mjs", `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "ran")`)
+
+  await assert.rejects(
+    () => runDrillMatrix({
+      matrixName: "test-matrix",
+      scenarios: [
+        { id: "first", description: "would write marker", script },
+        { id: "second", description: "bad later command" },
+      ],
+      commandForScenario: (scenario) => scenario.id === "first"
+        ? { command: process.execPath, args: [scenario.script] }
+        : { command: "", args: [] },
+      cwd: dir,
+    }),
+    /second command is missing command/,
+  )
+  assert.equal(await exists(marker), false)
+  await rm(dir, { recursive: true, force: true })
+})
+
 test("quotes commands consistently", () => {
   assert.equal(quoteDrillCommand("node", ["plain", "two words", "quote'here"]), 'node plain "two words" "quote\'here"')
 })

@@ -74,13 +74,12 @@ export async function runDrillMatrix({
 }) {
   validateDrillMatrixScenarioDefinitions(scenarios)
   validateCommandFactory(commandForScenario)
+  const preparedScenarios = prepareMatrixScenarioCommands(scenarios, commandForScenario)
   const startedAt = new Date()
   console.log(`[${matrixName}] selected ${scenarios.map((scenario) => scenario.id).join(", ")}`)
   if (dryRun) {
     const results = []
-    for (const scenario of scenarios) {
-      const { command, args } = commandForScenario(scenario)
-      validateMatrixScenarioCommand({ command, args }, `${scenario.id} command`)
+    for (const { scenario, command, args } of preparedScenarios) {
       console.log(`[${matrixName}] dry-run ${scenario.id}: ${quoteDrillCommand(command, args)}`)
       results.push({
         scenario,
@@ -96,19 +95,18 @@ export async function runDrillMatrix({
   }
 
   const results = []
-  for (let index = 0; index < scenarios.length; index += 1) {
-    const scenario = scenarios[index]
-    const result = await runMatrixScenario({ matrixName, scenario, commandForScenario, cwd })
+  for (let index = 0; index < preparedScenarios.length; index += 1) {
+    const prepared = preparedScenarios[index]
+    const result = await runMatrixScenario({ matrixName, ...prepared, cwd })
     results.push(result)
     if (!result.ok && !continueOnFailure) {
-      for (const skippedScenario of scenarios.slice(index + 1)) {
-        const { command, args } = commandForScenario(skippedScenario)
+      for (const skipped of preparedScenarios.slice(index + 1)) {
         results.push({
-          scenario: skippedScenario,
+          scenario: skipped.scenario,
           ok: true,
           skipped: true,
-          command,
-          args,
+          command: skipped.command,
+          args: skipped.args,
           durationMs: 0,
           reason: "skipped after previous failure",
         })
@@ -133,10 +131,8 @@ export async function runDrillMatrix({
   return results
 }
 
-async function runMatrixScenario({ matrixName, scenario, commandForScenario, cwd }) {
+async function runMatrixScenario({ matrixName, scenario, command, args, cwd }) {
   const start = Date.now()
-  const { command, args } = commandForScenario(scenario)
-  validateMatrixScenarioCommand({ command, args }, `${scenario.id} command`)
   console.log(`[${matrixName}] start ${scenario.id}: ${scenario.description}`)
   console.log(`[${matrixName}] command ${quoteDrillCommand(command, args)}`)
 
@@ -184,6 +180,14 @@ async function runMatrixScenario({ matrixName, scenario, commandForScenario, cwd
   const classification = classifyDrillChildFailure(failureOutput)
   console.error(`[${matrixName}] fail ${scenario.id} duration_ms=${durationMs} classification=${classification} ${reason}`)
   return { scenario, ok: false, durationMs, reason, classification, command, args, artifactHints: extractDrillArtifactHints(failureOutput) }
+}
+
+function prepareMatrixScenarioCommands(scenarios, commandForScenario) {
+  return scenarios.map((scenario) => {
+    const commandSpec = commandForScenario(scenario)
+    validateMatrixScenarioCommand(commandSpec, `${scenario.id} command`)
+    return { scenario, command: commandSpec.command, args: commandSpec.args }
+  })
 }
 
 export function validateDrillMatrixScenarioDefinitions(scenarios, { requireDescription = true } = {}) {
