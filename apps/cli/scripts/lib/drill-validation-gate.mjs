@@ -1,3 +1,6 @@
+import { opendir, readFile, stat } from "node:fs/promises"
+import path from "node:path"
+
 import {
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
@@ -19,6 +22,69 @@ import {
 import { verifyDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
+export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
+
+export async function readDrillValidationGateReport(reportPath) {
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  validateDrillValidationGateReport(report, reportPath)
+  return report
+}
+
+export async function findDrillValidationGateReportPaths(roots, { maxDepth = 8 } = {}) {
+  const discovered = new Set()
+  for (const root of roots) {
+    await collectDrillValidationGateReportPaths(discovered, root, { depth: 0, maxDepth })
+  }
+  return [...discovered].sort()
+}
+
+export function summarizeDrillValidationGateReports(reports, { sources = [] } = {}) {
+  const totals = {
+    reports: reports.length,
+    passed: 0,
+    failed: 0,
+  }
+  const nextActions = new Map()
+  const summaries = reports.map((report, index) => {
+    validateDrillValidationGateReport(report, sources[index] ?? "validation gate report")
+    totals[report.status] += 1
+    for (const action of report.nextActions) {
+      countDrillAggregateNextAction(nextActions, action)
+    }
+    return {
+      source: sources[index] ?? null,
+      status: report.status,
+      checks: Object.fromEntries(Object.entries(report.checks).map(([name, check]) => [name, check.status])),
+    }
+  })
+  const aggregate = {
+    schema: DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA,
+    status: totals.failed > 0 ? "failed" : "passed",
+    totals,
+    nextActions: formatDrillAggregateNextActionCounts(nextActions),
+    reports: summaries,
+  }
+  validateDrillValidationGateAggregate(aggregate)
+  return aggregate
+}
+
+export function formatDrillValidationGateAggregateSummary(aggregate) {
+  validateDrillValidationGateAggregate(aggregate)
+  const lines = [
+    "drill validation gate aggregate:",
+    `status=${aggregate.status} reports=${aggregate.totals.reports} passed=${aggregate.totals.passed} failed=${aggregate.totals.failed}`,
+  ]
+  if (aggregate.nextActions.length > 0) {
+    lines.push("next actions:")
+    for (const action of aggregate.nextActions) {
+      lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+    }
+  }
+  lines.push(aggregate.status === "passed"
+    ? "next: all validation gate reports passed"
+    : "next: inspect failed validation gate reports and rerun the relevant drills")
+  return lines.join("\n")
+}
 
 export async function runDrillValidationGate({
   failureInputs = [],
@@ -116,6 +182,50 @@ export function validateDrillValidationGateReport(report, source = "validation g
   const expectedStatus = Object.values(report.checks).some((check) => check.status === "failed") ? "failed" : "passed"
   if (report.status !== expectedStatus) {
     throw new Error(`${source} status does not match check statuses`)
+  }
+}
+
+export function validateDrillValidationGateAggregate(aggregate, source = "validation gate aggregate") {
+  if (!aggregate || typeof aggregate !== "object" || Array.isArray(aggregate)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (aggregate.schema !== DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA) {
+    throw new Error(`${source} has unsupported schema ${JSON.stringify(aggregate.schema)}`)
+  }
+  if (!["passed", "failed"].includes(aggregate.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(aggregate.status)}`)
+  }
+  if (!aggregate.totals || typeof aggregate.totals !== "object" || Array.isArray(aggregate.totals)) {
+    throw new Error(`${source} has invalid totals`)
+  }
+  for (const key of ["reports", "passed", "failed"]) {
+    if (!Number.isSafeInteger(aggregate.totals[key]) || aggregate.totals[key] < 0) {
+      throw new Error(`${source}.totals has invalid ${key}`)
+    }
+  }
+  if (!Array.isArray(aggregate.nextActions)) {
+    throw new Error(`${source} has invalid nextActions`)
+  }
+  for (const [index, action] of aggregate.nextActions.entries()) {
+    validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
+  }
+  if (!Array.isArray(aggregate.reports)) {
+    throw new Error(`${source} has invalid reports`)
+  }
+  for (const [index, report] of aggregate.reports.entries()) {
+    validateGateAggregateReportSummary(report, `${source}.reports[${index}]`)
+  }
+  if (aggregate.totals.reports !== aggregate.reports.length) {
+    throw new Error(`${source} totals.reports does not match reports`)
+  }
+  const passed = aggregate.reports.filter((report) => report.status === "passed").length
+  const failed = aggregate.reports.filter((report) => report.status === "failed").length
+  if (aggregate.totals.passed !== passed || aggregate.totals.failed !== failed) {
+    throw new Error(`${source} totals do not match reports`)
+  }
+  const expectedStatus = aggregate.totals.failed > 0 ? "failed" : "passed"
+  if (aggregate.status !== expectedStatus) {
+    throw new Error(`${source} status does not match totals`)
   }
 }
 
@@ -225,6 +335,26 @@ function validateStringArray(value, source) {
   for (const [index, entry] of value.entries()) {
     if (typeof entry !== "string") {
       throw new Error(`${source}[${index}] is not a string`)
+    }
+  }
+}
+
+function validateGateAggregateReportSummary(report, source) {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (report.source !== null && typeof report.source !== "string") {
+    throw new Error(`${source} has invalid source`)
+  }
+  if (!["passed", "failed"].includes(report.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
+  }
+  if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
+    throw new Error(`${source} has invalid checks`)
+  }
+  for (const name of ["configuration", "platformBundle", "matrices", "failures"]) {
+    if (!["passed", "failed", "skipped"].includes(report.checks[name])) {
+      throw new Error(`${source}.checks has invalid ${name}`)
     }
   }
 }
@@ -399,6 +529,49 @@ async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+async function collectDrillValidationGateReportPaths(discovered, entryPath, { depth, maxDepth }) {
+  const entry = await stat(entryPath).catch(() => null)
+  if (!entry) return
+  if (entry.isFile()) {
+    await maybeCollectDrillValidationGateReportPath(discovered, entryPath)
+    return
+  }
+  if (!entry.isDirectory() || depth > maxDepth) return
+  let dir = null
+  try {
+    dir = await opendir(entryPath)
+    for await (const child of dir) {
+      const childPath = path.join(entryPath, child.name)
+      if (child.isFile()) {
+        await maybeCollectDrillValidationGateReportPath(discovered, childPath)
+        continue
+      }
+      if (!child.isDirectory() || shouldPruneValidationGateDirectory(child.name)) continue
+      await collectDrillValidationGateReportPaths(discovered, childPath, { depth: depth + 1, maxDepth })
+    }
+  } catch {
+    // Ignore unreadable directories in broad artifact roots.
+  }
+}
+
+async function maybeCollectDrillValidationGateReportPath(discovered, entryPath) {
+  if (!entryPath.endsWith(".json")) return
+  try {
+    const parsed = JSON.parse(await readFile(entryPath, "utf8"))
+    if (parsed?.schema === DRILL_VALIDATION_GATE_SCHEMA) discovered.add(entryPath)
+  } catch {
+    // Ignore unrelated JSON files in broad artifact roots.
+  }
+}
+
+function shouldPruneValidationGateDirectory(name) {
+  return name === ".git"
+    || name === "node_modules"
+    || name === ".pnpm-store"
+    || name === "debug"
+    || name === "release"
 }
 
 function nonEmptyString(value) {

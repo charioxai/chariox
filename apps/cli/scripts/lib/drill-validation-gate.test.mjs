@@ -6,8 +6,13 @@ import test from "node:test"
 
 import {
   drillValidationGateExitCode,
+  findDrillValidationGateReportPaths,
+  formatDrillValidationGateAggregateSummary,
   formatDrillValidationGateSummary,
+  readDrillValidationGateReport,
   runDrillValidationGate,
+  summarizeDrillValidationGateReports,
+  validateDrillValidationGateAggregate,
   validateDrillValidationGateReport,
 } from "./drill-validation-gate.mjs"
 import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
@@ -201,6 +206,44 @@ test("resolves explicit failure root inputs to manifest paths", async () => {
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("reads and discovers validation gate report artifacts", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await writeDrillPlatformBundle(bundleDir)
+    const report = await runDrillValidationGate({ platformBundleDir: bundleDir })
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+    await writeFile(path.join(rootDir, "reports", "unrelated.json"), "{\"schema\":\"other\"}\n", "utf8")
+
+    assert.deepEqual(await findDrillValidationGateReportPaths([rootDir]), [reportPath])
+    assert.deepEqual(await readDrillValidationGateReport(reportPath), report)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("summarizes validation gate reports", async () => {
+  const passed = await runDrillValidationGate({
+    failureRoots: ["/tmp/no-such-arroba-failure-root"],
+  })
+  const failed = await runDrillValidationGate()
+  const aggregate = summarizeDrillValidationGateReports([passed, failed], {
+    sources: ["passed.json", "failed.json"],
+  })
+
+  assert.equal(aggregate.schema, "arroba.drill.validation_gate.aggregate.v1")
+  assert.equal(aggregate.status, "failed")
+  assert.deepEqual(aggregate.totals, { reports: 2, passed: 1, failed: 1 })
+  assert.deepEqual(aggregate.reports.map((report) => report.source), ["passed.json", "failed.json"])
+  assert.deepEqual(aggregate.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+    { owner: "validation-harness", classification: "validation-gate" },
+  ])
+  assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /status=failed reports=2 passed=1 failed=1/)
 })
 
 async function writeMatrixReport(file, report) {
