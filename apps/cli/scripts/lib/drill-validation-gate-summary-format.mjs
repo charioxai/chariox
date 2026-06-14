@@ -62,6 +62,7 @@ export function formatDrillValidationGateSummary(report) {
   const missingMatrixRuntimeSignals = matrices.missingMatrixRuntimeSignals ?? []
   if (requiredMatrixRuntimeSignals.length > 0) {
     lines.push(`matrix_required_runtime_signals=${requiredMatrixRuntimeSignals.join(",")} missing=${missingMatrixRuntimeSignals.join(",") || "none"}`)
+    appendMatrixRuntimeSignalSources(lines, matrices.aggregate?.runtimeSignalScenarios, requiredMatrixRuntimeSignals)
   }
   const requiredDeploymentPresets = matrices.requiredDeploymentPresets ?? []
   const missingDeploymentPresets = matrices.missingDeploymentPresets ?? []
@@ -101,4 +102,24 @@ export function formatDrillValidationGateSummary(report) {
     ? "next: validation artifacts passed configured gates"
     : "next: inspect failed gate checks and rerun the relevant drills")
   return lines.join("\n")
+}
+
+function appendMatrixRuntimeSignalSources(lines, runtimeSignalScenarios, requiredMatrixRuntimeSignals) {
+  const evidence = runtimeSignalScenarios && typeof runtimeSignalScenarios === "object" && !Array.isArray(runtimeSignalScenarios)
+    ? runtimeSignalScenarios
+    : {}
+  lines.push("matrix_runtime_signal_sources:")
+  for (const signal of requiredMatrixRuntimeSignals) {
+    const scenarios = Array.isArray(evidence[signal]) ? evidence[signal] : []
+    lines.push(`- ${signal}: ${scenarios.length > 0 ? scenarios.map(formatMatrixRuntimeSignalScenario).join(", ") : "missing"}`)
+  }
+}
+
+function formatMatrixRuntimeSignalScenario(scenario) {
+  if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) return "invalid"
+  const matrix = typeof scenario.matrix === "string" && scenario.matrix ? scenario.matrix : "unknown-matrix"
+  const id = typeof scenario.id === "string" && scenario.id ? scenario.id : "unknown-scenario"
+  const status = typeof scenario.status === "string" && scenario.status ? scenario.status : "unknown"
+  const source = typeof scenario.source === "string" && scenario.source ? ` source=${scenario.source}` : ""
+  return `${matrix}/${id}(${status})${source}`
 }

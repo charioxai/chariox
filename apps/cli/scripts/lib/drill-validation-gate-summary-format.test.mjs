@@ -37,6 +37,8 @@ test("formats required platform and matrix coverage diagnostics", () => {
         missingMatrices: ["workspace-live-sync-matrix"],
         requiredMatrixClassifications: ["workspace-live-sync-conflict"],
         missingMatrixClassifications: ["workspace-live-sync-conflict"],
+        requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
+        missingMatrixRuntimeSignals: ["workspace-live-sync-state"],
         requiredDeploymentPresets: ["hosted-cloud"],
         missingDeploymentPresets: ["hosted-cloud"],
         requiredProviders: ["claude"],
@@ -58,6 +60,8 @@ test("formats required platform and matrix coverage diagnostics", () => {
   assert.match(text, /platform_required_failure_classifications=kernel-authority missing=kernel-authority/)
   assert.match(text, /matrix_required_names=workspace-live-sync-matrix missing=workspace-live-sync-matrix/)
   assert.match(text, /matrix_required_classifications=workspace-live-sync-conflict missing=workspace-live-sync-conflict/)
+  assert.match(text, /matrix_required_runtime_signals=workspace-live-sync-state missing=workspace-live-sync-state/)
+  assert.match(text, /matrix_runtime_signal_sources:\n- workspace-live-sync-state: missing/)
   assert.match(text, /matrix_required_deployment_presets=hosted-cloud missing=hosted-cloud/)
   assert.match(text, /matrix_required_providers=claude missing=claude/)
   assert.match(text, /matrix_required_scenarios=tracked missing=tracked/)
@@ -105,10 +109,26 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
       matrices: matrixCheck({
         status: "passed",
         reportPaths: ["/tmp/matrix.json"],
+        requiredMatrixRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
+        missingMatrixRuntimeSignals: [],
         aggregate: {
           schema: "arroba.drill.matrix.aggregate.v1",
           status: "passed",
           totals: { failed: 0, skipped: 1, dryRun: 2 },
+          runtimeSignalScenarios: {
+            "session-authority": [{
+              matrix: "workspace-live-sync-matrix",
+              source: "/tmp/matrix.json",
+              id: "permission",
+              status: "passed",
+            }],
+            "workspace-live-sync-state": [{
+              matrix: "workspace-live-sync-matrix",
+              source: "/tmp/matrix.json",
+              id: "managed",
+              status: "passed",
+            }],
+          },
         },
       }),
       failures: {
@@ -129,6 +149,9 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /platform_failure_taxonomy=drill:1 scenario:2/)
   assert.match(text, /artifact_total=3 size_bytes=42/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
+  assert.match(text, /matrix_runtime_signal_sources:/)
+  assert.match(text, /- session-authority: workspace-live-sync-matrix\/permission\(passed\) source=\/tmp\/matrix\.json/)
+  assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/matrix\.json/)
   assert.match(text, /failure_total=1/)
 })
 
@@ -177,6 +200,8 @@ function matrixCheck(overrides = {}) {
     missingMatrices: [],
     requiredMatrixClassifications: [],
     missingMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    missingMatrixRuntimeSignals: [],
     requiredDeploymentPresets: [],
     missingDeploymentPresets: [],
     requiredProviders: [],
