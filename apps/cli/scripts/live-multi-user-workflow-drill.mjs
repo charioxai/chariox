@@ -2,9 +2,9 @@
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import { access, mkdir, rm } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -17,6 +17,10 @@ const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
 const DEFAULT_PROVIDER = 'codex'
 const DEFAULT_MODEL = 'gpt-5.4-mini'
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 async function loadCliModules(runtimeDir) {
   const [{ transformAsync }, tsPreset] = await Promise.all([
@@ -189,6 +193,17 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
+function spawnObserved(label, command, args, options) {
+  const child = spawn(command, args, options)
+  const startupError = new Promise((_, reject) => {
+    child.once('error', (error) => {
+      reject(new Error(`${label} failed to start: ${error.message}`))
+    })
+  })
+  startupError.catch(() => {})
+  return { child, startupError }
+}
+
 function unwrapVariant(resp, ...keys) {
   for (const key of keys) {
     if (resp?.[key] != null) return resp[key]
@@ -327,27 +342,10 @@ async function main() {
   }
 
   const runtimeDir = path.join(cliRoot, '.tmp-live-multi-user-workflow-drill')
-  const rootDir = path.join(os.tmpdir(), `arroba-multi-user-workflow-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-multi-user-workflow-drill', nowStamp())
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-  await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+  await prepareDrillArtifacts(rootDir)
   await mkdir(runtimeDir, { recursive: true })
-  await mkdir(rootDir, { recursive: true })
-
-  const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
-  const {
-    createSessionRequest,
-    createSessionInviteRequest,
-    joinSessionInviteRequest,
-    listSessionMembersRequest,
-    listSessionsRequest,
-    getSessionStateRequest,
-    spawnAgentRequest,
-    listAgentsRequest,
-    createWorkflowRequest,
-    resolveWorkflowRequest,
-    invokeWorkflowEndpointRequest,
-    endSessionRequest,
-  } = requests
 
   const ports = makePorts()
   const envs = makeChildrenEnv(ports, rootDir)
@@ -355,26 +353,60 @@ async function main() {
   let daemonChild = null
   const clients = []
   let sessionId = null
+  let endSessionRequest = null
+  let passed = false
+  let failure = null
+  let providerModel = null
+  let workflow = null
+  let user1Agent = null
+  let user2Agent = null
+  let user2PlacedUser1Node = null
+  let user2Node = null
+  let edge = null
+  let removedWorkflow = null
+  let user2State = null
 
   try {
+    const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
+    const {
+      createSessionRequest,
+      createSessionInviteRequest,
+      joinSessionInviteRequest,
+      listSessionMembersRequest,
+      listSessionsRequest,
+      getSessionStateRequest,
+      spawnAgentRequest,
+      listAgentsRequest,
+      createWorkflowRequest,
+      resolveWorkflowRequest,
+      invokeWorkflowEndpointRequest,
+    } = requests
+    ;({ endSessionRequest } = requests)
+
     logStep('start_relay', { relayUrl: envs.relayUrl })
-    relayChild = spawn('cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
+    const relayProcess = spawnObserved('relay', 'cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
       cwd: repoRoot,
       env: envs.relayEnv,
       stdio: ['ignore', 'ignore', 'inherit'],
     })
+    relayChild = relayProcess.child
     const daemonBinary = await resolveBinary(
       path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       'arroba-kernel',
     )
     logStep('start_kernel', { daemonAlias: envs.daemonAlias })
-    daemonChild = spawn(daemonBinary, [], {
+    const daemonProcess = spawnObserved('kernel', daemonBinary, [], {
       cwd: repoRoot,
       env: envs.daemonEnv,
       stdio: ['ignore', 'ignore', 'inherit'],
     })
-    await waitForRelayTarget(LocalIpcClient, envs.relayUrl, envs.daemonAlias)
+    daemonChild = daemonProcess.child
+    await Promise.race([
+      waitForRelayTarget(LocalIpcClient, envs.relayUrl, envs.daemonAlias),
+      relayProcess.startupError,
+      daemonProcess.startupError,
+    ])
 
     const user1 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-1')
     const user2 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-2')
@@ -408,12 +440,12 @@ async function main() {
     requireCondition(user2Sessions.some((entry) => entry.id === session.id), 'user-2 should see joined session', user2Sessions)
 
     logStep('spawn_user_owned_agents')
-    const providerModel = modelForProvider(options.provider, options.model)
-    const user1Agent = unwrapVariant(
+    providerModel = modelForProvider(options.provider, options.model)
+    user1Agent = unwrapVariant(
       await user1.send(spawnAgentRequest(session.id, options.provider, 'user-one-agent', providerModel, options.worktree, 'low')),
       'AgentSpawned',
     ).agent
-    const user2Agent = unwrapVariant(
+    user2Agent = unwrapVariant(
       await user2.send(spawnAgentRequest(session.id, options.provider, 'user-two-agent', providerModel, options.worktree, 'low')),
       'AgentSpawned',
     ).agent
@@ -429,7 +461,7 @@ async function main() {
     )
 
     logStep('mutate_shared_workflow')
-    const workflow = unwrapVariant(
+    workflow = unwrapVariant(
       await user1.send(createWorkflowRequest(session.id, 'multi-user-live-flow')),
       'WorkflowCreated',
     ).workflow
@@ -437,7 +469,7 @@ async function main() {
       await user2.send(resolveWorkflowRequest(session.id, workflow.id)),
       'WorkflowResolved',
     ).workflow
-    const user2PlacedUser1Node = unwrapVariant(
+    user2PlacedUser1Node = unwrapVariant(
       await user2.send(addWorkflowNodeRequest(session.id, workflow.id, user1Agent.id, resolvedBeforeUser2Node.revision)),
       'WorkflowNodeAdded',
     ).node
@@ -451,7 +483,7 @@ async function main() {
       await user2.send(resolveWorkflowRequest(session.id, workflow.id)),
       'WorkflowResolved',
     ).workflow
-    const user2Node = unwrapVariant(
+    user2Node = unwrapVariant(
       await user2.send(addWorkflowNodeRequest(session.id, workflow.id, user2Agent.id, resolvedAfterSharedNode.revision)),
       'WorkflowNodeAdded',
     ).node
@@ -476,7 +508,7 @@ async function main() {
       await user2.send(resolveWorkflowRequest(session.id, workflow.id)),
       'WorkflowResolved',
     ).workflow
-    const edge = unwrapVariant(
+    edge = unwrapVariant(
       await user2.send(addWorkflowEdgeRequest(session.id, workflow.id, user1Node.id, user2Node.id, beforeEdge.revision)),
       'WorkflowEdgeAdded',
     ).edge
@@ -514,14 +546,14 @@ async function main() {
       await user1.send(resolveWorkflowRequest(session.id, workflow.id)),
       'WorkflowResolved',
     ).workflow
-    const removedWorkflow = unwrapVariant(
+    removedWorkflow = unwrapVariant(
       await user1.send(removeWorkflowEdgeRequest(session.id, workflow.id, edge.id, freshWorkflow.revision)),
       'WorkflowEdgeRemoved',
     ).workflow
     requireCondition(removedWorkflow.edges.length === 0, 'user-1 should remove edge incident to its own node', removedWorkflow)
 
     logStep('verify_redacted_shared_projection')
-    const user2State = unwrapVariant(await user2.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
+    user2State = unwrapVariant(await user2.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     requireCondition(
       user2State.agents.some((agent) => agent.id === user2Agent.id && agent.provider !== 'redacted')
         && user2State.agents.some((agent) => agent.id === user1Agent.id && agent.provider === 'redacted'),
@@ -564,15 +596,48 @@ async function main() {
         'other-user node instructions redacted',
       ],
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    if (sessionId && clients[0]) {
+    if (sessionId && clients[0] && endSessionRequest) {
       await clients[0].send(endSessionRequest(sessionId)).catch(() => {})
     }
     await Promise.all(clients.map((client) => client.close().catch(() => {})))
     await terminateChild(daemonChild)
     await terminateChild(relayChild)
     await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-multi-user-workflow',
+        mode: 'multi-user-workflow-relay',
+        relayUrl: envs.relayUrl,
+        daemonAlias: envs.daemonAlias,
+        sessionId,
+        provider: options.provider,
+        model: providerModel ?? modelForProvider(options.provider, options.model),
+        workflowId: workflow?.id ?? null,
+        agents: [
+          user1Agent ? { id: user1Agent.id, ownerUserId: user1Agent.owner_user_id } : null,
+          user2Agent ? { id: user2Agent.id, ownerUserId: user2Agent.owner_user_id } : null,
+        ].filter(Boolean),
+        nodes: [
+          user2PlacedUser1Node ? { id: user2PlacedUser1Node.id, ownerUserId: user2PlacedUser1Node.owner_user_id, createdByUserId: user2PlacedUser1Node.created_by_user_id } : null,
+          user2Node ? { id: user2Node.id, ownerUserId: user2Node.owner_user_id, createdByUserId: user2Node.created_by_user_id } : null,
+        ].filter(Boolean),
+        edgeId: edge?.id ?? null,
+        remainingEdgeCount: removedWorkflow?.edges?.length ?? null,
+        user2Projection: user2State ? {
+          agentCount: user2State.agents?.length ?? 0,
+          workflowCount: user2State.workflows?.length ?? 0,
+        } : null,
+      },
+    })
   }
 }
 
