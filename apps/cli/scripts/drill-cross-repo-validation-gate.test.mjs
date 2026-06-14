@@ -168,6 +168,39 @@ test("cross repo validation gate keeps default artifact roots opt-in", async () 
   }
 })
 
+test("cross repo validation gate accepts explicit artifact evidence inputs", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    const artifactRoot = path.join(rootDir, "artifact-root")
+    await writeDrillPlatformBundle(bundleDir)
+    const artifactIndex = await writeValidationSuiteArtifact(artifactRoot)
+
+    const report = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--artifact-index",
+      artifactIndex,
+      "--json",
+    ])).stdout)
+
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.deepEqual(report.checks.artifacts.inputs, [artifactIndex])
+    assert.deepEqual(report.checks.artifacts.roots, [])
+    assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate keeps default failure roots opt-in", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
   try {
@@ -215,6 +248,49 @@ test("cross repo validation gate keeps default failure roots opt-in", async () =
         ].sort())
         assert.equal(report.checks.failures.aggregate.total, 1)
         assert.equal(report.checks.failures.aggregate.failures[0].drill, "cloud-slice-runtime-matrix")
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("cross repo validation gate accepts explicit failure manifests", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    const failureManifest = await writeFailureManifest(path.join(rootDir, "preserved", "arroba-drill-failure.json"), {
+      drill: "slice-runtime-matrix",
+      message: "slice launch timed out",
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--no-default-roots",
+        "--platform-bundle",
+        bundleDir,
+        "--failure-manifest",
+        failureManifest,
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.equal(report.checks.failures.status, "failed")
+        assert.deepEqual(report.checks.failures.inputs, [failureManifest])
+        assert.deepEqual(report.checks.failures.roots, [])
+        assert.equal(report.checks.failures.aggregate.total, 1)
+        assert.equal(report.checks.failures.aggregate.failures[0].drill, "slice-runtime-matrix")
         return true
       },
     )
@@ -361,6 +437,7 @@ async function writeValidationSuiteArtifact(rootDir) {
     artifacts: ["cloud-validation-suite.json"],
     metadata: { drill: "cloud-validation-suite", tests: 1, coverageAreas: "distributed-observability,suite-contract" },
   })
+  return path.join(rootDir, "arroba-drill-artifacts.json")
 }
 
 async function writeFailureManifest(file, {
@@ -375,6 +452,7 @@ async function writeFailureManifest(file, {
     metadata: { drill },
     error: { name: "Error", message, stack: null },
   }, null, 2)}\n`, "utf8")
+  return file
 }
 
 function scenario(id, classification, runtimeSignals = [], overrides = {}) {

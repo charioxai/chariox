@@ -38,7 +38,10 @@ function printHelp() {
     "                         Discover failure manifests under each repo's .artifacts root",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
     "  --matrix-root ROOT     Discover matrix reports below ROOT; repeatable",
+    "  --artifact-index PATH  Read and verify a specific artifact index; repeatable",
     "  --artifact-root ROOT   Discover artifact indexes below ROOT; repeatable",
+    "  --failure-manifest PATH",
+    "                         Read a specific failure manifest or preserved root; repeatable",
     "  --failure-root ROOT    Discover failure manifests below ROOT; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
   "  --require-complete     Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
@@ -104,9 +107,11 @@ async function main() {
 
 function parseArgs(argv) {
   const options = {
+    artifactIndexes: [],
     artifactRoots: [],
     cloudRoot: defaultCloudRoot,
     defaultRoots: true,
+    failureInputs: [],
     includeDefaultArtifacts: false,
     includeDefaultFailures: false,
     failureRoots: [],
@@ -155,11 +160,21 @@ function parseArgs(argv) {
         index += 1
       } else if (arg.startsWith("--matrix-root=")) {
         options.matrixRoots.push(arg.slice("--matrix-root=".length))
+      } else if (arg === "--artifact-index") {
+        options.artifactIndexes.push(readValue(argv, index, arg))
+        index += 1
+      } else if (arg.startsWith("--artifact-index=")) {
+        options.artifactIndexes.push(arg.slice("--artifact-index=".length))
       } else if (arg === "--artifact-root") {
         options.artifactRoots.push(readValue(argv, index, arg))
         index += 1
       } else if (arg.startsWith("--artifact-root=")) {
         options.artifactRoots.push(arg.slice("--artifact-root=".length))
+      } else if (arg === "--failure-manifest") {
+        options.failureInputs.push(readValue(argv, index, arg))
+        index += 1
+      } else if (arg.startsWith("--failure-manifest=")) {
+        options.failureInputs.push(arg.slice("--failure-manifest=".length))
       } else if (arg === "--failure-root") {
         options.failureRoots.push(readValue(argv, index, arg))
         index += 1
@@ -222,7 +237,9 @@ function gateOptionsFor(options) {
     )
   }
   return {
+    artifactIndexes: uniqueSortedResolvedPaths(options.artifactIndexes),
     artifactRoots: uniqueSortedResolvedPaths(artifactRoots),
+    failureInputs: uniqueSortedResolvedPaths(options.failureInputs),
     failureRoots: uniqueSortedResolvedPaths(failureRoots),
     matrixRoots: uniqueSortedResolvedPaths(matrixRoots),
     maxDepth: options.maxDepth,
