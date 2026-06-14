@@ -35,6 +35,8 @@ function printHelp() {
     "  --cloud-root DIR        Cloud repo root; defaults to ../arroba-cloud",
     "  --no-default-roots      Only use matrix roots passed explicitly with --matrix-root",
     "  --matrix-root ROOT      Discover matrix reports below ROOT; repeatable",
+    "  --artifact-index PATH   Read and verify a specific artifact index; repeatable",
+    "  --artifact-root ROOT    Discover artifact indexes below ROOT; repeatable",
     "  --include-default-artifacts",
     "                         Discover artifact indexes under each repo's .artifacts root",
     "  --include-default-failures",
@@ -80,6 +82,7 @@ async function main() {
       await writeDrillPlatformBundle(platformBundleDir)
     }
     const report = await runDrillValidationGate({
+      artifactIndexes: options.artifactIndexes,
       artifactRoots: artifactRootsFor(options),
       failureRoots: failureRootsFor(options),
       matrixRoots: matrixRootsFor(options),
@@ -140,6 +143,8 @@ async function main() {
 function parseArgs(argv) {
   const options = {
     cloudRoot: defaultCloudRoot,
+    artifactIndexes: [],
+    artifactRoots: [],
     defaultRoots: true,
     failureRoots: [],
     help: false,
@@ -178,6 +183,16 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--matrix-root=")) {
       options.matrixRoots.push(arg.slice("--matrix-root=".length))
+    } else if (arg === "--artifact-index") {
+      options.artifactIndexes.push(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--artifact-index=")) {
+      options.artifactIndexes.push(arg.slice("--artifact-index=".length))
+    } else if (arg === "--artifact-root") {
+      options.artifactRoots.push(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--artifact-root=")) {
+      options.artifactRoots.push(arg.slice("--artifact-root=".length))
     } else if (arg === "--failure-root") {
       options.failureRoots.push(readValue(argv, index, arg))
       index += 1
@@ -240,11 +255,14 @@ function matrixRootsFor(options) {
 }
 
 function artifactRootsFor(options) {
-  if (!options.includeDefaultArtifacts) return []
-  return [
-    path.join(options.ossRoot, ".artifacts"),
-    path.join(options.cloudRoot, ".artifacts"),
-  ].map((item) => path.resolve(item)).sort()
+  const roots = [...options.artifactRoots]
+  if (options.includeDefaultArtifacts) {
+    roots.push(
+      path.join(options.ossRoot, ".artifacts"),
+      path.join(options.cloudRoot, ".artifacts"),
+    )
+  }
+  return [...new Set(roots.map((item) => path.resolve(item)))].sort()
 }
 
 function failureRootsFor(options) {

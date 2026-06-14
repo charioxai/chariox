@@ -152,6 +152,42 @@ test("distributed runtime gate requires default artifact indexes", async () => {
   }
 })
 
+test("distributed runtime gate accepts explicit artifact evidence inputs", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const explicitArtifactRoot = path.join(rootDir, "validation-artifacts", "cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    const ossArtifactIndex = await writeValidationSuiteArtifact(path.join(rootDir, "validation-artifacts", "oss"), {
+      evidenceRepo: "oss",
+    })
+    await writeValidationSuiteArtifact(explicitArtifactRoot)
+
+    const report = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--artifact-index",
+      ossArtifactIndex,
+      "--artifact-root",
+      explicitArtifactRoot,
+      "--json",
+    ])).stdout)
+
+    assert.equal(report.status, "passed")
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.deepEqual(report.checks.artifacts.roots, [explicitArtifactRoot])
+    assert.deepEqual(report.checks.artifacts.inputs, [ossArtifactIndex])
+    assert.equal(report.checks.artifacts.aggregate.evidenceRepos.cloud, 1)
+    assert.equal(report.checks.artifacts.aggregate.evidenceRepos.oss, 1)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("distributed runtime gate requires executed Cloud validation suite artifacts", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {
@@ -492,6 +528,7 @@ async function writeValidationSuiteArtifact(rootDir, {
       evidenceRepos: evidenceRepo,
     },
   })
+  return path.join(rootDir, "arroba-drill-artifacts.json")
 }
 
 const DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS = Object.freeze([
