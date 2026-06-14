@@ -27,7 +27,8 @@ function parseArgs(argv) {
         'Usage: node apps/cli/scripts/live-metaagent-capabilities-drill.mjs [options]',
         '',
         'Runs an isolated local dev-stub drill for metaagent capabilities:',
-        '- verifies meta-only runtime tools',
+        '- verifies metaagent runtime tool policy: meta tools, read-only workspace, and recall',
+        '- verifies scoped metaagent task and plan artifacts',
         '- verifies MCP install/grant/revoke/uninstall via arroba.meta.run_command',
         '- verifies skill install/grant/revoke/uninstall via arroba.meta.run_command',
         '- verifies credential handle and vault status commands without passing secrets',
@@ -220,6 +221,20 @@ async function waitForInteraction(client, requests, sessionId, agentId, title, t
   throw new Error(`timed out waiting for interaction ${title}\n${JSON.stringify(last, null, 2)}`)
 }
 
+async function waitForMetaagentTask(client, requests, sessionId, metaagentId, predicate, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    const payload = unwrapVariant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState', 'SessionStateLoaded')
+    const session = payload.session ?? payload
+    last = session.metaagent_tasks ?? []
+    const task = last.find((entry) => entry.metaagent_id === metaagentId)
+    if (task && predicate(task)) return task
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for metaagent task projection\n${JSON.stringify(last, null, 2)}`)
+}
+
 async function cleanupSession(kernelUrl, sessionId) {
   if (!sessionId) return
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -287,6 +302,11 @@ async function main() {
       '---\nname: iso-skill\ndescription: Isolated metaagent capability drill skill\n---\nUse this only for the isolated metaagent capability drill.\n',
       'utf8',
     )
+    await writeFile(
+      path.join(workspace, 'README.md'),
+      '# Metaagent capabilities fixture\n\nThe metaagent should be able to read this planning context.\n',
+      'utf8',
+    )
     await initGitWorktree(workspace)
 
     const kernelBinary = await buildKernel()
@@ -299,6 +319,7 @@ async function main() {
       'set provider dev-stub',
       'set model metaagent-capabilities-default',
       'session new --meta $workspace as session',
+      'session permissions yolo',
       'agent spawn worker metaagent-capabilities-worker as worker',
       'agent list',
     ].join('\n'), 'utf8')
@@ -340,18 +361,68 @@ async function main() {
 
     const metaRun = await launchRuntime(client, requests, sessionId, metaagent.id, 'metaagent-capabilities-meta', options.timeoutMs, options.pollMs)
     assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be forced to plan mode', { metaRun })
-    assert(metaRun.permission_level === 'required', 'metaagent provider run must require permissions', { metaRun })
+    assert(
+      metaRun.permission_level == null || metaRun.permission_level === 'yolo',
+      'metaagent provider run must inherit session permission level instead of forcing required',
+      { metaRun },
+    )
 
     const metaTools = await listRuntimeToolNames(metaRun)
     assert(metaTools.length > 0, 'metaagent runtime should expose runtime tools', { metaTools })
-    assert(metaTools.every((tool) => tool.startsWith('arroba.meta.')), 'metaagent runtime must expose only meta tools', { metaTools })
+    for (const expectedTool of [
+      'arroba.meta.read_task',
+      'arroba.meta.update_task',
+      'arroba.meta.read_plan',
+      'arroba.meta.update_plan',
+      'arroba.meta.complete_task',
+      'arroba.meta.mark_blocked',
+      'arroba.read_artifact',
+      'arroba.search_recall',
+      'arroba.query_recall',
+    ]) {
+      assert(metaTools.includes(expectedTool), `metaagent runtime should expose ${expectedTool}`, { metaTools })
+    }
+    assert(
+      metaTools.every((tool) => tool.startsWith('arroba.meta.') || tool === 'arroba.read_artifact' || tool.startsWith('arroba.search_recall') || tool.startsWith('arroba.query_recall')),
+      'metaagent runtime must expose only meta, read-only workspace, and recall tools',
+      { metaTools },
+    )
+
+    const readTaskInitial = await callRuntimeTool(metaRun, 'arroba.meta.read_task')
+    assert(readTaskInitial.ok && readTaskInitial.payload?.status === 'none', 'metaagent task should start empty before task update', readTaskInitial.payload)
+    const updateTask = await callRuntimeTool(metaRun, 'arroba.meta.update_task', {
+      markdown: 'Coordinate the isolated capability validation.',
+    })
+    assert(updateTask.ok && updateTask.payload?.task?.task_markdown?.includes('Coordinate the isolated'), 'metaagent should update its scoped task document', updateTask.payload)
+    const updatePlan = await callRuntimeTool(metaRun, 'arroba.meta.update_plan', {
+      markdown: '- Verify planning context\n- Delegate capability checks',
+    })
+    assert(updatePlan.ok && updatePlan.payload?.plan_markdown?.includes('Delegate capability checks'), 'metaagent should update its scoped plan document', updatePlan.payload)
+    const readPlan = await callRuntimeTool(metaRun, 'arroba.meta.read_plan')
+    assert(readPlan.ok && readPlan.payload?.plan_markdown?.includes('Verify planning context'), 'metaagent should read its scoped plan document', readPlan.payload)
+    const projectedTask = await waitForMetaagentTask(
+      client,
+      requests,
+      sessionId,
+      metaagent.id,
+      (task) => task.task_markdown.includes('isolated capability'),
+      options.timeoutMs,
+      options.pollMs,
+    )
+    assert(projectedTask, 'session snapshot should expose scoped metaagent task state')
+
+    const artifactRead = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'README.md' })
+    assert(artifactRead.ok, 'metaagent should be able to read workspace artifacts for planning', artifactRead.payload)
+    const recallSearch = await callRuntimeTool(metaRun, 'arroba.search_recall', { query: 'metaagent capability drill', mode: 'keyword', limit: 3 })
+    assert(recallSearch.ok, 'metaagent should be able to search recall for planning', recallSearch.payload)
+    const recallQuery = await callRuntimeTool(metaRun, 'arroba.query_recall', { text: 'metaagent capability drill', limit: 3 })
+    assert(recallQuery.ok, 'metaagent should be able to query recall for planning', recallQuery.payload)
+
     const deniedToolCalls = [
-      ['arroba.read_artifact', { path: 'README.md' }, 'workspace artifact reads must be denied'],
       ['arroba.write_artifact', { path: 'README.md', content_text: 'forbidden', domain: 'text' }, 'workspace artifact writes must be denied'],
       ['arroba.register_script_path', { name: 'forbidden-script', path: '/tmp/forbidden-script.js' }, 'script registration must be denied'],
       ['arroba.register_connector_path', { name: 'forbidden-connector', path: '/tmp/forbidden-connector' }, 'connector registration must be denied'],
       ['arroba.request_extension', { kind: 'mcp', name: 'iso-mcp' }, 'user MCP requests must be denied'],
-      ['arroba.search_recall', { query: 'metaagent capability drill' }, 'recall search must be denied'],
       ['arroba.request_credential_secret', { credential_id: 'iso-credential' }, 'raw credential secret requests must be denied'],
       ['arroba.http_request_with_credential', { credential_id: 'iso-credential', url: 'https://example.invalid' }, 'credential-backed HTTP execution must be denied'],
       ['arroba.slice_screenshot', {}, 'slice runtime tools must be denied'],
@@ -430,6 +501,11 @@ async function main() {
     const credentialRemove = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'credential remove iso-credential' })
     assert(credentialRemove.ok, 'metaagent should remove credential handles', credentialRemove.payload)
     log('credential-capabilities-passed')
+
+    const blockedTask = await callRuntimeTool(metaRun, 'arroba.meta.mark_blocked', { reason: 'Synthetic isolated blocker check.' })
+    assert(blockedTask.ok && blockedTask.payload?.status === 'blocked', 'metaagent should mark its task blocked', blockedTask.payload)
+    const completeTask = await callRuntimeTool(metaRun, 'arroba.meta.complete_task', { summary: 'Capability drill task finished.' })
+    assert(completeTask.ok && completeTask.payload?.status === 'completed', 'metaagent should mark its task completed', completeTask.payload)
 
     const sliceDenied = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'slice list' })
     assert(!sliceDenied.ok, 'metaagent slice management must be denied', sliceDenied.payload)

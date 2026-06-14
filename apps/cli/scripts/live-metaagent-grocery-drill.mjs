@@ -28,7 +28,7 @@ function parseArgs(argv) {
         '',
         'Runs a deterministic local grocery delegation drill:',
         '- creates a fresh git repo and metaagent session',
-        '- verifies metaagent plan mode and meta-only runtime tool exposure',
+        '- verifies metaagent plan mode and planning runtime tool exposure',
         '- drives metaagent delegation commands for workers and workflow wiring',
         '- materializes a local grocery web app as worker output',
         '- starts the app and runs registration/login/catalog/cart/checkout smoke checks',
@@ -627,11 +627,14 @@ async function main() {
     assert(metaagent, 'session should contain a metaagent', sessionState)
     const metaRun = await launchRuntime(client, requests, sessionId, metaagent.id, 'metaagent-grocery-meta', options.timeoutMs, options.pollMs)
     assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be forced to plan mode', { metaRun })
-    assert(metaRun.permission_level === 'required', 'metaagent provider run must require permissions', { metaRun })
+    assert(metaRun.permission_level == null || metaRun.permission_level === 'yolo', 'metaagent provider run must not force required permissions', { metaRun })
     const metaTools = await listRuntimeToolNames(metaRun)
-    assert(metaTools.every((tool) => tool.startsWith('arroba.meta.')), 'metaagent runtime tools should be meta-only', { metaTools })
-    const deniedRead = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'package.json' })
-    assert(!deniedRead.ok, 'direct metaagent workspace read should remain denied', deniedRead.payload)
+    assert(
+      metaTools.every((tool) => tool.startsWith('arroba.meta.') || tool === 'arroba.read_artifact' || tool === 'arroba.search_recall' || tool === 'arroba.query_recall'),
+      'metaagent runtime tools should be meta, read-only workspace, and recall only',
+      { metaTools },
+    )
+    assert(metaTools.includes('arroba.read_artifact'), 'metaagent runtime should expose artifact reads for planning', { metaTools })
 
     const visiblePrompt = await client.send(requests.submitPromptRequest(
       sessionId,
@@ -714,8 +717,8 @@ async function main() {
     const smoke = await runGrocerySmoke(appUrl)
     log('grocery-smoke-passed', smoke)
 
-    const postSmokeDenied = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'server.mjs' })
-    assert(!postSmokeDenied.ok, 'direct metaagent tool calls should remain denied after app generation', postSmokeDenied.payload)
+    const postSmokeRead = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'server.mjs' })
+    assert(postSmokeRead.ok, 'metaagent artifact reads should remain available after app generation', postSmokeRead.payload)
 
     console.log(JSON.stringify({
       status: 'ok',

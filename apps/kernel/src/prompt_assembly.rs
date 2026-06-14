@@ -544,7 +544,7 @@ mod tests {
         assert!(
             envelope
                 .hidden_system_context
-                .contains("You are a delegation-only Arroba metaagent")
+                .contains("You are an Arroba metaagent")
         );
         assert!(
             envelope
