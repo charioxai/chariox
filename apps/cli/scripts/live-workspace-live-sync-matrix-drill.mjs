@@ -14,6 +14,11 @@ import {
   parseHetznerPassthroughArg,
 } from './lib/drill-environment-presets.mjs'
 import { providerProfileMetadata } from './lib/drill-provider-profiles.mjs'
+import {
+  workspaceLiveSyncRequiredScenarioIds,
+  workspaceLiveSyncScenarioClassification,
+  workspaceLiveSyncScenarioRuntimeSignals,
+} from './lib/workspace-live-sync-fixtures.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..', '..', '..')
@@ -25,6 +30,7 @@ const remotePermissionDrill = path.join(scriptDir, 'live-remote-workspace-live-s
 const codexModelId = process.env.ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL ?? process.env.ARROBA_CODEX_MODEL ?? 'gpt-5.5'
 const CODEX_MODEL = ['--provider-model', `codex=${codexModelId}`]
 const OPENCODE_MODEL = ['--provider-model', 'opencode=opencode/gpt-5.2']
+const REQUIRED_SCENARIOS = new Set(workspaceLiveSyncRequiredScenarioIds())
 
 const MATRIX = [
   scenario('local-off-codex', 'local off-mode Codex smoke', localDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'off']),
@@ -80,6 +86,7 @@ function scenario(id, description, script, args, flags = {}) {
 
 function workspaceLiveSyncClassification({ id, args, flags }) {
   if (flags.expectedFailure) return null
+  if (REQUIRED_SCENARIOS.has(id)) return workspaceLiveSyncScenarioClassification(id)
   if (id.includes('permission')) return 'kernel-authority'
   if (id.includes('restart')) return 'relay-target-freshness'
   const mode = valueAfter(args, '--mode') ?? null
@@ -89,6 +96,7 @@ function workspaceLiveSyncClassification({ id, args, flags }) {
 
 function workspaceLiveSyncRuntimeSignals({ id, args, flags }) {
   if (flags.expectedFailure) return []
+  if (REQUIRED_SCENARIOS.has(id)) return workspaceLiveSyncScenarioRuntimeSignals(id)
   const signals = ['session-authority']
   if (id.includes('restart')) signals.push('relay-target-freshness')
   const mode = valueAfter(args, '--mode') ?? null
