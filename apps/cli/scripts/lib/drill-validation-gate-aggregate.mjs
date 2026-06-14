@@ -3,7 +3,11 @@ import {
   formatDrillAggregateNextActionCounts,
   validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
-import { drillRuntimeSignalOwnerCounts } from "./drill-runtime-signals.mjs"
+import {
+  DRILL_RUNTIME_SIGNAL_OWNERS,
+  drillRuntimeSignalOwnerCounts,
+  isKnownDrillRuntimeSignal,
+} from "./drill-runtime-signals.mjs"
 
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
 
@@ -327,24 +331,24 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateStringArray(aggregate.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateStringArray(aggregate.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
-  validateStringArray(aggregate.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
-  validateStringArray(aggregate.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
+  validateRuntimeSignalArray(aggregate.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
+  validateRuntimeSignalArray(aggregate.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateStringArray(aggregate.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
   validateStringArray(aggregate.missingArtifactRuntimeSignalOwners ?? [], `${source}.missingArtifactRuntimeSignalOwners`)
   validateStringArray(aggregate.requiredArtifactOwners ?? [], `${source}.requiredArtifactOwners`)
   validateStringArray(aggregate.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
   validateStringArray(aggregate.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
   validateStringArray(aggregate.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
-  validateStringArray(aggregate.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
-  validateStringArray(aggregate.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
+  validateRuntimeSignalArray(aggregate.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
+  validateRuntimeSignalArray(aggregate.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
   validateStringArray(aggregate.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
   validateStringArray(aggregate.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
   validateStringArray(aggregate.requiredMatrices ?? [], `${source}.requiredMatrices`)
   validateStringArray(aggregate.missingMatrices ?? [], `${source}.missingMatrices`)
   validateStringArray(aggregate.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
   validateStringArray(aggregate.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
-  validateStringArray(aggregate.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
-  validateStringArray(aggregate.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
+  validateRuntimeSignalArray(aggregate.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
+  validateRuntimeSignalArray(aggregate.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   if (aggregate.matrixRuntimeSignalSources !== undefined) {
     validateMatrixRuntimeSignalSources(aggregate.matrixRuntimeSignalSources, `${source}.matrixRuntimeSignalSources`)
   }
@@ -790,41 +794,41 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingArtifactGeneratedEvidenceKinds ?? {}, `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateCountObject(coverage.requiredArtifactEvidenceRepos ?? {}, `${source}.requiredArtifactEvidenceRepos`)
   validateCountObject(coverage.missingArtifactEvidenceRepos ?? {}, `${source}.missingArtifactEvidenceRepos`)
-  validateCountObject(coverage.requiredArtifactRuntimeSignals ?? {}, `${source}.requiredArtifactRuntimeSignals`)
-  validateCountObject(coverage.missingArtifactRuntimeSignals ?? {}, `${source}.missingArtifactRuntimeSignals`)
-  validateCountObject(coverage.requiredArtifactRuntimeSignalOwners ?? {}, `${source}.requiredArtifactRuntimeSignalOwners`)
-  validateCountObject(coverage.missingArtifactRuntimeSignalOwners ?? {}, `${source}.missingArtifactRuntimeSignalOwners`)
+  validateRuntimeSignalCountObject(coverage.requiredArtifactRuntimeSignals ?? {}, `${source}.requiredArtifactRuntimeSignals`)
+  validateRuntimeSignalCountObject(coverage.missingArtifactRuntimeSignals ?? {}, `${source}.missingArtifactRuntimeSignals`)
+  validateRuntimeSignalOwnerCountObject(coverage.requiredArtifactRuntimeSignalOwners ?? {}, `${source}.requiredArtifactRuntimeSignalOwners`)
+  validateRuntimeSignalOwnerCountObject(coverage.missingArtifactRuntimeSignalOwners ?? {}, `${source}.missingArtifactRuntimeSignalOwners`)
   validateCountObject(coverage.requiredArtifactOwners ?? {}, `${source}.requiredArtifactOwners`)
   validateCountObject(coverage.missingArtifactOwners ?? {}, `${source}.missingArtifactOwners`)
   validateCountObject(coverage.requiredArtifactClassifications ?? {}, `${source}.requiredArtifactClassifications`)
   validateCountObject(coverage.missingArtifactClassifications ?? {}, `${source}.missingArtifactClassifications`)
   validateCountObject(coverage.artifactSchemas ?? {}, `${source}.artifactSchemas`)
   validateCountObject(coverage.artifactCoverageAreas ?? {}, `${source}.artifactCoverageAreas`)
-  validateCountObject(coverage.requiredRuntimeSignals ?? {}, `${source}.requiredRuntimeSignals`)
-  validateCountObject(coverage.missingRuntimeSignals ?? {}, `${source}.missingRuntimeSignals`)
+  validateRuntimeSignalCountObject(coverage.requiredRuntimeSignals ?? {}, `${source}.requiredRuntimeSignals`)
+  validateRuntimeSignalCountObject(coverage.missingRuntimeSignals ?? {}, `${source}.missingRuntimeSignals`)
   validateCountObject(coverage.requiredFailureClassifications ?? {}, `${source}.requiredFailureClassifications`)
   validateCountObject(coverage.missingFailureClassifications ?? {}, `${source}.missingFailureClassifications`)
-  validateCountObject(coverage.artifactRuntimeSignals ?? {}, `${source}.artifactRuntimeSignals`)
-  validateCountObject(coverage.artifactRuntimeSignalOwners ?? {}, `${source}.artifactRuntimeSignalOwners`)
+  validateRuntimeSignalCountObject(coverage.artifactRuntimeSignals ?? {}, `${source}.artifactRuntimeSignals`)
+  validateRuntimeSignalOwnerCountObject(coverage.artifactRuntimeSignalOwners ?? {}, `${source}.artifactRuntimeSignalOwners`)
   validateCountObject(coverage.artifactOwners ?? {}, `${source}.artifactOwners`)
   validateCountObject(coverage.artifactClassifications ?? {}, `${source}.artifactClassifications`)
   validateCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
   validateCountObject(coverage.artifactGeneratedEvidenceKinds ?? {}, `${source}.artifactGeneratedEvidenceKinds`)
   validateCountObject(coverage.artifactEvidenceRepos ?? {}, `${source}.artifactEvidenceRepos`)
-  validateCountObject(coverage.failureRuntimeSignals ?? {}, `${source}.failureRuntimeSignals`)
-  validateCountObject(coverage.failureRuntimeSignalOwners ?? {}, `${source}.failureRuntimeSignalOwners`)
+  validateRuntimeSignalCountObject(coverage.failureRuntimeSignals ?? {}, `${source}.failureRuntimeSignals`)
+  validateRuntimeSignalOwnerCountsMatch(coverage.failureRuntimeSignals ?? {}, coverage.failureRuntimeSignalOwners ?? {}, `${source}.failureRuntimeSignalOwners`)
   validateCountObject(coverage.failureOwners ?? {}, `${source}.failureOwners`)
   validateCountObject(coverage.failureClassifications ?? {}, `${source}.failureClassifications`)
-  validateCountObject(coverage.matrixRuntimeSignals ?? {}, `${source}.matrixRuntimeSignals`)
-  validateCountObject(coverage.matrixRuntimeSignalOwners ?? {}, `${source}.matrixRuntimeSignalOwners`)
+  validateRuntimeSignalCountObject(coverage.matrixRuntimeSignals ?? {}, `${source}.matrixRuntimeSignals`)
+  validateRuntimeSignalOwnerCountsMatch(coverage.matrixRuntimeSignals ?? {}, coverage.matrixRuntimeSignalOwners ?? {}, `${source}.matrixRuntimeSignalOwners`)
   validateCountObject(coverage.matrixOwners ?? {}, `${source}.matrixOwners`)
   validateCountObject(coverage.matrixClassifications ?? {}, `${source}.matrixClassifications`)
   validateCountObject(coverage.requiredMatrices ?? {}, `${source}.requiredMatrices`)
   validateCountObject(coverage.missingMatrices ?? {}, `${source}.missingMatrices`)
   validateCountObject(coverage.requiredMatrixClassifications ?? {}, `${source}.requiredMatrixClassifications`)
   validateCountObject(coverage.missingMatrixClassifications ?? {}, `${source}.missingMatrixClassifications`)
-  validateCountObject(coverage.requiredMatrixRuntimeSignals ?? {}, `${source}.requiredMatrixRuntimeSignals`)
-  validateCountObject(coverage.missingMatrixRuntimeSignals ?? {}, `${source}.missingMatrixRuntimeSignals`)
+  validateRuntimeSignalCountObject(coverage.requiredMatrixRuntimeSignals ?? {}, `${source}.requiredMatrixRuntimeSignals`)
+  validateRuntimeSignalCountObject(coverage.missingMatrixRuntimeSignals ?? {}, `${source}.missingMatrixRuntimeSignals`)
   validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
   validateCountObject(coverage.missingDeploymentPresets ?? {}, `${source}.missingDeploymentPresets`)
   validateCountObject(coverage.requiredProviders ?? {}, `${source}.requiredProviders`)
@@ -840,16 +844,16 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error(`${source} is not an object`)
   }
-  validateCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)
-  validateCountObject(coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
+  validateRuntimeSignalCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)
+  validateRuntimeSignalOwnerCountsMatch(coverage.runtimeSignals ?? {}, coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(coverage.owners ?? {}, `${source}.owners`)
   validateCountObject(coverage.classifications ?? {}, `${source}.classifications`)
   validateStringArray(coverage.requiredMatrices ?? [], `${source}.requiredMatrices`)
   validateStringArray(coverage.missingMatrices ?? [], `${source}.missingMatrices`)
   validateStringArray(coverage.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
   validateStringArray(coverage.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
-  validateStringArray(coverage.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
-  validateStringArray(coverage.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
+  validateRuntimeSignalArray(coverage.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
+  validateRuntimeSignalArray(coverage.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   validateStringArray(coverage.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(coverage.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateStringArray(coverage.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -867,8 +871,8 @@ function validateValidationGatePlatformCoverage(coverage, source) {
   }
   validateStringArray(coverage.requiredCoverageAreas ?? [], `${source}.requiredCoverageAreas`)
   validateStringArray(coverage.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
-  validateStringArray(coverage.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
-  validateStringArray(coverage.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
+  validateRuntimeSignalArray(coverage.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
+  validateRuntimeSignalArray(coverage.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
   validateStringArray(coverage.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
   validateStringArray(coverage.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
 }
@@ -1189,8 +1193,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateStringArray(coverage.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateStringArray(coverage.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateStringArray(coverage.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
-  validateStringArray(coverage.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
-  validateStringArray(coverage.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
+  validateRuntimeSignalArray(coverage.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
+  validateRuntimeSignalArray(coverage.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateStringArray(coverage.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
   validateStringArray(coverage.missingArtifactRuntimeSignalOwners ?? [], `${source}.missingArtifactRuntimeSignalOwners`)
   validateStringArray(coverage.requiredArtifactOwners ?? [], `${source}.requiredArtifactOwners`)
@@ -1199,8 +1203,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateStringArray(coverage.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
   validateCountObject(coverage.schemas ?? {}, `${source}.schemas`)
   validateCountObject(coverage.coverageAreas ?? {}, `${source}.coverageAreas`)
-  validateCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)
-  validateCountObject(coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
+  validateRuntimeSignalCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)
+  validateRuntimeSignalOwnerCountObject(coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(coverage.owners ?? {}, `${source}.owners`)
   validateCountObject(coverage.classifications ?? {}, `${source}.classifications`)
   validateCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
@@ -1269,8 +1273,8 @@ function validateRuntimeSignalScenarioMap(value, source, { reportSource }) {
     throw new Error(`${source} is not an object`)
   }
   for (const [signal, scenarios] of Object.entries(value)) {
-    if (!nonEmptyString(signal)) {
-      throw new Error(`${source} has invalid signal`)
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
     }
     if (!Array.isArray(scenarios)) {
       throw new Error(`${source}.${signal} is not an array`)
@@ -1302,6 +1306,15 @@ function validateRuntimeSignalScenario(scenario, source, { reportSource }) {
   }
 }
 
+function validateRuntimeSignalArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, signal] of value.entries()) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source}[${index}] has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
+}
+
 function validateStringArray(value, source) {
   if (!Array.isArray(value)) {
     throw new Error(`${source} is not an array`)
@@ -1310,6 +1323,33 @@ function validateStringArray(value, source) {
     if (typeof entry !== "string") {
       throw new Error(`${source}[${index}] is not a string`)
     }
+  }
+}
+
+function validateRuntimeSignalCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const signal of Object.keys(value)) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
+}
+
+function validateRuntimeSignalOwnerCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const owner of Object.keys(value)) {
+    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
+      throw new Error(`${source} has unknown runtime signal owner ${JSON.stringify(owner)}`)
+    }
+  }
+}
+
+function validateRuntimeSignalOwnerCountsMatch(runtimeSignals, runtimeSignalOwners, source) {
+  validateRuntimeSignalCountObject(runtimeSignals, source.replace(/\.runtimeSignalOwners$/, ".runtimeSignals"))
+  validateRuntimeSignalOwnerCountObject(runtimeSignalOwners, source)
+  const expected = drillRuntimeSignalOwnerCounts(runtimeSignals)
+  if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expected)) {
+    throw new Error(`${source} must match runtimeSignals`)
   }
 }
 

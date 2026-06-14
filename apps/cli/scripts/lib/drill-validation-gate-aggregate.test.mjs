@@ -453,6 +453,55 @@ test("rejects inconsistent aggregate status and coverage", () => {
     }),
     /matrixRuntimeSignalSources does not match reports/,
   )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredMatrixRuntimeSignals: ["workspace-live-synch-state"],
+    }),
+    /requiredMatrixRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        matrixRuntimeSignals: { "workspace-live-synch-state": 1 },
+        matrixRuntimeSignalOwners: { "runtime-state": 1 },
+      },
+    }),
+    /coverage\.matrixRuntimeSignals has unknown runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        failureRuntimeSignals: { "relay-target-freshness": 1 },
+        failureRuntimeSignalOwners: { "kernel-authority": 1 },
+      },
+    }),
+    /coverage\.failureRuntimeSignalOwners must match runtimeSignals/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        matrixCoverage: {
+          ...aggregate.reports[0].matrixCoverage,
+          runtimeSignalScenarios: {
+            "workspace-live-synch-state": [{
+              matrix: "workspace-live-sync-matrix",
+              source: "/tmp/workspace-live-sync-matrix.json",
+              id: "managed",
+              status: "passed",
+            }],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.matrixCoverage\.runtimeSignalScenarios has unknown runtime signal "workspace-live-synch-state"/,
+  )
 })
 
 function generatedEvidenceFixture() {
