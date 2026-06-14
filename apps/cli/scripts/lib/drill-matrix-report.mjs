@@ -342,6 +342,9 @@ function validateDrillMatrixScenario(scenario, source) {
   )) {
     throw new Error(`${source} has invalid artifactHints`)
   }
+  if (scenario.artifactHints?.some((value) => looksLikeSecretValue(value))) {
+    throw new Error(`${source} includes secret-looking artifactHints`)
+  }
 }
 
 function validateDrillMatrixAggregate(aggregate) {

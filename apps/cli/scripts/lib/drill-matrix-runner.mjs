@@ -271,5 +271,12 @@ function isArtifactKey(key) {
 function looksLikeArtifactPath(value) {
   return typeof value === "string"
     && value.length < 500
+    && !looksLikeSecretValue(value)
     && (/^\/[^ ]+/.test(value) || value.includes(".artifacts") || value.includes("arroba-drill"))
+}
+
+function looksLikeSecretValue(value) {
+  return /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i.test(value)
+    || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(value)
+    || /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/.test(value)
 }

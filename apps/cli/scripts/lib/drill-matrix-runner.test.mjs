@@ -65,6 +65,7 @@ test("extracts artifact hints from structured and text drill output", () => {
   const hints = extractDrillArtifactHints([
     '[drill] preserved-failed-run {"rootDir":"/tmp/arroba-drill-one","manifestPath":"/tmp/arroba-drill-one/arroba-drill-failure.json","token":"secret"}',
     'remote workspace live sync permission drill artifacts kept at /tmp/arroba-drill-two',
+    'bad artifacts kept at /tmp/arroba-drill-sk-this-should-not-persist',
     'ignored token=/not-an-artifact-token',
   ].join("\n"))
 

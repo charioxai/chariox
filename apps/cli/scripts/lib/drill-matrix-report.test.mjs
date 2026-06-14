@@ -226,6 +226,11 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
+    scenarios: [{ ...scenario("broken", "passed"), artifactHints: ["/tmp/arroba-drill-sk-this-should-not-persist"] }],
+  }), /scenarios\[0\] includes secret-looking artifactHints/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
     metadata: { relayToken: "redacted-or-not-it-should-not-be-here" },
   }), /sensitive metadata key/)
 
