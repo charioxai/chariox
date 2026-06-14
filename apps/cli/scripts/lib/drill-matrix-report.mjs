@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import {
+  countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
   validateDrillAggregateNextAction,
@@ -421,6 +422,50 @@ function validateDrillMatrixAggregate(aggregate) {
   }
   for (const [index, report] of aggregate.reports.entries()) {
     validateMatrixAggregateReport(report, `aggregate.reports[${index}]`)
+  }
+  validateDrillMatrixAggregateConsistency(aggregate)
+}
+
+function validateDrillMatrixAggregateConsistency(aggregate) {
+  const scenarioTotal = aggregate.totals.passed + aggregate.totals.failed + aggregate.totals.skipped + aggregate.totals.dryRun
+  if (aggregate.totals.scenarios !== scenarioTotal) {
+    throw new Error("aggregate scenario total does not match status counts")
+  }
+  if (aggregate.totals.reports !== aggregate.reports.length) {
+    throw new Error("aggregate report total does not match reports")
+  }
+  if (aggregate.totals.failed !== aggregate.failedScenarios.length) {
+    throw new Error("aggregate failed total does not match failedScenarios")
+  }
+  if (aggregate.totals.skipped + aggregate.totals.dryRun !== aggregate.incompleteScenarios.length) {
+    throw new Error("aggregate incomplete total does not match incompleteScenarios")
+  }
+  assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failedScenarios, "owner")
+  assertNextActionCountsMatchScenarios(aggregate)
+}
+
+function assertObjectCountsMatchEntries(label, counts, entries, key) {
+  const expected = countDrillAggregateEntriesBy(
+    entries.filter((entry) => typeof entry[key] === "string" && entry[key]),
+    (entry) => entry[key],
+  )
+  if (JSON.stringify(counts) !== JSON.stringify(expected)) {
+    throw new Error(`${label} do not match failedScenarios`)
+  }
+}
+
+function assertNextActionCountsMatchScenarios(aggregate) {
+  const expected = new Map()
+  for (const scenario of aggregate.failedScenarios) {
+    countDrillAggregateNextAction(expected, {
+      owner: scenario.owner,
+      classification: scenario.classification ?? "child-process",
+      nextAction: scenario.nextAction,
+    })
+  }
+  const expectedActions = formatDrillAggregateNextActionCounts(expected)
+  if (JSON.stringify(aggregate.nextActions ?? []) !== JSON.stringify(expectedActions)) {
+    throw new Error("aggregate nextActions do not match failedScenarios")
   }
 }
 

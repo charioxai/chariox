@@ -219,6 +219,29 @@ test("aggregates preserved drill failure summaries", () => {
   assert.match(text, /next: inspect relay and kernel logs/)
 })
 
+test("rejects inconsistent failure aggregates", () => {
+  const aggregate = summarizeDrillFailureManifests([
+    validManifest({
+      rootDir: "/tmp/provider",
+      metadata: { drill: "provider-drill" },
+      error: { name: "Error", message: "Token refresh failed: 401", stack: null },
+    }),
+  ])
+
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    total: 2,
+  }), /total does not match failures/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    owners: { "runtime-network": 1 },
+  }), /owners do not match failures/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    nextActions: [],
+  }), /nextActions do not match failures/)
+})
+
 function validManifest(overrides = {}) {
   return {
     schema: "arroba.drill.failure.v1",

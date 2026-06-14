@@ -29,6 +29,15 @@ export function validateDrillAggregateNextAction(action, source) {
   }
 }
 
+export function countDrillAggregateEntriesBy(entries, keyForEntry) {
+  const counts = new Map()
+  for (const entry of entries) {
+    const key = keyForEntry(entry)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
 }

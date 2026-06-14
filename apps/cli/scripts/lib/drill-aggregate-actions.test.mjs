@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
   validateDrillAggregateNextAction,
@@ -61,4 +62,15 @@ test("validates aggregate next action entries", () => {
     nextAction: "inspect state",
     count: 0,
   }, "action"), /invalid count/)
+})
+
+test("counts aggregate entries by stable sorted key", () => {
+  assert.deepEqual(countDrillAggregateEntriesBy([
+    { owner: "runtime-network" },
+    { owner: "provider-account" },
+    { owner: "provider-account" },
+  ], (entry) => entry.owner), {
+    "provider-account": 2,
+    "runtime-network": 1,
+  })
 })

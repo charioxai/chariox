@@ -175,6 +175,30 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /- workspace\/tracked status=dry-run source=\/tmp\/workspace-matrix.json/)
 })
 
+test("rejects inconsistent matrix aggregates", () => {
+  const aggregate = summarizeDrillMatrixReports([
+    matrixReport({
+      matrix: "remote",
+      scenarios: [
+        scenario("remote", "failed", { classification: "provider-auth", reason: "expired token" }),
+      ],
+    }),
+  ])
+
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    totals: { ...aggregate.totals, failed: 2 },
+  }), /scenario total does not match status counts/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    owners: { "runtime-network": 1 },
+  }), /owners do not match failedScenarios/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    nextActions: [],
+  }), /nextActions do not match failedScenarios/)
+})
+
 test("reads and validates report files", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-report-"))
   const file = path.join(dir, "matrix.json")

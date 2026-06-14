@@ -1,6 +1,7 @@
 import { opendir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import {
+  countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
   validateDrillAggregateNextAction,
@@ -212,6 +213,38 @@ function validateDrillFailureManifestAggregate(aggregate) {
   }
   for (const [index, failure] of aggregate.failures.entries()) {
     validateDrillFailureAggregateEntry(failure, `aggregate.failures[${index}]`)
+  }
+  validateDrillFailureAggregateConsistency(aggregate)
+}
+
+function validateDrillFailureAggregateConsistency(aggregate) {
+  if (aggregate.total !== aggregate.failures.length) {
+    throw new Error("aggregate total does not match failures")
+  }
+  assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failures, "owner")
+  assertObjectCountsMatchEntries("aggregate classifications", aggregate.classifications, aggregate.failures, "classification")
+  assertNextActionCountsMatchFailures(aggregate)
+}
+
+function assertObjectCountsMatchEntries(label, counts, entries, key) {
+  const expected = countDrillAggregateEntriesBy(entries, (entry) => entry[key])
+  if (JSON.stringify(counts) !== JSON.stringify(expected)) {
+    throw new Error(`${label} do not match failures`)
+  }
+}
+
+function assertNextActionCountsMatchFailures(aggregate) {
+  const expected = new Map()
+  for (const failure of aggregate.failures) {
+    countDrillAggregateNextAction(expected, {
+      owner: failure.owner,
+      classification: failure.classification,
+      nextAction: failure.nextAction,
+    })
+  }
+  const expectedActions = formatDrillAggregateNextActionCounts(expected)
+  if (JSON.stringify(aggregate.nextActions ?? []) !== JSON.stringify(expectedActions)) {
+    throw new Error("aggregate nextActions do not match failures")
   }
 }
 
