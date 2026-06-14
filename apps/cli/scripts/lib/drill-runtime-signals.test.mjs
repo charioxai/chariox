@@ -4,7 +4,9 @@ import test from "node:test"
 import {
   DRILL_RUNTIME_SIGNAL_IDS,
   DRILL_RUNTIME_SIGNALS_SCHEMA,
+  drillRuntimeSignalOwnerCounts,
   drillRuntimeSignalOwner,
+  drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
   isKnownDrillRuntimeSignal,
   validateDrillRuntimeSignalsManifest,
@@ -33,6 +35,19 @@ test("writes and validates runtime signal manifest", () => {
   assert.deepEqual(manifest.signals.map((signal) => signal.id), DRILL_RUNTIME_SIGNAL_IDS)
   assert.equal(drillRuntimeSignalOwner("session-authority"), "kernel-authority")
   assert.equal(drillRuntimeSignalOwner("slice-auth-state"), "provider-account")
+  assert.deepEqual(drillRuntimeSignalOwnersFor(["slice-auth-state", "session-authority", "lease-health"]), [
+    "kernel-authority",
+    "provider-account",
+  ])
+  assert.deepEqual(drillRuntimeSignalOwnerCounts({
+    "lease-health": 2,
+    "provider-run-lifecycle": 1,
+    "relay-target-freshness": 1,
+  }), {
+    "kernel-authority": 2,
+    "provider-runtime": 1,
+    "runtime-network": 1,
+  })
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-sync-state"), true)
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-synch-state"), false)
   assert.doesNotThrow(() => validateDrillRuntimeSignalsManifest(manifest))

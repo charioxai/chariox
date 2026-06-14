@@ -7,7 +7,7 @@ import {
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
-import { drillRuntimeSignalOwner } from "./drill-runtime-signals.mjs"
+import { drillRuntimeSignalOwnersFor } from "./drill-runtime-signals.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
 export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
@@ -441,7 +441,7 @@ function runtimeSignalsFromMetadata(metadata) {
 }
 
 function runtimeSignalOwnersFromRuntimeSignals(runtimeSignals) {
-  return [...new Set(runtimeSignals.map((signal) => drillRuntimeSignalOwner(signal)))].sort()
+  return drillRuntimeSignalOwnersFor(runtimeSignals)
 }
 
 function metadataListFromMetadata(metadata, key) {

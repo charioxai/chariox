@@ -58,6 +58,19 @@ export function drillRuntimeSignalOwner(signal) {
   return RUNTIME_SIGNALS[signal]?.owner ?? "runtime-state"
 }
 
+export function drillRuntimeSignalOwnersFor(runtimeSignals) {
+  return [...new Set((runtimeSignals ?? []).map((signal) => drillRuntimeSignalOwner(signal)))].sort()
+}
+
+export function drillRuntimeSignalOwnerCounts(runtimeSignals) {
+  const counts = new Map()
+  for (const [signal, count] of Object.entries(runtimeSignals ?? {})) {
+    const owner = drillRuntimeSignalOwner(signal)
+    counts.set(owner, (counts.get(owner) ?? 0) + count)
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
 export function drillRuntimeSignalsManifest() {
   return {
     schema: DRILL_RUNTIME_SIGNALS_SCHEMA,

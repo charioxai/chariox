@@ -10,7 +10,7 @@ import {
   drillFailureOwnerForClassification,
   isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
-import { drillRuntimeSignalOwner, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
+import { drillRuntimeSignalOwnerCounts, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
@@ -274,7 +274,7 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
   const runtimeSignals = Object.entries(summary.runtimeSignals)
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
-    lines.push(`runtime_signal_owners: ${formatCountObject(runtimeSignalOwnerCounts(summary.runtimeSignals))}`)
+    lines.push(`runtime_signal_owners: ${formatCountObject(drillRuntimeSignalOwnerCounts(summary.runtimeSignals))}`)
   }
 
   if (summary.failedScenarios.length > 0) {
@@ -359,7 +359,7 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
-    lines.push(`runtime_signal_owners: ${formatCountObject(runtimeSignalOwnerCounts(aggregate.runtimeSignals))}`)
+    lines.push(`runtime_signal_owners: ${formatCountObject(drillRuntimeSignalOwnerCounts(aggregate.runtimeSignals))}`)
   }
   const runtimeSignalScenarios = Object.entries(aggregate.runtimeSignalScenarios ?? {})
   if (runtimeSignalScenarios.length > 0) {
@@ -1287,15 +1287,6 @@ function compareRuntimeSignalEvidenceEntries(left, right) {
     || String(left.source ?? "").localeCompare(String(right.source ?? ""))
     || left.id.localeCompare(right.id)
     || left.status.localeCompare(right.status)
-}
-
-function runtimeSignalOwnerCounts(runtimeSignals) {
-  const counts = new Map()
-  for (const [signal, count] of Object.entries(runtimeSignals ?? {})) {
-    const owner = drillRuntimeSignalOwner(signal)
-    counts.set(owner, (counts.get(owner) ?? 0) + count)
-  }
-  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
 }
 
 function formatCountObject(counts) {

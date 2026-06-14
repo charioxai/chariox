@@ -10,7 +10,7 @@ import {
 } from "./lib/drill-matrix-report.mjs"
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
-import { drillRuntimeSignalOwner } from "./lib/drill-runtime-signals.mjs"
+import { drillRuntimeSignalOwnersFor } from "./lib/drill-runtime-signals.mjs"
 
 function printHelp() {
   console.log([
@@ -67,7 +67,7 @@ async function main() {
         owners: Object.keys(aggregate.owners).join(","),
         classifications: Object.keys(aggregate.classifications).join(","),
         runtimeSignals: runtimeSignals.join(","),
-        runtimeSignalOwners: runtimeSignalOwnersFor(runtimeSignals).join(","),
+        runtimeSignalOwners: drillRuntimeSignalOwnersFor(runtimeSignals).join(","),
       },
     })
   }
@@ -79,10 +79,6 @@ async function main() {
   process.exitCode = options.requireComplete
     ? drillMatrixReportCompletionExitCode(reports)
     : drillMatrixReportExitCode(reports)
-}
-
-function runtimeSignalOwnersFor(runtimeSignals) {
-  return [...new Set(runtimeSignals.map((signal) => drillRuntimeSignalOwner(signal)))].sort()
 }
 
 function parseArgs(argv) {
