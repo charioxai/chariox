@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import {
   drillMatrixReportExitCode,
+  findDrillMatrixReportPaths,
   formatDrillMatrixReportSummary,
   readDrillMatrixReport,
   summarizeDrillMatrixReports,
@@ -10,11 +11,12 @@ import {
 
 function printHelp() {
   console.log([
-    "Usage: node apps/cli/scripts/drill-matrix-report-summary.mjs [--json] [--output PATH] REPORT...",
+    "Usage: node apps/cli/scripts/drill-matrix-report-summary.mjs [--json] [--output PATH] [--find ROOT] REPORT...",
     "",
     "Summarizes arroba.drill.matrix.v1 JSON reports and exits non-zero when any report failed.",
     "",
     "Options:",
+    "  --find ROOT    Discover valid matrix reports below ROOT; repeatable",
     "  --json         Print aggregate JSON instead of human-readable summaries",
     "  --output PATH  Write aggregate JSON to PATH",
   ].join("\n"))
@@ -26,14 +28,18 @@ async function main() {
     printHelp()
     return
   }
-  if (options.reportPaths.length === 0) {
+  const discovered = options.findRoots.length > 0
+    ? await findDrillMatrixReportPaths(options.findRoots)
+    : []
+  const reportPaths = [...new Set([...options.reportPaths, ...discovered])].sort()
+  if (reportPaths.length === 0) {
     printHelp()
     process.exitCode = 1
     return
   }
 
   const reports = []
-  for (const reportPath of options.reportPaths) {
+  for (const reportPath of reportPaths) {
     const report = await readDrillMatrixReport(reportPath)
     reports.push(report)
     if (!options.json) {
@@ -55,6 +61,7 @@ function parseArgs(argv) {
   const options = {
     help: false,
     json: false,
+    findRoots: [],
     outputPath: null,
     reportPaths: [],
   }
@@ -62,7 +69,14 @@ function parseArgs(argv) {
     const arg = argv[index]
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
-    else if (arg === "--output") {
+    else if (arg === "--find") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--find requires a value")
+      options.findRoots.push(value)
+      index += 1
+    } else if (arg.startsWith("--find=")) {
+      options.findRoots.push(arg.slice("--find=".length))
+    } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
       options.outputPath = value

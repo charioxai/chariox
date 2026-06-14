@@ -1,9 +1,18 @@
-import { readFile } from "node:fs/promises"
+import { readdir, readFile, stat } from "node:fs/promises"
+import path from "node:path"
 
 export async function readDrillMatrixReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))
   validateDrillMatrixReport(report, reportPath)
   return report
+}
+
+export async function findDrillMatrixReportPaths(roots) {
+  const discovered = new Set()
+  for (const root of roots) {
+    await collectDrillMatrixReportPaths(discovered, root)
+  }
+  return [...discovered].sort()
 }
 
 export function validateDrillMatrixReport(report, source = "report") {
@@ -163,6 +172,25 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
 
 export function drillMatrixReportExitCode(reports) {
   return reports.some((report) => report.status === "failed") ? 1 : 0
+}
+
+async function collectDrillMatrixReportPaths(discovered, entryPath) {
+  const entry = await stat(entryPath).catch(() => null)
+  if (!entry) return
+  if (entry.isDirectory()) {
+    const children = await readdir(entryPath, { withFileTypes: true }).catch(() => [])
+    for (const child of children) {
+      await collectDrillMatrixReportPaths(discovered, path.join(entryPath, child.name))
+    }
+    return
+  }
+  if (!entry.isFile() || !entryPath.endsWith(".json")) return
+  try {
+    const parsed = JSON.parse(await readFile(entryPath, "utf8"))
+    if (parsed?.schema === "arroba.drill.matrix.v1") discovered.add(entryPath)
+  } catch {
+    // Ignore unrelated JSON files in broad artifact roots.
+  }
 }
 
 function nextActionForScenario(scenario) {

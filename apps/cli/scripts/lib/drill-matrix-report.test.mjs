@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
 import {
   drillMatrixReportExitCode,
+  findDrillMatrixReportPaths,
   formatDrillMatrixReportSummary,
   readDrillMatrixReport,
   summarizeDrillMatrixReport,
@@ -118,6 +119,21 @@ test("reads and validates report files", async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+test("discovers matrix reports below artifact roots", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-report-find-"))
+  const first = path.join(dir, ".artifacts", "drill-matrices", "one", "matrix.json")
+  const second = path.join(dir, ".artifacts", "drill-matrices", "two", "matrix.json")
+  const unrelated = path.join(dir, ".artifacts", "drill-matrices", "two", "other.json")
+  await writeFileWithDir(first, `${JSON.stringify(matrixReport({ matrix: "one" }))}\n`)
+  await writeFileWithDir(second, `${JSON.stringify(matrixReport({ matrix: "two" }))}\n`)
+  await writeFileWithDir(unrelated, `${JSON.stringify({ schema: "other" })}\n`)
+
+  const reports = await findDrillMatrixReportPaths([path.join(dir, ".artifacts")])
+
+  assert.deepEqual(reports, [first, second].sort())
+  await rm(dir, { recursive: true, force: true })
+})
+
 test("rejects malformed matrix reports", () => {
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
@@ -181,4 +197,9 @@ function scenario(id, status, overrides = {}) {
     artifactHints: [],
     ...overrides,
   }
+}
+
+async function writeFileWithDir(file, contents) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, contents, "utf8")
 }
