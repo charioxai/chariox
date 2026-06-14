@@ -143,6 +143,10 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
         aggregate: {
           schema: "arroba.drill.failure.aggregate.v1",
           total: 1,
+          runtimeSignals: {
+            "lease-health": 1,
+            "relay-target-freshness": 1,
+          },
         },
       },
     },
@@ -158,6 +162,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /- session-authority: workspace-live-sync-matrix\/permission\(passed\) source=\/tmp\/matrix\.json/)
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/matrix\.json/)
   assert.match(text, /failure_total=1/)
+  assert.match(text, /failure_runtime_signals=lease-health:1,relay-target-freshness:1/)
 })
 
 test("validates reports before formatting", () => {

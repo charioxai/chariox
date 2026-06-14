@@ -123,6 +123,37 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_presets=remote-home-extension missing=remote-home-extension/)
 })
 
+test("aggregates failure runtime signal coverage from failed reports", () => {
+  const failedReport = reportFixture()
+  failedReport.status = "failed"
+  failedReport.checks.failures = {
+    status: "failed",
+    aggregate: {
+      runtimeSignals: {
+        "lease-health": 1,
+        "provider-run-lifecycle": 2,
+      },
+    },
+  }
+  const aggregate = summarizeValidationGateReportAggregate([failedReport], {
+    validateReport: () => {},
+  })
+
+  assert.equal(aggregate.status, "failed")
+  assert.deepEqual(aggregate.coverage.failureRuntimeSignals, {
+    "lease-health": 1,
+    "provider-run-lifecycle": 2,
+  })
+  assert.deepEqual(aggregate.reports[0].failureCoverage.runtimeSignals, {
+    "lease-health": 1,
+    "provider-run-lifecycle": 2,
+  })
+  assert.match(
+    formatDrillValidationGateAggregateSummary(aggregate),
+    /- failure_runtime_signals: lease-health=1 provider-run-lifecycle=2/,
+  )
+})
+
 test("rejects inconsistent aggregate status and coverage", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["workspace-live-sync"],

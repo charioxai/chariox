@@ -93,6 +93,10 @@ export function formatDrillValidationGateSummary(report) {
   if (failures.error) lines.push(`failure_error=${failures.error}`)
   if (failures.aggregate) {
     lines.push(`failure_total=${failures.aggregate.total}`)
+    const runtimeSignals = Object.entries(failures.aggregate.runtimeSignals ?? {})
+    if (runtimeSignals.length > 0) {
+      lines.push(`failure_runtime_signals=${runtimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)
+    }
   }
 
   if (report.nextActions.length > 0) {
