@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -40,21 +41,22 @@ export async function writeDrillPlatformBundle(outputDir) {
     },
   ]
 
+  const artifactRecords = []
   for (const file of files) {
-    await writeFile(
-      path.join(outputDir, file.path),
-      `${JSON.stringify(file.contents, null, 2)}\n`,
-      "utf8",
-    )
+    const serialized = `${JSON.stringify(file.contents, null, 2)}\n`
+    await writeFile(path.join(outputDir, file.path), serialized, "utf8")
+    artifactRecords.push({
+      path: file.path,
+      schema: file.contents.schema,
+      sha256: sha256(serialized),
+      sizeBytes: Buffer.byteLength(serialized),
+    })
   }
 
   const bundle = {
     schema: DRILL_PLATFORM_BUNDLE_SCHEMA,
     outputDir,
-    artifacts: files.map((file) => ({
-      path: file.path,
-      schema: file.contents.schema,
-    })),
+    artifacts: artifactRecords,
   }
   await writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(bundle, null, 2)}\n`, "utf8")
   return bundle
@@ -77,10 +79,23 @@ export async function verifyDrillPlatformBundle(outputDir) {
     if (typeof artifact.schema !== "string" || artifact.schema.length === 0) {
       throw new Error(`platform bundle artifact ${artifact.path} has invalid schema`)
     }
+    if (!/^[a-f0-9]{64}$/.test(artifact.sha256)) {
+      throw new Error(`platform bundle artifact ${artifact.path} has invalid sha256`)
+    }
+    if (!Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 0) {
+      throw new Error(`platform bundle artifact ${artifact.path} has invalid sizeBytes`)
+    }
   }
   assertRequiredBundleArtifacts(bundle.artifacts)
   for (const artifact of bundle.artifacts) {
-    const contents = JSON.parse(await readFile(path.join(outputDir, artifact.path), "utf8"))
+    const serialized = await readFile(path.join(outputDir, artifact.path), "utf8")
+    if (sha256(serialized) !== artifact.sha256) {
+      throw new Error(`platform bundle artifact ${artifact.path} sha256 mismatch`)
+    }
+    if (Buffer.byteLength(serialized) !== artifact.sizeBytes) {
+      throw new Error(`platform bundle artifact ${artifact.path} sizeBytes mismatch`)
+    }
+    const contents = JSON.parse(serialized)
     if (contents.schema !== artifact.schema) {
       throw new Error(
         `platform bundle artifact ${artifact.path} schema mismatch: `
@@ -153,4 +168,8 @@ function relativeBundlePath(value) {
     && value.length > 0
     && !path.isAbsolute(value)
     && !value.split(/[\\/]/).includes("..")
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex")
 }
