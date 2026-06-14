@@ -39,6 +39,7 @@ test("reads and summarizes a preserved drill failure directory", async () => {
   const summary = summarizeDrillFailureManifest(manifest, { source: root })
   const text = formatDrillFailureManifestSummary(manifest, { source: root })
 
+  assert.equal(manifest.metadata.token, "<redacted>")
   assert.equal(summary.schema, "arroba.drill.failure.v1")
   assert.equal(summary.metadata.drill, "hosted-cloud-relay")
   assert.equal(summary.metadata.provider, "opencode-zen")

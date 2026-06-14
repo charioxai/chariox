@@ -38,7 +38,7 @@ function failureManifest({ rootDir, failure, metadata }) {
     schema: "arroba.drill.failure.v1",
     rootDir,
     failedAt: new Date().toISOString(),
-    metadata,
+    metadata: sanitizeManifestMetadata(metadata),
     error: failure
       ? {
           name: failure.name ?? "Error",
@@ -47,4 +47,30 @@ function failureManifest({ rootDir, failure, metadata }) {
         }
       : null,
   }
+}
+
+function sanitizeManifestMetadata(value, key = "") {
+  if (isSensitiveMetadataKey(key)) return "<redacted>"
+  if (typeof value === "string") {
+    return looksLikeSecretValue(value) ? "<redacted>" : value
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value
+  if (Array.isArray(value)) return value.map((item) => sanitizeManifestMetadata(item, key))
+  if (!value || typeof value !== "object") return null
+
+  const sanitized = {}
+  for (const [childKey, childValue] of Object.entries(value)) {
+    sanitized[childKey] = sanitizeManifestMetadata(childValue, childKey)
+  }
+  return sanitized
+}
+
+function isSensitiveMetadataKey(key) {
+  return /token|secret|password|credential|cookie|authorization|api[-_]?key/i.test(key)
+}
+
+function looksLikeSecretValue(value) {
+  return /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/i.test(value)
+    || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(value)
+    || /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/.test(value)
 }
