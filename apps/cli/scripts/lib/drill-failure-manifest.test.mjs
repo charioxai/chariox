@@ -128,6 +128,21 @@ test("rejects malformed failure manifests", () => {
   }), /secret-looking metadata value/)
   assert.throws(() => validateDrillFailureManifest({
     ...validManifest(),
+    metadata: { runtimeSignals: "workspace-live-synch-state" },
+  }), /metadata\.runtimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => validateDrillFailureManifest({
+    ...validManifest(),
+    metadata: { runtimeSignalOwners: "kernel-authority" },
+  }), /runtimeSignalOwners requires runtimeSignals/)
+  assert.throws(() => validateDrillFailureManifest({
+    ...validManifest(),
+    metadata: {
+      runtimeSignals: "session-authority,provider-run-lifecycle",
+      runtimeSignalOwners: "kernel-authority",
+    },
+  }), /runtimeSignalOwners must match runtimeSignals/)
+  assert.throws(() => validateDrillFailureManifest({
+    ...validManifest(),
     error: { name: "Error", message: "failed", stack: 1 },
   }), /invalid stack/)
 })

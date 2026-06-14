@@ -18,7 +18,11 @@ import {
   looksLikeDrillSecretValue,
   redactDrillSecretText,
 } from "./drill-secrets.mjs"
-import { drillRuntimeSignalOwnerCounts } from "./drill-runtime-signals.mjs"
+import {
+  drillRuntimeSignalOwnerCounts,
+  drillRuntimeSignalOwnersFor,
+  validateDrillRuntimeSignals,
+} from "./drill-runtime-signals.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
@@ -62,6 +66,7 @@ export function validateDrillFailureManifest(manifest, source = "manifest") {
     throw new Error(`${source} has invalid metadata`)
   }
   validateFailureMetadataValue(manifest.metadata, `${source}.metadata`)
+  validateFailureRuntimeSignalMetadata(manifest.metadata, `${source}.metadata`)
   if (manifest.error !== null) {
     validateFailureError(manifest.error, `${source}.error`)
   }
@@ -368,6 +373,20 @@ function validateFailureMetadataValue(value, source) {
   }
 }
 
+function validateFailureRuntimeSignalMetadata(metadata, source) {
+  const runtimeSignals = runtimeSignalsFromMetadata(metadata)
+  const runtimeSignalOwners = runtimeSignalOwnersFromMetadata(metadata)
+  validateDrillRuntimeSignals(runtimeSignals, `${source}.runtimeSignals`)
+  if (runtimeSignalOwners.length === 0) return
+  if (runtimeSignals.length === 0) {
+    throw new Error(`${source}.runtimeSignalOwners requires runtimeSignals`)
+  }
+  const expectedRuntimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)
+  if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expectedRuntimeSignalOwners)) {
+    throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+  }
+}
+
 function summarizeMetadata(metadata) {
   const entries = Object.entries(metadata)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -388,6 +407,12 @@ function runtimeSignalsFromMetadata(metadata) {
   const value = metadata.runtimeSignals
   if (typeof value !== "string") return []
   return [...new Set(value.split(",").map((signal) => signal.trim()).filter(nonEmptyString))].sort()
+}
+
+function runtimeSignalOwnersFromMetadata(metadata) {
+  const value = metadata.runtimeSignalOwners
+  if (typeof value !== "string") return []
+  return [...new Set(value.split(",").map((owner) => owner.trim()).filter(nonEmptyString))].sort()
 }
 
 function formatCountObject(counts) {
