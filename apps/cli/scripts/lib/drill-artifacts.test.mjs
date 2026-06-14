@@ -558,7 +558,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions({
       runtimeSignals: {},
-      runtimeSignalOwners: { "kernel-authority": 1 },
+      runtimeSignalOwners: {},
       coverageAreas: {},
       owners: {},
       classifications: {},
@@ -569,6 +569,21 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       evidenceRepos: { oss: -1 },
     }),
     /evidenceRepos has invalid count/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: { "kernel-authority": 1 },
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: {},
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      evidenceRepos: {},
+    }),
+    /drill artifact diagnostics\.runtimeSignalOwners must match runtimeSignals/,
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions({

@@ -283,6 +283,7 @@ export function validateDrillArtifactDiagnosticDimensions(value, source = "drill
     }
     validateDiagnosticCountObject(value[key], `${source}.${key}`, key)
   }
+  validateRuntimeSignalOwnerKeysMatch(value.runtimeSignals, value.runtimeSignalOwners, source)
 }
 
 export function validateDrillArtifactIndex(index, source = "drill artifact index") {
@@ -496,6 +497,16 @@ function validateRuntimeSignalOwnerCountsMatch(runtimeSignals, runtimeSignalOwne
     drillRuntimeSignalOwnersFor(Object.keys(runtimeSignals ?? {})).map((owner) => [owner, 1]),
   )
   if (JSON.stringify(runtimeSignalOwners ?? {}) !== JSON.stringify(expectedOwners)) {
+    throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+  }
+}
+
+function validateRuntimeSignalOwnerKeysMatch(runtimeSignals, runtimeSignalOwners, source) {
+  validateDiagnosticCountObject(runtimeSignals ?? {}, `${source}.runtimeSignals`, "runtimeSignals")
+  validateCountObject(runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
+  const actualOwners = Object.keys(runtimeSignalOwners ?? {}).sort()
+  const expectedOwners = drillRuntimeSignalOwnersFor(Object.keys(runtimeSignals ?? {})).sort()
+  if (JSON.stringify(actualOwners) !== JSON.stringify(expectedOwners)) {
     throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
   }
 }
