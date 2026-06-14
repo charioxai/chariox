@@ -300,6 +300,7 @@ export function validateDrillArtifactIndex(index, source = "drill artifact index
   if (!index.metadata || typeof index.metadata !== "object" || Array.isArray(index.metadata)) {
     throw new Error(`${source} has invalid metadata`)
   }
+  validateDrillArtifactIndexEvidenceRepoMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexRuntimeSignalOwnerMetadata(index.metadata, `${source}.metadata`)
   if (!Array.isArray(index.artifacts) || index.artifacts.length === 0) {
     throw new Error(`${source} has invalid artifacts`)
@@ -557,6 +558,14 @@ function validateDrillArtifactIndexRuntimeSignalOwnerMetadata(metadata, source) 
   }
   if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expectedRuntimeSignalOwners)) {
     throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+  }
+}
+
+function validateDrillArtifactIndexEvidenceRepoMetadata(metadata, source) {
+  for (const repo of metadataListFromMetadata(metadata, "evidenceRepos")) {
+    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
+      throw new Error(`${source}.evidenceRepos has unknown evidence repo ${JSON.stringify(repo)}`)
+    }
   }
 }
 
