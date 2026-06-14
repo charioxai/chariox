@@ -10,6 +10,7 @@ export function formatDrillValidationGateSummary(report) {
   if ((report.presets ?? []).length > 0) {
     lines.push(`presets=${report.presets.join(",")}`)
   }
+  appendGeneratedEvidenceSummary(lines, report.generatedEvidence)
   const configuration = report.checks.configuration
   lines.push(`configuration=${configuration.status}${configuration.error ? ` error=${configuration.error}` : ""}`)
 
@@ -196,6 +197,38 @@ export function formatDrillValidationGateSummary(report) {
     ? "next: validation artifacts passed configured gates"
     : "next: inspect failed gate checks and rerun the relevant drills")
   return lines.join("\n")
+}
+
+function appendGeneratedEvidenceSummary(lines, generatedEvidence) {
+  if (!generatedEvidence || typeof generatedEvidence !== "object" || Array.isArray(generatedEvidence)) return
+  const validationSuites = generatedEvidence.validationSuites
+  if (validationSuites && typeof validationSuites === "object" && !Array.isArray(validationSuites)) {
+    const outputRoots = stringArrayForSummary(validationSuites.outputRoots)
+    const artifactIndexes = stringArrayForSummary(validationSuites.artifactIndexes)
+    lines.push([
+      `generated_validation_suites=${validationSuites.enabled === true ? "enabled" : "disabled"}`,
+      `output_roots=${outputRoots.join(",") || "none"}`,
+      `artifact_indexes=${artifactIndexes.join(",") || "none"}`,
+    ].join(" "))
+  }
+  const matrixReports = generatedEvidence.matrixReports
+  if (matrixReports && typeof matrixReports === "object" && !Array.isArray(matrixReports)) {
+    const roots = stringArrayForSummary(matrixReports.roots)
+    const commands = Array.isArray(matrixReports.commands) ? matrixReports.commands.length : 0
+    lines.push([
+      `generated_matrices=${matrixReports.enabled === true ? "enabled" : "disabled"}`,
+      `roots=${roots.join(",") || "none"}`,
+      `commands=${commands}`,
+      `dry_run=${matrixReports.dryRun === true}`,
+      `continue_on_failure=${matrixReports.continueOnFailure === true}`,
+    ].join(" "))
+  }
+}
+
+function stringArrayForSummary(value) {
+  return Array.isArray(value)
+    ? value.filter((item) => typeof item === "string" && item.length > 0)
+    : []
 }
 
 function formatCountObject(counts) {

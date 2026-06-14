@@ -145,6 +145,31 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /failure_runtime_signal_owners=kernel-authority:1,runtime-network:1/)
 })
 
+test("formats generated evidence provenance when present", () => {
+  const text = formatDrillValidationGateSummary(report({
+    generatedEvidence: {
+      validationSuites: {
+        enabled: true,
+        outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
+        artifactIndexes: [
+          "/tmp/suites/cloud/arroba-drill-artifacts.json",
+          "/tmp/suites/oss/arroba-drill-artifacts.json",
+        ],
+      },
+      matrixReports: {
+        enabled: true,
+        roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
+        commands: [{ scriptPath: "/repo/arroba/a.mjs" }, { scriptPath: "/repo/arroba/b.mjs" }],
+        dryRun: false,
+        continueOnFailure: true,
+      },
+    },
+  }))
+
+  assert.match(text, /generated_validation_suites=enabled output_roots=\/tmp\/suites\/cloud,\/tmp\/suites\/oss artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json/)
+  assert.match(text, /generated_matrices=enabled roots=\/tmp\/matrices\/cloud,\/tmp\/matrices\/oss commands=2 dry_run=false continue_on_failure=true/)
+})
+
 test("validates reports before formatting", () => {
   assert.throws(
     () => formatDrillValidationGateSummary({ schema: "wrong" }),
