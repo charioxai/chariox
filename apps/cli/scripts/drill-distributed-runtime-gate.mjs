@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url"
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
+  parseValidationGateRequirementArg,
+  validationGateRequirementOptionDefaults,
+} from "./lib/drill-validation-gate-args.mjs"
+import {
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
   runDrillValidationGate,
@@ -32,6 +36,15 @@ function printHelp() {
     "  --platform-bundle DIR   Use an existing drill platform bundle instead of generating one",
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
     "  --require-complete      Fail when matrix reports include skipped or dry-run scenarios",
+    "  --require-platform-coverage-area ID[,ID]",
+    "  --require-runtime-signal ID[,ID]",
+    "  --require-failure-classification KIND[,KIND]",
+    "  --require-matrix NAME[,NAME]",
+    "  --require-matrix-classification KIND[,KIND]",
+    "  --require-matrix-runtime-signal ID[,ID]",
+    "  --require-deployment-preset NAME[,NAME]",
+    "  --require-provider NAME[,NAME]",
+    "  --require-scenario ID[,ID]",
     "  --json                  Print gate report JSON",
     "  --output PATH           Write gate report JSON to PATH",
     "  --output-artifact-index PATH",
@@ -57,6 +70,15 @@ async function main() {
       platformBundleDir,
       presets: ["distributed-runtime"],
       requireComplete: options.requireComplete,
+      requiredPlatformCoverageAreas: options.requiredPlatformCoverageAreas,
+      requiredRuntimeSignals: options.requiredRuntimeSignals,
+      requiredFailureClassifications: options.requiredFailureClassifications,
+      requiredMatrices: options.requiredMatrices,
+      requiredMatrixClassifications: options.requiredMatrixClassifications,
+      requiredMatrixRuntimeSignals: options.requiredMatrixRuntimeSignals,
+      requiredDeploymentPresets: options.requiredDeploymentPresets,
+      requiredProviders: options.requiredProviders,
+      requiredScenarios: options.requiredScenarios,
     })
     if (options.outputPath) {
       await writeDrillJsonArtifactOutput({
@@ -98,6 +120,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    ...validationGateRequirementOptionDefaults(),
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -141,6 +164,13 @@ function parseArgs(argv) {
     } else if (arg.startsWith("--output-artifact-index=")) {
       options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
     } else if (arg.startsWith("--")) {
+      const requirementIndex = parseValidationGateRequirementArg(argv, index, options, {
+        presetFlag: "--distributed-runtime-gate-does-not-accept-preset",
+      })
+      if (requirementIndex !== null) {
+        index = requirementIndex
+        continue
+      }
       throw new Error(`unknown argument: ${arg}`)
     } else {
       throw new Error(`unexpected argument: ${arg}`)

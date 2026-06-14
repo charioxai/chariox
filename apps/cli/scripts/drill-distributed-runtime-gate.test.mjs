@@ -28,6 +28,10 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       "--cloud-root",
       cloudRoot,
       "--require-complete",
+      "--require-runtime-signal",
+      "slice-auth-state",
+      "--require-matrix-runtime-signal",
+      "slice-auth-state",
       "--json",
       "--output",
       outputPath,
@@ -45,6 +49,11 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
     assert.deepEqual(report.checks.matrices.missingProviders, [])
     assert.deepEqual(report.checks.matrices.missingScenarios, [])
+    assert.deepEqual(report.checks.platformBundle.missingRuntimeSignals, [])
+    assert.ok(report.checks.platformBundle.requiredRuntimeSignals.includes("slice-auth-state"))
+    assert.deepEqual(report.checks.matrices.missingMatrixRuntimeSignals, [])
+    assert.ok(report.checks.matrices.requiredMatrixRuntimeSignals.includes("slice-auth-state"))
+    assert.deepEqual(report.checks.matrices.aggregate.runtimeSignalScenarios["slice-auth-state"].map((entry) => entry.id), ["provider-auth"])
     assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 1)
     assert.equal(artifactIndex.metadata.drill, "distributed-runtime-gate")
@@ -94,6 +103,17 @@ test("distributed runtime gate rejects output artifact index without output", as
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
+      return true
+    },
+  )
+})
+
+test("distributed runtime gate rejects requirement flags without values", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-runtime-signal", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-runtime-signal requires a value/)
       return true
     },
   )
