@@ -1,11 +1,13 @@
 import assert from "node:assert/strict"
 import { execFile as execFileWithCallback } from "node:child_process"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+
+import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-failure-summary.mjs", import.meta.url))
@@ -32,6 +34,52 @@ test("failure summary rejects invalid max-depth", async () => {
   await assert.rejects(
     () => execFile(process.execPath, [scriptPath, "--find", ".", "--max-depth", "nope"]),
     /--max-depth must be a non-negative integer/,
+  )
+})
+
+test("failure summary writes artifact index for output", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-summary-"))
+  try {
+    const manifestPath = path.join(dir, "arroba-drill-failure.json")
+    const outputPath = path.join(dir, "aggregate.json")
+    const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+    await writeManifest(manifestPath, failureManifest({ rootDir: dir, drill: "root" }))
+
+    const aggregate = await runSummary([
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+      manifestPath,
+    ])
+    const fileAggregate = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.equal(aggregate.total, 1)
+    assert.deepEqual(fileAggregate, aggregate)
+    assert.equal(artifactIndex.metadata.drill, "failure-summary")
+    assert.equal(artifactIndex.metadata.total, 1)
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
+      path: artifact.path,
+      schema: artifact.schema,
+    })), [{
+      path: "aggregate.json",
+      schema: "arroba.drill.failure.aggregate.v1",
+    }])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("failure summary rejects output artifact index without output", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /requires --output/)
+      return true
+    },
   )
 })
 
