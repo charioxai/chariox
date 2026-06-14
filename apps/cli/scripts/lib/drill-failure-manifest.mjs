@@ -1,5 +1,10 @@
 import { opendir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
+import {
+  countDrillAggregateNextAction,
+  formatDrillAggregateNextActionCounts,
+  validateDrillAggregateNextAction,
+} from "./drill-aggregate-actions.mjs"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import { drillFailureClassificationForKind } from "./drill-failure-taxonomy.mjs"
 
@@ -107,7 +112,7 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
     const nextAction = summary.classification.nextAction
     owners.set(owner, (owners.get(owner) ?? 0) + 1)
     classifications.set(kind, (classifications.get(kind) ?? 0) + 1)
-    countNextAction(nextActions, { owner, classification: kind, nextAction })
+    countDrillAggregateNextAction(nextActions, { owner, classification: kind, nextAction })
     failures.push({
       drill: summary.metadata.drill ?? "unknown",
       source: summary.source,
@@ -122,7 +127,7 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
     total: summaries.length,
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
-    nextActions: formatNextActionCounts(nextActions),
+    nextActions: formatDrillAggregateNextActionCounts(nextActions),
     failures,
   }
 }
@@ -200,24 +205,10 @@ function validateDrillFailureManifestAggregate(aggregate) {
     throw new Error("aggregate has invalid nextActions")
   }
   for (const [index, action] of (aggregate.nextActions ?? []).entries()) {
-    validateDrillFailureAggregateNextAction(action, `aggregate.nextActions[${index}]`)
+    validateDrillAggregateNextAction(action, `aggregate.nextActions[${index}]`)
   }
   for (const [index, failure] of aggregate.failures.entries()) {
     validateDrillFailureAggregateEntry(failure, `aggregate.failures[${index}]`)
-  }
-}
-
-function validateDrillFailureAggregateNextAction(action, source) {
-  if (!action || typeof action !== "object" || Array.isArray(action)) {
-    throw new Error(`${source} is not an object`)
-  }
-  for (const key of ["owner", "classification", "nextAction"]) {
-    if (!nonEmptyString(action[key])) {
-      throw new Error(`${source} is missing ${key}`)
-    }
-  }
-  if (!Number.isFinite(action.count) || action.count < 1) {
-    throw new Error(`${source} has invalid count`)
   }
 }
 
@@ -272,23 +263,6 @@ function isSensitiveKey(key) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
-}
-
-function countNextAction(counts, { owner, classification, nextAction }) {
-  const key = JSON.stringify([owner, classification, nextAction])
-  const previous = counts.get(key)
-  counts.set(key, previous
-    ? { ...previous, count: previous.count + 1 }
-    : { owner, classification, nextAction, count: 1 })
-}
-
-function formatNextActionCounts(counts) {
-  return [...counts.values()].sort((left, right) => (
-    right.count - left.count
-    || left.owner.localeCompare(right.owner)
-    || left.classification.localeCompare(right.classification)
-    || left.nextAction.localeCompare(right.nextAction)
-  ))
 }
 
 async function collectFailureManifestPaths(manifests, currentPath, { depth, maxDepth }) {

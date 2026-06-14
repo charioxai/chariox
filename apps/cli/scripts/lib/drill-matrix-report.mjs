@@ -1,6 +1,11 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import path from "node:path"
 import {
+  countDrillAggregateNextAction,
+  formatDrillAggregateNextActionCounts,
+  validateDrillAggregateNextAction,
+} from "./drill-aggregate-actions.mjs"
+import {
   drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
 } from "./drill-failure-taxonomy.mjs"
@@ -122,7 +127,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
       })
       const owner = ownerForScenario(scenario)
       owners.set(owner, (owners.get(owner) ?? 0) + 1)
-      countNextAction(nextActions, {
+      countDrillAggregateNextAction(nextActions, {
         owner,
         classification: scenario.classification ?? "child-process",
         nextAction: nextActionForScenario(scenario),
@@ -146,7 +151,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     totals,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
-    nextActions: formatNextActionCounts(nextActions),
+    nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries.map((summary) => ({
       matrix: summary.matrix,
       source: summary.source,
@@ -391,7 +396,7 @@ function validateDrillMatrixAggregate(aggregate) {
     throw new Error("aggregate has invalid nextActions")
   }
   for (const [index, action] of (aggregate.nextActions ?? []).entries()) {
-    validateMatrixAggregateNextAction(action, `aggregate.nextActions[${index}]`)
+    validateDrillAggregateNextAction(action, `aggregate.nextActions[${index}]`)
   }
   if (!Array.isArray(aggregate.skippedScenarios)) {
     throw new Error("aggregate is missing skippedScenarios")
@@ -443,20 +448,6 @@ function validateMatrixAggregateScenario(scenario, source) {
     || !scenario.artifactHints.every((value) => typeof value === "string")
   )) {
     throw new Error(`${source} has invalid artifactHints`)
-  }
-}
-
-function validateMatrixAggregateNextAction(action, source) {
-  if (!action || typeof action !== "object" || Array.isArray(action)) {
-    throw new Error(`${source} is not an object`)
-  }
-  for (const key of ["owner", "classification", "nextAction"]) {
-    if (!nonEmptyString(action[key])) {
-      throw new Error(`${source} is missing ${key}`)
-    }
-  }
-  if (!Number.isFinite(action.count) || action.count < 1) {
-    throw new Error(`${source} has invalid count`)
   }
 }
 
@@ -516,21 +507,4 @@ function artifactHintsForScenario(scenario) {
   return Array.isArray(scenario.artifactHints)
     ? scenario.artifactHints.filter((hint) => typeof hint === "string" && hint.trim().length > 0)
     : []
-}
-
-function countNextAction(counts, { owner, classification, nextAction }) {
-  const key = JSON.stringify([owner, classification, nextAction])
-  const previous = counts.get(key)
-  counts.set(key, previous
-    ? { ...previous, count: previous.count + 1 }
-    : { owner, classification, nextAction, count: 1 })
-}
-
-function formatNextActionCounts(counts) {
-  return [...counts.values()].sort((left, right) => (
-    right.count - left.count
-    || left.owner.localeCompare(right.owner)
-    || left.classification.localeCompare(right.classification)
-    || left.nextAction.localeCompare(right.nextAction)
-  ))
 }
