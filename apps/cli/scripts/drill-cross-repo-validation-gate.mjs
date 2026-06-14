@@ -33,6 +33,8 @@ function printHelp() {
     "  --no-default-roots     Only use matrix roots passed explicitly with --matrix-root",
     "  --include-default-artifacts",
     "                         Discover artifact indexes under each repo's .artifacts root",
+    "  --include-default-failures",
+    "                         Discover failure manifests under each repo's .artifacts root",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
     "  --matrix-root ROOT     Discover matrix reports below ROOT; repeatable",
     "  --artifact-root ROOT   Discover artifact indexes below ROOT; repeatable",
@@ -93,6 +95,7 @@ function parseArgs(argv) {
     cloudRoot: defaultCloudRoot,
     defaultRoots: true,
     includeDefaultArtifacts: false,
+    includeDefaultFailures: false,
     failureRoots: [],
     help: false,
     json: false,
@@ -111,6 +114,7 @@ function parseArgs(argv) {
     else if (arg === "--json") options.json = true
     else if (arg === "--no-default-roots") options.defaultRoots = false
     else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
+    else if (arg === "--include-default-failures") options.includeDefaultFailures = true
     else if (arg === "--require-complete") options.requireComplete = true
     else {
       const requirementIndex = parseValidationGateRequirementArg(argv, index, options)
@@ -194,6 +198,12 @@ function gateOptionsFor(options) {
   }
   if (options.includeDefaultArtifacts) {
     artifactRoots.push(
+      path.join(options.ossRoot, ".artifacts"),
+      path.join(options.cloudRoot, ".artifacts"),
+    )
+  }
+  if (options.includeDefaultFailures) {
+    failureRoots.push(
       path.join(options.ossRoot, ".artifacts"),
       path.join(options.cloudRoot, ".artifacts"),
     )

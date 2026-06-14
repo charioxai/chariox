@@ -163,6 +163,61 @@ test("cross repo validation gate keeps default artifact roots opt-in", async () 
   }
 })
 
+test("cross repo validation gate keeps default failure roots opt-in", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeFailureManifest(path.join(cloudRoot, ".artifacts", "failed-run", "arroba-drill-failure.json"), {
+      drill: "cloud-slice-runtime-matrix",
+      message: "relay target stale",
+    })
+
+    const skipped = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--json",
+    ])).stdout)
+    assert.equal(skipped.checks.failures.status, "skipped")
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--no-default-roots",
+        "--include-default-failures",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.equal(report.checks.failures.status, "failed")
+        assert.deepEqual(report.checks.failures.roots, [
+          path.join(cloudRoot, ".artifacts"),
+          path.join(ossRoot, ".artifacts"),
+        ].sort())
+        assert.equal(report.checks.failures.aggregate.total, 1)
+        assert.equal(report.checks.failures.aggregate.failures[0].drill, "cloud-slice-runtime-matrix")
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate can disable default roots for focused evidence checks", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
   try {
@@ -287,6 +342,20 @@ async function writeValidationSuiteArtifact(rootDir) {
     artifacts: ["cloud-validation-suite.json"],
     metadata: { drill: "cloud-validation-suite", tests: 1 },
   })
+}
+
+async function writeFailureManifest(file, {
+  drill = "failed-drill",
+  message = "Token refresh failed: 401",
+} = {}) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify({
+    schema: "arroba.drill.failure.v1",
+    rootDir: path.dirname(file),
+    failedAt: "2026-06-13T00:00:00.000Z",
+    metadata: { drill },
+    error: { name: "Error", message, stack: null },
+  }, null, 2)}\n`, "utf8")
 }
 
 function scenario(id, classification, runtimeSignals = [], overrides = {}) {
