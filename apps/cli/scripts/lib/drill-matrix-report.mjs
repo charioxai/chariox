@@ -98,6 +98,7 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
     source,
     status: report.status,
     durationMs: report.durationMs,
+    deploymentPresets: deploymentPresetsForReport(report),
     scenarioCount: report.scenarios.length,
     counts,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -123,6 +124,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
   const classifications = new Map()
   const owners = new Map()
   const nextActions = new Map()
+  const deploymentPresets = new Map()
   const failedScenarios = []
   const skippedScenarios = []
   const incompleteScenarios = []
@@ -133,6 +135,9 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     totals.skipped += summary.counts.skipped
     totals.dryRun += summary.counts.dryRun
     totals.durationMs += Number.isFinite(summary.durationMs) ? summary.durationMs : 0
+    for (const preset of summary.deploymentPresets) {
+      deploymentPresets.set(preset, (deploymentPresets.get(preset) ?? 0) + 1)
+    }
     for (const [classification, count] of Object.entries(summary.classifications)) {
       classifications.set(classification, (classifications.get(classification) ?? 0) + count)
     }
@@ -172,12 +177,14 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
         : "passed",
     totals,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    deploymentPresets: Object.fromEntries([...deploymentPresets.entries()].sort(([left], [right]) => left.localeCompare(right))),
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries.map((summary) => ({
       matrix: summary.matrix,
       source: summary.source,
       status: summary.status,
+      deploymentPresets: summary.deploymentPresets,
       scenarioCount: summary.scenarioCount,
       counts: summary.counts,
       durationMs: summary.durationMs,
@@ -248,6 +255,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const owners = Object.entries(aggregate.owners)
   if (owners.length > 0) {
     lines.push(`owners: ${owners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
+  }
+  const deploymentPresets = Object.entries(aggregate.deploymentPresets ?? {})
+  if (deploymentPresets.length > 0) {
+    lines.push(`deployment_presets: ${deploymentPresets.map(([preset, count]) => `${preset}=${count}`).join(" ")}`)
   }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -480,6 +491,7 @@ function validateDrillMatrixAggregate(aggregate) {
   if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {
     throw new Error("aggregate is missing owners")
   }
+  validateCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
   if (aggregate.nextActions !== undefined && !Array.isArray(aggregate.nextActions)) {
     throw new Error("aggregate has invalid nextActions")
   }
@@ -536,6 +548,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
     throw new Error("aggregate status does not match totals")
   }
   assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failedScenarios, "owner")
+  assertDeploymentPresetCountsMatchReports(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
 }
 
@@ -564,6 +577,19 @@ function assertNextActionCountsMatchScenarios(aggregate) {
   }
 }
 
+function assertDeploymentPresetCountsMatchReports(aggregate) {
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    for (const preset of report.deploymentPresets ?? []) {
+      expected.set(preset, (expected.get(preset) ?? 0) + 1)
+    }
+  }
+  const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(aggregate.deploymentPresets ?? {}) !== JSON.stringify(expectedCounts)) {
+    throw new Error("aggregate deploymentPresets do not match reports")
+  }
+}
+
 function validateMatrixAggregateReport(report, source) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     throw new Error(`${source} is not an object`)
@@ -576,6 +602,9 @@ function validateMatrixAggregateReport(report, source) {
   }
   if (!["passed", "failed", "dry-run"].includes(report.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
+  }
+  if (!Array.isArray(report.deploymentPresets) || !report.deploymentPresets.every(nonEmptyString)) {
+    throw new Error(`${source} has invalid deploymentPresets`)
   }
   if (!Number.isFinite(report.scenarioCount) || report.scenarioCount < 0) {
     throw new Error(`${source} has invalid scenarioCount`)
@@ -654,6 +683,23 @@ function sumMatrixAggregateReportEntries(reports) {
     dryRun: 0,
     durationMs: 0,
   })
+}
+
+function validateCountObject(value, source) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} is missing`)
+  }
+  for (const [key, count] of Object.entries(value)) {
+    if (!nonEmptyString(key) || !Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`${source} has invalid count for ${JSON.stringify(key)}`)
+    }
+  }
+}
+
+function deploymentPresetsForReport(report) {
+  const value = report.metadata?.deploymentPresets
+  if (!nonEmptyString(value)) return []
+  return [...new Set(value.split(",").map((preset) => preset.trim()).filter(Boolean))].sort()
 }
 
 function validateReportMetadataValue(value, source, key = "") {
