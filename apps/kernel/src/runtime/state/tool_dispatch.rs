@@ -45,10 +45,10 @@ impl KernelRuntimeState {
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = Vec::new();
+        if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
+            return crate::transport::runtime_tools::meta_runtime_tool_specs();
+        }
         if matches!(provider_runs.as_slice(), [_]) {
-            if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
-                return crate::transport::runtime_tools::meta_runtime_tool_specs();
-            }
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
@@ -105,10 +105,11 @@ impl KernelRuntimeState {
                     message: "invalid runtime MCP auth token".to_string(),
                 });
             }
-            if matches!(provider_runs.as_slice(), [_])
-                && self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token)
-                && crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_none()
-            {
+            let is_metaagent_auth_token =
+                self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
+            let is_meta_tool =
+                crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some();
+            if is_metaagent_auth_token && !is_meta_tool {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: false,
                     payload: serde_json::json!({
@@ -118,6 +119,12 @@ impl KernelRuntimeState {
                         "tool": canonical_tool_name,
                     }),
                 });
+            }
+            if is_meta_tool {
+                let (provider_run, _, _) = self.metaagent_context_for_auth_token(auth_token)?;
+                return self
+                    .dispatch_meta_runtime_tool_call(&provider_run, canonical_tool_name, arguments)
+                    .await;
             }
             let is_workflow_tool =
                 crate::transport::runtime_tools::canonical_workflow_tool_name(tool_name).is_some();

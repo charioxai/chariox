@@ -126,9 +126,113 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
     assert!(
         denied
             .to_string()
-            .contains("only available to session metaagents"),
+            .contains("exactly one active metaagent provider run"),
         "{denied:?}"
     );
+}
+
+#[tokio::test]
+async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
+    let env = TestMetaRuntimeEnv::new("shared-token-tool-visibility");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, standard_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let shared_auth_token = "shared-meta-runtime-token".to_string();
+    let standard_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "worker-model",
+            )
+            .with_agent_id(standard_agent.id())
+            .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+                "http://127.0.0.1:1",
+                shared_auth_token.clone(),
+            )),
+        )
+        .expect("standard provider run should launch");
+    app.update_provider_run_projection(standard_run);
+    let meta_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "meta-model",
+            )
+            .with_agent_id(metaagent.id())
+            .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+                "http://127.0.0.1:1",
+                shared_auth_token.clone(),
+            )),
+        )
+        .expect("meta provider run should launch");
+    app.update_provider_run_projection(meta_run);
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let specs = router
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&shared_auth_token);
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL),
+        "shared token with a metaagent run should expose metaagent tools"
+    );
+    assert!(
+        specs
+            .iter()
+            .all(|spec| spec.name.starts_with("arroba.meta.")),
+        "shared token with a metaagent run should stay meta-only: {specs:?}"
+    );
+
+    let overview = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &shared_auth_token,
+            crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("shared meta token should dispatch meta tools");
+    assert!(overview.ok, "{:?}", overview.payload);
+    assert_eq!(
+        overview
+            .payload
+            .get("metaagent")
+            .and_then(|value| value.get("id"))
+            .and_then(serde_json::Value::as_str),
+        Some(metaagent.id())
+    );
+
+    let denied_direct_tool = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &shared_auth_token,
+            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
+            serde_json::json!({ "path": "README.md" }),
+        )
+        .await
+        .expect("shared meta token direct tools should return structured denials");
+    assert!(!denied_direct_tool.ok, "{:?}", denied_direct_tool.payload);
 }
 
 #[tokio::test]

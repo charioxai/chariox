@@ -27,10 +27,13 @@ impl KernelRuntimeState {
             .owned
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
-        let [provider_run] = provider_runs.as_slice() else {
+        let metaagent_provider_runs = metaagent_provider_runs_for_auth_token(self, &provider_runs);
+        let [provider_run] = metaagent_provider_runs.as_slice() else {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
-                message: "metaagent runtime tools require one active provider run".to_string(),
+                message:
+                    "metaagent runtime tools require exactly one active metaagent provider run"
+                        .to_string(),
             });
         };
         let (session, agent) = self.metaagent_for_provider_run(provider_run)?;
@@ -42,10 +45,10 @@ impl KernelRuntimeState {
             .owned
             .provider_store
             .get_runs_by_runtime_mcp_auth_token(auth_token);
-        let [provider_run] = provider_runs.as_slice() else {
-            return false;
-        };
-        self.metaagent_for_provider_run(provider_run).is_ok()
+        matches!(
+            metaagent_provider_runs_for_auth_token(self, &provider_runs).as_slice(),
+            [_]
+        )
     }
 
     pub(super) async fn dispatch_meta_runtime_tool_call(
@@ -793,6 +796,21 @@ impl KernelRuntimeState {
                 ),
             })
     }
+}
+
+fn metaagent_provider_runs_for_auth_token(
+    runtime_state: &KernelRuntimeState,
+    provider_runs: &[crate::provider::RuntimeProviderRun],
+) -> Vec<crate::provider::RuntimeProviderRun> {
+    provider_runs
+        .iter()
+        .filter(|provider_run| {
+            runtime_state
+                .metaagent_for_provider_run(provider_run)
+                .is_ok()
+        })
+        .cloned()
+        .collect()
 }
 
 fn invalid_meta_args(error: serde_json::Error) -> DaemonError {
