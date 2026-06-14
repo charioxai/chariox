@@ -20,13 +20,15 @@ Summarize one or more reports with:
 ```bash
 node apps/cli/scripts/drill-matrix-report-summary.mjs path/to/matrix-report.json
 node apps/cli/scripts/drill-matrix-report-summary.mjs --find .artifacts/drill-matrices
+node apps/cli/scripts/drill-matrix-report-summary.mjs --require-complete --find .artifacts/drill-matrices
 node apps/cli/scripts/drill-matrix-report-summary.mjs --json --output path/to/aggregate.json path/to/*.json
 ```
 
 The summary command exits non-zero when any input report has `status=failed`. `--find ROOT` discovers valid matrix reports below an artifact root and ignores unrelated JSON files.
 For dry-run reports, it prints selected scenario exit criteria so reviewers can confirm matrix scope before running live drills.
+Use `--require-complete` for release/staging gates that must reject skipped or dry-run scenarios even when no scenario failed.
 Failed-scenario summaries include an owner and next action so humans and CI can route the fix without opening raw logs first.
-The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `failedScenarios` entries include `classification`, `owner`, `reason`, and `nextAction`.
+The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `failedScenarios` entries include `classification`, `owner`, `reason`, and `nextAction`, and its `incompleteScenarios` entries list skipped and dry-run coverage gaps.
 
 Required top-level fields:
 

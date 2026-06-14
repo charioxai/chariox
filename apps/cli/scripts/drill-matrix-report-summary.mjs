@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import {
   drillMatrixReportExitCode,
+  drillMatrixReportCompletionExitCode,
   findDrillMatrixReportPaths,
   formatDrillMatrixReportSummary,
   readDrillMatrixReport,
@@ -11,7 +12,7 @@ import {
 
 function printHelp() {
   console.log([
-    "Usage: node apps/cli/scripts/drill-matrix-report-summary.mjs [--json] [--output PATH] [--find ROOT] REPORT...",
+    "Usage: node apps/cli/scripts/drill-matrix-report-summary.mjs [--json] [--output PATH] [--find ROOT] [--require-complete] REPORT...",
     "",
     "Summarizes arroba.drill.matrix.v1 JSON reports and exits non-zero when any report failed.",
     "",
@@ -19,6 +20,8 @@ function printHelp() {
     "  --find ROOT    Discover valid matrix reports below ROOT; repeatable",
     "  --json         Print aggregate JSON instead of human-readable summaries",
     "  --output PATH  Write aggregate JSON to PATH",
+    "  --require-complete",
+    "                 Exit non-zero when selected reports contain skipped or dry-run scenarios",
   ].join("\n"))
 }
 
@@ -54,13 +57,16 @@ async function main() {
   if (options.json) {
     console.log(JSON.stringify(aggregate, null, 2))
   }
-  process.exitCode = drillMatrixReportExitCode(reports)
+  process.exitCode = options.requireComplete
+    ? drillMatrixReportCompletionExitCode(reports)
+    : drillMatrixReportExitCode(reports)
 }
 
 function parseArgs(argv) {
   const options = {
     help: false,
     json: false,
+    requireComplete: false,
     findRoots: [],
     outputPath: null,
     reportPaths: [],
@@ -69,6 +75,7 @@ function parseArgs(argv) {
     const arg = argv[index]
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
+    else if (arg === "--require-complete") options.requireComplete = true
     else if (arg === "--find") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--find requires a value")

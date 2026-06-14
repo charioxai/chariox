@@ -74,6 +74,7 @@ export function summarizeDrillMatrixReport(report) {
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
     failedScenarios: report.scenarios.filter((scenario) => scenario.status === "failed"),
     skippedScenarios: report.scenarios.filter((scenario) => scenario.status === "skipped"),
+    dryRunScenarios: report.scenarios.filter((scenario) => scenario.status === "dry-run"),
   }
 }
 
@@ -91,6 +92,7 @@ export function summarizeDrillMatrixReports(reports) {
   const classifications = new Map()
   const failedScenarios = []
   const skippedScenarios = []
+  const incompleteScenarios = []
   for (const summary of summaries) {
     totals.scenarios += summary.scenarioCount
     totals.passed += summary.counts.passed
@@ -113,6 +115,10 @@ export function summarizeDrillMatrixReports(reports) {
     }
     for (const scenario of summary.skippedScenarios) {
       skippedScenarios.push({ matrix: summary.matrix, id: scenario.id, reason: scenario.reason ?? null })
+      incompleteScenarios.push({ matrix: summary.matrix, id: scenario.id, status: "skipped", reason: scenario.reason ?? null })
+    }
+    for (const scenario of summary.dryRunScenarios) {
+      incompleteScenarios.push({ matrix: summary.matrix, id: scenario.id, status: "dry-run", reason: scenario.reason ?? null })
     }
   }
   return {
@@ -133,6 +139,7 @@ export function summarizeDrillMatrixReports(reports) {
     })),
     failedScenarios,
     skippedScenarios,
+    incompleteScenarios,
   }
 }
 
@@ -184,6 +191,12 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
 
 export function drillMatrixReportExitCode(reports) {
   return reports.some((report) => report.status === "failed") ? 1 : 0
+}
+
+export function drillMatrixReportCompletionExitCode(reports) {
+  const aggregate = summarizeDrillMatrixReports(reports)
+  if (aggregate.status === "failed") return 1
+  return aggregate.incompleteScenarios.length > 0 ? 2 : 0
 }
 
 async function collectDrillMatrixReportPaths(discovered, entryPath) {

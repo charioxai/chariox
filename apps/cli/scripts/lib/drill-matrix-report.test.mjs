@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  drillMatrixReportCompletionExitCode,
   drillMatrixReportExitCode,
   findDrillMatrixReportPaths,
   formatDrillMatrixReportSummary,
@@ -29,6 +30,7 @@ test("summarizes matrix report status and scenario counts", () => {
   assert.deepEqual(summary.counts, { passed: 1, failed: 1, skipped: 1, dryRun: 0 })
   assert.deepEqual(summary.classifications, { "provider-auth": 1 })
   assert.equal(drillMatrixReportExitCode([report]), 1)
+  assert.equal(drillMatrixReportCompletionExitCode([report]), 1)
 })
 
 test("formats failed and skipped scenarios with next actions", () => {
@@ -73,6 +75,7 @@ test("formats dry-run reports without failures", () => {
   assert.match(text, /- local: local runtime path is selected/)
   assert.match(text, /next: run without --dry-run/)
   assert.equal(drillMatrixReportExitCode([report]), 0)
+  assert.equal(drillMatrixReportCompletionExitCode([report]), 2)
 })
 
 test("aggregates multiple matrix reports for CI", () => {
@@ -115,6 +118,10 @@ test("aggregates multiple matrix reports for CI", () => {
     nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
   }])
   assert.deepEqual(aggregate.skippedScenarios, [{ matrix: "remote", id: "hetzner", reason: "skipped after previous failure" }])
+  assert.deepEqual(aggregate.incompleteScenarios, [
+    { matrix: "remote", id: "hetzner", status: "skipped", reason: "skipped after previous failure" },
+    { matrix: "workspace", id: "tracked", status: "dry-run", reason: null },
+  ])
 })
 
 test("reads and validates report files", async () => {
