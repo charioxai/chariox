@@ -4,6 +4,7 @@ import { describeDrillValidationGatePresets } from "./drill-validation-gate-pres
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/drill-artifact-index-summary.test.mjs",
+  "apps/cli/scripts/drill-cross-repo-validation-gate.test.mjs",
   "apps/cli/scripts/drill-failure-summary.test.mjs",
   "apps/cli/scripts/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/drill-matrix-report-summary.test.mjs",
@@ -81,6 +82,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
     description: "Matrix runners, report validation, report summaries, and validation gates.",
     testPaths: Object.freeze([
       "apps/cli/scripts/drill-matrix-report-summary.test.mjs",
+      "apps/cli/scripts/drill-cross-repo-validation-gate.test.mjs",
       "apps/cli/scripts/drill-validation-gate-summary.test.mjs",
       "apps/cli/scripts/drill-validation-gate.test.mjs",
       "apps/cli/scripts/live-native-provider-tui-matrix-drill.test.mjs",
