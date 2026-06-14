@@ -116,6 +116,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
         classification: scenario.classification ?? null,
         owner: ownerForScenario(scenario),
         reason: scenario.reason ?? null,
+        artifactHints: artifactHintsForScenario(scenario),
         nextAction: nextActionForScenario(scenario),
       })
       const owner = ownerForScenario(scenario)
@@ -222,6 +223,9 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
       const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
       const source = scenario.source ? ` source=${scenario.source}` : ""
       lines.push(`- ${scenario.matrix}/${scenario.id}${classification} owner=${scenario.owner}${reason}${source}`)
+      if (Array.isArray(scenario.artifactHints) && scenario.artifactHints.length > 0) {
+        lines.push(`  artifacts: ${scenario.artifactHints.join(", ")}`)
+      }
       lines.push(`  next: ${scenario.nextAction}`)
     }
   }
@@ -411,6 +415,12 @@ function validateMatrixAggregateScenario(scenario, source) {
   }
   if (scenario.source !== null && scenario.source !== undefined && !nonEmptyString(scenario.source)) {
     throw new Error(`${source} has invalid source`)
+  }
+  if (scenario.artifactHints !== undefined && (
+    !Array.isArray(scenario.artifactHints)
+    || !scenario.artifactHints.every((value) => typeof value === "string")
+  )) {
+    throw new Error(`${source} has invalid artifactHints`)
   }
 }
 

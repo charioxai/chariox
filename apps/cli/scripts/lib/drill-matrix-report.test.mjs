@@ -84,7 +84,11 @@ test("aggregates multiple matrix reports for CI", () => {
     matrix: "remote",
     scenarios: [
       scenario("local", "passed"),
-      scenario("remote", "failed", { classification: "provider-auth", reason: "expired token" }),
+      scenario("remote", "failed", {
+        classification: "provider-auth",
+        reason: "expired token",
+        artifactHints: ["/tmp/arroba-drill-remote"],
+      }),
       scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
     ],
   })
@@ -124,6 +128,7 @@ test("aggregates multiple matrix reports for CI", () => {
     classification: "provider-auth",
     owner: "provider-account",
     reason: "expired token",
+    artifactHints: ["/tmp/arroba-drill-remote"],
     nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
   }])
   assert.deepEqual(aggregate.skippedScenarios, [{
@@ -153,6 +158,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /matrix aggregate:/)
   assert.match(text, /status=failed reports=2 scenarios=4 passed=1 failed=1 skipped=1 dry_run=1/)
   assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token source=\/tmp\/remote-matrix.json/)
+  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
   assert.match(text, /owners: provider-account=1/)
   assert.match(text, /next: refresh provider login/)
   assert.match(text, /incomplete scenarios:/)
