@@ -14,6 +14,7 @@ import {
   parseHetznerPassthroughArg,
 } from "./lib/drill-environment-presets.mjs"
 import {
+  applyProviderAccountAlias,
   applyProviderModelOverride,
   providerProfileMetadata,
   resolveProviderModel,
@@ -221,6 +222,7 @@ function printHelp() {
     "  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices",
     "  --artifact-index PATH    Write a verifiable artifact index for the matrix report",
     "  --provider-model P=M     Override model for provider-backed scenarios",
+    "  --provider-account P=A   Label the provider account/profile used by this matrix without exposing credentials",
     "  --hetzner-host HOST      Forwarded to Hetzner drill scenarios",
     "  --hetzner-key PATH       Forwarded to Hetzner drill scenarios",
     "  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios",
@@ -250,6 +252,7 @@ function parseArgs(argv) {
     continueOnFailure: false,
     reportPath: null,
     artifactIndexPath: null,
+    providerAccounts: {},
     providerModels: {},
     passthrough: [],
     help: false,
@@ -265,6 +268,8 @@ function parseArgs(argv) {
     else if (arg.startsWith("--report=")) options.reportPath = arg.slice("--report=".length)
     else if (arg === "--artifact-index") options.artifactIndexPath = readValue(argv, index++, arg)
     else if (arg.startsWith("--artifact-index=")) options.artifactIndexPath = arg.slice("--artifact-index=".length)
+    else if (arg === "--provider-account") applyProviderAccountAlias(options.providerAccounts, readValue(argv, index++, arg))
+    else if (arg.startsWith("--provider-account=")) applyProviderAccountAlias(options.providerAccounts, arg.slice("--provider-account=".length))
     else if (arg === "--provider-model") applyProviderModelOverride(options.providerModels, readValue(argv, index++, arg))
     else if (arg.startsWith("--provider-model=")) applyProviderModelOverride(options.providerModels, arg.slice("--provider-model=".length))
     else if (arg === "--help" || arg === "-h") options.help = true
@@ -341,6 +346,7 @@ function metadataFor(selected, options) {
     ...providerProfileMetadata({
       providers,
       defaultModel: "per-provider",
+      providerAccounts: options.providerAccounts,
       providerModels: options.providerModels,
     }),
   }

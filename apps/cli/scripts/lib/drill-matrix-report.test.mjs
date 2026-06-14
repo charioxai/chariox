@@ -709,6 +709,21 @@ test("rejects malformed matrix reports", () => {
     metadata: { providers: "codex", providerModelOverrides: "opencode" },
   }), /metadata\.providerModelOverrides includes provider not in providers/)
 
+  assert.doesNotThrow(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    metadata: { providers: "codex,opencode", providerAccountAliases: "codex=work" },
+  }))
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    metadata: { providers: "codex", providerAccountAliases: "opencode=zen" },
+  }), /metadata\.providerAccountAliases includes provider not in providers/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    metadata: { providers: "codex", providerAccountAliases: "codex=user@example.test" },
+  }), /metadata\.providerAccountAliases includes invalid account alias/)
+
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
       metadata: { providers: "codex,opencode", providerCount: 2 },

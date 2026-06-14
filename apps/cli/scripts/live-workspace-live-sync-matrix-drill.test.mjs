@@ -23,6 +23,10 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
       "--include-remote",
       "--include-hetzner",
       "--include-opencode",
+      "--provider-account",
+      "codex=work_codex",
+      "--provider-account",
+      "opencode=zen",
       "--report",
       reportPath,
       "--artifact-index",
@@ -48,6 +52,7 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     assert.equal(report.metadata.providers, "codex,opencode")
     assert.equal(report.metadata.defaultModel, "per-provider")
     assert.equal(report.metadata.providerModelOverrides, "codex,opencode")
+    assert.equal(report.metadata.providerAccountAliases, "codex=work_codex,opencode=zen")
     assert.equal(report.metadata.includeRemote, true)
     assert.equal(report.metadata.includeHetzner, true)
     assert.equal(report.metadata.includeOpencode, true)

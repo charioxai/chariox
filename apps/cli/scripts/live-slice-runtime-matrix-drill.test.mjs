@@ -22,6 +22,8 @@ test("slice runtime matrix dry-run covers lifecycle auth session agent UI and re
       "--dry-run",
       "--include-browser-state",
       "--include-self-hosted-relay",
+      "--provider-account",
+      "opencode=zen",
       "--report",
       reportPath,
       "--artifact-index",
@@ -49,6 +51,7 @@ test("slice runtime matrix dry-run covers lifecycle auth session agent UI and re
     assert.equal(report.metadata.providers, "claude,codex,opencode")
     assert.equal(report.metadata.defaultModel, "provider-default")
     assert.equal(report.metadata.providerModelOverrides, "")
+    assert.equal(report.metadata.providerAccountAliases, "opencode=zen")
     assert.equal(report.metadata.includeBrowserState, true)
     assert.equal(report.metadata.includeSelfHostedRelay, true)
     assert.match(stdout, /dry-run slice-lifecycle classification=slice-runtime/)

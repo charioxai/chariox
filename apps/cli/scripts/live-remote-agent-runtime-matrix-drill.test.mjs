@@ -24,6 +24,10 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
       "--include-hosted-cloud",
       "--provider-model",
       "claude=sonnet-test",
+      "--provider-account",
+      "claude=work_claude",
+      "--provider-account",
+      "codex=work_codex",
       "--report",
       reportPath,
       "--artifact-index",
@@ -59,6 +63,7 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-single-user-remote-agent").requires, ["hetzner"])
     assert.equal(report.metadata.deploymentPresets, "hetzner,hosted-cloud,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providers, "claude,codex,opencode")
+    assert.equal(report.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex")
     assert.equal(report.metadata.includesHetzner, true)
     assert.equal(report.metadata.includesHostedCloud, true)
     assert.equal(report.metadata.includesSelfHostedRelay, true)

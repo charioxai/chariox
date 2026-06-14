@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  applyProviderAccountAlias,
   applyProviderModelOverride,
   codexCliModel,
+  parseProviderAccountAlias,
   parseProviderList,
   parseProviderModelOverride,
   providerProfileMetadata,
@@ -19,6 +21,14 @@ test("parses provider model overrides", () => {
   assert.deepEqual(parseProviderModelOverride("codex=gpt-5.5"), { provider: "codex", model: "gpt-5.5" })
   assert.deepEqual(applyProviderModelOverride({}, "opencode=opencode/gpt-5.2"), { opencode: "opencode/gpt-5.2" })
   assert.throws(() => parseProviderModelOverride("codex"), /provider=model/)
+})
+
+test("parses provider account aliases without accepting secrets", () => {
+  assert.deepEqual(parseProviderAccountAlias("codex=work-account"), { provider: "codex", alias: "work-account" })
+  assert.deepEqual(applyProviderAccountAlias({}, "opencode=zen_profile"), { opencode: "zen_profile" })
+  assert.throws(() => parseProviderAccountAlias("codex"), /provider=alias/)
+  assert.throws(() => parseProviderAccountAlias("codex=sk-this-should-not-persist"), /provider account alias/)
+  assert.throws(() => parseProviderAccountAlias("codex=user@example.test"), /provider account alias/)
 })
 
 test("resolves provider-specific model defaults", () => {
@@ -38,10 +48,12 @@ test("summarizes provider profile metadata without account secrets", () => {
     providers: ["codex", "opencode"],
     defaultModel: "gpt-5.2",
     providerModels: { opencode: "opencode/gpt-5.4", codex: "gpt-5.5" },
+    providerAccounts: { opencode: "zen", codex: "work" },
   }), {
     providerCount: 2,
     providers: "codex,opencode",
     defaultModel: "gpt-5.2",
     providerModelOverrides: "codex,opencode",
+    providerAccountAliases: "codex=work,opencode=zen",
   })
 })

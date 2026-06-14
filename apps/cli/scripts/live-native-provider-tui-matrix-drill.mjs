@@ -13,7 +13,10 @@ import {
   drillDeploymentPresetMetadata,
   parseHetznerPassthroughArg,
 } from "./lib/drill-environment-presets.mjs"
-import { providerProfileMetadata } from "./lib/drill-provider-profiles.mjs"
+import {
+  applyProviderAccountAlias,
+  providerProfileMetadata,
+} from "./lib/drill-provider-profiles.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -147,6 +150,7 @@ function printHelp() {
     "  --continue-on-failure    Run every selected scenario before exiting non-zero",
     "  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices",
     "  --artifact-index PATH    Write a verifiable artifact index for the matrix report",
+    "  --provider-account P=A   Label the provider account/profile used by this matrix without exposing credentials",
     "  --hetzner-host HOST      Forwarded to Hetzner drill scenarios",
     "  --hetzner-key PATH       Forwarded to Hetzner drill scenarios",
     "  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios",
@@ -170,6 +174,7 @@ function parseArgs(argv) {
     continueOnFailure: false,
     reportPath: null,
     artifactIndexPath: null,
+    providerAccounts: {},
     passthrough: [],
     help: false,
   }
@@ -183,6 +188,8 @@ function parseArgs(argv) {
     else if (arg.startsWith("--report=")) options.reportPath = arg.slice("--report=".length)
     else if (arg === "--artifact-index") options.artifactIndexPath = readValue(argv, index++, arg)
     else if (arg.startsWith("--artifact-index=")) options.artifactIndexPath = arg.slice("--artifact-index=".length)
+    else if (arg === "--provider-account") applyProviderAccountAlias(options.providerAccounts, readValue(argv, index++, arg))
+    else if (arg.startsWith("--provider-account=")) applyProviderAccountAlias(options.providerAccounts, arg.slice("--provider-account=".length))
     else if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--only") options.only = parseDrillScenarioIds(readValue(argv, index++, arg))
     else if (arg.startsWith("--only=")) options.only = parseDrillScenarioIds(arg.slice("--only=".length))
@@ -229,7 +236,7 @@ function metadataFor(selected, options) {
   ]
   return {
     includeHetzner: options.includeHetzner,
-    ...providerProfileMetadata({ providers, defaultModel: "provider-default" }),
+    ...providerProfileMetadata({ providers, defaultModel: "provider-default", providerAccounts: options.providerAccounts }),
     ...drillDeploymentPresetMetadata(deploymentPresets, { hetznerPassthrough: options.passthrough }),
   }
 }

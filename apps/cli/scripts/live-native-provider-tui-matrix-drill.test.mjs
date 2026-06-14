@@ -21,6 +21,8 @@ test("native provider TUI matrix dry-run covers authority placement and provider
       scriptPath,
       "--dry-run",
       "--include-hetzner",
+      "--provider-account",
+      "codex=work_codex",
       "--report",
       reportPath,
       "--artifact-index",
@@ -47,6 +49,7 @@ test("native provider TUI matrix dry-run covers authority placement and provider
     assert.equal(report.metadata.providers, "claude,codex,opencode")
     assert.equal(report.metadata.defaultModel, "provider-default")
     assert.equal(report.metadata.providerModelOverrides, "")
+    assert.equal(report.metadata.providerAccountAliases, "codex=work_codex")
     assert.equal(report.metadata.includeHetzner, true)
     assert.match(stdout, /dry-run local-native-tui classification=provider-error/)
     assert.match(stdout, /dry-run permission-visibility classification=kernel-authority/)

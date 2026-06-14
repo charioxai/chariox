@@ -943,6 +943,27 @@ function validateProviderMetadata(metadata, source) {
       }
     }
   }
+  if (metadata.providerAccountAliases !== undefined) {
+    if (typeof metadata.providerAccountAliases !== "string") {
+      throw new Error(`${source}.providerAccountAliases is invalid`)
+    }
+    const providerSet = new Set(providers)
+    for (const entry of metadataListValue(metadata.providerAccountAliases)) {
+      const [provider, alias] = entry.split("=", 2).map((part) => part.trim())
+      if (!providerSet.has(provider)) {
+        throw new Error(`${source}.providerAccountAliases includes provider not in providers`)
+      }
+      if (!validProviderAccountAlias(alias)) {
+        throw new Error(`${source}.providerAccountAliases includes invalid account alias`)
+      }
+    }
+  }
+}
+
+function validProviderAccountAlias(alias) {
+  return typeof alias === "string"
+    && /^[a-zA-Z0-9._-]{1,64}$/.test(alias)
+    && !looksLikeDrillSecretValue(alias)
 }
 
 function validateScenarioProviderMetadataConsistency(report, source) {
