@@ -170,6 +170,40 @@ export function drillValidationSuiteManifest({
   }
 }
 
+export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
+  const manifest = suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1"
+    ? suiteArtifact.manifest
+    : suiteArtifact
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error("validation suite artifact metadata requires a manifest or run report")
+  }
+  const coverageAreas = sortedStringArray(
+    (manifest.coverage ?? []).map((area) => area?.id).filter((id) => typeof id === "string" && id.length > 0),
+    "coverageAreas",
+  )
+  const validationPresets = sortedStringArray(
+    (manifest.validationPresets ?? []).map((preset) => preset?.name).filter((name) => typeof name === "string" && name.length > 0),
+    "validationPresets",
+  )
+  const runtimeSignals = sortedStringArray(
+    (manifest.validationPresets ?? []).flatMap((preset) => [
+      ...(preset?.requiredRuntimeSignals ?? []),
+      ...(preset?.requiredMatrixRuntimeSignals ?? []),
+    ]),
+    "runtimeSignals",
+  )
+  return {
+    drill: "validation-suite",
+    ...(suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1" ? { status: suiteArtifact.status } : {}),
+    tests: manifest.testCount,
+    owners: "validation-platform",
+    classifications: "validation-suite",
+    ...(coverageAreas.length > 0 ? { coverageAreas: coverageAreas.join(",") } : {}),
+    ...(validationPresets.length > 0 ? { validationPresets: validationPresets.join(",") } : {}),
+    ...(runtimeSignals.length > 0 ? { runtimeSignals: runtimeSignals.join(",") } : {}),
+  }
+}
+
 export function validationSuiteCoverage({
   coverageAreas = DRILL_VALIDATION_COVERAGE_AREAS,
   testPaths = SHARED_DRILL_TEST_PATHS,

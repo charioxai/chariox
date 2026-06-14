@@ -5,6 +5,7 @@ import {
   DRILL_VALIDATION_COVERAGE_AREAS,
   SHARED_DRILL_TEST_PATHS,
   discoverDrillValidationSuiteTestPaths,
+  drillValidationSuiteArtifactMetadata,
   drillValidationSuiteArgs,
   drillValidationSuiteCommand,
   drillValidationSuiteManifest,
@@ -14,6 +15,7 @@ import {
   validateValidationSuiteCoverage,
   validationSuiteCoverage,
 } from "./drill-validation-suite.mjs"
+import { DRILL_RUNTIME_SIGNAL_IDS } from "./drill-runtime-signals.mjs"
 
 test("shared drill validation suite lists stable test paths", () => {
   assert(SHARED_DRILL_TEST_PATHS.includes("apps/cli/scripts/lib/drill-matrix-runner.test.mjs"))
@@ -120,6 +122,35 @@ test("builds shared drill validation suite manifest", () => {
     }],
     testPaths: ["one.test.mjs", "two words.test.mjs"],
   })
+})
+
+test("builds validation suite artifact metadata from manifest and run report", () => {
+  const manifest = drillValidationSuiteManifest()
+
+  assert.deepEqual(drillValidationSuiteArtifactMetadata(manifest), {
+    drill: "validation-suite",
+    tests: SHARED_DRILL_TEST_PATHS.length,
+    owners: "validation-platform",
+    classifications: "validation-suite",
+    coverageAreas: "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract",
+    validationPresets: "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync",
+    runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
+  })
+  assert.deepEqual(drillValidationSuiteArtifactMetadata({
+    schema: "arroba.drill.validation_suite_run.v1",
+    status: "passed",
+    manifest,
+  }), {
+    drill: "validation-suite",
+    status: "passed",
+    tests: SHARED_DRILL_TEST_PATHS.length,
+    owners: "validation-platform",
+    classifications: "validation-suite",
+    coverageAreas: "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract",
+    validationPresets: "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync",
+    runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
+  })
+  assert.throws(() => drillValidationSuiteArtifactMetadata(null), /requires a manifest or run report/)
 })
 
 test("normalizes validation suite preset contracts", () => {

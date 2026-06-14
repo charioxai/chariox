@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { DRILL_RUNTIME_SIGNAL_IDS } from "./lib/drill-runtime-signals.mjs"
 import { SHARED_DRILL_TEST_PATHS } from "./lib/drill-validation-suite.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -99,6 +100,11 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(fileManifest.schema, "arroba.drill.validation_suite.v1")
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.tests, SHARED_DRILL_TEST_PATHS.length)
+    assert.equal(artifactIndex.metadata.owners, "validation-platform")
+    assert.equal(artifactIndex.metadata.classifications, "validation-suite")
+    assert.equal(artifactIndex.metadata.coverageAreas, "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract")
+    assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync")
+    assert.equal(artifactIndex.metadata.runtimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -148,6 +154,10 @@ test("drill validation suite writes passing run report artifact output", async (
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.tests, 1)
+    assert.equal(artifactIndex.metadata.owners, "validation-platform")
+    assert.equal(artifactIndex.metadata.classifications, "validation-suite")
+    assert.equal(artifactIndex.metadata.coverageAreas, "custom-suite")
+    assert.equal(artifactIndex.metadata.runtimeSignals, undefined)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

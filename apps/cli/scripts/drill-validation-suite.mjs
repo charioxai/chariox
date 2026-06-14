@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process"
 import {
   SHARED_DRILL_TEST_PATHS,
+  drillValidationSuiteArtifactMetadata,
   drillValidationSuiteArgs,
   drillValidationSuiteCommand,
   drillValidationSuiteManifest,
@@ -54,10 +55,7 @@ async function main() {
         outputPath: options.outputPath,
         artifactIndexPath: options.outputArtifactIndexPath,
         value: manifest,
-        metadata: {
-          drill: "validation-suite",
-          tests: manifest.testCount,
-        },
+        metadata: drillValidationSuiteArtifactMetadata(manifest),
       })
     }
     console.log(JSON.stringify(manifest, null, 2))
@@ -70,11 +68,7 @@ async function main() {
         outputPath: options.outputPath,
         artifactIndexPath: options.outputArtifactIndexPath,
         value: report,
-        metadata: {
-          drill: "validation-suite",
-          status: report.status,
-          tests: report.testCount,
-        },
+        metadata: drillValidationSuiteArtifactMetadata(report),
       })
     }
     console.log(JSON.stringify(report, null, 2))
