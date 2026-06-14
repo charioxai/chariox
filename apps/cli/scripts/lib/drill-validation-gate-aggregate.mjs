@@ -21,6 +21,7 @@ export function summarizeValidationGateReportAggregate(
     failed: 0,
   }
   const nextActions = new Map()
+  const matrixRuntimeSignalSources = new Map()
   const coverage = {
     presets: new Map(),
     requiredPlatformCoverageAreas: new Map(),
@@ -69,6 +70,10 @@ export function summarizeValidationGateReportAggregate(
     countStringValues(coverage.missingProviders, matrixCoverage.missingProviders)
     countStringValues(coverage.requiredScenarios, matrixCoverage.requiredScenarios)
     countStringValues(coverage.missingScenarios, matrixCoverage.missingScenarios)
+    appendMatrixRuntimeSignalSources(matrixRuntimeSignalSources, {
+      reportSource: sources[index] ?? null,
+      runtimeSignalScenarios: matrixCoverage.runtimeSignalScenarios,
+    })
     return {
       source: sources[index] ?? null,
       status: report.status,
@@ -116,6 +121,7 @@ export function summarizeValidationGateReportAggregate(
     missingProviders: missingRequirements.missingProviders,
     requiredScenarios: normalizedAggregateRequirements.requiredScenarios,
     missingScenarios: missingRequirements.missingScenarios,
+    matrixRuntimeSignalSources: formatMatrixRuntimeSignalSources(matrixRuntimeSignalSources),
     coverage: coverageCounts,
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries,
@@ -152,6 +158,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_matrices", aggregate.requiredMatrices, aggregate.missingMatrices)
   appendAggregateRequirementLine(lines, "required_matrix_classifications", aggregate.requiredMatrixClassifications, aggregate.missingMatrixClassifications)
   appendAggregateRequirementLine(lines, "required_matrix_runtime_signals", aggregate.requiredMatrixRuntimeSignals, aggregate.missingMatrixRuntimeSignals)
+  appendAggregateMatrixRuntimeSignalSources(lines, aggregate.matrixRuntimeSignalSources, aggregate.requiredMatrixRuntimeSignals)
   appendAggregateRequirementLine(lines, "required_deployment_presets", aggregate.requiredDeploymentPresets, aggregate.missingDeploymentPresets)
   appendAggregateRequirementLine(lines, "required_providers", aggregate.requiredProviders, aggregate.missingProviders)
   appendAggregateRequirementLine(lines, "required_scenarios", aggregate.requiredScenarios, aggregate.missingScenarios)
@@ -201,6 +208,9 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
   validateStringArray(aggregate.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
   validateStringArray(aggregate.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
+  if (aggregate.matrixRuntimeSignalSources !== undefined) {
+    validateMatrixRuntimeSignalSources(aggregate.matrixRuntimeSignalSources, `${source}.matrixRuntimeSignalSources`)
+  }
   validateStringArray(aggregate.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(aggregate.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateStringArray(aggregate.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -248,6 +258,9 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   if (aggregate.coverage !== undefined) {
     assertValidationGateCoverageMatchesReports(aggregate, source)
   }
+  if (aggregate.matrixRuntimeSignalSources !== undefined) {
+    assertMatrixRuntimeSignalSourcesMatchReports(aggregate, source)
+  }
 }
 
 function validationGateReportPlatformCoverage(report) {
@@ -264,6 +277,7 @@ function validationGateReportPlatformCoverage(report) {
 
 function validationGateReportMatrixCoverage(report) {
   const matrices = report.checks.matrices
+  const runtimeSignalScenarios = cloneRuntimeSignalScenarios(matrices.aggregate?.runtimeSignalScenarios)
   return {
     requiredMatrices: [...(matrices.requiredMatrices ?? [])],
     missingMatrices: [...(matrices.missingMatrices ?? [])],
@@ -277,6 +291,7 @@ function validationGateReportMatrixCoverage(report) {
     missingProviders: [...(matrices.missingProviders ?? [])],
     requiredScenarios: [...(matrices.requiredScenarios ?? [])],
     missingScenarios: [...(matrices.missingScenarios ?? [])],
+    ...(Object.keys(runtimeSignalScenarios).length > 0 ? { runtimeSignalScenarios } : {}),
   }
 }
 
@@ -414,6 +429,24 @@ function appendAggregateRequirementLine(lines, label, required, missing) {
   }
 }
 
+function appendAggregateMatrixRuntimeSignalSources(lines, matrixRuntimeSignalSources, requiredMatrixRuntimeSignals) {
+  if ((requiredMatrixRuntimeSignals ?? []).length === 0) return
+  const sources = matrixRuntimeSignalSources && typeof matrixRuntimeSignalSources === "object" && !Array.isArray(matrixRuntimeSignalSources)
+    ? matrixRuntimeSignalSources
+    : {}
+  lines.push("matrix_runtime_signal_sources:")
+  for (const signal of requiredMatrixRuntimeSignals) {
+    const entries = Array.isArray(sources[signal]) ? sources[signal] : []
+    lines.push(`- ${signal}: ${entries.length > 0 ? entries.map(formatMatrixRuntimeSignalSource).join(", ") : "missing"}`)
+  }
+}
+
+function formatMatrixRuntimeSignalSource(entry) {
+  const report = entry.reportSource ? ` report=${entry.reportSource}` : ""
+  const source = entry.source ? ` source=${entry.source}` : ""
+  return `${entry.matrix}/${entry.id}(${entry.status})${source}${report}`
+}
+
 function validateValidationGateCoverageAggregate(coverage, source) {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error(`${source} is not an object`)
@@ -455,6 +488,9 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   validateStringArray(coverage.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(coverage.requiredScenarios ?? [], `${source}.requiredScenarios`)
   validateStringArray(coverage.missingScenarios ?? [], `${source}.missingScenarios`)
+  if (coverage.runtimeSignalScenarios !== undefined) {
+    validateRuntimeSignalScenarioMap(coverage.runtimeSignalScenarios, `${source}.runtimeSignalScenarios`, { reportSource: false })
+  }
 }
 
 function validateValidationGatePlatformCoverage(coverage, source) {
@@ -540,6 +576,20 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
   }
 }
 
+function assertMatrixRuntimeSignalSourcesMatchReports(aggregate, source) {
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    appendMatrixRuntimeSignalSources(expected, {
+      reportSource: report.source ?? null,
+      runtimeSignalScenarios: report.matrixCoverage?.runtimeSignalScenarios,
+    })
+  }
+  const expectedSources = formatMatrixRuntimeSignalSources(expected)
+  if (JSON.stringify(aggregate.matrixRuntimeSignalSources ?? {}) !== JSON.stringify(expectedSources)) {
+    throw new Error(`${source} matrixRuntimeSignalSources does not match reports`)
+  }
+}
+
 function validateGateAggregateReportSummary(report, source) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     throw new Error(`${source} is not an object`)
@@ -564,6 +614,100 @@ function validateGateAggregateReportSummary(report, source) {
   }
   if (report.platformCoverage !== undefined) {
     validateValidationGatePlatformCoverage(report.platformCoverage, `${source}.platformCoverage`)
+  }
+}
+
+function cloneRuntimeSignalScenarios(runtimeSignalScenarios) {
+  if (!runtimeSignalScenarios || typeof runtimeSignalScenarios !== "object" || Array.isArray(runtimeSignalScenarios)) return {}
+  return Object.fromEntries(Object.entries(runtimeSignalScenarios)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([signal, scenarios]) => [signal, Array.isArray(scenarios)
+      ? scenarios.map((scenario) => ({
+        matrix: scenario.matrix,
+        source: scenario.source ?? null,
+        id: scenario.id,
+        status: scenario.status,
+      })).sort(compareMatrixRuntimeSignalSource)
+      : []]))
+}
+
+function appendMatrixRuntimeSignalSources(target, { reportSource, runtimeSignalScenarios }) {
+  for (const [signal, scenarios] of Object.entries(cloneRuntimeSignalScenarios(runtimeSignalScenarios))) {
+    const entries = target.get(signal) ?? []
+    for (const scenario of scenarios) {
+      entries.push({
+        reportSource,
+        matrix: scenario.matrix,
+        source: scenario.source ?? null,
+        id: scenario.id,
+        status: scenario.status,
+      })
+    }
+    target.set(signal, entries)
+  }
+}
+
+function formatMatrixRuntimeSignalSources(sources) {
+  return Object.fromEntries([...sources.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([signal, entries]) => [signal, entries
+      .map((entry) => ({
+        reportSource: entry.reportSource ?? null,
+        matrix: entry.matrix,
+        source: entry.source ?? null,
+        id: entry.id,
+        status: entry.status,
+      }))
+      .sort(compareMatrixRuntimeSignalSource)]))
+}
+
+function compareMatrixRuntimeSignalSource(left, right) {
+  return String(left.reportSource ?? "").localeCompare(String(right.reportSource ?? ""))
+    || String(left.matrix ?? "").localeCompare(String(right.matrix ?? ""))
+    || String(left.source ?? "").localeCompare(String(right.source ?? ""))
+    || String(left.id ?? "").localeCompare(String(right.id ?? ""))
+    || String(left.status ?? "").localeCompare(String(right.status ?? ""))
+}
+
+function validateMatrixRuntimeSignalSources(value, source) {
+  validateRuntimeSignalScenarioMap(value, source, { reportSource: true })
+}
+
+function validateRuntimeSignalScenarioMap(value, source, { reportSource }) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const [signal, scenarios] of Object.entries(value)) {
+    if (!nonEmptyString(signal)) {
+      throw new Error(`${source} has invalid signal`)
+    }
+    if (!Array.isArray(scenarios)) {
+      throw new Error(`${source}.${signal} is not an array`)
+    }
+    for (const [index, scenario] of scenarios.entries()) {
+      validateRuntimeSignalScenario(scenario, `${source}.${signal}[${index}]`, { reportSource })
+    }
+  }
+}
+
+function validateRuntimeSignalScenario(scenario, source, { reportSource }) {
+  if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (reportSource && scenario.reportSource !== null && scenario.reportSource !== undefined && !nonEmptyString(scenario.reportSource)) {
+    throw new Error(`${source} has invalid reportSource`)
+  }
+  if (!nonEmptyString(scenario.matrix)) {
+    throw new Error(`${source} is missing matrix`)
+  }
+  if (scenario.source !== null && scenario.source !== undefined && !nonEmptyString(scenario.source)) {
+    throw new Error(`${source} has invalid source`)
+  }
+  if (!nonEmptyString(scenario.id)) {
+    throw new Error(`${source} is missing id`)
+  }
+  if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
   }
 }
 

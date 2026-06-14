@@ -17,6 +17,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
       requiredScenarios: ["managed"],
@@ -28,11 +29,23 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.equal(drillValidationGateAggregateExitCode(aggregate), 0)
   assert.deepEqual(aggregate.totals, { reports: 1, passed: 1, failed: 0 })
   assert.deepEqual(aggregate.coverage.presets, { "workspace-live-sync": 1 })
+  assert.deepEqual(aggregate.matrixRuntimeSignalSources, {
+    "workspace-live-sync-state": [{
+      reportSource: "workspace-live-sync.json",
+      matrix: "workspace-live-sync-matrix",
+      source: "/tmp/workspace-live-sync-matrix.json",
+      id: "managed",
+      status: "passed",
+    }],
+  })
   assert.deepEqual(aggregate.missingPresets, [])
   assert.deepEqual(aggregate.missingProviders, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
   assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
-  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_providers=codex missing=none/)
+  const text = formatDrillValidationGateAggregateSummary(aggregate)
+  assert.match(text, /required_providers=codex missing=none/)
+  assert.match(text, /matrix_runtime_signal_sources:/)
+  assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/workspace-live-sync-matrix\.json report=workspace-live-sync\.json/)
 })
 
 test("fails aggregate requirements missing from otherwise passing reports", () => {
@@ -43,6 +56,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       requiredFailureClassifications: ["remote-extension-sync"],
       requiredMatrices: ["remote-home-extension-matrix"],
       requiredMatrixClassifications: ["remote-extension-sync"],
+      requiredMatrixRuntimeSignals: ["home-extension-manifest-sync"],
       requiredDeploymentPresets: ["hosted-cloud"],
       requiredProviders: ["claude"],
       requiredScenarios: ["hetzner-collab"],
@@ -53,6 +67,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.equal(aggregate.status, "failed")
   assert.equal(drillValidationGateAggregateExitCode(aggregate), 1)
   assert.deepEqual(aggregate.missingPresets, ["remote-home-extension"])
+  assert.deepEqual(aggregate.missingMatrixRuntimeSignals, ["home-extension-manifest-sync"])
   assert.deepEqual(aggregate.missingProviders, ["claude"])
   assert.deepEqual(aggregate.missingScenarios, ["hetzner-collab"])
   assert.deepEqual(
@@ -69,6 +84,10 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       {
         classification: "matrix-coverage",
         nextAction: "provide validation gate reports requiring matrix classifications: remote-extension-sync",
+      },
+      {
+        classification: "matrix-coverage",
+        nextAction: "provide validation gate reports requiring matrix runtime signals: home-extension-manifest-sync",
       },
       {
         classification: "matrix-coverage",
@@ -118,6 +137,21 @@ test("rejects inconsistent aggregate status and coverage", () => {
     }),
     /missingPresets does not match reports/,
   )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      matrixRuntimeSignalSources: {
+        "workspace-live-sync-state": [{
+          reportSource: "other.json",
+          matrix: "workspace-live-sync-matrix",
+          source: "/tmp/workspace-live-sync-matrix.json",
+          id: "managed",
+          status: "passed",
+        }],
+      },
+    }),
+    /matrixRuntimeSignalSources does not match reports/,
+  )
 })
 
 function reportFixture(overrides = {}) {
@@ -141,6 +175,18 @@ function reportFixture(overrides = {}) {
         missingMatrices: [],
         requiredMatrixClassifications: ["workspace-live-sync-conflict"],
         missingMatrixClassifications: [],
+        requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
+        missingMatrixRuntimeSignals: [],
+        aggregate: {
+          runtimeSignalScenarios: {
+            "workspace-live-sync-state": [{
+              matrix: "workspace-live-sync-matrix",
+              source: "/tmp/workspace-live-sync-matrix.json",
+              id: "managed",
+              status: "passed",
+            }],
+          },
+        },
         requiredDeploymentPresets: ["local"],
         missingDeploymentPresets: [],
         requiredProviders: ["codex"],
