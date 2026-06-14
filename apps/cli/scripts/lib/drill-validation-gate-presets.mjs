@@ -195,6 +195,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
 })
 
 const GENERATED_EVIDENCE_KINDS = Object.freeze(["matrix-report", "validation-suite-run"])
+const ARTIFACT_EVIDENCE_REPOS = Object.freeze(["cloud", "external", "oss"])
 
 export function describeDrillValidationGatePresets({ names = null } = {}) {
   const presetNames = names == null
@@ -374,20 +375,16 @@ export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifact
 }
 
 export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceRepos) {
-  if (!Array.isArray(requiredArtifactEvidenceRepos)) {
-    throw new Error("requiredArtifactEvidenceRepos must be an array")
-  }
-  const repos = []
-  for (const repo of requiredArtifactEvidenceRepos) {
-    if (!nonEmptyString(repo)) {
-      throw new Error("requiredArtifactEvidenceRepos has invalid repo")
-    }
-    for (const value of repo.split(",")) {
-      const normalized = value.trim()
-      if (normalized) repos.push(normalized)
+  const repos = normalizeCommaSeparatedStrings(requiredArtifactEvidenceRepos, {
+    fieldName: "requiredArtifactEvidenceRepos",
+    itemName: "repo",
+  })
+  for (const repo of repos) {
+    if (!ARTIFACT_EVIDENCE_REPOS.includes(repo)) {
+      throw new Error(`unknown required artifact evidence repo: ${repo}`)
     }
   }
-  return [...new Set(repos)].sort()
+  return repos
 }
 
 export function normalizeRequiredArtifactRuntimeSignals(requiredArtifactRuntimeSignals) {

@@ -369,6 +369,10 @@ test("rejects unknown validation gate requirements", () => {
     /unknown required artifact runtime signal owner: not-an-owner/,
   )
   assert.throws(
+    () => normalizeRequiredArtifactEvidenceRepos(["cluod"]),
+    /unknown required artifact evidence repo: cluod/,
+  )
+  assert.throws(
     () => normalizeRequiredMatrixClassifications(["not-a-classification"]),
     /unknown required matrix classification: not-a-classification/,
   )
