@@ -1,6 +1,7 @@
 import {
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
+  validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
 import {
   findDrillFailureManifestPaths,
@@ -35,19 +36,23 @@ export async function runDrillValidationGate({
     failures: await failureCheck({ failureInputs, failureRoots }, { maxDepth }),
   }
   const nextActions = validationGateNextActions(checks)
-  return {
+  const report = {
     schema: DRILL_VALIDATION_GATE_SCHEMA,
     status: Object.values(checks).some((check) => check.status === "failed") ? "failed" : "passed",
     checks,
     nextActions,
   }
+  validateDrillValidationGateReport(report)
+  return report
 }
 
 export function drillValidationGateExitCode(report) {
+  validateDrillValidationGateReport(report)
   return report.status === "failed" ? 1 : 0
 }
 
 export function formatDrillValidationGateSummary(report) {
+  validateDrillValidationGateReport(report)
   const lines = [
     "drill validation gate:",
     `status=${report.status}`,
@@ -83,6 +88,145 @@ export function formatDrillValidationGateSummary(report) {
     ? "next: validation artifacts passed configured gates"
     : "next: inspect failed gate checks and rerun the relevant drills")
   return lines.join("\n")
+}
+
+export function validateDrillValidationGateReport(report, source = "validation gate report") {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (report.schema !== DRILL_VALIDATION_GATE_SCHEMA) {
+    throw new Error(`${source} has unsupported schema ${JSON.stringify(report.schema)}`)
+  }
+  if (!["passed", "failed"].includes(report.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
+  }
+  if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
+    throw new Error(`${source} is missing checks`)
+  }
+  validateConfigurationCheck(report.checks.configuration, `${source}.checks.configuration`)
+  validatePlatformBundleCheck(report.checks.platformBundle, `${source}.checks.platformBundle`)
+  validateMatrixCheck(report.checks.matrices, `${source}.checks.matrices`)
+  validateFailureCheck(report.checks.failures, `${source}.checks.failures`)
+  if (!Array.isArray(report.nextActions)) {
+    throw new Error(`${source} has invalid nextActions`)
+  }
+  for (const [index, action] of report.nextActions.entries()) {
+    validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
+  }
+  const expectedStatus = Object.values(report.checks).some((check) => check.status === "failed") ? "failed" : "passed"
+  if (report.status !== expectedStatus) {
+    throw new Error(`${source} status does not match check statuses`)
+  }
+}
+
+function validateConfigurationCheck(check, source) {
+  validateCheckObject(check, source)
+  if (check.status === "skipped") {
+    throw new Error(`${source} cannot be skipped`)
+  }
+  if (check.status === "failed" && !nonEmptyString(check.error)) {
+    throw new Error(`${source} is missing error`)
+  }
+}
+
+function validatePlatformBundleCheck(check, source) {
+  validateCheckObject(check, source)
+  if (check.status === "skipped") {
+    if (check.dir !== null) {
+      throw new Error(`${source} skipped check has invalid dir`)
+    }
+    return
+  }
+  if (!nonEmptyString(check.dir)) {
+    throw new Error(`${source} is missing dir`)
+  }
+  if (check.status === "failed") {
+    if (!nonEmptyString(check.error)) {
+      throw new Error(`${source} is missing error`)
+    }
+    return
+  }
+  if (!Array.isArray(check.artifacts)) {
+    throw new Error(`${source} has invalid artifacts`)
+  }
+  for (const [index, artifact] of check.artifacts.entries()) {
+    validatePlatformBundleArtifact(artifact, `${source}.artifacts[${index}]`)
+  }
+}
+
+function validateMatrixCheck(check, source) {
+  validateCheckObject(check, source)
+  validateStringArray(check.roots, `${source}.roots`)
+  validateStringArray(check.inputs, `${source}.inputs`)
+  validateStringArray(check.reportPaths, `${source}.reportPaths`)
+  if (typeof check.requireComplete !== "boolean") {
+    throw new Error(`${source} has invalid requireComplete`)
+  }
+  if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
+    throw new Error(`${source} is missing error`)
+  }
+  if (check.aggregate) {
+    validateAggregateSchema(check.aggregate, "arroba.drill.matrix.aggregate.v1", `${source}.aggregate`)
+  }
+}
+
+function validateFailureCheck(check, source) {
+  validateCheckObject(check, source)
+  validateStringArray(check.roots, `${source}.roots`)
+  validateStringArray(check.inputs, `${source}.inputs`)
+  validateStringArray(check.manifestPaths, `${source}.manifestPaths`)
+  if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
+    throw new Error(`${source} is missing error`)
+  }
+  if (check.aggregate) {
+    validateAggregateSchema(check.aggregate, "arroba.drill.failure.aggregate.v1", `${source}.aggregate`)
+  }
+}
+
+function validateCheckObject(check, source) {
+  if (!check || typeof check !== "object" || Array.isArray(check)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!["passed", "failed", "skipped"].includes(check.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(check.status)}`)
+  }
+}
+
+function validatePlatformBundleArtifact(artifact, source) {
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const key of ["path", "schema"]) {
+    if (!nonEmptyString(artifact[key])) {
+      throw new Error(`${source} is missing ${key}`)
+    }
+  }
+  if (typeof artifact.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(artifact.sha256)) {
+    throw new Error(`${source} has invalid sha256`)
+  }
+  if (!Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes < 0) {
+    throw new Error(`${source} has invalid sizeBytes`)
+  }
+}
+
+function validateAggregateSchema(aggregate, schema, source) {
+  if (!aggregate || typeof aggregate !== "object" || Array.isArray(aggregate)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (aggregate.schema !== schema) {
+    throw new Error(`${source} has unsupported schema ${JSON.stringify(aggregate.schema)}`)
+  }
+}
+
+function validateStringArray(value, source) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, entry] of value.entries()) {
+    if (typeof entry !== "string") {
+      throw new Error(`${source}[${index}] is not a string`)
+    }
+  }
 }
 
 function validationGateNextActions(checks) {
@@ -255,4 +399,8 @@ async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0
 }

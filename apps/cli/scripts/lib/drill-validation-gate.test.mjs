@@ -8,6 +8,7 @@ import {
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
   runDrillValidationGate,
+  validateDrillValidationGateReport,
 } from "./drill-validation-gate.mjs"
 import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
@@ -33,6 +34,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.equal(report.checks.matrices.status, "passed")
     assert.equal(report.checks.failures.status, "skipped")
     assert.deepEqual(report.nextActions, [])
+    assert.doesNotThrow(() => validateDrillValidationGateReport(report))
     assert.match(formatDrillValidationGateSummary(report), /status=passed/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -141,6 +143,44 @@ test("fails with explicit failure manifest paths", async () => {
     assert.deepEqual(report.checks.failures.inputs, [manifestPath])
     assert.deepEqual(report.checks.failures.manifestPaths, [manifestPath])
     assert.match(formatDrillValidationGateSummary(report), /failures=failed roots=0 inputs=1 manifests=1/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects validation gate reports with mismatched top-level status", async () => {
+  const report = await runDrillValidationGate()
+
+  assert.throws(
+    () => validateDrillValidationGateReport({ ...report, status: "passed" }),
+    /status does not match check statuses/,
+  )
+})
+
+test("rejects malformed platform bundle artifact evidence", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    const report = await runDrillValidationGate({ platformBundleDir: bundleDir })
+    const malformed = {
+      ...report,
+      checks: {
+        ...report.checks,
+        platformBundle: {
+          ...report.checks.platformBundle,
+          artifacts: [{
+            ...report.checks.platformBundle.artifacts[0],
+            sha256: "not-a-sha",
+          }],
+        },
+      },
+    }
+
+    assert.throws(
+      () => formatDrillValidationGateSummary(malformed),
+      /artifacts\[0\] has invalid sha256/,
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
