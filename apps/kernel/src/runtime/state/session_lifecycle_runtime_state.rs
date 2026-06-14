@@ -342,12 +342,83 @@ impl KernelRuntimeState {
         machine_ref: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let local_agent =
+            self.owned
+                .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
+        let terminated_run_ids = self
+            .owned
+            .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
+        for provider_run_id in terminated_run_ids {
+            let (_, process_key) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            self.owned
+                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+        }
+        let target_slice_id = self
+            .owned
+            .slice_store
+            .resolve_by_worker_kernel_ref(machine_ref)
+            .map(|slice| slice.id);
+        let agent = self
+            .with_app_side_effect(|app| {
+                app.move_agent_to_remote(session_id, agent_ref, machine_ref)
+            })
+            .await?;
+        if let Some(slice_ref) = target_slice_id {
+            self.attach_slice_agent(&slice_ref, session_id, agent.id())
+                .await?;
+        }
+        Ok(agent)
+    }
+
+    pub(crate) async fn move_agent_to_local(
+        &self,
+        session_id: &str,
+        agent_ref: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let remote_agent =
+            self.owned
+                .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to local")?;
+        let slice_ref = remote_agent
+            .remote_execution()
+            .and_then(|remote| {
+                self.owned
+                    .slice_store
+                    .resolve_by_worker_kernel_ref(&remote.worker_kernel_id)
+                    .or_else(|| {
+                        self.owned
+                            .slice_store
+                            .resolve_by_worker_kernel_ref(&remote.worker_machine_id)
+                    })
+            })
+            .map(|slice| slice.id);
         self.owned
-            .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
-        self.with_app_side_effect(|app| {
-            app.move_agent_to_remote(session_id, agent_ref, machine_ref)
-        })
-        .await
+            .terminate_idle_remote_provider_projection_for_agent_before_local_move(
+                session_id,
+                &remote_agent,
+            )?;
+        let agent = self
+            .with_app_side_effect(|app| app.move_agent_to_local(session_id, agent_ref))
+            .await?;
+        if let Some(slice_ref) = slice_ref {
+            let slice = self.owned.slice_store.detach_agent(
+                &slice_ref,
+                agent.id(),
+                crate::session::unix_epoch_ms(),
+            )?;
+            self.owned.durable_state_store.append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+        }
+        let _ = self.owned.session_snapshot(session_id)?;
+        Ok(agent)
     }
 
     pub(crate) async fn destroy_agent(

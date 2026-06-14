@@ -42,6 +42,12 @@ pub struct MoveAgentToRemoteRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveAgentToLocalRequest {
+    pub session_id: String,
+    pub agent_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestroyAgentRequest {
     pub session_id: String,
     pub agent_id: String,

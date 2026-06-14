@@ -60,6 +60,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         home_session_id: session_id.clone(),
         home_agent_id: agent_id.clone(),
         provider_run_id: "remote:worker:provider-run-1".to_string(),
+        provider_run: None,
         prompts: Vec::new(),
         output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
             kind: crate::terminal::TerminalOutputKind::ProviderOutput,

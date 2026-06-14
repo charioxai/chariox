@@ -12,6 +12,7 @@ pub(crate) fn is_interactive_command(request: &LocalDaemonRequest) -> bool {
             request,
             LocalDaemonRequest::GrantAgentExtension(_)
                 | LocalDaemonRequest::MoveAgentToRemote(_)
+                | LocalDaemonRequest::MoveAgentToLocal(_)
                 | LocalDaemonRequest::SyncRemoteExtensionManifest(_)
                 | LocalDaemonRequest::ListHomeExtensionAudit(_)
                 | LocalDaemonRequest::RevokeAgentExtension(_)
@@ -36,6 +37,7 @@ pub(crate) async fn dispatch_interactive_command(
     match request {
         request @ (LocalDaemonRequest::GrantAgentExtension(_)
         | LocalDaemonRequest::MoveAgentToRemote(_)
+        | LocalDaemonRequest::MoveAgentToLocal(_)
         | LocalDaemonRequest::SyncRemoteExtensionManifest(_)
         | LocalDaemonRequest::ListHomeExtensionAudit(_)
         | LocalDaemonRequest::RevokeAgentExtension(_)) => {

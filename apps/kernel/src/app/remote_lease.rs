@@ -247,6 +247,33 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
+        let provider_runs = self
+            .app
+            .providers
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == agent.backing_session_id
+                    && run.agent_instance_id() == Some(agent.backing_agent_id.as_str())
+                    && run.state() != ProviderRunState::Ended
+            })
+            .collect::<Vec<_>>();
+        for provider_run in provider_runs {
+            let run_id = provider_run.id().to_string();
+            let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
+                .remove_run(&run_id);
+            if let Ok(outcome) = self
+                .app
+                .providers
+                .terminate_run_provider_only(provider_run.session_id(), provider_run.id())
+            {
+                let _ = self
+                    .app
+                    .sessions
+                    .set_active_provider_run(outcome.run().session_id(), None);
+                self.app.update_provider_run_projection(outcome.into_run());
+            }
+        }
         let backing_session_still_used = self
             .app
             .leased_agents

@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutco
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 2;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -523,6 +523,8 @@ pub enum RelayPeerEvent {
         home_session_id: String,
         home_agent_id: String,
         provider_run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_run: Option<crate::provider::RuntimeProviderRun>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         prompts: Vec<RelayProjectedPrompt>,
         output_chunks: Vec<RelayProjectedOutputChunk>,

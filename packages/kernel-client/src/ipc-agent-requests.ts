@@ -120,6 +120,15 @@ export function moveAgentToRemoteRequest(sessionId: string, agentRef: string, ma
   }
 }
 
+export function moveAgentToLocalRequest(sessionId: string, agentRef: string) {
+  return {
+    MoveAgentToLocal: {
+      session_id: sessionId,
+      agent_ref: agentRef,
+    },
+  }
+}
+
 export function destroyAgentRequest(sessionId: string, agentId: string) {
   return {
     DestroyAgent: {

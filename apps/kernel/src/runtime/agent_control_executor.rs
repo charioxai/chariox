@@ -1,7 +1,7 @@
 use crate::error::DaemonError;
 use crate::local::{
     ExtensionKind, GrantAgentExtensionRequest, LocalDaemonRequest, LocalDaemonResponse,
-    MoveAgentToRemoteRequest, RevokeAgentExtensionRequest,
+    MoveAgentToLocalRequest, MoveAgentToRemoteRequest, RevokeAgentExtensionRequest,
 };
 use crate::runtime::capability_registry::{
     ensure_connector_exists, ensure_credential_exists, ensure_environment_exists,
@@ -20,6 +20,9 @@ pub(crate) async fn execute_agent_control_request(
         }
         LocalDaemonRequest::MoveAgentToRemote(request) => {
             execute_move_agent_to_remote_request(runtime_state, caller_user_id, request).await
+        }
+        LocalDaemonRequest::MoveAgentToLocal(request) => {
+            execute_move_agent_to_local_request(runtime_state, caller_user_id, request).await
         }
         LocalDaemonRequest::SyncRemoteExtensionManifest(request) => {
             let agent = runtime_state
@@ -114,6 +117,17 @@ pub(crate) async fn execute_move_agent_to_remote_request(
         )
         .await?;
     Ok(LocalDaemonResponse::AgentMovedToRemote { agent })
+}
+
+pub(crate) async fn execute_move_agent_to_local_request(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    request: MoveAgentToLocalRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let agent = runtime_state
+        .move_agent_to_local(&request.session_id, &request.agent_ref, caller_user_id)
+        .await?;
+    Ok(LocalDaemonResponse::AgentMovedToLocal { agent })
 }
 
 pub(crate) async fn execute_revoke_agent_extension_request(

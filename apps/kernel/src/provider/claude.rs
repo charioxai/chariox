@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -252,26 +253,82 @@ fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<St
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
     if treat_as_literal_path || candidate.components().count() > 1 {
-        return candidate.exists().then_some(candidate);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+        return resolve_native_claude_binary_from_stub(&candidate);
     }
 
-    if candidate.is_absolute() && candidate.exists() {
+    if is_executable_file(&candidate) {
         return Some(candidate);
     }
 
     let path_var = env::var_os("PATH")?;
-    env::split_paths(&path_var)
-        .map(|directory| directory.join(&candidate))
-        .find(|path| is_executable_file(path))
+    for directory in env::split_paths(&path_var) {
+        let path = directory.join(&candidate);
+        if is_executable_file(&path) {
+            return Some(path);
+        }
+        if let Some(native) = resolve_native_claude_binary_from_stub(&path) {
+            return Some(native);
+        }
+    }
+    None
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    path.is_file()
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return path
+            .metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn resolve_native_claude_binary_from_stub(candidate: &Path) -> Option<PathBuf> {
+    let canonical = fs::canonicalize(candidate).ok()?;
+    let file_name = canonical.file_name().and_then(|name| name.to_str())?;
+    if file_name != "claude" && file_name != "claude.exe" {
+        return None;
+    }
+    let bin_dir = canonical.parent()?;
+    if bin_dir.file_name().and_then(|name| name.to_str()) != Some("bin") {
+        return None;
+    }
+    let package_root = bin_dir.parent()?;
+    let platform_package = claude_native_platform_package()?;
+    let native = package_root
+        .join("node_modules")
+        .join("@anthropic-ai")
+        .join(platform_package)
+        .join("claude");
+    is_executable_file(&native).then_some(native)
+}
+
+fn claude_native_platform_package() -> Option<&'static str> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("macos", "aarch64") => Some("claude-code-darwin-arm64"),
+        ("macos", "x86_64") => Some("claude-code-darwin-x64"),
+        ("linux", "aarch64") => Some("claude-code-linux-arm64"),
+        ("linux", "x86_64") => Some("claude-code-linux-x64"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use crate::mcp::ArrobaMcpServerConfig;
     use crate::provider::{
@@ -285,12 +342,24 @@ mod tests {
         crate::env_lock::lock()
     }
 
+    fn write_executable_fixture(path: &std::path::Path, contents: &str) {
+        fs::write(path, contents).expect("fixture should exist");
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(path)
+                .expect("fixture metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("fixture should be executable");
+        }
+    }
+
     #[test]
     fn resolves_override_path_for_tests() {
         let _guard = env_guard();
         let path =
             std::env::temp_dir().join(format!("arroba-claude-resolve-test-{}", std::process::id()));
-        fs::write(&path, "#!/bin/sh\nexit 0\n").expect("fixture should exist");
+        write_executable_fixture(&path, "#!/bin/sh\nexit 0\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
         let resolved = resolve_claude_executable().expect("override path should resolve");
@@ -298,6 +367,49 @@ mod tests {
         std::env::remove_var("ARROBA_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
         assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn resolves_native_binary_when_path_shim_is_non_executable_stub() {
+        let _guard = env_guard();
+        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        let root = std::env::temp_dir().join(format!(
+            "arroba-claude-stub-resolve-test-{}",
+            std::process::id()
+        ));
+        let bin_dir = root.join("bin");
+        let native_dir = root
+            .join("node_modules")
+            .join("@anthropic-ai")
+            .join(super::claude_native_platform_package().unwrap_or("unsupported"));
+        let shim = bin_dir.join("claude.exe");
+        let command = root.join("claude");
+        let native = native_dir.join("claude");
+        fs::create_dir_all(&bin_dir).expect("bin dir should exist");
+        fs::create_dir_all(&native_dir).expect("native dir should exist");
+        fs::write(&shim, "echo native binary not installed\n").expect("shim should exist");
+        write_executable_fixture(&native, "#!/bin/sh\nexit 0\n");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&shim, &command).expect("command shim should link");
+        }
+        #[cfg(not(unix))]
+        {
+            fs::copy(&shim, &command).expect("command shim should exist");
+        }
+        let previous_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &root);
+
+        let resolved = resolve_claude_executable().expect("native binary should resolve");
+        let expected = fs::canonicalize(&native).expect("native should canonicalize");
+
+        if let Some(previous_path) = previous_path {
+            std::env::set_var("PATH", previous_path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(resolved, expected);
     }
 
     #[test]
@@ -366,7 +478,7 @@ mod tests {
             "arroba-claude-resolve-test-{}-launch",
             std::process::id()
         ));
-        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
         std::env::set_var("ANTHROPIC_API_KEY", "not-used-by-arroba");
 
@@ -416,7 +528,7 @@ mod tests {
             "arroba-claude-resolve-test-{}-print-mode",
             std::process::id()
         ));
-        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
@@ -450,7 +562,7 @@ mod tests {
             "arroba-claude-resolve-test-{}-headless-mode",
             std::process::id()
         ));
-        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
@@ -484,7 +596,7 @@ mod tests {
             "arroba-claude-resolve-test-{}-yolo",
             std::process::id()
         ));
-        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
@@ -516,7 +628,7 @@ mod tests {
             "arroba-claude-resolve-test-{}-mcp",
             std::process::id()
         ));
-        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
@@ -571,7 +683,7 @@ mod tests {
             "arroba-claude-resolve-test-{}-native-mcp",
             std::process::id()
         ));
-        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
+        write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(

@@ -1086,6 +1086,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
             session.id(),
             agent.id(),
             "remote:worker:provider-run-1",
+            None,
             Vec::new(),
             vec![RelayProjectedOutputChunk {
                 kind: TerminalOutputKind::ProviderOutput,

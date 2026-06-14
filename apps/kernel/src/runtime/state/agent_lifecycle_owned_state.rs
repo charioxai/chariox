@@ -70,6 +70,121 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn terminate_idle_provider_runs_for_agent_before_remote_move(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Vec<String>, DaemonError> {
+        if agent.session_id() != session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to remote",
+                message: format!(
+                    "agent `{}` does not belong to session `{session_id}`",
+                    agent.id()
+                ),
+            });
+        }
+
+        let provider_runs = self
+            .provider_store
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == session_id
+                    && run.agent_instance_id() == Some(agent.id())
+                    && run.state() != crate::provider::ProviderRunState::Ended
+            })
+            .collect::<Vec<_>>();
+
+        let mut terminated_run_ids = Vec::with_capacity(provider_runs.len());
+        for provider_run in provider_runs {
+            if self.provider_run_has_active_prompt(session_id, &provider_run)? {
+                return Err(DaemonError::LocalTransport {
+                    operation: "move agent to remote",
+                    message: format!(
+                        "agent `{}` has an active provider prompt; wait for the turn to finish before moving it",
+                        agent.id()
+                    ),
+                });
+            }
+
+            let outcome = self
+                .provider_store
+                .terminate_run_provider_only(session_id, provider_run.id())?;
+            self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
+            let ended_run = outcome.into_run();
+            terminated_run_ids.push(ended_run.id().to_string());
+            self.provider_run_projection.update(ended_run.clone());
+            self.clear_prompt_activity(ended_run.id());
+        }
+
+        Ok(terminated_run_ids)
+    }
+
+    pub(super) fn terminate_idle_remote_provider_projection_for_agent_before_local_move(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Option<String>, DaemonError> {
+        if agent.session_id() != session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to local",
+                message: format!(
+                    "agent `{}` does not belong to session `{session_id}`",
+                    agent.id()
+                ),
+            });
+        }
+        let Some(remote_execution) = agent.remote_execution() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to local",
+                message: format!("agent `{}` is already local", agent.id()),
+            });
+        };
+
+        let projected_run_id = remote_execution
+            .active_worker_provider_run_id
+            .as_deref()
+            .map(|worker_run_id| {
+                crate::provider::projected_leased_provider_run_id(
+                    &remote_execution.leased_agent_id,
+                    worker_run_id,
+                )
+            });
+        let projected_run = projected_run_id
+            .as_deref()
+            .and_then(|run_id| self.provider_run_projection.get(run_id))
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent.id())
+            });
+
+        if let Some(mut projected_run) = projected_run {
+            if self.provider_run_has_active_prompt(session_id, &projected_run)? {
+                return Err(DaemonError::LocalTransport {
+                    operation: "move agent to local",
+                    message: format!(
+                        "agent `{}` has an active provider prompt; wait for the turn to finish before moving it",
+                        agent.id()
+                    ),
+                });
+            }
+            if projected_run.state() != crate::provider::ProviderRunState::Ended {
+                projected_run.mark_ended();
+                self.clear_active_provider_run_session_pointer(session_id, projected_run.id())?;
+                self.clear_prompt_activity(projected_run.id());
+                self.provider_run_projection.update(projected_run.clone());
+            }
+            self.agent_store
+                .set_remote_execution_active_worker_provider_run_id(agent.id(), None)?;
+            Ok(Some(projected_run.id().to_string()))
+        } else {
+            self.agent_store
+                .set_remote_execution_active_worker_provider_run_id(agent.id(), None)?;
+            Ok(None)
+        }
+    }
+
     pub(super) fn ensure_agent_extension_authority(
         &self,
         agent_ref: &str,

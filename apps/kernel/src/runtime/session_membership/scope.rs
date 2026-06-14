@@ -168,6 +168,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::MoveAgentToRemote(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::MoveAgentToLocal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::DestroyAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

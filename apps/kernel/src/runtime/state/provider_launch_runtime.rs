@@ -150,6 +150,7 @@ impl KernelRuntimeState {
         ) {
             relay_config.apply_remote_relay_override(relay_url, relay_token);
         }
+        let leased_agent_id = remote_execution.leased_agent_id.clone();
         let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
             &relay_config,
             ClientTarget {
@@ -157,7 +158,7 @@ impl KernelRuntimeState {
                 daemon_alias: None,
             },
             RelayPeerRequest::LaunchLeasedNativeProviderRun {
-                leased_agent_id: remote_execution.leased_agent_id,
+                leased_agent_id: leased_agent_id.clone(),
                 adapter_key: crate::provider::adapter_key_for_provider(&request.provider)
                     .to_string(),
                 provider: request.provider.clone(),
@@ -174,15 +175,22 @@ impl KernelRuntimeState {
         match response {
             RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
                 let home_agent_id = agent_id.clone();
-                let projected_run = provider_run
-                    .clone()
-                    .projected_for_home_agent(request.session_id.clone(), agent_id);
+                let worker_provider_run_id = provider_run.id().to_string();
+                let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+                    &leased_agent_id,
+                    &worker_provider_run_id,
+                );
+                let projected_run = provider_run.clone().projected_for_home_agent_with_id(
+                    projected_provider_run_id,
+                    request.session_id.clone(),
+                    agent_id,
+                );
                 let _ = self
                     .owned
                     .agent_store
                     .set_remote_execution_active_worker_provider_run_id(
                         &home_agent_id,
-                        Some(projected_run.id().to_string()),
+                        Some(worker_provider_run_id),
                     )?;
                 self.owned
                     .provider_run_projection

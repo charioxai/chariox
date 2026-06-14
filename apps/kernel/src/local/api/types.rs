@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 140;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 141;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -320,6 +320,7 @@ pub enum LocalDaemonRequest {
     AliasAgent(AliasAgentRequest),
     SpawnAgent(SpawnAgentRequest),
     MoveAgentToRemote(MoveAgentToRemoteRequest),
+    MoveAgentToLocal(MoveAgentToLocalRequest),
     SyncRemoteExtensionManifest(SyncRemoteExtensionManifestRequest),
     ListHomeExtensionAudit(ListHomeExtensionAuditRequest),
     DestroyAgent(DestroyAgentRequest),
@@ -1005,6 +1006,9 @@ pub enum LocalDaemonResponse {
         agent: AgentInstance,
     },
     AgentMovedToRemote {
+        agent: AgentInstance,
+    },
+    AgentMovedToLocal {
         agent: AgentInstance,
     },
     RemoteExtensionManifestSynced {

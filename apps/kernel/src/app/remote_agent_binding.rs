@@ -401,8 +401,96 @@ impl DaemonApp {
                         .to_string(),
             });
         }
-        let worker_kernel = self.select_remote_kernel_for_machine(machine_ref, agent.provider())?;
-        self.bind_remote_agent_to_worker(&agent, &worker_kernel, None, None, None)
+        let relay_override = self.slice_relay_config_for_kernel_ref(machine_ref);
+        let relay_config = relay_override.as_ref().unwrap_or(&self.config);
+        let worker_kernel = self.select_remote_kernel_for_machine_with_config(
+            machine_ref,
+            agent.provider(),
+            relay_config,
+        )?;
+        self.bind_remote_agent_to_worker(&agent, &worker_kernel, None, None, relay_override)
+    }
+
+    pub(crate) fn move_agent_to_local(
+        &mut self,
+        session_id: &str,
+        agent_ref: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .agents
+            .get_agent(agent_ref)
+            .or_else(|_| self.agents.get_agent_by_ref(agent_ref))?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to local",
+                message: format!("agent `{agent_ref}` does not belong to session `{session_id}`"),
+            });
+        }
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to local",
+                message: format!("agent `{agent_ref}` is already local"),
+            });
+        };
+        if self
+            .providers
+            .get_run_for_agent(session_id, agent.id())
+            .is_some()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "move agent to local",
+                message: "agent has a local provider run; stop or destroy the provider run before moving it"
+                    .to_string(),
+            });
+        }
+        let relay_config = self.relay_config_for_remote_execution(&remote_execution);
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+            &relay_config,
+            target.clone(),
+            RelayPeerRequest::DestroyLeasedAgent {
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+            },
+        ))? {
+            RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "destroy remote leased agent before moving local",
+                    message: format!("unexpected peer response: {other:?}"),
+                });
+            }
+        }
+        match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+            &relay_config,
+            target,
+            RelayPeerRequest::DestroyExecutionLease {
+                lease_id: remote_execution.execution_lease_id.clone(),
+            },
+        ))? {
+            RelayPeerResponse::ExecutionLeaseDestroyed { .. } => {}
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "destroy remote execution lease before moving local",
+                    message: format!("unexpected peer response: {other:?}"),
+                });
+            }
+        }
+        let moved = self.agents.clear_remote_execution(agent.id())?;
+        self.durable_state_store().append_event(
+            "agent.updated",
+            Some(moved.id().to_string()),
+            serde_json::json!({
+                "agent": &moved,
+                "source": "agent_moved_to_local",
+            }),
+        )?;
+        if let Ok(session) = self.sessions.get_session(moved.session_id()) {
+            self.update_session_projection(session);
+        }
+        Ok(moved)
     }
 
     fn ensure_remote_agent_skill_packages(
@@ -459,14 +547,6 @@ impl DaemonApp {
                 message: format!("unexpected remote skill sync response: {other:?}"),
             }),
         }
-    }
-
-    fn select_remote_kernel_for_machine(
-        &self,
-        machine_ref: &str,
-        provider: &str,
-    ) -> Result<RelayKernelPresence, DaemonError> {
-        self.select_remote_kernel_for_machine_with_config(machine_ref, provider, &self.config)
     }
 
     fn select_remote_kernel_for_machine_with_config(
@@ -660,6 +740,59 @@ mod tests {
         let relay_config = app
             .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
             .expect("slice worker ref should have relay config");
+        let ports = slice
+            .local_docker_ports
+            .expect("local Docker slice should have assigned ports");
+
+        let expected_relay_url = format!("ws://127.0.0.1:{}", ports.relay);
+        assert_eq!(
+            relay_config.relay_url.as_deref(),
+            Some(expected_relay_url.as_str())
+        );
+        assert_eq!(
+            relay_config.relay_token.as_deref(),
+            Some("slice-local-daemon-test-slice-1")
+        );
+        assert!(relay_config.cloud_relay.is_none());
+    }
+
+    #[test]
+    fn slice_worker_machine_ids_resolve_to_private_relay_config() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: Some("/repo".to_string()),
+                    worker_kernel_ref: None,
+                    display_url: Some("http://127.0.0.1:6080".to_string()),
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+        app.slices()
+            .set_worker_presence(
+                &slice.id,
+                Some("slice-kernel-1".to_string()),
+                Some("slice:slice-1".to_string()),
+                vec!["codex".to_string()],
+                43,
+            )
+            .expect("slice worker presence should update");
+
+        let relay_config = app
+            .slice_relay_config_for_kernel_ref("slice:slice-1")
+            .expect("slice worker machine id should have relay config");
         let ports = slice
             .local_docker_ports
             .expect("local Docker slice should have assigned ports");

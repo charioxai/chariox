@@ -618,6 +618,17 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn clear_remote_execution(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_remote_execution(None);
+        Ok(agent.clone())
+    }
+
     /// Get agent by ID
     pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         self.store
@@ -1011,6 +1022,10 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_remote_execution_active_worker_provider_run_id(agent_id, provider_run_id)
+    }
+
+    pub fn clear_remote_execution(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
+        self.write().clear_remote_execution(agent_id)
     }
 
     pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {

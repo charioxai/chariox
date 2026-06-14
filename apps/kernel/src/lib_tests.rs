@@ -7,7 +7,10 @@ use std::time::Duration;
 use super::agent::{CreateAgentRequest, GitWorktreePlacement};
 use super::app::RemoteLeaseRuntime;
 use super::attachment::{AttachRequest, ClientCapabilityLevel};
-use super::provider::{LaunchProviderRequest, ProviderResumeState};
+use super::provider::{
+    AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
+    RuntimeProviderRun,
+};
 use super::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, SessionStatus};
 use super::terminal::TerminalOutputKind;
 use super::transport::relay_peer::{
@@ -71,7 +74,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 140);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 141);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -150,7 +153,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 140);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 141);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -195,8 +198,70 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 }
 
 #[test]
+fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
+    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 3);
+
+    let launch_request =
+        LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")
+            .with_agent_id("worker-agent-1")
+            .with_resume_state(ProviderResumeState::from_codex_thread_id("thread-1"));
+    let provider_run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &launch_request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex:serve".to_string(),
+            pty_target: None,
+            pty_program: Some("codex".to_string()),
+            pty_args: vec!["serve".to_string()],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some("/worker/repo".into()),
+            structured_endpoint: Some("http://127.0.0.1:46000".to_string()),
+        },
+    );
+    let event = RelayPeerEvent::LeasedRuntimeProjection {
+        home_session_id: "home-session-1".to_string(),
+        home_agent_id: "home-agent-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        provider_run: Some(provider_run),
+        prompts: Vec::new(),
+        output_chunks: Vec::new(),
+        notices: Vec::new(),
+        completions: vec![RelayProjectedCompletion {
+            message_id: "assistant-msg-1".to_string(),
+            completed_at_ms: 1234,
+        }],
+    };
+    let mut snapshot =
+        serde_json::to_value(event).expect("relay runtime projection should serialize");
+    snapshot["provider_run"]["started_at_ms"] = serde_json::json!(1);
+    snapshot["provider_run"]["last_activity_at_ms"] = serde_json::json!(1);
+
+    assert_eq!(
+        snapshot.pointer("/kind"),
+        Some(&serde_json::json!("leased_runtime_projection"))
+    );
+    assert_eq!(
+        snapshot.pointer("/provider_run/provider_session_id"),
+        Some(&serde_json::json!("thread-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/provider_run/resume_state/codex_thread_id"),
+        Some(&serde_json::json!("thread-1"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("leased runtime projection should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "c0dd05f046436c73aa3d85300e813eb87a700034decae92ae102b180a9a34f6a"
+    );
+}
+
+#[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 140);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 141);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),

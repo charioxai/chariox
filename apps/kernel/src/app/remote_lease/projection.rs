@@ -342,6 +342,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 home_session_id: lease.home_session_id,
                 home_agent_id: lease.home_agent_id,
                 provider_run_id: provider_run_id.to_string(),
+                provider_run: self.app.providers.get_run(provider_run_id).ok(),
                 prompts,
                 output_chunks,
                 notices,
@@ -469,12 +470,59 @@ impl<'a> RemoteLeaseRuntime<'a> {
         session_id: &str,
         agent_id: &str,
         provider_run_id: &str,
+        provider_run: Option<crate::provider::RuntimeProviderRun>,
         prompts: Vec<RelayProjectedPrompt>,
         output_chunks: Vec<RelayProjectedOutputChunk>,
         notices: Vec<String>,
         completions: Vec<RelayProjectedCompletion>,
     ) -> Result<(), DaemonError> {
         let _ = self.app.sessions.get_session(session_id)?;
+        if let Some(provider_run) = provider_run {
+            let leased_agent_id = self
+                .app
+                .agents
+                .get_agent(agent_id)
+                .ok()
+                .and_then(|agent| {
+                    agent
+                        .remote_execution()
+                        .map(|remote| remote.leased_agent_id.clone())
+                })
+                .unwrap_or_else(|| agent_id.to_string());
+            let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+                &leased_agent_id,
+                provider_run_id,
+            );
+            let projected_run = provider_run.projected_for_home_agent_with_id(
+                projected_provider_run_id,
+                session_id.to_string(),
+                agent_id.to_string(),
+            );
+            self.app
+                .update_provider_run_projection(projected_run.clone());
+            let _ = self
+                .app
+                .sessions
+                .set_active_provider_run(session_id, Some(projected_run.id().to_string()));
+            if let Ok(agent) = self.app.agents.get_agent(agent_id) {
+                if agent.remote_execution().is_some() {
+                    let _ = self
+                        .app
+                        .agents
+                        .set_remote_execution_active_worker_provider_run_id(
+                            agent_id,
+                            Some(provider_run_id.to_string()),
+                        );
+                    let _ = self.app.agents.set_agent_runtime_profile(
+                        agent_id,
+                        projected_run.provider(),
+                        Some(projected_run.model().to_string()),
+                        projected_run.variant().map(str::to_string),
+                        projected_run.resume_state().clone(),
+                    );
+                }
+            }
+        }
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
         let saw_completion = !completions.is_empty();
         for prompt in prompts {

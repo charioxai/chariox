@@ -270,9 +270,16 @@ capture provider thread id and launch state
   -> rollback to the exact previous config on failure
 ```
 
-If this does not work reliably for a provider, V1 should require agents that
-need strict autonomous server admission to already run in the standard Arroba
-slice.
+The June 14, 2026 drills prove this local-to-slice transfer path for Codex,
+OpenCode, and Claude Code in the current environment: the local provider run is
+ended, provider state is copied into a local Docker slice, the same Arroba
+agent record is moved to the slice worker, the slice provider run resumes the
+same provider thread id, and the provider recalls pre-transfer conversation
+state.
+
+If this does not work reliably for a provider, V1 should require agents using
+that provider to already run in the standard Arroba slice when connecting to
+strict slice-required servers.
 
 ## App Bridge
 
@@ -545,10 +552,12 @@ clean place to enforce rules.
 
 ## Open Design Questions
 
-Provider thread transfer into slices remains the main unresolved design
-question. The next step is drills that prove whether Codex, OpenCode, and
-Claude can resume the same provider thread inside a standard Arroba slice with
-credentials and required provider-local state available.
+Provider thread transfer into slices remains a high-risk implementation area,
+but it is no longer purely speculative for Codex, OpenCode, or Claude Code.
+Current drills show that all three can preserve the same provider-native thread
+through live migration from a running local, unsliced provider run into a slice
+while keeping the same Arroba agent record. Codex and OpenCode also have
+home-managed slice save/restart coverage.
 
 Other important questions:
 
@@ -561,4 +570,3 @@ Other important questions:
 - framework-neutral TypeScript SDK package shape
 - minimum protocol changes needed to keep the new behavior shared across local
   CLI, remote TUI, web, and future native clients
-

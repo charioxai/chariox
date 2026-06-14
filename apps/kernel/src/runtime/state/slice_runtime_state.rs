@@ -147,7 +147,10 @@ impl KernelRuntimeState {
                     account_profile: run.account_profile().to_string(),
                     model: run.model().to_string(),
                     variant: run.variant().map(str::to_string),
-                    structured_endpoint: run.structured_endpoint().map(str::to_string),
+                    // A slice restart must spawn a fresh managed provider process inside the
+                    // restarted worker. The previous structured endpoint is worker-local and
+                    // points at the provider server that was stopped with the old slice.
+                    structured_endpoint: None,
                     provider_session_id: run
                         .provider_session_id()
                         .or_else(|| run.resume_state().opencode_session_id())
@@ -306,9 +309,18 @@ impl KernelRuntimeState {
             let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
             let app = Arc::clone(&self.app);
             let task_state = Arc::clone(&state);
+            let task_slice_id = slice_id.to_string();
             let task_relay_url = relay_url.clone();
             let task_relay_token = relay_token;
             let task = std::thread::spawn(move || {
+                crate::logging::info_with_fields(
+                    "daemon.slice_private_relay",
+                    "home connector thread starting",
+                    serde_json::json!({
+                        "slice_id": task_slice_id.clone(),
+                        "relay_url": task_relay_url.clone(),
+                    }),
+                );
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -330,9 +342,17 @@ impl KernelRuntimeState {
                         app,
                         task_state,
                         shutdown_rx,
-                        task_relay_url,
+                        task_relay_url.clone(),
                         task_relay_token,
                     ),
+                );
+                crate::logging::info_with_fields(
+                    "daemon.slice_private_relay",
+                    "home connector thread exited",
+                    serde_json::json!({
+                        "slice_id": task_slice_id,
+                        "relay_url": task_relay_url.clone(),
+                    }),
                 );
             });
             connectors.insert(
@@ -347,7 +367,7 @@ impl KernelRuntimeState {
             state
         };
 
-        for _ in 0..40 {
+        for _ in 0..150 {
             if self
                 .slice_private_relay_home_is_visible(
                     &relay_config,
@@ -359,11 +379,22 @@ impl KernelRuntimeState {
             {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        let (state_connected, connector_task_finished) = {
+            let state_connected = state.read().await.connected();
+            let connectors = self.owned.slice_private_relay_connectors.lock().await;
+            let connector_task_finished = connectors
+                .get(slice_id)
+                .map(|connector| connector.task.is_finished())
+                .unwrap_or(true);
+            (state_connected, connector_task_finished)
+        };
         Err(DaemonError::LocalTransport {
             operation: "slice.private_relay.home_connect",
-            message: format!("home kernel did not attach to private relay `{relay_url}`"),
+            message: format!(
+                "home kernel did not attach to private relay `{relay_url}` (state_connected={state_connected}, connector_task_finished={connector_task_finished})"
+            ),
         })
     }
 

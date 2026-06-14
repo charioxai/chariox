@@ -460,6 +460,23 @@ impl RuntimeProviderRun {
         self.agent_instance_id = Some(agent_id.into());
         self
     }
+
+    pub(crate) fn projected_for_home_agent_with_id(
+        mut self,
+        projected_id: impl Into<String>,
+        session_id: impl Into<String>,
+        agent_id: impl Into<String>,
+    ) -> Self {
+        self.id = projected_id.into();
+        self.projected_for_home_agent(session_id, agent_id)
+    }
+}
+
+pub(crate) fn projected_leased_provider_run_id(
+    leased_agent_id: &str,
+    worker_provider_run_id: &str,
+) -> String {
+    format!("leased:{leased_agent_id}:{worker_provider_run_id}")
 }
 
 fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
@@ -546,7 +563,7 @@ impl ProviderRunTokenUsage {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::RuntimeProviderRun;
+    use super::{projected_leased_provider_run_id, RuntimeProviderRun};
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
     };
@@ -599,5 +616,35 @@ mod tests {
             .as_object()
             .expect("run should serialize to object")
             .contains_key("workspace_live_sync_roots"));
+    }
+
+    #[test]
+    fn projected_leased_provider_run_ids_namespace_worker_ids() {
+        let request =
+            LaunchProviderRequest::new("worker-session", "codex", "codex", "default", "default");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let worker_run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
+        let projected_id = projected_leased_provider_run_id("home-agent-1", worker_run.id());
+
+        let projected_run = worker_run.projected_for_home_agent_with_id(
+            projected_id.clone(),
+            "home-session",
+            "home-agent-1",
+        );
+
+        assert_eq!(projected_id, "leased:home-agent-1:provider-run-1");
+        assert_eq!(projected_run.id(), projected_id);
+        assert_eq!(projected_run.session_id(), "home-session");
+        assert_eq!(projected_run.agent_instance_id(), Some("home-agent-1"));
     }
 }
