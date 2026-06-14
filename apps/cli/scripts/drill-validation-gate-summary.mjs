@@ -82,6 +82,7 @@ async function main() {
       metadata: {
         drill: "validation-gate-summary",
         status: aggregate.status,
+        ...runtimeSignalMetadataForAggregate(aggregate),
       },
     })
   }
@@ -161,6 +162,17 @@ function parseArgs(argv) {
     throw new Error("--output-artifact-index requires --output")
   }
   return options
+}
+
+function runtimeSignalMetadataForAggregate(aggregate) {
+  const signals = new Set([
+    ...Object.keys(aggregate.coverage?.artifactRuntimeSignals ?? {}),
+    ...Object.keys(aggregate.coverage?.failureRuntimeSignals ?? {}),
+    ...Object.keys(aggregate.matrixRuntimeSignalSources ?? {}),
+  ])
+  return signals.size > 0
+    ? { runtimeSignals: [...signals].sort().join(",") }
+    : {}
 }
 
 main().catch((error) => {

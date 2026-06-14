@@ -21,8 +21,10 @@ test("drill validation gate summary aggregates discovered reports", async () => 
   try {
     const passedReportPath = path.join(rootDir, "reports", "passed.json")
     const failedReportPath = path.join(rootDir, "reports", "failed.json")
+    const workspaceReportPath = path.join(rootDir, "reports", "workspace-live-sync.json")
     await writeGateReport(passedReportPath, await passingGateReport(rootDir))
     await writeGateReport(failedReportPath, await runDrillValidationGate())
+    await writeGateReport(workspaceReportPath, await passingWorkspaceLiveSyncGateReport(rootDir))
 
     await assert.rejects(
       execFile(process.execPath, [
@@ -39,10 +41,11 @@ test("drill validation gate summary aggregates discovered reports", async () => 
         const stdoutAggregate = JSON.parse(error.stdout)
         assert.equal(error.code, 1)
         assert.equal(stdoutAggregate.status, "failed")
-        assert.deepEqual(stdoutAggregate.totals, { reports: 2, passed: 1, failed: 1 })
+        assert.deepEqual(stdoutAggregate.totals, { reports: 3, passed: 2, failed: 1 })
         assert.deepEqual(stdoutAggregate.reports.map((report) => report.source), [
           failedReportPath,
           passedReportPath,
+          workspaceReportPath,
         ])
         return true
       },
@@ -51,9 +54,10 @@ test("drill validation gate summary aggregates discovered reports", async () => 
     const fileAggregate = JSON.parse(await readFile(outputPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
     assert.equal(fileAggregate.status, "failed")
-    assert.deepEqual(fileAggregate.totals, { reports: 2, passed: 1, failed: 1 })
+    assert.deepEqual(fileAggregate.totals, { reports: 3, passed: 2, failed: 1 })
     assert.equal(artifactIndex.metadata.drill, "validation-gate-summary")
     assert.equal(artifactIndex.metadata.status, "failed")
+    assert.equal(artifactIndex.metadata.runtimeSignals, "relay-target-freshness,session-authority,workspace-live-sync-state")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
