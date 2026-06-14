@@ -87,6 +87,32 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
             .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL),
         "metaagents should see the metaagent runtime MCP tools"
     );
+    assert!(
+        meta_specs
+            .iter()
+            .all(|spec| spec.name.starts_with("arroba.meta.")),
+        "metaagents should only see metaagent runtime MCP tools: {meta_specs:?}"
+    );
+
+    let denied_direct_tool = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
+            serde_json::json!({ "path": "README.md" }),
+        )
+        .await
+        .expect("metaagent direct runtime tools should return structured denials");
+    assert!(
+        !denied_direct_tool.ok
+            && denied_direct_tool
+                .payload
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| message.contains("not available to metaagents")),
+        "{:?}",
+        denied_direct_tool.payload
+    );
 
     let denied = router
         .runtime_state
@@ -432,9 +458,11 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(owned_agents
-        .iter()
-        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
+    assert!(
+        owned_agents.iter().any(|agent| {
+            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
+        })
+    );
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -1002,10 +1030,12 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(session
-        .agents()
-        .iter()
-        .all(|agent| agent.id() != worker.id()));
+    assert!(
+        session
+            .agents()
+            .iter()
+            .all(|agent| agent.id() != worker.id())
+    );
 }
 
 #[tokio::test]
@@ -1128,11 +1158,12 @@ async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
     app.sessions_mut()
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("collaborator should join session");
-    assert!(app
-        .sessions()
-        .get_session(&session_id)
-        .expect("session should remain")
-        .has_member("user-2"));
+    assert!(
+        app.sessions()
+            .get_session(&session_id)
+            .expect("session should remain")
+            .has_member("user-2")
+    );
 
     let owner_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-worker"))

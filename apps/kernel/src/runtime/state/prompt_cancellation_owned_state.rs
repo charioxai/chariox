@@ -131,6 +131,11 @@ impl KernelRuntimeOwnedState {
                     started_next.hidden_system_context(),
                     &granted_skill_context,
                 );
+                let mode = if self.agent_store.get_agent(agent_id)?.is_metaagent() {
+                    crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
+                } else {
+                    crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
+                };
                 self.provider_store.enqueue_structured_prompt_submit(
                     session_id.to_string(),
                     provider_run_id.to_string(),
@@ -139,6 +144,7 @@ impl KernelRuntimeOwnedState {
                     &prompt_with_handoff,
                     &hidden_system_context,
                     started_next.attachments(),
+                    mode,
                 )?;
                 self.note_prompt_started(provider_run_id);
                 None

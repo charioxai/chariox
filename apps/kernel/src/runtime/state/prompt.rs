@@ -177,6 +177,11 @@ impl KernelRuntimeOwnedState {
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
             let hidden_system_context =
                 join_hidden_context(started_next.hidden_system_context(), &granted_skill_context);
+            let mode = if self.agent_store.get_agent(agent_id)?.is_metaagent() {
+                crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
+            } else {
+                crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
+            };
             if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.clone(),
@@ -185,6 +190,7 @@ impl KernelRuntimeOwnedState {
                 &prompt_with_handoff,
                 &hidden_system_context,
                 started_next.attachments(),
+                mode,
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
                 let _ = self.clear_prompt_activity(&provider_run_id);

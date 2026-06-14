@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
+use crate::prompt_assembly::PromptAssemblyMode;
 use crate::provider::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
@@ -261,6 +262,7 @@ impl ProviderProcessServiceStore {
         prompt: &str,
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
+        mode: PromptAssemblyMode,
     ) -> Result<(), DaemonError> {
         self.write().enqueue_structured_prompt_submit(
             session_id,
@@ -270,6 +272,7 @@ impl ProviderProcessServiceStore {
             prompt,
             hidden_system_context,
             attachments,
+            mode,
         )
     }
 

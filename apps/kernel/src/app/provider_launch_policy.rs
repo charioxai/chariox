@@ -5,7 +5,10 @@ use crate::agent::AgentInstance;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
-use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
+use crate::provider::{
+    AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest, ProviderResumeState,
+    RuntimeProviderRun,
+};
 use crate::session::RuntimeSession;
 
 pub(super) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
@@ -97,6 +100,21 @@ pub(crate) fn granted_mcp_servers_for_agent_launch(
         }
     }
     Ok(servers)
+}
+
+pub(crate) fn apply_metaagent_launch_policy(
+    mut request: LaunchProviderRequest,
+    agent: Option<&AgentInstance>,
+) -> LaunchProviderRequest {
+    if !agent.is_some_and(AgentInstance::is_metaagent) {
+        return request;
+    }
+    request = request
+        .with_execution_mode(AgentExecutionMode::Plan)
+        .with_permission_level(AgentPermissionLevel::Required)
+        .with_mcp_servers(Vec::new())
+        .with_remote_extension_manifest(crate::extension::RemoteExtensionManifest::default());
+    request
 }
 
 pub(crate) fn failed_codex_resume_state_replacement(

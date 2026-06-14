@@ -5,7 +5,7 @@ use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
 
 use super::provider_launch_policy::{
-    default_provider_env_remove, generate_runtime_mcp_auth_token,
+    apply_metaagent_launch_policy, default_provider_env_remove, generate_runtime_mcp_auth_token,
     granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
     sanitize_resume_state_for_launch,
 };
@@ -98,6 +98,7 @@ impl DaemonApp {
             &self.config,
             mcp_servers,
         )?);
+        request = apply_metaagent_launch_policy(request, agent.as_ref());
         Ok(request)
     }
 }
@@ -105,7 +106,9 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{AgentRole, CreateAgentRequest};
     use crate::provider::LaunchProviderRequest;
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::CreateSessionRequest;
 
     #[test]
@@ -191,6 +194,55 @@ mod tests {
         assert_eq!(
             prepared.workspace_live_sync_roots,
             vec![canonical_selected, attached]
+        );
+    }
+
+    #[test]
+    fn app_launch_preparation_forces_metaagents_to_plan_without_user_mcps() {
+        let mut app =
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let metaagent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_role(AgentRole::Meta)
+                    .with_execution_mode_override(AgentExecutionMode::Build)
+                    .with_permission_level_override(AgentPermissionLevel::Yolo),
+            )
+            .expect("metaagent should spawn");
+
+        let prepared = app
+            .prepare_app_provider_launch_request(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "model",
+                )
+                .with_agent_id(metaagent.id())
+                .with_execution_mode(AgentExecutionMode::Build)
+                .with_permission_level(AgentPermissionLevel::Yolo)
+                .with_mcp_servers(vec![
+                    crate::mcp::ArrobaMcpServerConfig::streamable_http(
+                        "worker-tool",
+                        "http://127.0.0.1/mcp",
+                    ),
+                ]),
+                "test.launch",
+            )
+            .expect("provider launch should prepare");
+
+        assert_eq!(prepared.execution_mode, Some(AgentExecutionMode::Plan));
+        assert_eq!(
+            prepared.permission_level,
+            Some(AgentPermissionLevel::Required)
+        );
+        assert!(
+            prepared.mcp_servers.is_empty(),
+            "metaagent provider runs should not receive user MCP servers"
         );
     }
 

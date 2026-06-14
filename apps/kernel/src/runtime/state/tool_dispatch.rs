@@ -46,6 +46,9 @@ impl KernelRuntimeState {
             .get_runs_by_runtime_mcp_auth_token(auth_token);
         let mut specs = Vec::new();
         if matches!(provider_runs.as_slice(), [_]) {
+            if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
+                return crate::transport::runtime_tools::meta_runtime_tool_specs();
+            }
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
@@ -56,9 +59,6 @@ impl KernelRuntimeState {
             specs.extend(self.script_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(self.connector_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(crate::transport::runtime_tools::credential_runtime_tool_specs());
-            if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
-                specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
-            }
             if self.slice_kernel_id().is_some() {
                 specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
             }
@@ -103,6 +103,20 @@ impl KernelRuntimeState {
                 return Err(DaemonError::LocalTransport {
                     operation: "dispatch_authenticated_runtime_tool_call",
                     message: "invalid runtime MCP auth token".to_string(),
+                });
+            }
+            if matches!(provider_runs.as_slice(), [_])
+                && self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token)
+                && crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_none()
+            {
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: false,
+                    payload: serde_json::json!({
+                        "error": format!(
+                            "runtime tool `{canonical_tool_name}` is not available to metaagents; use arroba.meta.* delegation tools"
+                        ),
+                        "tool": canonical_tool_name,
+                    }),
                 });
             }
             let is_workflow_tool =

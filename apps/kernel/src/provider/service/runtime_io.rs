@@ -8,9 +8,9 @@ use crate::provider::{
 use crate::session::PromptAttachment;
 
 use super::super::{
-    claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
-    codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
-    opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
+    claude_runtime::{ClaudeRunSelection, ClaudeRuntimeBinding, initialize_claude_runtime},
+    codex_runtime::{CodexRuntimeBinding, initialize_codex_runtime},
+    opencode_binding::{OpenCodeRunSelection, OpenCodeRuntimeBinding, initialize_opencode_runtime},
 };
 use super::ProviderProcessService;
 
@@ -174,6 +174,7 @@ impl ProviderProcessService {
         prompt: &str,
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
+        mode: PromptAssemblyMode,
     ) -> Result<(), DaemonError> {
         let _ = self.record_run_activity(run.id());
         if !self.run_uses_structured_prompt_io(run) {
@@ -184,7 +185,9 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let mode = if run.client_interface().is_arroba() {
+        let mode = if mode == PromptAssemblyMode::MetaagentProviderTurn {
+            mode
+        } else if run.client_interface().is_arroba() {
             PromptAssemblyMode::NormalProviderTurn
         } else {
             PromptAssemblyMode::NativeTuiProviderTurn

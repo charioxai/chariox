@@ -17,6 +17,8 @@ const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
     include_str!("provider/workspace_live_sync_tracked_instructions.md");
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
+const RUNTIME_METAAGENT_DELEGATION: &str =
+    include_str!("provider/metaagent_delegation_instructions.md");
 const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.";
 const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Workflow direct JSON fallback:\nArroba runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Arroba workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
 const RUNTIME_METAAGENT_EVENT: &str = "Arroba runtime event for the session metaagent.\n\nEvent id: {{EVENT_ID}}\nKind: {{EVENT_KIND}}\nSource: {{SOURCE}}\nTitle: {{TITLE}}\n\n{{BODY}}\n\nUse `arroba.meta.session_overview`, `arroba.meta.list_events`, or `arroba.meta.read_event` if you need more context. Decide whether to act now or continue your current work.";
@@ -87,6 +89,7 @@ pub(crate) struct PromptManifestEntry {
 pub(crate) enum PromptAssemblyMode {
     NormalProviderTurn,
     NativeTuiProviderTurn,
+    MetaagentProviderTurn,
     WorkflowNodeTurn,
     UtilityTurn,
     McpSkillContinuationTurn,
@@ -214,6 +217,13 @@ impl PromptAssemblyService {
             "runtime/native-permissions"
         };
         self.push_template(execution_template, &mut hidden_fragments, &mut manifest)?;
+        if mode == PromptAssemblyMode::MetaagentProviderTurn {
+            self.push_template(
+                "runtime/metaagent-delegation",
+                &mut hidden_fragments,
+                &mut manifest,
+            )?;
+        }
         if let Some(additional_hidden_context) = additional_hidden_context
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -233,6 +243,7 @@ impl PromptAssemblyService {
             mode,
             PromptAssemblyMode::McpSkillContinuationTurn
                 | PromptAssemblyMode::NativeTuiProviderTurn
+                | PromptAssemblyMode::MetaagentProviderTurn
                 | PromptAssemblyMode::NormalProviderTurn
                 | PromptAssemblyMode::WorkflowNodeTurn
                 | PromptAssemblyMode::UtilityTurn
@@ -322,6 +333,7 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         ),
         BundledPromptTemplate::new("runtime/native-permissions", RUNTIME_NATIVE_PERMISSIONS),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
+        BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new(
             "runtime/mcp-skill-continuation",
             RUNTIME_MCP_SKILL_CONTINUATION,
@@ -430,10 +442,11 @@ mod tests {
             .expect("defaults should materialize");
 
         assert!(root.join("runtime").join("base.md").exists());
-        assert!(root
-            .join("runtime")
-            .join("workspace-live-sync-tracked.md")
-            .exists());
+        assert!(
+            root.join("runtime")
+                .join("workspace-live-sync-tracked.md")
+                .exists()
+        );
         assert!(root.join("workflow").join("turn.md").exists());
         let base = fs::read_to_string(root.join("runtime").join("base.md"))
             .expect("base prompt should read");
@@ -466,9 +479,11 @@ mod tests {
             .read_required("runtime/base")
             .expect_err("missing template should fail");
 
-        assert!(error
-            .to_string()
-            .contains("required prompt template `runtime/base` missing"));
+        assert!(
+            error
+                .to_string()
+                .contains("required prompt template `runtime/base` missing")
+        );
     }
 
     #[test]
@@ -491,16 +506,81 @@ mod tests {
             .expect("envelope should assemble");
 
         assert_eq!(envelope.manifest.version, PROMPT_REGISTRY_VERSION);
-        assert!(envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/base" && entry.sha256.len() == 64));
-        assert!(envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/native-permissions"));
+        assert!(
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/base" && entry.sha256.len() == 64)
+        );
+        assert!(
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/native-permissions")
+        );
+    }
+
+    #[test]
+    fn metaagent_provider_turn_includes_delegation_template() {
+        let root = temp_prompt_root("metaagent");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "visible prompt",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::MetaagentProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("You are a delegation-only Arroba metaagent")
+        );
+        assert!(
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/metaagent-delegation")
+        );
+    }
+
+    #[test]
+    fn normal_provider_turn_excludes_metaagent_delegation_template() {
+        let root = temp_prompt_root("not-metaagent");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "visible prompt",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(
+            !envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/metaagent-delegation")
+        );
     }
 
     #[test]
@@ -522,14 +602,18 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(envelope
-            .hidden_system_context
-            .contains("do not write pseudo tool calls"));
-        assert!(envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/workflow-direct-json-fallback"));
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("do not write pseudo tool calls")
+        );
+        assert!(
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/workflow-direct-json-fallback")
+        );
     }
 
     #[test]
@@ -554,12 +638,16 @@ mod tests {
             .expect("envelope should assemble");
 
         assert_eq!(envelope.visible_user_prompt, "user visible prompt");
-        assert!(envelope
-            .hidden_system_context
-            .contains("HIDDEN_RUNTIME_TOKEN"));
-        assert!(!envelope
-            .visible_user_prompt
-            .contains("HIDDEN_RUNTIME_TOKEN"));
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("HIDDEN_RUNTIME_TOKEN")
+        );
+        assert!(
+            !envelope
+                .visible_user_prompt
+                .contains("HIDDEN_RUNTIME_TOKEN")
+        );
     }
 
     #[test]
@@ -581,22 +669,30 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
-        assert!(envelope
-            .hidden_system_context
-            .contains("Do not interpret live sync as a global filesystem restriction"));
-        assert!(envelope
-            .hidden_system_context
-            .contains("use provider-native edit/write/patch or shell/bash tools normally"));
-        assert!(!envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/native-permissions"));
+        assert!(
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/workspace-live-sync")
+        );
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("Do not interpret live sync as a global filesystem restriction")
+        );
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("use provider-native edit/write/patch or shell/bash tools normally")
+        );
+        assert!(
+            !envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/native-permissions")
+        );
     }
 
     #[test]
@@ -618,30 +714,42 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/workspace-live-sync-tracked"));
-        assert!(envelope
-            .hidden_system_context
-            .contains("provider-native edits inside the selected synced roots are allowed"));
-        assert!(envelope
-            .hidden_system_context
-            .contains("Other repositories outside the synced roots are not part of live sync"));
-        assert!(!envelope
-            .hidden_system_context
-            .contains("Direct filesystem writes inside those roots are unavailable"));
-        assert!(!envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
-        assert!(!envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/native-permissions"));
+        assert!(
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/workspace-live-sync-tracked")
+        );
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("provider-native edits inside the selected synced roots are allowed")
+        );
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("Other repositories outside the synced roots are not part of live sync")
+        );
+        assert!(
+            !envelope
+                .hidden_system_context
+                .contains("Direct filesystem writes inside those roots are unavailable")
+        );
+        assert!(
+            !envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/workspace-live-sync")
+        );
+        assert!(
+            !envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/native-permissions")
+        );
     }
 
     #[test]
@@ -667,11 +775,13 @@ mod tests {
             .expect("envelope should assemble");
         std::env::remove_var("ARROBA_MACHINE_ID");
 
-        assert!(envelope
-            .manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/slice"));
+        assert!(
+            envelope
+                .manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/slice")
+        );
     }
 
     #[test]
@@ -693,9 +803,11 @@ mod tests {
             .expect("continuation context should assemble");
 
         assert_eq!(hidden, "CONTINUATION_TEMPLATE playwright");
-        assert!(manifest
-            .entries
-            .iter()
-            .any(|entry| entry.template_id == "runtime/mcp-skill-continuation"));
+        assert!(
+            manifest
+                .entries
+                .iter()
+                .any(|entry| entry.template_id == "runtime/mcp-skill-continuation")
+        );
     }
 }

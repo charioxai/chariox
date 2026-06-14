@@ -204,6 +204,7 @@ impl KernelRuntimeOwnedState {
             &config,
             mcp_servers,
         )?);
+        request = crate::app::apply_metaagent_launch_policy(request, agent.as_ref());
         Ok(request)
     }
 }

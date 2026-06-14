@@ -77,6 +77,15 @@ impl KernelRuntimeState {
             )?;
             let hidden_system_context =
                 join_hidden_context(&dispatch.hidden_system_context, &granted_skill_context);
+            let mode = if owned
+                .agent_store
+                .get_agent(&dispatch.agent_id)?
+                .is_metaagent()
+            {
+                crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
+            } else {
+                crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
+            };
             return owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
@@ -85,6 +94,7 @@ impl KernelRuntimeState {
                 &prompt_with_handoff,
                 &hidden_system_context,
                 &dispatch.attachments,
+                mode,
             );
         }
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(&dispatch.source_attachment_id)

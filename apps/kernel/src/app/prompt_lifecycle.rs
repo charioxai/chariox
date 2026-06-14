@@ -109,6 +109,11 @@ impl<'a> ProviderPromptDispatcher<'a> {
                     agent_id: "provider run has no agent".to_string(),
                 })?
                 .to_string();
+            let mode = if self.app.agents.get_agent(&agent_id)?.is_metaagent() {
+                crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
+            } else {
+                crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
+            };
             self.app.providers.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.to_string(),
@@ -117,6 +122,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 prompt,
                 hidden_system_context,
                 attachments,
+                mode,
             )?;
             return Ok(());
         }
@@ -316,6 +322,11 @@ impl DaemonApp {
             self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
         if self.providers.run_uses_structured_prompt_io(&provider_run) {
             flow_control::note_prompt_started(self, &dispatch.provider_run_id);
+            let mode = if self.agents.get_agent(&dispatch.agent_id)?.is_metaagent() {
+                crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
+            } else {
+                crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
+            };
             return self.providers.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
@@ -324,6 +335,7 @@ impl DaemonApp {
                 &dispatch.prompt,
                 &dispatch.hidden_system_context,
                 &dispatch.attachments,
+                mode,
             );
         }
         crate::app::terminal_input::ProviderTerminalInput::new(self).send_provider_input(
