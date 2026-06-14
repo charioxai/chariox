@@ -17,6 +17,14 @@ Arroba runtime features must be validated through reusable drill primitives, not
 - Child failure classification: use `apps/cli/scripts/lib/drill-child-process.mjs` so provider auth/account failures are separated from runtime regressions.
 - Feature fixtures: put reusable setup and assertions under `apps/cli/scripts/lib/`; entry scripts should stay thin.
 
+Run the shared non-live validation platform checks with:
+
+```bash
+node apps/cli/scripts/drill-validation-suite.mjs
+node apps/cli/scripts/drill-validation-suite.mjs --list
+node apps/cli/scripts/drill-validation-suite.mjs --command
+```
+
 ## Matrix Reports
 
 Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.
