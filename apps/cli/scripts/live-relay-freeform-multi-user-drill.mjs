@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -17,6 +18,10 @@ const RELAY_REALM = 'relay-freeform-multi-user-drill'
 const DEFAULT_PROVIDER = 'codex'
 const DEFAULT_MODEL = 'gpt-5.4-mini'
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
 
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
@@ -222,6 +227,14 @@ function unwrap(resp, ...keys) {
   return resp
 }
 
+function eventCounts(events) {
+  return events.reduce((counts, event) => {
+    const key = event.event ?? 'unknown'
+    counts[key] = (counts[key] ?? 0) + 1
+    return counts
+  }, {})
+}
+
 function clientFor(LocalIpcClient, relayUrl, daemonAlias, userId) {
   return new LocalIpcClient(relayUrl, {
     relayAuthToken: clientToken(userId),
@@ -303,24 +316,41 @@ async function waitForHistoryMarker(rootDir, sessionId, marker, timeoutMs, pollM
 
 async function main() {
   const options = parseArgs()
-  const rootDir = path.join(os.tmpdir(), `arroba-relay-freeform-multi-user-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, '.artifacts', 'live-relay-freeform-multi-user-drill', nowStamp())
   const workspace = path.join(rootDir, 'workspace')
-  await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+  await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
 
-  const [{ LocalIpcClient }, requests] = await Promise.all([
-    import('../../../packages/kernel-client/dist/ipc.js'),
-    import('../../../packages/kernel-client/dist/ipc-requests.js'),
-  ])
-  const kernelPath = await buildKernelIfNeeded()
   const ports = makePorts()
   const envs = makeEnv(ports, rootDir)
+  let requests = null
   let relay = null
   let relayTunnel = null
   let daemon = null
   const clients = []
   let sessionId = null
+  let passed = false
+  let failure = null
+  let providerModel = null
+  let agent1 = null
+  let agent2 = null
+  let user1CompletionCount = 0
+  let user2CompletionCount = 0
+  let user3CompletionCount = 0
+  let state1 = null
+  let state2 = null
+  let state3 = null
+  let state4 = null
+  let events1 = []
+  let events2 = []
+  let events3 = []
   try {
+    const [{ LocalIpcClient }, ipcRequests] = await Promise.all([
+      import('../../../packages/kernel-client/dist/ipc.js'),
+      import('../../../packages/kernel-client/dist/ipc-requests.js'),
+    ])
+    requests = ipcRequests
+    const kernelPath = await buildKernelIfNeeded()
     if (options.hetznerRelay) {
       const remoteRelayCheck = await run('ssh', sshArgs(options, [
         `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
@@ -408,16 +438,16 @@ async function main() {
       'SessionAttached',
     ).attachment
 
-    const providerModel = modelForProvider(options.provider, options.model)
-    const events1 = await subscribeForCompletions(user1, session.id, attachment1.id)
-    const events2 = await subscribeForCompletions(user2, session.id, attachment2.id)
-    const events3 = await subscribeForCompletions(user3, session.id, attachment3.id)
+    providerModel = modelForProvider(options.provider, options.model)
+    events1 = await subscribeForCompletions(user1, session.id, attachment1.id)
+    events2 = await subscribeForCompletions(user2, session.id, attachment2.id)
+    events3 = await subscribeForCompletions(user3, session.id, attachment3.id)
 
-    const agent1 = unwrap(
+    agent1 = unwrap(
       await user1.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-one', providerModel, workspace, 'low')),
       'AgentSpawned',
     ).agent
-    const agent2 = unwrap(
+    agent2 = unwrap(
       await user2.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-two', providerModel, workspace, 'low')),
       'AgentSpawned',
     ).agent
@@ -448,7 +478,7 @@ async function main() {
       'PromptSubmitted',
     )
     assert(user1Prompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'user-1 prompt should start for own agent', user1Prompt)
-    let user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, 0, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, 0, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
     await waitForHistoryMarker(rootDir, session.id, 'USER1_FREEFORM_OK', options.timeoutMs, options.pollMs, 'user-1 owned prompt')
     await expectReject(
       user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent1.id, 'Cross-user freeform prompt should fail.', [])),
@@ -466,7 +496,7 @@ async function main() {
       'PromptSubmitted',
     )
     assert(fullPrompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'full collaborator should start prompt for owner agent', fullPrompt)
-    const user3CompletionCount = await waitForCompletion(user3, session.id, attachment3.id, events3, 0, 30_000, options.pollMs, 'full collaborator cross-owner prompt')
+    user3CompletionCount = await waitForCompletion(user3, session.id, attachment3.id, events3, 0, 30_000, options.pollMs, 'full collaborator cross-owner prompt')
       .catch(() => events3.filter((event) => event.event === 'assistant_message_completed').length)
     await waitForHistoryMarker(rootDir, session.id, 'FULL_USER3_CAN_PROMPT_OWNER_AGENT', options.timeoutMs, options.pollMs, 'full collaborator cross-owner prompt')
     user1CompletionCount = Math.max(user1CompletionCount, events1.filter((event) => event.event === 'assistant_message_completed').length)
@@ -476,13 +506,13 @@ async function main() {
       'PromptSubmitted',
     )
     assert(user2Prompt.outcome?.Started?.prompt?.target_agent_id === agent2.id, 'user-2 prompt should start for own agent', user2Prompt)
-    const user2CompletionCount = await waitForCompletion(user2, session.id, attachment2.id, events2, 0, options.timeoutMs, options.pollMs, 'private user own prompt')
+    user2CompletionCount = await waitForCompletion(user2, session.id, attachment2.id, events2, 0, options.timeoutMs, options.pollMs, 'private user own prompt')
     await waitForHistoryMarker(rootDir, session.id, 'USER2_PRIVATE_OWN_AGENT_OK', options.timeoutMs, options.pollMs, 'private user own prompt')
 
-    const state1 = unwrap(await user1.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
-    const state2 = unwrap(await user2.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
-    const state3 = unwrap(await user3.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
-    const state4 = unwrap(await user4.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
+    state1 = unwrap(await user1.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
+    state2 = unwrap(await user2.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
+    state3 = unwrap(await user3.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
+    state4 = unwrap(await user4.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     assert(state1.agents.some((agent) => agent.id === agent1.id), 'user-1 projection should retain own agent', state1.agents)
     assert(state2.agents.some((agent) => agent.id === agent1.id && agent.provider === 'redacted'), 'private user projection should redact user-1 agent details', state2.agents)
     assert(state3.agents.some((agent) => agent.id === agent1.id && agent.provider !== 'redacted'), 'full user projection should expose user-1 agent details', state3.agents)
@@ -534,13 +564,53 @@ async function main() {
         'session state projection redacts other-user agent details for private invitees',
       ],
     }, null, 2))
+    passed = true
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    if (sessionId && clients[0]) await clients[0].send(requests.endSessionRequest(sessionId)).catch(() => {})
+    if (sessionId && clients[0] && requests) await clients[0].send(requests.endSessionRequest(sessionId)).catch(() => {})
     await Promise.all(clients.map((client) => client.close().catch(() => {})))
     await terminateChild(daemon)
     await terminateChild(relay)
     await terminateChild(relayTunnel)
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: 'live-relay-freeform-multi-user',
+        mode: options.hetznerRelay ? 'hetzner-relay-freeform-multi-user' : 'relay-freeform-multi-user',
+        relayUrl: envs.relayUrl,
+        daemonAlias: envs.daemonAlias,
+        sessionId,
+        provider: options.provider,
+        model: providerModel ?? modelForProvider(options.provider, options.model),
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        agents: [
+          agent1 ? { id: agent1.id, ownerUserId: agent1.owner_user_id } : null,
+          agent2 ? { id: agent2.id, ownerUserId: agent2.owner_user_id } : null,
+        ].filter(Boolean),
+        completionCounts: {
+          user1: user1CompletionCount,
+          user2: user2CompletionCount,
+          user3: user3CompletionCount,
+        },
+        eventCounts: {
+          user1: eventCounts(events1),
+          user2: eventCounts(events2),
+          user3: eventCounts(events3),
+        },
+        collaborationAgentCounts: {
+          user1: state1?.collaboration_agent_counts ?? null,
+          user2: state2?.collaboration_agent_counts ?? null,
+          user3: state3?.collaboration_agent_counts ?? null,
+          user4: state4?.collaboration_agent_counts ?? null,
+        },
+      },
+    })
   }
 }
 
