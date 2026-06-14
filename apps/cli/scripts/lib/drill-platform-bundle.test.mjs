@@ -5,10 +5,28 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  DRILL_PLATFORM_BUNDLE_ARTIFACTS,
   DRILL_PLATFORM_BUNDLE_SCHEMA,
   verifyDrillPlatformBundle,
   writeDrillPlatformBundle,
 } from "./drill-platform-bundle.mjs"
+
+test("defines stable drill platform bundle artifacts", () => {
+  assert.deepEqual(DRILL_PLATFORM_BUNDLE_ARTIFACTS, [
+    {
+      path: "failure-taxonomy-drill.json",
+      schema: "arroba.drill.failure_taxonomy.v1",
+    },
+    {
+      path: "failure-taxonomy-scenario.json",
+      schema: "arroba.drill.failure_taxonomy.v1",
+    },
+    {
+      path: "validation-suite.json",
+      schema: "arroba.drill.validation_suite.v1",
+    },
+  ])
+})
 
 test("writes and verifies drill platform bundle artifacts", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
@@ -37,6 +55,24 @@ test("rejects unsafe drill platform bundle artifact paths", async () => {
     await assert.rejects(
       verifyDrillPlatformBundle(rootDir),
       /unsafe artifact path/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects incomplete drill platform bundles", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeFile(path.join(rootDir, "index.json"), `${JSON.stringify({
+      schema: DRILL_PLATFORM_BUNDLE_SCHEMA,
+      outputDir: rootDir,
+      artifacts: [{ path: "validation-suite.json", schema: "arroba.drill.validation_suite.v1" }],
+    })}\n`, "utf8")
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /artifacts do not match required platform contracts/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })

@@ -5,6 +5,20 @@ import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 import { drillValidationSuiteManifest } from "./drill-validation-suite.mjs"
 
 export const DRILL_PLATFORM_BUNDLE_SCHEMA = "arroba.drill.platform_bundle.v1"
+export const DRILL_PLATFORM_BUNDLE_ARTIFACTS = Object.freeze([
+  {
+    path: "failure-taxonomy-drill.json",
+    schema: "arroba.drill.failure_taxonomy.v1",
+  },
+  {
+    path: "failure-taxonomy-scenario.json",
+    schema: "arroba.drill.failure_taxonomy.v1",
+  },
+  {
+    path: "validation-suite.json",
+    schema: "arroba.drill.validation_suite.v1",
+  },
+])
 
 export async function writeDrillPlatformBundle(outputDir) {
   await mkdir(outputDir, { recursive: true })
@@ -60,6 +74,9 @@ export async function verifyDrillPlatformBundle(outputDir) {
     if (typeof artifact.schema !== "string" || artifact.schema.length === 0) {
       throw new Error(`platform bundle artifact ${artifact.path} has invalid schema`)
     }
+  }
+  assertRequiredBundleArtifacts(bundle.artifacts)
+  for (const artifact of bundle.artifacts) {
     const contents = JSON.parse(await readFile(path.join(outputDir, artifact.path), "utf8"))
     if (contents.schema !== artifact.schema) {
       throw new Error(
@@ -69,6 +86,15 @@ export async function verifyDrillPlatformBundle(outputDir) {
     }
   }
   return bundle
+}
+
+function assertRequiredBundleArtifacts(artifacts) {
+  const actual = artifacts
+    .map((artifact) => ({ path: artifact?.path, schema: artifact?.schema }))
+    .sort((left, right) => String(left.path).localeCompare(String(right.path)))
+  if (JSON.stringify(actual) !== JSON.stringify(DRILL_PLATFORM_BUNDLE_ARTIFACTS)) {
+    throw new Error("platform bundle artifacts do not match required platform contracts")
+  }
 }
 
 function relativeBundlePath(value) {
