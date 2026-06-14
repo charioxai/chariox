@@ -7,7 +7,7 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-distributed-runtime-gate.mjs", import.meta.url))
@@ -44,6 +44,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
 
     assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
+    assert.equal(report.checks.artifacts.status, "skipped")
     assert.deepEqual(report.presets, ["distributed-runtime"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
@@ -67,6 +68,45 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.equal(indexedRuntimeSignals.includes("provider-run-lifecycle"), true)
     assert.equal(indexedRuntimeSignals.includes("slice-auth-state"), true)
     assert.equal(indexedRuntimeSignals.includes("workspace-live-sync-state"), true)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate can include default artifact indexes", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+
+    const skipped = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--json",
+    ])).stdout)
+    assert.equal(skipped.status, "passed")
+    assert.equal(skipped.checks.artifacts.status, "skipped")
+
+    const discovered = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--include-default-artifacts",
+      "--json",
+    ])).stdout)
+    assert.equal(discovered.status, "passed")
+    assert.equal(discovered.checks.artifacts.status, "passed")
+    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite.v1"], 1)
+    assert.deepEqual(discovered.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
+      path.join(".artifacts", "validation-suite"),
+    ])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -231,6 +271,28 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
     metadata,
     scenarios,
   }, null, 2)}\n`, "utf8")
+}
+
+async function writeValidationSuiteArtifact(rootDir) {
+  const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
+  await mkdir(rootDir, { recursive: true })
+  await writeFile(artifactPath, `${JSON.stringify({
+    schema: "arroba.drill.validation_suite.v1",
+    testCount: 1,
+    command: "node --test scripts/cloud-validation-suite.test.mjs",
+    coverage: [{
+      id: "suite-contract",
+      description: "Cloud validation-suite contract",
+      testCount: 1,
+      testPaths: ["scripts/cloud-validation-suite.test.mjs"],
+    }],
+    testPaths: ["scripts/cloud-validation-suite.test.mjs"],
+  }, null, 2)}\n`, "utf8")
+  await writeDrillArtifactIndex({
+    rootDir,
+    artifacts: ["cloud-validation-suite.json"],
+    metadata: { drill: "cloud-validation-suite", tests: 1 },
+  })
 }
 
 function scenario(id, classification, runtimeSignals = [], overrides = {}) {

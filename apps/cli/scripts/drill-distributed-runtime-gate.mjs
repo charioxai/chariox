@@ -34,6 +34,8 @@ function printHelp() {
     "  --cloud-root DIR        Cloud repo root; defaults to ../arroba-cloud",
     "  --no-default-roots      Only use matrix roots passed explicitly with --matrix-root",
     "  --matrix-root ROOT      Discover matrix reports below ROOT; repeatable",
+    "  --include-default-artifacts",
+    "                         Discover artifact indexes under each repo's .artifacts root",
     "  --platform-bundle DIR   Use an existing drill platform bundle instead of generating one",
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
     "  --require-complete      Fail when matrix reports include skipped or dry-run scenarios",
@@ -66,6 +68,7 @@ async function main() {
       await writeDrillPlatformBundle(platformBundleDir)
     }
     const report = await runDrillValidationGate({
+      artifactRoots: artifactRootsFor(options),
       matrixRoots: matrixRootsFor(options),
       maxDepth: options.maxDepth,
       platformBundleDir,
@@ -114,6 +117,7 @@ function parseArgs(argv) {
     cloudRoot: defaultCloudRoot,
     defaultRoots: true,
     help: false,
+    includeDefaultArtifacts: false,
     json: false,
     matrixRoots: [],
     maxDepth: 8,
@@ -129,6 +133,7 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
     else if (arg === "--no-default-roots") options.defaultRoots = false
+    else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
     else if (arg === "--require-complete") options.requireComplete = true
     else if (arg === "--oss-root") {
       options.ossRoot = path.resolve(readValue(argv, index, arg))
@@ -199,6 +204,14 @@ function matrixRootsFor(options) {
     )
   }
   return [...new Set(roots.map((item) => path.resolve(item)))].sort()
+}
+
+function artifactRootsFor(options) {
+  if (!options.includeDefaultArtifacts) return []
+  return [
+    path.join(options.ossRoot, ".artifacts"),
+    path.join(options.cloudRoot, ".artifacts"),
+  ].map((item) => path.resolve(item)).sort()
 }
 
 main().catch((error) => {
