@@ -837,6 +837,30 @@ function validateReportMetadata(value, source) {
     throw new Error(`${source} must be an object`)
   }
   validateReportMetadataValue(value, source)
+  validateProviderMetadata(value, source)
+}
+
+function validateProviderMetadata(metadata, source) {
+  const providers = metadataListValue(metadata.providers)
+  if (metadata.providerCount !== undefined) {
+    if (!Number.isInteger(metadata.providerCount) || metadata.providerCount < 0) {
+      throw new Error(`${source}.providerCount is invalid`)
+    }
+    if (metadata.providerCount !== providers.length) {
+      throw new Error(`${source}.providerCount does not match providers`)
+    }
+  }
+  if (metadata.providerModelOverrides !== undefined) {
+    if (typeof metadata.providerModelOverrides !== "string") {
+      throw new Error(`${source}.providerModelOverrides is invalid`)
+    }
+    const providerSet = new Set(providers)
+    for (const provider of metadataListValue(metadata.providerModelOverrides)) {
+      if (!providerSet.has(provider)) {
+        throw new Error(`${source}.providerModelOverrides includes provider not in providers`)
+      }
+    }
+  }
 }
 
 function validateMatrixAggregateReportCounts(counts, source) {
@@ -931,9 +955,12 @@ function deploymentPresetsForReport(report) {
 }
 
 function providersForReport(report) {
-  const value = report.metadata?.providers
+  return metadataListValue(report.metadata?.providers)
+}
+
+function metadataListValue(value) {
   if (!nonEmptyString(value)) return []
-  return [...new Set(value.split(",").map((provider) => provider.trim()).filter(Boolean))].sort()
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))].sort()
 }
 
 function validateReportMetadataValue(value, source, key = "") {

@@ -591,6 +591,16 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     metadata: { provider: "Bearer abcdefghijklmnopqrstuvwxyz" },
   }), /secret-looking metadata value/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    metadata: { providers: "codex,opencode", providerCount: 3 },
+  }), /metadata\.providerCount does not match providers/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    metadata: { providers: "codex", providerModelOverrides: "opencode" },
+  }), /metadata\.providerModelOverrides includes provider not in providers/)
 })
 
 function matrixReport(overrides = {}) {
