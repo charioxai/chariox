@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-distributed-runtime-gate.mjs", import.meta.url))
@@ -714,6 +715,7 @@ async function writeValidationSuiteArtifact(rootDir, {
         testCount: 1,
         testPaths: ["scripts/cloud-validation-suite.test.mjs"],
       }],
+      runtimeSignalsManifest: drillRuntimeSignalsManifest(),
       testPaths: ["scripts/cloud-validation-suite.test.mjs"],
     },
   }, null, 2)}\n`, "utf8")
@@ -996,6 +998,7 @@ const report = {
         testPaths: ["fake-validation-suite.test.mjs"],
       },
     ],
+    runtimeSignalsManifest: ${JSON.stringify(drillRuntimeSignalsManifest())},
     testPaths: ["fake-validation-suite.test.mjs"],
   },
 }

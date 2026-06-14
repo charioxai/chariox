@@ -128,9 +128,44 @@ test("verifies runtime signal manifests embedded in validation artifacts", async
     const index = await writeDrillArtifactIndex({
       rootDir: root,
       artifacts: ["reports/suite-run.json"],
+      metadata: {
+        runtimeSignals: "session-authority",
+        runtimeSignalOwners: "kernel-authority",
+      },
     })
 
     assert.deepEqual(await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")), index)
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects validation artifacts that advertise runtime signals without a manifest", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify({
+      schema: "arroba.drill.validation_suite_run.v1",
+      status: "passed",
+      ok: true,
+      manifest: {
+        schema: "arroba.drill.validation_suite.v1",
+      },
+    }, null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+      metadata: {
+        runtimeSignals: "session-authority",
+        runtimeSignalOwners: "kernel-authority",
+      },
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /suite-run\.json is missing manifest\.runtimeSignalsManifest/,
+    )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
@@ -157,6 +192,10 @@ test("rejects validation artifacts with malformed runtime signal manifests", asy
     await writeDrillArtifactIndex({
       rootDir: root,
       artifacts: ["reports/suite-run.json"],
+      metadata: {
+        runtimeSignals: "session-authority",
+        runtimeSignalOwners: "kernel-authority",
+      },
     })
 
     await assert.rejects(

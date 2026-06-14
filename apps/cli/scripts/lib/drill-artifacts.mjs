@@ -147,7 +147,7 @@ export async function verifyDrillArtifactIndex(indexPath) {
     if (schema !== artifact.schema) {
       throw new Error(`drill artifact ${artifact.path} schema mismatch`)
     }
-    validateKnownArtifactContents(contents, artifact.path)
+    validateKnownArtifactContents(contents, artifact.path, index.metadata)
   }
   return index
 }
@@ -469,18 +469,29 @@ function schemaForArtifact(contents) {
   }
 }
 
-function validateKnownArtifactContents(contents, artifactPath) {
+function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   let parsed
   try {
     parsed = JSON.parse(contents.toString("utf8"))
   } catch {
     return
   }
-  if (parsed?.schema === "arroba.drill.validation_suite.v1" && parsed.runtimeSignalsManifest !== undefined) {
-    validateDrillRuntimeSignalsManifest(parsed.runtimeSignalsManifest, `${artifactPath}.runtimeSignalsManifest`)
+  const requiresRuntimeSignalManifest = runtimeSignalsFromMetadata(metadata).length > 0
+  if (parsed?.schema === "arroba.drill.validation_suite.v1") {
+    if (requiresRuntimeSignalManifest && parsed.runtimeSignalsManifest === undefined) {
+      throw new Error(`drill artifact ${artifactPath} is missing runtimeSignalsManifest`)
+    }
+    if (parsed.runtimeSignalsManifest !== undefined) {
+      validateDrillRuntimeSignalsManifest(parsed.runtimeSignalsManifest, `${artifactPath}.runtimeSignalsManifest`)
+    }
   }
-  if (parsed?.schema === "arroba.drill.validation_suite_run.v1" && parsed.manifest?.runtimeSignalsManifest !== undefined) {
-    validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
+  if (parsed?.schema === "arroba.drill.validation_suite_run.v1") {
+    if (requiresRuntimeSignalManifest && parsed.manifest?.runtimeSignalsManifest === undefined) {
+      throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeSignalsManifest`)
+    }
+    if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
+      validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
+    }
   }
 }
 
