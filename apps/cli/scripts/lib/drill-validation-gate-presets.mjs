@@ -7,6 +7,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "distributed-runtime": Object.freeze({
     description: "End-to-end distributed runtime authority evidence across native TUI, remote agents, home extensions, slices, and Workspace Live Sync.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredArtifactSchemas: Object.freeze(["arroba.drill.validation_suite_run.v1"]),
     requiredRuntimeSignals: Object.freeze([
       "agent-lifecycle",
       "client-projection-health",

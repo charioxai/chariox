@@ -20,6 +20,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     const outputPath = path.join(rootDir, "gate.json")
     const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -27,6 +28,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       ossRoot,
       "--cloud-root",
       cloudRoot,
+      "--include-default-artifacts",
       "--require-complete",
       "--require-runtime-signal",
       "slice-auth-state",
@@ -44,7 +46,8 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
 
     assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
-    assert.equal(report.checks.artifacts.status, "skipped")
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
     assert.deepEqual(report.presets, ["distributed-runtime"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
@@ -73,7 +76,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
   }
 })
 
-test("distributed runtime gate can include default artifact indexes", async () => {
+test("distributed runtime gate requires default artifact indexes", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {
     const ossRoot = path.join(rootDir, "arroba")
@@ -81,16 +84,25 @@ test("distributed runtime gate can include default artifact indexes", async () =
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
-    const skipped = JSON.parse((await execFile(process.execPath, [
-      scriptPath,
-      "--oss-root",
-      ossRoot,
-      "--cloud-root",
-      cloudRoot,
-      "--json",
-    ])).stdout)
-    assert.equal(skipped.status, "passed")
-    assert.equal(skipped.checks.artifacts.status, "skipped")
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.equal(report.checks.artifacts.status, "failed")
+        assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        assert.deepEqual(report.checks.artifacts.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        return true
+      },
+    )
 
     const discovered = JSON.parse((await execFile(process.execPath, [
       scriptPath,
@@ -153,6 +165,7 @@ test("distributed runtime gate can include default failure manifests", async () 
     const ossRoot = path.join(rootDir, "arroba")
     const cloudRoot = path.join(rootDir, "arroba-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
     await writeFailureManifest(path.join(cloudRoot, ".artifacts", "failed-run", "arroba-drill-failure.json"), {
       drill: "cloud-slice-runtime-matrix",
       message: "slice auth stale projection",
@@ -164,6 +177,7 @@ test("distributed runtime gate can include default failure manifests", async () 
       ossRoot,
       "--cloud-root",
       cloudRoot,
+      "--include-default-artifacts",
       "--json",
     ])).stdout)
     assert.equal(skipped.status, "passed")
@@ -176,6 +190,7 @@ test("distributed runtime gate can include default failure manifests", async () 
         ossRoot,
         "--cloud-root",
         cloudRoot,
+        "--include-default-artifacts",
         "--include-default-failures",
         "--json",
       ]),
@@ -204,6 +219,7 @@ test("distributed runtime gate reports missing hosted Cloud evidence", async () 
     const ossRoot = path.join(rootDir, "arroba")
     const cloudRoot = path.join(rootDir, "arroba-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: false })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
     await assert.rejects(
       execFile(process.execPath, [
@@ -212,6 +228,7 @@ test("distributed runtime gate reports missing hosted Cloud evidence", async () 
         ossRoot,
         "--cloud-root",
         cloudRoot,
+        "--include-default-artifacts",
         "--json",
       ]),
       (error) => {
