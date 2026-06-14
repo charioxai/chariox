@@ -306,7 +306,7 @@ test("drill validation gate summary indexes aggregate artifact coverage metadata
     const evidencePath = path.join(evidenceRoot, "validation-suite.json")
     const evidenceIndexPath = path.join(evidenceRoot, "arroba-drill-artifacts.json")
     await mkdir(evidenceRoot, { recursive: true })
-    await writeFile(evidencePath, `${JSON.stringify({ schema: "arroba.drill.validation_suite_run.v1" })}\n`, "utf8")
+    await writeFile(evidencePath, `${JSON.stringify(validationSuiteRunArtifact(), null, 2)}\n`, "utf8")
     await writeDrillArtifactIndex({
       rootDir: evidenceRoot,
       artifacts: ["validation-suite.json"],
@@ -382,6 +382,30 @@ function generatedEvidence() {
         scriptPath: "/tmp/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
       }],
     },
+  }
+}
+
+function validationSuiteRunArtifact() {
+  const manifest = {
+    schema: "arroba.drill.validation_suite.v1",
+    command: "node --test apps/cli/scripts/drill-validation-gate-summary.test.mjs",
+    testCount: 1,
+    testPaths: ["apps/cli/scripts/drill-validation-gate-summary.test.mjs"],
+  }
+  return {
+    schema: "arroba.drill.validation_suite_run.v1",
+    status: "passed",
+    ok: true,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:00.500Z",
+    durationMs: 500,
+    exitCode: 0,
+    signal: null,
+    error: null,
+    command: manifest.command,
+    testCount: manifest.testCount,
+    testPaths: manifest.testPaths,
+    manifest,
   }
 }
 

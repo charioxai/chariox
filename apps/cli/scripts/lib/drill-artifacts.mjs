@@ -556,11 +556,80 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     }
   }
   if (parsed?.schema === "arroba.drill.validation_suite_run.v1") {
+    validateValidationSuiteRunArtifact(parsed, artifactPath)
     if (requiresRuntimeSignalManifest && parsed.manifest?.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeSignalsManifest`)
     }
     if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
+    }
+  }
+}
+
+function validateValidationSuiteRunArtifact(run, source) {
+  if (!["passed", "failed"].includes(run.status)) {
+    throw new Error(`drill artifact ${source} has invalid status`)
+  }
+  if (typeof run.ok !== "boolean") {
+    throw new Error(`drill artifact ${source} is missing ok`)
+  }
+  if (run.ok !== (run.status === "passed")) {
+    throw new Error(`drill artifact ${source} ok does not match status`)
+  }
+  const startedMs = parseDrillIsoTimestamp(run.startedAt, `drill artifact ${source}.startedAt`)
+  const completedMs = parseDrillIsoTimestamp(run.completedAt, `drill artifact ${source}.completedAt`)
+  if (completedMs < startedMs) {
+    throw new Error(`drill artifact ${source}.completedAt must not be before startedAt`)
+  }
+  if (!Number.isSafeInteger(run.durationMs) || run.durationMs < 0) {
+    throw new Error(`drill artifact ${source} has invalid durationMs`)
+  }
+  if (run.durationMs !== completedMs - startedMs) {
+    throw new Error(`drill artifact ${source}.durationMs must match completedAt - startedAt`)
+  }
+  if (run.exitCode !== null && (!Number.isSafeInteger(run.exitCode) || run.exitCode < 0)) {
+    throw new Error(`drill artifact ${source} has invalid exitCode`)
+  }
+  if (run.signal !== null && !nonEmptyString(run.signal)) {
+    throw new Error(`drill artifact ${source} has invalid signal`)
+  }
+  if (run.error !== null && typeof run.error !== "string") {
+    throw new Error(`drill artifact ${source} has invalid error`)
+  }
+  if (run.status === "passed" && (run.exitCode !== 0 || run.signal !== null || run.error !== null)) {
+    throw new Error(`drill artifact ${source} passed run has failure fields`)
+  }
+  validateValidationSuiteManifestArtifact(run.manifest, `${source}.manifest`)
+  if (!nonEmptyString(run.command) || run.command !== run.manifest.command) {
+    throw new Error(`drill artifact ${source}.command must match manifest.command`)
+  }
+  if (run.testCount !== run.manifest.testCount) {
+    throw new Error(`drill artifact ${source}.testCount must match manifest.testCount`)
+  }
+  if (!Array.isArray(run.testPaths) || JSON.stringify(run.testPaths) !== JSON.stringify(run.manifest.testPaths)) {
+    throw new Error(`drill artifact ${source}.testPaths must match manifest.testPaths`)
+  }
+}
+
+function validateValidationSuiteManifestArtifact(manifest, source) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`drill artifact ${source} is not an object`)
+  }
+  if (manifest.schema !== "arroba.drill.validation_suite.v1") {
+    throw new Error(`drill artifact ${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
+  }
+  if (!nonEmptyString(manifest.command)) {
+    throw new Error(`drill artifact ${source} is missing command`)
+  }
+  if (!Number.isSafeInteger(manifest.testCount) || manifest.testCount <= 0) {
+    throw new Error(`drill artifact ${source} has invalid testCount`)
+  }
+  if (!Array.isArray(manifest.testPaths) || manifest.testPaths.length !== manifest.testCount) {
+    throw new Error(`drill artifact ${source}.testPaths must match testCount`)
+  }
+  for (const [index, testPath] of manifest.testPaths.entries()) {
+    if (!nonEmptyString(testPath)) {
+      throw new Error(`drill artifact ${source}.testPaths[${index}] has invalid path`)
     }
   }
 }
