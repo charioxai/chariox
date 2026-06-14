@@ -23,7 +23,7 @@ import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
 test("describes validation gate presets", () => {
   const presets = describeDrillValidationGatePresets()
-  assert.deepEqual(presets.map((preset) => preset.name), ["native-provider-tui", "remote-home-extension", "slice-runtime", "workspace-live-sync"])
+  assert.deepEqual(presets.map((preset) => preset.name), ["native-provider-tui", "remote-agent-runtime", "remote-home-extension", "slice-runtime", "workspace-live-sync"])
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
     ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
@@ -31,6 +31,10 @@ test("describes validation gate presets", () => {
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["native-provider-tui"] })[0].requiredScenarios,
     ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
+  )
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["remote-agent-runtime"] })[0].requiredMatrixClassifications,
+    ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"],
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["slice-runtime"] })[0].requiredProviders,
@@ -75,6 +79,11 @@ test("passes with valid platform bundle and complete matrix reports", async () =
           name: "native-provider-tui",
           requiredMatrices: ["native-provider-tui-matrix"],
           requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
+        },
+        {
+          name: "remote-agent-runtime",
+          requiredMatrices: ["remote-agent-runtime-matrix"],
+          requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"],
         },
         {
           name: "remote-home-extension",

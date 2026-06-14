@@ -99,7 +99,7 @@ test("drill validation gate lists presets", async () => {
 test("drill validation gate help lists presets from the registry", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
 
-  assert.match(stdout, /Known: native-provider-tui, remote-home-extension, slice-runtime, workspace-live-sync/)
+  assert.match(stdout, /Known: native-provider-tui, remote-agent-runtime, remote-home-extension, slice-runtime, workspace-live-sync/)
 })
 
 test("drill validation gate lists selected presets as JSON", async () => {

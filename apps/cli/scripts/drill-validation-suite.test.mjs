@@ -44,6 +44,7 @@ test("drill validation suite prints coverage manifest", async () => {
   ])
   assert.deepEqual(manifest.validationPresets.map((preset) => preset.name), [
     "native-provider-tui",
+    "remote-agent-runtime",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",
@@ -55,6 +56,10 @@ test("drill validation suite prints coverage manifest", async () => {
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "native-provider-tui").requiredDeploymentPresets,
     ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
+  )
+  assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "remote-agent-runtime").requiredScenarios,
+    ["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
   )
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "slice-runtime").requiredScenarios,

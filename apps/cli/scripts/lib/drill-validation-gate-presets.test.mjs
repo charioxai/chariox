@@ -18,12 +18,14 @@ import {
 test("describes stable validation gate presets", () => {
   assert.deepEqual(Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort(), [
     "native-provider-tui",
+    "remote-agent-runtime",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",
   ])
   assert.deepEqual(describeDrillValidationGatePresets().map((preset) => preset.name), [
     "native-provider-tui",
+    "remote-agent-runtime",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",
@@ -60,6 +62,20 @@ test("describes stable validation gate presets", () => {
       requiredScenarios: ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
     },
   )
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["remote-agent-runtime"] })[0],
+    {
+      name: "remote-agent-runtime",
+      description: "Leased remote-agent lifecycle, worker provider-run binding, relay freshness, and collab projection evidence.",
+      requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"],
+      requiredMatrices: ["remote-agent-runtime-matrix"],
+      requiredMatrixClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"],
+      requiredDeploymentPresets: ["hetzner", "hosted-cloud", "same-host-remote", "self-hosted-relay"],
+      requiredProviders: ["claude", "codex", "opencode"],
+      requiredScenarios: ["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
+    },
+  )
 })
 
 test("expands validation gate preset requirements", () => {
@@ -84,8 +100,9 @@ test("expands validation gate preset requirements", () => {
 })
 
 test("normalizes validation gate requirements", () => {
-  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "slice-runtime,native-provider-tui"]), [
+  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "slice-runtime,native-provider-tui", "remote-agent-runtime"]), [
     "native-provider-tui",
+    "remote-agent-runtime",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",

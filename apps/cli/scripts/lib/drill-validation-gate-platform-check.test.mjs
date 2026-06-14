@@ -54,6 +54,7 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
     assert.equal(check.validationSuite.coverageAreas.some((area) => area.id === "matrix-validation"), true)
     assert.deepEqual(check.validationSuite.validationPresets.map((preset) => preset.name), [
       "native-provider-tui",
+      "remote-agent-runtime",
       "remote-home-extension",
       "slice-runtime",
       "workspace-live-sync",

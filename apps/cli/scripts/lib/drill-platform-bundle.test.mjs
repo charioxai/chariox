@@ -51,6 +51,7 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     ])
     assert.deepEqual(validationSuite.validationPresets.map((preset) => preset.name), [
       "native-provider-tui",
+      "remote-agent-runtime",
       "remote-home-extension",
       "slice-runtime",
       "workspace-live-sync",
@@ -62,6 +63,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "native-provider-tui").requiredScenarios,
       ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
+    )
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "remote-agent-runtime").requiredMatrices,
+      ["remote-agent-runtime-matrix"],
     )
     assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "slice-runtime").requiredDeploymentPresets,

@@ -12,6 +12,16 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredProviders: Object.freeze(["claude", "codex", "opencode"]),
     requiredScenarios: Object.freeze(["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"]),
   }),
+  "remote-agent-runtime": Object.freeze({
+    description: "Leased remote-agent lifecycle, worker provider-run binding, relay freshness, and collab projection evidence.",
+    requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredFailureClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"]),
+    requiredMatrices: Object.freeze(["remote-agent-runtime-matrix"]),
+    requiredMatrixClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"]),
+    requiredDeploymentPresets: Object.freeze(["hetzner", "hosted-cloud", "same-host-remote", "self-hosted-relay"]),
+    requiredProviders: Object.freeze(["claude", "codex", "opencode"]),
+    requiredScenarios: Object.freeze(["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"]),
+  }),
   "workspace-live-sync": Object.freeze({
     description: "Workspace Live Sync local/remote matrix evidence and distributed sync diagnostics.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
