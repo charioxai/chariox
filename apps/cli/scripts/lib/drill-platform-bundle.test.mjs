@@ -254,6 +254,28 @@ test("rejects validation suite preset contract drift", async () => {
   }
 })
 
+test("rejects validation suite preset artifact kind drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const suitePath = path.join(rootDir, "validation-suite.json")
+    const suite = JSON.parse(await readFile(suitePath, "utf8"))
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
+        ? { ...preset, requiredArtifactKinds: ["validation-sutie"] }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredArtifactKinds\[0\] has unknown artifact kind "validation-sutie"/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("rejects failure taxonomy target drift", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
   try {

@@ -7,6 +7,7 @@ import {
   isKnownDrillRuntimeSignal,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
+import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -299,7 +300,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredPlatformCoverageAreas: sortedStringArray(preset.requiredPlatformCoverageAreas, `${preset.name}.requiredPlatformCoverageAreas`),
     requiredArtifactCoverageAreas: sortedStringArray(preset.requiredArtifactCoverageAreas, `${preset.name}.requiredArtifactCoverageAreas`),
     requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
-    requiredArtifactKinds: sortedStringArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
+    requiredArtifactKinds: sortedArtifactKindArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
     requiredArtifactGeneratedEvidenceKinds: sortedStringArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
     requiredArtifactEvidenceRepos: sortedStringArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
@@ -338,6 +339,16 @@ function sortedRuntimeSignalArray(value, source) {
     }
   }
   return signals
+}
+
+function sortedArtifactKindArray(value, source) {
+  const kinds = sortedStringArray(value, source)
+  for (const [index, kind] of kinds.entries()) {
+    if (!isKnownDrillArtifactKind(kind)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown artifact kind ${JSON.stringify(kind)}`)
+    }
+  }
+  return kinds
 }
 
 function sortedRuntimeSignalOwnerArray(value, source) {

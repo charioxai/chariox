@@ -185,6 +185,7 @@ test("normalizes validation suite preset contracts", () => {
     description: "Workspace Live Sync",
     requiredPlatformCoverageAreas: ["runtime-fixtures", "matrix-validation", "matrix-validation"],
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    requiredArtifactKinds: ["validation-suite-run", "validation-suite-run"],
     requiredArtifactRuntimeSignals: ["workspace-live-sync-state", "session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
@@ -196,7 +197,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredPlatformCoverageAreas: ["matrix-validation", "runtime-fixtures"],
     requiredArtifactCoverageAreas: [],
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
-    requiredArtifactKinds: [],
+    requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: [],
     requiredArtifactEvidenceRepos: [],
     requiredArtifactRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
@@ -237,6 +238,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad runtime signal owner",
     requiredArtifactRuntimeSignalOwners: ["runtime-stat"],
   }]), /requiredArtifactRuntimeSignalOwners\[0\] has unknown runtime signal owner "runtime-stat"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-kind",
+    description: "bad artifact kind",
+    requiredArtifactKinds: ["validation-sutie"],
+  }]), /requiredArtifactKinds\[0\] has unknown artifact kind "validation-sutie"/)
 })
 
 test("finds missing shared drill validation suite paths", async () => {
