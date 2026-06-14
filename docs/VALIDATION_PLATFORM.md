@@ -134,6 +134,8 @@ Runtime signal owners are derived from `drill-runtime-signals.mjs`. Matrix repor
 
 Artifact indexes and aggregate summaries treat runtime-signal metadata as validated evidence, not labels. `runtimeSignals` entries must be known signal ids, and per-index `runtimeSignalOwners` counts must be derived from those signal ids so typoed or hand-edited diagnostics fail before they reach CI summaries.
 
+Validation-suite preset contracts use the same runtime-signal registry. Required runtime-signal fields and runtime-signal owner fields in presets must be canonical values before the suite manifest can be written.
+
 Matrix runners preflight selected scenario definitions and all selected scenario commands before spawning child drills. Scenario ids must be unique and non-empty, selected scenarios must include descriptions, `requires` and `exitCriteria` must be string arrays or valid strings where supported, and `commandForScenario` must return a non-empty command with string args for every selected scenario.
 
 Scenario outcome fields must be internally consistent. Failed scenarios require a non-empty `reason` and `classification` so CI can route the failure. Skipped scenarios require a non-empty `reason` and zero `durationMs`. Dry-run scenarios require zero `durationMs` and must not include a `reason` or `classification`. Passed scenarios must not include a `reason`.
