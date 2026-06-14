@@ -328,6 +328,10 @@ function failureAggregateFixture() {
       "lease-health": 1,
       "relay-target-freshness": 1,
     },
+    runtimeSignalOwners: {
+      "kernel-authority": 1,
+      "runtime-network": 1,
+    },
     nextActions: [{
       owner: "runtime-network",
       classification: "relay-runtime",

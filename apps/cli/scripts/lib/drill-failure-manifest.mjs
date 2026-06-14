@@ -146,6 +146,7 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
     runtimeSignals: Object.fromEntries([...runtimeSignals.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    runtimeSignalOwners: drillRuntimeSignalOwnerCounts(Object.fromEntries(runtimeSignals)),
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     failures,
   }
@@ -168,7 +169,7 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
   const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
-    lines.push(`runtime_signal_owners: ${formatCountObject(drillRuntimeSignalOwnerCounts(aggregate.runtimeSignals))}`)
+    lines.push(`runtime_signal_owners: ${formatCountObject(aggregate.runtimeSignalOwners)}`)
   }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -228,6 +229,9 @@ export function validateDrillFailureManifestAggregate(aggregate) {
   if (!aggregate.runtimeSignals || typeof aggregate.runtimeSignals !== "object" || Array.isArray(aggregate.runtimeSignals)) {
     throw new Error("aggregate has invalid runtimeSignals")
   }
+  if (!aggregate.runtimeSignalOwners || typeof aggregate.runtimeSignalOwners !== "object" || Array.isArray(aggregate.runtimeSignalOwners)) {
+    throw new Error("aggregate has invalid runtimeSignalOwners")
+  }
   if (!Array.isArray(aggregate.failures)) {
     throw new Error("aggregate has invalid failures")
   }
@@ -250,6 +254,7 @@ function validateDrillFailureAggregateConsistency(aggregate) {
   assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failures, "owner")
   assertObjectCountsMatchEntries("aggregate classifications", aggregate.classifications, aggregate.failures, "classification")
   assertRuntimeSignalCountsMatchFailures(aggregate)
+  assertRuntimeSignalOwnerCountsMatchSignals(aggregate)
   assertNextActionCountsMatchFailures(aggregate)
 }
 
@@ -283,6 +288,13 @@ function assertRuntimeSignalCountsMatchFailures(aggregate) {
   const expectedSignals = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
   if (JSON.stringify(aggregate.runtimeSignals ?? {}) !== JSON.stringify(expectedSignals)) {
     throw new Error("aggregate runtimeSignals do not match failures")
+  }
+}
+
+function assertRuntimeSignalOwnerCountsMatchSignals(aggregate) {
+  const expectedOwners = drillRuntimeSignalOwnerCounts(aggregate.runtimeSignals ?? {})
+  if (JSON.stringify(aggregate.runtimeSignalOwners ?? {}) !== JSON.stringify(expectedOwners)) {
+    throw new Error("aggregate runtimeSignalOwners do not match runtimeSignals")
   }
 }
 

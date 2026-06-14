@@ -224,6 +224,11 @@ test("aggregates preserved drill failure summaries", () => {
     "provider-run-lifecycle": 1,
     "relay-target-freshness": 1,
   })
+  assert.deepEqual(aggregate.runtimeSignalOwners, {
+    "kernel-authority": 2,
+    "provider-runtime": 1,
+    "runtime-network": 1,
+  })
   assert.deepEqual(aggregate.nextActions.map((action) => ({
     owner: action.owner,
     classification: action.classification,
@@ -308,6 +313,10 @@ test("rejects inconsistent failure aggregates", () => {
     ...aggregate,
     runtimeSignals: { "lease-health": 2 },
   }), /runtimeSignals do not match failures/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    runtimeSignalOwners: { "runtime-network": 1 },
+  }), /runtimeSignalOwners do not match runtimeSignals/)
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
     ...aggregate,
     owners: { "runtime-state": 1 },

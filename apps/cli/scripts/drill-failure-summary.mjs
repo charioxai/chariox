@@ -8,7 +8,6 @@ import {
 } from "./lib/drill-failure-manifest.mjs"
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
-import { drillRuntimeSignalOwnersFor } from "./lib/drill-runtime-signals.mjs"
 
 function printHelp() {
   console.log([
@@ -62,7 +61,7 @@ async function main() {
   const aggregate = summarizeDrillFailureManifests(manifests, { sources: inputs })
   if (options.outputPath) {
     const runtimeSignals = Object.keys(aggregate.runtimeSignals).sort()
-    const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)
+    const runtimeSignalOwners = Object.keys(aggregate.runtimeSignalOwners).sort()
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
       artifactIndexPath: options.outputArtifactIndexPath,
@@ -147,6 +146,7 @@ function emptyAggregate() {
     owners: {},
     classifications: {},
     runtimeSignals: {},
+    runtimeSignalOwners: {},
     nextActions: [],
     failures: [],
   }

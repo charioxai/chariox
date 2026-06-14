@@ -192,6 +192,7 @@ test("validates aggregate schemas for artifact, matrix, and failure checks", () 
           aggregate: {
             ...failureAggregate(),
             runtimeSignals: { "lease-health": 2 },
+            runtimeSignalOwners: { "kernel-authority": 2 },
           },
         },
       },
@@ -299,6 +300,7 @@ function failureAggregate() {
     owners: { "runtime-network": 1 },
     classifications: { "relay-runtime": 1 },
     runtimeSignals: { "lease-health": 1 },
+    runtimeSignalOwners: { "kernel-authority": 1 },
     nextActions: [{
       owner: "runtime-network",
       classification: "relay-runtime",

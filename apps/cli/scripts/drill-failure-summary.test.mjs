@@ -61,6 +61,9 @@ test("failure summary writes artifact index for output", async () => {
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.equal(aggregate.total, 1)
+    assert.deepEqual(aggregate.runtimeSignalOwners, {
+      "kernel-authority": 2,
+    })
     assert.deepEqual(fileAggregate, aggregate)
     assert.equal(artifactIndex.metadata.drill, "failure-summary")
     assert.equal(artifactIndex.metadata.total, 1)
