@@ -366,7 +366,6 @@ function missingCoverageRequirements(counts, required) {
 function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
   const specs = [
     ["missingPlatformCoverageAreas", "platform-bundle", "provide validation gate reports requiring platform coverage areas"],
-    ["missingArtifactSchemas", "artifact-coverage", "provide validation gate reports with artifact schemas"],
     ["missingRuntimeSignals", "platform-bundle", "provide validation gate reports requiring runtime signals"],
     ["missingFailureClassifications", "platform-bundle", "provide validation gate reports requiring failure classifications"],
     ["missingMatrices", "matrix-coverage", "provide validation gate reports requiring matrices"],
@@ -384,6 +383,25 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
         nextAction: `${prefix}: ${missing[key].join(", ")}`,
       })
     }
+  }
+  appendMissingArtifactSchemaNextActions(nextActions, missing.missingArtifactSchemas ?? [])
+}
+
+function appendMissingArtifactSchemaNextActions(nextActions, missingArtifactSchemas) {
+  if (missingArtifactSchemas.includes("arroba.drill.validation_suite_run.v1")) {
+    countDrillAggregateNextAction(nextActions, {
+      owner: "validation-harness",
+      classification: "artifact-coverage",
+      nextAction: "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate aggregate",
+    })
+  }
+  const remainingSchemas = missingArtifactSchemas.filter((schema) => schema !== "arroba.drill.validation_suite_run.v1")
+  if (remainingSchemas.length > 0) {
+    countDrillAggregateNextAction(nextActions, {
+      owner: "validation-harness",
+      classification: "artifact-coverage",
+      nextAction: `provide validation gate reports with artifact schemas: ${remainingSchemas.join(", ")}`,
+    })
   }
 }
 

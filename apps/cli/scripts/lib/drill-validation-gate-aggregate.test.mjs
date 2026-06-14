@@ -137,6 +137,66 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_presets=remote-home-extension missing=remote-home-extension/)
 })
 
+test("reports executable validation suite remediation for missing suite-run aggregate evidence", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
+    normalizedAggregateRequirements: {
+      requiredArtifactSchemas: [
+        "arroba.drill.validation_suite_run.v1",
+        "arroba.drill.matrix.v1",
+      ],
+    },
+    validateReport: () => {},
+  })
+
+  assert.equal(aggregate.status, "failed")
+  assert.deepEqual(aggregate.missingArtifactSchemas, [
+    "arroba.drill.matrix.v1",
+  ])
+  assert.deepEqual(
+    aggregate.nextActions
+      .filter((action) => action.classification === "artifact-coverage")
+      .map(({ nextAction }) => nextAction),
+    [
+      "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
+    ],
+  )
+
+  const missingSuiteRun = summarizeValidationGateReportAggregate([reportFixture({
+    checks: {
+      ...reportFixture().checks,
+      artifacts: {
+        ...reportFixture().checks.artifacts,
+        aggregate: {
+          schemas: {},
+          runtimeSignals: {},
+        },
+      },
+    },
+  })], {
+    normalizedAggregateRequirements: {
+      requiredArtifactSchemas: [
+        "arroba.drill.validation_suite_run.v1",
+        "arroba.drill.matrix.v1",
+      ],
+    },
+    validateReport: () => {},
+  })
+
+  assert.deepEqual(missingSuiteRun.missingArtifactSchemas, [
+    "arroba.drill.validation_suite_run.v1",
+    "arroba.drill.matrix.v1",
+  ])
+  assert.deepEqual(
+    missingSuiteRun.nextActions
+      .filter((action) => action.classification === "artifact-coverage")
+      .map(({ nextAction }) => nextAction),
+    [
+      "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
+      "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate aggregate",
+    ],
+  )
+})
+
 test("aggregates failure runtime signal coverage from failed reports", () => {
   const failedReport = reportFixture()
   failedReport.status = "failed"
