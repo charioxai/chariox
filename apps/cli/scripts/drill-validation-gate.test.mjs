@@ -7,7 +7,10 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import {
+  verifyDrillArtifactIndex,
+  writeDrillArtifactIndex,
+} from "./lib/drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -16,6 +19,7 @@ const scriptPath = fileURLToPath(new URL("./drill-validation-gate.mjs", import.m
 test("drill validation gate writes passing JSON report", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   const outputPath = path.join(rootDir, "gate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
@@ -27,16 +31,39 @@ test("drill validation gate writes passing JSON report", async () => {
       "--json",
       "--output",
       outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
     ])
     const stdoutReport = JSON.parse(stdout)
     const fileReport = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileReport, stdoutReport)
     assert.equal(fileReport.status, "passed")
     assert.equal(fileReport.checks.platformBundle.status, "passed")
+    assert.equal(artifactIndex.metadata.drill, "validation-gate")
+    assert.equal(artifactIndex.metadata.status, "passed")
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
+      path: artifact.path,
+      schema: artifact.schema,
+    })), [{
+      path: "gate.json",
+      schema: "arroba.drill.validation_gate.v1",
+    }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("drill validation gate rejects output artifact index without output", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /requires --output/)
+      return true
+    },
+  )
 })
 
 test("drill validation gate accepts explicit matrix report paths", async () => {

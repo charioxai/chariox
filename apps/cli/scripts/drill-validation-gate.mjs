@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
+import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import {
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
@@ -28,6 +29,8 @@ function printHelp() {
     "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
     "  --json                 Print gate report JSON",
     "  --output PATH          Write gate report JSON to PATH",
+    "  --output-artifact-index PATH",
+    "                         Write an artifact index for --output",
   ].join("\n"))
 }
 
@@ -41,6 +44,17 @@ async function main() {
   if (options.outputPath) {
     await mkdir(path.dirname(options.outputPath), { recursive: true })
     await writeFile(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+    if (options.outputArtifactIndexPath) {
+      await writeDrillArtifactIndex({
+        rootDir: path.dirname(options.outputPath),
+        artifacts: [path.basename(options.outputPath)],
+        indexPath: options.outputArtifactIndexPath,
+        metadata: {
+          drill: "validation-gate",
+          status: report.status,
+        },
+      })
+    }
   }
   if (options.json) {
     console.log(JSON.stringify(report, null, 2))
@@ -61,6 +75,7 @@ function parseArgs(argv) {
     matrixReports: [],
     matrixRoots: [],
     maxDepth: 8,
+    outputArtifactIndexPath: null,
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
@@ -133,11 +148,21 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--output=")) {
       options.outputPath = arg.slice("--output=".length)
+    } else if (arg === "--output-artifact-index") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--output-artifact-index requires a value")
+      options.outputArtifactIndexPath = value
+      index += 1
+    } else if (arg.startsWith("--output-artifact-index=")) {
+      options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
     } else if (arg.startsWith("--")) {
       throw new Error(`unknown argument: ${arg}`)
     } else {
       throw new Error(`unexpected argument: ${arg}`)
     }
+  }
+  if (options.outputArtifactIndexPath && !options.outputPath) {
+    throw new Error("--output-artifact-index requires --output")
   }
   return options
 }
