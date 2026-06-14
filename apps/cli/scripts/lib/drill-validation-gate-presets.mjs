@@ -2,6 +2,16 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 
 export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
+  "native-provider-tui": Object.freeze({
+    description: "Native provider TUI parity across local, remote, slice, permissions, and UI projection paths.",
+    requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredFailureClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"]),
+    requiredMatrices: Object.freeze(["native-provider-tui-matrix"]),
+    requiredMatrixClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"]),
+    requiredDeploymentPresets: Object.freeze(["hetzner", "local", "same-host-remote", "self-hosted-relay"]),
+    requiredProviders: Object.freeze(["claude", "codex", "opencode"]),
+    requiredScenarios: Object.freeze(["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"]),
+  }),
   "workspace-live-sync": Object.freeze({
     description: "Workspace Live Sync local/remote matrix evidence and distributed sync diagnostics.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),

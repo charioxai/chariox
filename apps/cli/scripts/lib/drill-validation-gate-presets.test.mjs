@@ -17,11 +17,13 @@ import {
 
 test("describes stable validation gate presets", () => {
   assert.deepEqual(Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort(), [
+    "native-provider-tui",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",
   ])
   assert.deepEqual(describeDrillValidationGatePresets().map((preset) => preset.name), [
+    "native-provider-tui",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",
@@ -42,6 +44,20 @@ test("describes stable validation gate presets", () => {
       requiredDeploymentPresets: ["hosted-cloud", "local", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
+    },
+  )
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["native-provider-tui"] })[0],
+    {
+      name: "native-provider-tui",
+      description: "Native provider TUI parity across local, remote, slice, permissions, and UI projection paths.",
+      requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
+      requiredMatrices: ["native-provider-tui-matrix"],
+      requiredMatrixClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
+      requiredDeploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
+      requiredProviders: ["claude", "codex", "opencode"],
+      requiredScenarios: ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
     },
   )
 })
@@ -68,7 +84,8 @@ test("expands validation gate preset requirements", () => {
 })
 
 test("normalizes validation gate requirements", () => {
-  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "slice-runtime"]), [
+  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "slice-runtime,native-provider-tui"]), [
+    "native-provider-tui",
     "remote-home-extension",
     "slice-runtime",
     "workspace-live-sync",

@@ -90,9 +90,16 @@ test("drill validation gate lists presets", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--list-presets"])
 
   assert.match(stdout, /validation gate presets:/)
+  assert.match(stdout, /native-provider-tui/)
   assert.match(stdout, /workspace-live-sync/)
   assert.match(stdout, /remote-home-extension/)
   assert.match(stdout, /matrix_classifications=kernel-authority,relay-target-freshness,workspace-live-sync-conflict/)
+})
+
+test("drill validation gate help lists presets from the registry", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
+
+  assert.match(stdout, /Known: native-provider-tui, remote-home-extension, slice-runtime, workspace-live-sync/)
 })
 
 test("drill validation gate lists selected presets as JSON", async () => {

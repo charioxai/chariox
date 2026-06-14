@@ -6,6 +6,7 @@ import {
   validationGateRequirementOptionDefaults,
 } from "./lib/drill-validation-gate-args.mjs"
 import {
+  DRILL_VALIDATION_GATE_PRESETS,
   describeDrillValidationGatePresets,
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
@@ -21,7 +22,7 @@ function printHelp() {
     "Options:",
     "  --list-presets       List validation gate requirement presets and exit",
     "  --preset NAME[,NAME]  Apply named requirement preset; repeatable",
-    "                         Known: workspace-live-sync, remote-home-extension",
+    `                         Known: ${Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort().join(", ")}`,
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
     "  --artifact-index PATH  Read and verify a specific artifact index; repeatable",
     "  --artifact-root ROOT   Discover artifact indexes below ROOT; repeatable",
