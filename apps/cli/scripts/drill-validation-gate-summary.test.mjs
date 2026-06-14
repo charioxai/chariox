@@ -176,6 +176,40 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
   }
 })
 
+test("drill validation gate summary gates aggregate artifact schema coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  try {
+    const reportPath = path.join(rootDir, "gate.json")
+    await writeGateReport(reportPath, await passingGateReport(rootDir))
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-artifact-schema",
+        "arroba.drill.validation_suite_run.v1",
+        "--json",
+      ]),
+      (error) => {
+        const aggregate = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(aggregate.status, "failed")
+        assert.deepEqual(aggregate.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        assert.deepEqual(aggregate.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        assert.equal(
+          aggregate.nextActions.some((action) =>
+            action.nextAction === "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate aggregate"),
+          true,
+        )
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill validation gate summary rejects empty inputs", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--json"]),
