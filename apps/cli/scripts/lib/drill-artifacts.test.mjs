@@ -507,6 +507,37 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
       }),
       /generatedEvidenceKinds do not match indexes/,
     )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        runtimeSignals: { "workspace-live-synch-state": 1 },
+      }),
+      /runtimeSignals has unknown runtime signal "workspace-live-synch-state"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        indexes: [{
+          ...aggregate.indexes[0],
+          runtimeSignals: { "workspace-live-synch-state": 1 },
+          runtimeSignalOwners: { "runtime-state": 1 },
+        }],
+      }),
+      /indexes\[0\]\.runtimeSignals has unknown runtime signal "workspace-live-synch-state"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        runtimeSignals: { "workspace-live-sync-state": 1 },
+        runtimeSignalOwners: { "kernel-authority": 1 },
+        indexes: [{
+          ...aggregate.indexes[0],
+          runtimeSignals: { "workspace-live-sync-state": 1 },
+          runtimeSignalOwners: { "kernel-authority": 1 },
+        }],
+      }),
+      /indexes\[0\]\.runtimeSignalOwners must match runtimeSignals/,
+    )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
@@ -538,6 +569,21 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       evidenceRepos: { oss: -1 },
     }),
     /evidenceRepos has invalid count/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: { "workspace-live-synch-state": 1 },
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: {},
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      evidenceRepos: {},
+    }),
+    /runtimeSignals has unknown runtime signal "workspace-live-synch-state"/,
   )
 })
 

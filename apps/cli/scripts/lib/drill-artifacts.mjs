@@ -9,6 +9,7 @@ import {
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
   drillRuntimeSignalOwnersFor,
+  isKnownDrillRuntimeSignal,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 
@@ -277,7 +278,7 @@ export function validateDrillArtifactDiagnosticDimensions(value, source = "drill
     if (!Object.hasOwn(value, key)) {
       throw new Error(`${source} is missing ${key}`)
     }
-    validateCountObject(value[key], `${source}.${key}`)
+    validateDiagnosticCountObject(value[key], `${source}.${key}`, key)
   }
 }
 
@@ -331,7 +332,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
     if (!Object.hasOwn(aggregate, key)) {
       throw new Error(`${source} is missing ${key}`)
     }
-    validateCountObject(aggregate[key], `${source}.${key}`)
+    validateDiagnosticCountObject(aggregate[key], `${source}.${key}`, key)
   }
   if (!Array.isArray(aggregate.indexes)) {
     throw new Error(`${source} has invalid indexes`)
@@ -432,8 +433,9 @@ function validateArtifactIndexSummary(summary, source) {
     if (!Object.hasOwn(summary, key)) {
       throw new Error(`${source} is missing ${key}`)
     }
-    validateCountObject(summary[key], `${source}.${key}`)
+    validateDiagnosticCountObject(summary[key], `${source}.${key}`, key)
   }
+  validateRuntimeSignalOwnerCountsMatch(summary.runtimeSignals, summary.runtimeSignalOwners, source)
 }
 
 function validateCountObject(value, source) {
@@ -444,6 +446,26 @@ function validateCountObject(value, source) {
     if (!nonEmptyString(key) || !Number.isSafeInteger(count) || count < 0) {
       throw new Error(`${source} has invalid count`)
     }
+  }
+}
+
+function validateDiagnosticCountObject(value, source, key) {
+  validateCountObject(value, source)
+  if (key === "runtimeSignals") {
+    for (const signal of Object.keys(value)) {
+      if (!isKnownDrillRuntimeSignal(signal)) {
+        throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+      }
+    }
+  }
+}
+
+function validateRuntimeSignalOwnerCountsMatch(runtimeSignals, runtimeSignalOwners, source) {
+  const expectedOwners = Object.fromEntries(
+    drillRuntimeSignalOwnersFor(Object.keys(runtimeSignals ?? {})).map((owner) => [owner, 1]),
+  )
+  if (JSON.stringify(runtimeSignalOwners ?? {}) !== JSON.stringify(expectedOwners)) {
+    throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
   }
 }
 
