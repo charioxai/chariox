@@ -64,6 +64,8 @@ test("failure summary writes artifact index for output", async () => {
     assert.deepEqual(fileAggregate, aggregate)
     assert.equal(artifactIndex.metadata.drill, "failure-summary")
     assert.equal(artifactIndex.metadata.total, 1)
+    assert.equal(artifactIndex.metadata.owners, "runtime-network")
+    assert.equal(artifactIndex.metadata.classifications, "relay-runtime")
     assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,session-authority")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
