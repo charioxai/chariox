@@ -24,7 +24,8 @@ node apps/cli/scripts/drill-matrix-report-summary.mjs --json --output path/to/ag
 
 The summary command exits non-zero when any input report has `status=failed`. `--find ROOT` discovers valid matrix reports below an artifact root and ignores unrelated JSON files.
 For dry-run reports, it prints selected scenario exit criteria so reviewers can confirm matrix scope before running live drills.
-The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`.
+Failed-scenario summaries include an owner and next action so humans and CI can route the fix without opening raw logs first.
+The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `failedScenarios` entries include `classification`, `owner`, `reason`, and `nextAction`.
 
 Required top-level fields:
 

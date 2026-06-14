@@ -50,11 +50,11 @@ test("formats failed and skipped scenarios with next actions", () => {
   assert.match(text, /matrix report: test-matrix \(\/tmp\/report\.json\)/)
   assert.match(text, /status=failed scenarios=3 passed=0 failed=2 skipped=1 dry_run=0/)
   assert.match(text, /classifications: cloud-runtime=1 provider-account=1/)
-  assert.match(text, /- remote classification=provider-account reason=insufficient balance/)
+  assert.match(text, /- remote classification=provider-account owner=provider-account reason=insufficient balance/)
   assert.match(text, /criteria: remote worker executes the selected provider turn; home observes completion/)
   assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
   assert.match(text, /next: check provider quota or billing/)
-  assert.match(text, /- cloud classification=cloud-runtime reason=deployment did not become ready/)
+  assert.match(text, /- cloud classification=cloud-runtime owner=cloud-deployment reason=deployment did not become ready/)
   assert.match(text, /next: inspect Cloud deployment\/control-plane status/)
   assert.match(text, /skipped scenarios: hetzner/)
 })
@@ -106,7 +106,14 @@ test("aggregates multiple matrix reports for CI", () => {
     durationMs: 1025,
   })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1 })
-  assert.deepEqual(aggregate.failedScenarios, [{ matrix: "remote", id: "remote", classification: "provider-auth", reason: "expired token" }])
+  assert.deepEqual(aggregate.failedScenarios, [{
+    matrix: "remote",
+    id: "remote",
+    classification: "provider-auth",
+    owner: "provider-account",
+    reason: "expired token",
+    nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
+  }])
   assert.deepEqual(aggregate.skippedScenarios, [{ matrix: "remote", id: "hetzner", reason: "skipped after previous failure" }])
 })
 

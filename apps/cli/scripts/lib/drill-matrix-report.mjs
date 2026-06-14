@@ -98,7 +98,14 @@ export function summarizeDrillMatrixReports(reports) {
       classifications.set(classification, (classifications.get(classification) ?? 0) + count)
     }
     for (const scenario of summary.failedScenarios) {
-      failedScenarios.push({ matrix: summary.matrix, id: scenario.id, classification: scenario.classification ?? null, reason: scenario.reason ?? null })
+      failedScenarios.push({
+        matrix: summary.matrix,
+        id: scenario.id,
+        classification: scenario.classification ?? null,
+        owner: ownerForScenario(scenario),
+        reason: scenario.reason ?? null,
+        nextAction: nextActionForScenario(scenario),
+      })
     }
     for (const scenario of summary.skippedScenarios) {
       skippedScenarios.push({ matrix: summary.matrix, id: scenario.id, reason: scenario.reason ?? null })
@@ -141,8 +148,9 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
     lines.push("failed scenarios:")
     for (const scenario of summary.failedScenarios) {
       const classification = scenario.classification ? ` classification=${scenario.classification}` : ""
+      const owner = ` owner=${ownerForScenario(scenario)}`
       const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
-      lines.push(`- ${scenario.id}${classification}${reason}`)
+      lines.push(`- ${scenario.id}${classification}${owner}${reason}`)
       const criteria = exitCriteriaForScenario(scenario)
       if (criteria.length > 0) {
         lines.push(`  criteria: ${criteria.join("; ")}`)
@@ -216,6 +224,28 @@ function nextActionForScenario(scenario) {
     return "inspect the expected-failure assertion; the scenario failed differently than planned"
   }
   return "inspect preserved drill artifacts and rerun the command recorded in this report"
+}
+
+function ownerForScenario(scenario) {
+  if (scenario.classification === "provider-auth" || scenario.classification === "provider-account") {
+    return "provider-account"
+  }
+  if (scenario.classification === "provider-error") {
+    return "provider-runtime"
+  }
+  if (scenario.classification === "docker-runtime") {
+    return "local-machine"
+  }
+  if (scenario.classification === "cloud-runtime") {
+    return "cloud-deployment"
+  }
+  if (scenario.classification === "relay-runtime") {
+    return "runtime-network"
+  }
+  if (scenario.classification === "test-harness" || scenario.classification === "expected-failure") {
+    return "validation-harness"
+  }
+  return "drill-or-runtime"
 }
 
 function appendDryRunCriteria(lines, scenarios) {
