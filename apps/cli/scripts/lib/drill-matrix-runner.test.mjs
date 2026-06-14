@@ -311,7 +311,12 @@ test("writes artifact index for matrix reports", async () => {
 
   await runDrillMatrix({
     matrixName: "test-matrix",
-    scenarios: [{ id: "pass", description: "passing scenario", script }],
+    scenarios: [{
+      id: "pass",
+      description: "passing scenario",
+      script,
+      runtimeSignals: ["lease-health", "session-authority"],
+    }],
     commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
     cwd: dir,
     reportPath,
@@ -323,6 +328,7 @@ test("writes artifact index for matrix reports", async () => {
   assert.equal(index.metadata.status, "passed")
   assert.equal(index.metadata.dryRun, false)
   assert.equal(index.metadata.scenarios, 1)
+  assert.equal(index.metadata.runtimeSignals, "lease-health,session-authority")
   assert.deepEqual(index.artifacts.map((artifact) => ({
     path: artifact.path,
     schema: artifact.schema,

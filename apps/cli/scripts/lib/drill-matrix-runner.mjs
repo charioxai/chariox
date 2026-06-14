@@ -374,6 +374,7 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
       status: report.status,
       dryRun: report.dryRun,
       scenarios: report.scenarios.length,
+      ...(Object.keys(runtimeSignals).length > 0 ? { runtimeSignals: Object.keys(runtimeSignals).join(",") } : {}),
     },
   })
   console.log(`[${matrixName}] report ${reportPath}`)
