@@ -62,6 +62,9 @@ async function main() {
       metadata: {
         drill: "matrix-report-summary",
         status: aggregate.status,
+        owners: Object.keys(aggregate.owners).join(","),
+        classifications: Object.keys(aggregate.classifications).join(","),
+        runtimeSignals: Object.keys(aggregate.runtimeSignals).join(","),
       },
     })
   }

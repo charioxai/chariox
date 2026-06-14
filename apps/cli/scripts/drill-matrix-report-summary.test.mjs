@@ -60,6 +60,9 @@ test("matrix report summary writes artifact index for output", async () => {
     assert.deepEqual(fileAggregate, aggregate)
     assert.equal(artifactIndex.metadata.drill, "matrix-report-summary")
     assert.equal(artifactIndex.metadata.status, "passed")
+    assert.equal(artifactIndex.metadata.owners, "")
+    assert.equal(artifactIndex.metadata.classifications, "")
+    assert.equal(artifactIndex.metadata.runtimeSignals, "")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -67,6 +70,60 @@ test("matrix report summary writes artifact index for output", async () => {
       path: "aggregate.json",
       schema: "arroba.drill.matrix.aggregate.v1",
     }])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("matrix report summary indexes failure owner and classification metadata", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  try {
+    const reportPath = path.join(dir, "matrix.json")
+    const outputPath = path.join(dir, "aggregate.json")
+    const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+    await writeReport(reportPath, matrixReport({
+      matrix: "remote-agent-runtime-matrix",
+      status: "failed",
+      scenarios: [{
+        id: "remote",
+        description: "remote scenario",
+        requires: [],
+        exitCriteria: [],
+        status: "failed",
+        expectedFailure: false,
+        classification: "provider-auth",
+        durationMs: 10,
+        reason: "expired token",
+        command: "node",
+        args: ["remote.mjs"],
+        artifactHints: [],
+        runtimeSignals: ["provider-run-lifecycle", "lease-health"],
+      }],
+    }))
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--json",
+        "--output",
+        outputPath,
+        "--output-artifact-index",
+        artifactIndexPath,
+        reportPath,
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        return true
+      },
+    )
+
+    const aggregate = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+    assert.equal(aggregate.status, "failed")
+    assert.equal(artifactIndex.metadata.status, "failed")
+    assert.equal(artifactIndex.metadata.owners, "provider-account")
+    assert.equal(artifactIndex.metadata.classifications, "provider-auth")
+    assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,provider-run-lifecycle")
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
