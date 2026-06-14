@@ -29,6 +29,10 @@ const RUNTIME_SIGNALS = Object.freeze({
     owner: "runtime-network",
     description: "Relay target heartbeat freshness, selected kernel identity, and stale-target rejection.",
   },
+  "runtime-projection-health": {
+    owner: "kernel-authority",
+    description: "Kernel-owned read-model projection freshness, invariant checks, and stale projection reconciliation state.",
+  },
   "session-authority": {
     owner: "kernel-authority",
     description: "Kernel-owned session state, prompt routing, attachments, history, and authority boundaries.",

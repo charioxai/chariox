@@ -117,6 +117,14 @@ const REMOTE_EXTENSION_SYNC_PATTERNS = [
   /pending revoke/i,
 ]
 
+const PROJECTION_STALENESS_PATTERNS = [
+  /projection invariant .*failed/i,
+  /projection .*stale/i,
+  /stale .*projection/i,
+  /read[- ]model .*stale/i,
+  /projection .*reconciliation .*failed/i,
+]
+
 const WORKER_EXECUTION_PATTERNS = [
   /worker kernel .*failed/i,
   /remote worker .*failed/i,
@@ -178,6 +186,9 @@ export function classifyDrillChildFailure(text) {
   if (REMOTE_EXTENSION_SYNC_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'remote-extension-sync'
   }
+  if (PROJECTION_STALENESS_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'projection-staleness'
+  }
   if (WORKER_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'worker-execution'
   }
@@ -238,6 +249,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'remote-extension-sync'
       ? 'Remote extension manifest state did not reconcile between home and worker kernels.'
+      : null,
+    classification === 'projection-staleness'
+      ? 'Kernel projection state is stale; inspect projection health, read-model freshness, and reconciliation events.'
       : null,
     classification === 'worker-execution'
       ? 'Remote worker execution failed; inspect worker kernel logs, leased-agent state, and preserved worker artifacts.'

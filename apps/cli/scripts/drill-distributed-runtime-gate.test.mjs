@@ -94,6 +94,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     const indexedRuntimeSignals = artifactIndex.metadata.runtimeSignals.split(",")
     assert.equal(indexedRuntimeSignals.includes("home-extension-manifest-sync"), true)
     assert.equal(indexedRuntimeSignals.includes("provider-run-lifecycle"), true)
+    assert.equal(indexedRuntimeSignals.includes("runtime-projection-health"), true)
     assert.equal(indexedRuntimeSignals.includes("slice-auth-state"), true)
     assert.equal(indexedRuntimeSignals.includes("workspace-live-sync-state"), true)
     const indexedRuntimeSignalOwners = artifactIndex.metadata.runtimeSignalOwners.split(",")
@@ -592,7 +593,7 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       scenario("permission-visibility", "ui-client-projection", ["permission-interaction"]),
       scenario("remote-native-tui", "relay-runtime", ["provider-run-lifecycle", "session-authority"]),
       scenario("slice-native-tui", "worker-execution", ["provider-run-lifecycle", "session-authority"]),
-      scenario("transcript-parity", "provider-error", ["client-projection-health"]),
+      scenario("transcript-parity", "provider-error", ["client-projection-health", "runtime-projection-health"]),
       scenario("provider-auth-health", "provider-auth", ["provider-run-lifecycle"]),
     ],
   })
@@ -607,7 +608,7 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
       scenario("lease-reconnect", "relay-target-freshness", ["lease-health", "relay-target-freshness"]),
       scenario("provider-run-binding", "worker-execution", ["lease-health", "provider-run-lifecycle"]),
       scenario("remote-prompt-dispatch", "relay-runtime", ["agent-lifecycle", "provider-run-lifecycle"]),
-      scenario("single-user-remote-agent", "ui-client-projection", ["agent-lifecycle", "client-projection-health", "session-authority"]),
+      scenario("single-user-remote-agent", "ui-client-projection", ["agent-lifecycle", "client-projection-health", "runtime-projection-health", "session-authority"]),
     ],
   })
   await writeMatrixReport(path.join(ossMatrixRoot, "remote-home-extension.json"), {
@@ -663,7 +664,7 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
         providerModelOverrides: "",
       },
       scenarios: [
-        scenario("ui-projection", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health", "runtime-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
   }
@@ -741,6 +742,7 @@ const DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS = Object.freeze([
   "permission-interaction",
   "provider-run-lifecycle",
   "relay-target-freshness",
+  "runtime-projection-health",
   "session-authority",
   "slice-auth-state",
   "slice-runtime-state",
@@ -803,7 +805,7 @@ async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossRoot }) 
         scenario("permission-visibility", "ui-client-projection", ["permission-interaction"]),
         scenario("remote-native-tui", "relay-runtime", ["provider-run-lifecycle", "session-authority"]),
         scenario("slice-native-tui", "worker-execution", ["provider-run-lifecycle", "session-authority"]),
-        scenario("transcript-parity", "provider-error", ["client-projection-health"]),
+        scenario("transcript-parity", "provider-error", ["client-projection-health", "runtime-projection-health"]),
         scenario("provider-auth-health", "provider-auth", ["provider-run-lifecycle"]),
       ],
     }),
@@ -821,7 +823,7 @@ async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossRoot }) 
         scenario("lease-reconnect", "relay-target-freshness", ["lease-health", "relay-target-freshness"]),
         scenario("provider-run-binding", "worker-execution", ["lease-health", "provider-run-lifecycle"]),
         scenario("remote-prompt-dispatch", "relay-runtime", ["agent-lifecycle", "provider-run-lifecycle"]),
-        scenario("single-user-remote-agent", "ui-client-projection", ["agent-lifecycle", "client-projection-health", "session-authority"]),
+        scenario("single-user-remote-agent", "ui-client-projection", ["agent-lifecycle", "client-projection-health", "runtime-projection-health", "session-authority"]),
       ],
     }),
   })
@@ -885,7 +887,7 @@ async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossRoot }) 
         providers: "claude,codex,opencode",
       },
       scenarios: [
-        scenario("ui-projection", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health", "runtime-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     }),
   })

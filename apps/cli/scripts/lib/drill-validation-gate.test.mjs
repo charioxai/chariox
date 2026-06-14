@@ -20,6 +20,7 @@ import {
 } from "./drill-validation-gate.mjs"
 import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
+import { drillValidationSuiteManifest } from "./drill-validation-suite.mjs"
 import {
   workspaceLiveSyncRequiredScenarioDescriptors,
   workspaceLiveSyncRequiredScenarioIds,
@@ -340,7 +341,7 @@ test("slice runtime preset accepts hosted Cloud evidence from a separate matrix 
         scenario("provider-auth", "passed", { classification: "slice-auth", runtimeSignals: ["slice-auth-state"] }),
         scenario("session-start", "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority"] }),
         scenario("agent-reuse", "passed", { classification: "worker-execution", runtimeSignals: ["agent-lifecycle"] }),
-        scenario("ui-projection", "passed", { classification: "ui-client-projection", runtimeSignals: ["client-projection-health"] }),
+        scenario("ui-projection", "passed", { classification: "ui-client-projection", runtimeSignals: ["client-projection-health", "runtime-projection-health"] }),
         scenario("docker-browser-state", "passed", { classification: "docker-runtime", runtimeSignals: ["slice-runtime-state"] }),
       ],
     }))
@@ -351,7 +352,7 @@ test("slice runtime preset accepts hosted Cloud evidence from a separate matrix 
         providers: "claude,codex,opencode",
       },
       scenarios: [
-        scenario("hosted-slice-browser-e2e", "passed", { classification: "ui-client-projection", runtimeSignals: ["client-projection-health"] }),
+        scenario("hosted-slice-browser-e2e", "passed", { classification: "ui-client-projection", runtimeSignals: ["client-projection-health", "runtime-projection-health"] }),
         scenario("hosted-vault-view-slice", "passed", { classification: "kernel-authority", runtimeSignals: ["provider-run-lifecycle", "session-authority"] }),
       ],
     }))
@@ -1288,7 +1289,7 @@ function workspaceLiveSyncRequiredScenarios() {
 }
 
 function platformValidationPresetSummaries() {
-  return describeDrillValidationGatePresets().map((preset) => ({
+  return drillValidationSuiteManifest().validationPresets.map((preset) => ({
     name: preset.name,
     requiredArtifactCoverageAreas: preset.requiredArtifactCoverageAreas,
     requiredArtifactSchemas: preset.requiredArtifactSchemas,

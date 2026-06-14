@@ -59,6 +59,11 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect remote extension manifest sync status and audit events, retry sync if the grant is still valid, then rerun the drill",
     scenarioNextAction: "inspect remote extension manifest sync status and audit events, retry sync if the grant is still valid, then rerun the scenario",
   },
+  "projection-staleness": {
+    owner: "kernel-authority",
+    drillNextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the drill",
+    scenarioNextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the scenario",
+  },
   "worker-execution": {
     owner: "worker-kernel",
     drillNextAction: "inspect worker kernel logs, leased-agent launch state, and preserved worker artifacts, then rerun the drill",

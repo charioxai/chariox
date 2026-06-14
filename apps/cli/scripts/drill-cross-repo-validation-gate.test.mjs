@@ -46,7 +46,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
         providerModelOverrides: "",
       },
       scenarios: [
-        scenario("ui-projection", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health", "runtime-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
@@ -92,6 +92,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       "agent-lifecycle",
       "client-projection-health",
       "provider-run-lifecycle",
+      "runtime-projection-health",
       "session-authority",
       "slice-auth-state",
       "slice-runtime-state",
@@ -101,6 +102,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       "agent-lifecycle",
       "client-projection-health",
       "provider-run-lifecycle",
+      "runtime-projection-health",
       "session-authority",
       "slice-auth-state",
       "slice-runtime-state",
@@ -121,7 +123,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.matrixEvidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.artifactEvidenceRepos, "cloud")
-    assert.equal(artifactIndex.metadata.runtimeSignals, "agent-lifecycle,client-projection-health,provider-run-lifecycle,session-authority,slice-auth-state,slice-runtime-state")
+    assert.equal(artifactIndex.metadata.runtimeSignals, "agent-lifecycle,client-projection-health,provider-run-lifecycle,runtime-projection-health,session-authority,slice-auth-state,slice-runtime-state")
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,provider-account,provider-runtime,ui-client,worker-kernel")
     assert.equal(artifactIndex.metadata.classifications, "docker-runtime,kernel-authority,slice-auth,slice-runtime,ui-client-projection,worker-execution")
   } finally {
@@ -317,7 +319,7 @@ test("cross repo validation gate can disable default roots for focused evidence 
         scenario("provider-auth", "slice-auth", ["provider-run-lifecycle", "slice-auth-state"]),
         scenario("session-start", "kernel-authority", ["session-authority"]),
         scenario("agent-reuse", "worker-execution", ["agent-lifecycle"]),
-        scenario("ui-projection", "ui-client-projection", ["client-projection-health"]),
+        scenario("ui-projection", "ui-client-projection", ["client-projection-health", "runtime-projection-health"]),
         scenario("docker-browser-state", "docker-runtime", ["slice-runtime-state"]),
       ],
     })
@@ -331,7 +333,7 @@ test("cross repo validation gate can disable default roots for focused evidence 
         providerModelOverrides: "",
       },
       scenarios: [
-        scenario("hosted-slice-browser-e2e", "ui-client-projection", ["client-projection-health"], { providers: ["claude", "codex", "opencode"] }),
+        scenario("hosted-slice-browser-e2e", "ui-client-projection", ["client-projection-health", "runtime-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
 

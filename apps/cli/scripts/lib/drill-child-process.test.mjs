@@ -140,6 +140,16 @@ test('classifies remote extension manifest sync failures', () => {
   )
 })
 
+test('classifies stale projection failures separately from client rendering failures', () => {
+  const text = 'daemon health projection invariant failed: session prompt read-model stale for session session-1'
+
+  assert.equal(classifyDrillChildFailure(text), 'projection-staleness')
+  assert.match(
+    formatDrillChildFailure('projection health drill', 1, null, '', text),
+    /Kernel projection state is stale/,
+  )
+})
+
 test('classifies remote worker execution failures', () => {
   const text = 'remote worker execution failed: leased agent agent-1 failed to launch provider run'
 

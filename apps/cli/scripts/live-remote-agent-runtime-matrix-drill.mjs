@@ -88,7 +88,7 @@ const MATRIX = [
     provider: "opencode",
     description: "remote worker projection appears in waiting-room/client rows",
     classification: "ui-client-projection",
-    runtimeSignals: ["client-projection-health", "lease-health"],
+    runtimeSignals: ["client-projection-health", "lease-health", "runtime-projection-health"],
     exitCriteria: [
       "terminal client projection includes the selected remote worker kernel",
       "client-visible state matches the worker selected for the remote agent",
@@ -192,7 +192,7 @@ const MATRIX = [
   },
 ]
 
-function providerScenario({ id, provider, providerFamily = provider, description, classification, exitCriteria }) {
+function providerScenario({ id, provider, providerFamily = provider, description, classification, runtimeSignals, exitCriteria }) {
   return {
     id,
     provider,
@@ -201,6 +201,7 @@ function providerScenario({ id, provider, providerFamily = provider, description
     script: remoteMachineDrill,
     args: ["--provider", provider],
     classification,
+    runtimeSignals,
     deployment: "same-host-remote",
     exitCriteria,
   }

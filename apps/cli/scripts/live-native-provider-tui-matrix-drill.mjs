@@ -104,7 +104,7 @@ const MATRIX = [
     script: remoteNativeDrill,
     args: ["--standard-home-worker", "--providers", ALL_PROVIDERS, "--include-attachments"],
     classification: "ui-client-projection",
-    runtimeSignals: ["client-projection-health", "session-authority"],
+    runtimeSignals: ["client-projection-health", "runtime-projection-health", "session-authority"],
     deployment: "same-host-remote",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [

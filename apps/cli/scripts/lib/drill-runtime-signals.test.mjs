@@ -21,6 +21,7 @@ test("defines stable distributed runtime signal ids", () => {
     "permission-interaction",
     "provider-run-lifecycle",
     "relay-target-freshness",
+    "runtime-projection-health",
     "session-authority",
     "slice-auth-state",
     "slice-runtime-state",
@@ -43,8 +44,9 @@ test("writes and validates runtime signal manifest", () => {
     "lease-health": 2,
     "provider-run-lifecycle": 1,
     "relay-target-freshness": 1,
+    "runtime-projection-health": 3,
   }), {
-    "kernel-authority": 2,
+    "kernel-authority": 5,
     "provider-runtime": 1,
     "runtime-network": 1,
   })

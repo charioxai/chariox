@@ -75,7 +75,7 @@ const MATRIX = [
     description: "TUI slash-command and waiting-room slice projection",
     script: sliceLifecycleDrill,
     classification: "ui-client-projection",
-    runtimeSignals: ["client-projection-health", "slice-auth-state", "slice-runtime-state"],
+    runtimeSignals: ["client-projection-health", "runtime-projection-health", "slice-auth-state", "slice-runtime-state"],
     deployment: "local",
     exitCriteria: [
       "slash-command status renders provider auth aliases from kernel state",
