@@ -49,6 +49,11 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect worker kernel logs, leased-agent launch state, and preserved worker artifacts, then rerun the drill",
     scenarioNextAction: "inspect worker kernel logs, leased-agent launch state, and preserved worker artifacts, then rerun the scenario",
   },
+  "ui-client-projection": {
+    owner: "ui-client",
+    drillNextAction: "inspect web/TUI terminal projection logs, transcript rendering state, and preserved screenshots or terminal captures, then rerun the drill",
+    scenarioNextAction: "inspect web/TUI terminal projection logs, transcript rendering state, and preserved screenshots or terminal captures, then rerun the scenario",
+  },
   "workspace-live-sync-conflict": {
     owner: "runtime-state",
     drillNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the drill",

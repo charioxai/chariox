@@ -95,6 +95,15 @@ const WORKER_EXECUTION_PATTERNS = [
   /worker execution failed/i,
 ]
 
+const UI_CLIENT_PROJECTION_PATTERNS = [
+  /ui\/client projection/i,
+  /client projection .*failed/i,
+  /web terminal .*projection/i,
+  /tui .*projection/i,
+  /terminal event .*not .*rendered/i,
+  /transcript .*render(?:ing)? .*failed/i,
+]
+
 const WORKSPACE_LIVE_SYNC_CONFLICT_PATTERNS = [
   /workspace live sync .*conflict/i,
   /skipped_conflict/i,
@@ -129,6 +138,9 @@ export function classifyDrillChildFailure(text) {
   }
   if (WORKER_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'worker-execution'
+  }
+  if (UI_CLIENT_PROJECTION_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'ui-client-projection'
   }
   if (WORKSPACE_LIVE_SYNC_CONFLICT_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'workspace-live-sync-conflict'
@@ -178,6 +190,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'worker-execution'
       ? 'Remote worker execution failed; inspect worker kernel logs, leased-agent state, and preserved worker artifacts.'
+      : null,
+    classification === 'ui-client-projection'
+      ? 'UI/client projection failed; inspect web/TUI terminal projection logs, transcript rendering state, and preserved captures.'
       : null,
     classification === 'workspace-live-sync-conflict'
       ? 'Workspace Live Sync detected a conflict or external change that needs reconciliation.'

@@ -114,6 +114,16 @@ test('classifies remote worker execution failures', () => {
   )
 })
 
+test('classifies UI client projection failures', () => {
+  const text = 'web terminal projection failed: terminal event was not rendered in transcript'
+
+  assert.equal(classifyDrillChildFailure(text), 'ui-client-projection')
+  assert.match(
+    formatDrillChildFailure('web terminal drill', 1, null, '', text),
+    /UI\/client projection failed/,
+  )
+})
+
 test('classifies workspace live sync conflicts', () => {
   const text = 'Workspace Live Sync result skipped_conflict for src/app.ts after target changed outside workspace live sync'
 

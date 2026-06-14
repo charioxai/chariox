@@ -15,6 +15,7 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("kernel-authority"), "kernel-authority")
   assert.equal(drillFailureOwnerForClassification("remote-extension-sync"), "kernel-authority")
   assert.equal(drillFailureOwnerForClassification("worker-execution"), "worker-kernel")
+  assert.equal(drillFailureOwnerForClassification("ui-client-projection"), "ui-client")
   assert.equal(drillFailureOwnerForClassification("workspace-live-sync-conflict"), "runtime-state")
   assert.equal(drillFailureOwnerForClassification("slice-auth"), "provider-account")
   assert.equal(drillFailureOwnerForClassification("test-harness"), "validation-harness")
@@ -41,6 +42,10 @@ test("formats target-specific next actions", () => {
   assert.equal(
     drillFailureNextActionForClassification("worker-execution", { target: "scenario" }),
     "inspect worker kernel logs, leased-agent launch state, and preserved worker artifacts, then rerun the scenario",
+  )
+  assert.equal(
+    drillFailureNextActionForClassification("ui-client-projection", { target: "scenario" }),
+    "inspect web/TUI terminal projection logs, transcript rendering state, and preserved screenshots or terminal captures, then rerun the scenario",
   )
 })
 

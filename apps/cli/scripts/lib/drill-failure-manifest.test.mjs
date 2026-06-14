@@ -187,6 +187,14 @@ test("classifies common drill failure owners and next actions", () => {
     owner: "worker-kernel",
     nextAction: "inspect worker kernel logs, leased-agent launch state, and preserved worker artifacts, then rerun the drill",
   })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "web terminal projection failed: terminal event was not rendered", stack: null },
+  })), {
+    kind: "ui-client-projection",
+    owner: "ui-client",
+    nextAction: "inspect web/TUI terminal projection logs, transcript rendering state, and preserved screenshots or terminal captures, then rerun the drill",
+  })
 })
 
 test("aggregates preserved drill failure summaries", () => {
