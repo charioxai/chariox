@@ -94,12 +94,22 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const generatedEvidenceKinds = new Set([
     ...Object.keys(aggregate.coverage?.generatedEvidenceKinds ?? {}),
   ])
+  const requiredGeneratedEvidenceKinds = new Set([
+    ...Object.keys(aggregate.coverage?.requiredGeneratedEvidenceKinds ?? {}),
+    ...(aggregate.requiredGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
+  ])
+  const missingGeneratedEvidenceKinds = new Set([
+    ...Object.keys(aggregate.coverage?.missingGeneratedEvidenceKinds ?? {}),
+    ...(aggregate.missingGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
+  ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
+    ...(requiredGeneratedEvidenceKinds.size > 0 ? { requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds].sort().join(",") } : {}),
+    ...(missingGeneratedEvidenceKinds.size > 0 ? { missingGeneratedEvidenceKinds: [...missingGeneratedEvidenceKinds].sort().join(",") } : {}),
   }
 }
 
