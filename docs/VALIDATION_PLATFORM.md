@@ -7,6 +7,7 @@ Arroba runtime features must be validated through reusable drill primitives, not
 - Artifact lifecycle: use `apps/cli/scripts/lib/drill-artifacts.mjs` to prepare drill roots and preserve failed runs with `arroba-drill-failure.json`.
 - Failure summaries: use `apps/cli/scripts/lib/drill-failure-manifest.mjs` or `apps/cli/scripts/drill-failure-summary.mjs` to validate and summarize preserved failed runs without printing credentials or large payloads.
 - Failure taxonomy: use `apps/cli/scripts/lib/drill-failure-taxonomy.mjs` for classification owners and next actions shared by failure manifests and matrix reports.
+- Runtime signals: use `apps/cli/scripts/lib/drill-runtime-signals.mjs` for stable distributed-runtime signal ids and owner mapping. Do not hand-write signal owner tables in feature drills.
 - Aggregate actions: use `apps/cli/scripts/lib/drill-aggregate-actions.mjs` to group and validate owner/classification/next-action counts consistently across reports.
 - Secret hygiene: use `apps/cli/scripts/lib/drill-secrets.mjs` for shared drill metadata redaction and token-shaped value detection.
 - Time fields: use `apps/cli/scripts/lib/drill-time.mjs` to validate strict ISO timestamps and report start/end ordering.
@@ -62,7 +63,7 @@ node apps/cli/scripts/drill-validation-gate.mjs \
   --json --output .artifacts/drill-validation-gate.json
 ```
 
-The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, verifies indexed artifacts, can require artifact schema coverage with `--require-artifact-schema`, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first. Text summaries include discovered artifact schema counts so operators can see which evidence types were present without opening the artifact index.
+The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, verifies indexed artifacts, can require artifact schema coverage with `--require-artifact-schema`, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first. Text summaries include discovered artifact schema counts, runtime signal counts, and runtime signal owner counts for artifact, matrix, and failure evidence so operators can see which evidence types and runtime subsystems were present without opening raw JSON.
 Use `--matrix-report PATH` and `--failure-manifest PATH` when CI already knows the exact artifact paths and should avoid broad discovery.
 The distributed-runtime preset requires `arroba.drill.validation_suite_run.v1`, so release/staging evidence must include an executed validation-suite report rather than only publishing a coverage manifest. Pass `--include-default-artifacts` or explicit artifact indexes so the gate can verify that schema. When this schema is missing, the gate's next action points operators to rerun the suite with `--run-json --output PATH --output-artifact-index PATH`.
 
@@ -99,6 +100,8 @@ Required top-level fields:
 - `metadata`: feature-specific non-secret context such as enabled scenario groups or provider model ids.
 - `scenarios`: selected scenario results; reports with no selected scenarios are invalid.
 
+Distributed-runtime matrices must also include `runtimeSignals`, an aggregate count object for scenario runtime-signal ids, and `runtimeSignalScenarios`, a map from signal id to the scenario rows that provide that evidence.
+
 Top-level `durationMs` must equal `completedAt - startedAt` exactly. This keeps generated reports comparable across local, remote, hosted, and collab matrices and catches hand-authored report drift.
 
 Required scenario fields:
@@ -109,6 +112,10 @@ Required scenario fields:
 - `expectedFailure`, `classification`, `durationMs`, `reason`.
 - `command`, `args`.
 - `artifactHints`: optional paths to preserved artifact roots or failure manifests discovered from child drill output.
+
+Distributed-runtime scenario rows should include `runtimeSignals`: stable signal ids covered by the scenario, such as `session-authority`, `lease-health`, or `workspace-live-sync-state`.
+
+Runtime signal owners are derived from `drill-runtime-signals.mjs`. Matrix reports should emit `metadata.runtimeSignalOwners` and summary/gate artifacts should preserve owner counts rather than requiring operators to infer ownership from raw signal ids.
 
 Matrix runners preflight selected scenario definitions and all selected scenario commands before spawning child drills. Scenario ids must be unique and non-empty, selected scenarios must include descriptions, `requires` and `exitCriteria` must be string arrays or valid strings where supported, and `commandForScenario` must return a non-empty command with string args for every selected scenario.
 
