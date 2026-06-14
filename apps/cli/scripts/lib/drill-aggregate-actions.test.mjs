@@ -25,19 +25,25 @@ test("counts and orders aggregate next actions", () => {
     classification: "provider-auth",
     nextAction: "refresh provider login",
   })
+  countDrillAggregateNextAction(counts, {
+    owner: "runtime-network",
+    classification: "relay-runtime",
+    nextAction: "inspect relay",
+    count: 3,
+  })
 
   assert.deepEqual(formatDrillAggregateNextActionCounts(counts), [
+    {
+      owner: "runtime-network",
+      classification: "relay-runtime",
+      nextAction: "inspect relay",
+      count: 4,
+    },
     {
       owner: "provider-account",
       classification: "provider-auth",
       nextAction: "refresh provider login",
       count: 2,
-    },
-    {
-      owner: "runtime-network",
-      classification: "relay-runtime",
-      nextAction: "inspect relay",
-      count: 1,
     },
   ])
 })

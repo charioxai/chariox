@@ -117,7 +117,7 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       owner: "provider-account",
       classification: "provider-auth",
       nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
-      count: 1,
+      count: 2,
     },
     {
       owner: "validation-harness",

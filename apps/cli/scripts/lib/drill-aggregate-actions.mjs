@@ -1,9 +1,10 @@
-export function countDrillAggregateNextAction(counts, { owner, classification, nextAction }) {
+export function countDrillAggregateNextAction(counts, { owner, classification, nextAction, count = 1 }) {
   const key = JSON.stringify([owner, classification, nextAction])
   const previous = counts.get(key)
+  const increment = nextActionIncrement(count)
   counts.set(key, previous
-    ? { ...previous, count: previous.count + 1 }
-    : { owner, classification, nextAction, count: 1 })
+    ? { ...previous, count: previous.count + increment }
+    : { owner, classification, nextAction, count: increment })
 }
 
 export function formatDrillAggregateNextActionCounts(counts) {
@@ -40,4 +41,11 @@ export function countDrillAggregateEntriesBy(entries, keyForEntry) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function nextActionIncrement(count) {
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error("aggregate next action has invalid count")
+  }
+  return count
 }
