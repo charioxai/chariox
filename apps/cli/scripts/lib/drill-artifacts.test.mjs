@@ -6,6 +6,8 @@ import test from "node:test"
 
 import {
   DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA,
+  DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS,
+  DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS,
   DRILL_ARTIFACT_INDEX_SCHEMA,
   diagnosticMetadataForDrillArtifactIndexAggregate,
   findDrillArtifactIndexPaths,
@@ -15,6 +17,7 @@ import {
   readDrillArtifactIndex,
   summarizeDrillArtifactIndexes,
   validateDrillArtifactIndexAggregate,
+  validateDrillArtifactDiagnosticDimensions,
   validateDrillArtifactIndex,
   verifyDrillArtifactIndex,
   writeDrillArtifactIndex,
@@ -270,6 +273,24 @@ test("summarizes drill artifact indexes", async () => {
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
     })
+    assert.deepEqual(DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS, [
+      "runtimeSignals",
+      "runtimeSignalOwners",
+      "coverageAreas",
+      "owners",
+      "classifications",
+      "artifactKinds",
+      "evidenceRepos",
+    ])
+    assert.deepEqual(DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS, [
+      "schemas",
+      ...DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS,
+    ])
+    for (const key of DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS) {
+      assert(Object.hasOwn(aggregate, key), `aggregate should preserve ${key}`)
+      assert(aggregate.indexes.every((index) => Object.hasOwn(index, key)), `index summaries should preserve ${key}`)
+    }
+    assert.doesNotThrow(() => validateDrillArtifactDiagnosticDimensions(aggregate))
     assert.doesNotThrow(() => validateDrillArtifactIndexAggregate(aggregate))
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /indexes=2 artifacts=3/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=2/)
@@ -305,6 +326,32 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
+})
+
+test("rejects invalid drill artifact diagnostic dimensions", () => {
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+    }),
+    /missing evidenceRepos/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: { "kernel-authority": 1 },
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+      evidenceRepos: { oss: -1 },
+    }),
+    /evidenceRepos has invalid count/,
+  )
 })
 
 test("rejects unsafe drill artifact index paths", async () => {

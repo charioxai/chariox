@@ -218,6 +218,9 @@ function artifactAggregateFixture() {
       "kernel-authority": 1,
       "runtime-state": 1,
     },
+    coverageAreas: {
+      "distributed-observability": 1,
+    },
     owners: {
       "validation-platform": 1,
     },
@@ -249,6 +252,9 @@ function artifactAggregateFixture() {
       runtimeSignalOwners: {
         "kernel-authority": 1,
         "runtime-state": 1,
+      },
+      coverageAreas: {
+        "distributed-observability": 1,
       },
       owners: {
         "validation-platform": 1,

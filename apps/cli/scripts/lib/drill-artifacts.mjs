@@ -11,7 +11,29 @@ import { drillRuntimeSignalOwnersFor } from "./drill-runtime-signals.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
 export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
+export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
+  "runtimeSignals",
+  "runtimeSignalOwners",
+  "coverageAreas",
+  "owners",
+  "classifications",
+  "artifactKinds",
+  "evidenceRepos",
+])
+export const DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS = Object.freeze([
+  "schemas",
+  ...DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS,
+])
 const DRILL_ARTIFACT_INDEX_FILE = "arroba-drill-artifacts.json"
+const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
+  runtimeSignals: "runtime_signals",
+  runtimeSignalOwners: "runtime_signal_owners",
+  coverageAreas: "coverage_areas",
+  owners: "owners",
+  classifications: "classifications",
+  artifactKinds: "artifact_kinds",
+  evidenceRepos: "evidence_repos",
+})
 
 export async function prepareDrillArtifacts(rootDir) {
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
@@ -196,29 +218,10 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
 }
 
 export function diagnosticMetadataForDrillArtifactIndexAggregate(aggregate) {
-  return {
-    ...(Object.keys(aggregate.runtimeSignals ?? {}).length > 0
-      ? { runtimeSignals: Object.keys(aggregate.runtimeSignals).sort().join(",") }
-      : {}),
-    ...(Object.keys(aggregate.runtimeSignalOwners ?? {}).length > 0
-      ? { runtimeSignalOwners: Object.keys(aggregate.runtimeSignalOwners).sort().join(",") }
-      : {}),
-    ...(Object.keys(aggregate.coverageAreas ?? {}).length > 0
-      ? { coverageAreas: Object.keys(aggregate.coverageAreas).sort().join(",") }
-      : {}),
-    ...(Object.keys(aggregate.owners ?? {}).length > 0
-      ? { owners: Object.keys(aggregate.owners).sort().join(",") }
-      : {}),
-    ...(Object.keys(aggregate.classifications ?? {}).length > 0
-      ? { classifications: Object.keys(aggregate.classifications).sort().join(",") }
-      : {}),
-    ...(Object.keys(aggregate.artifactKinds ?? {}).length > 0
-      ? { artifactKinds: Object.keys(aggregate.artifactKinds).sort().join(",") }
-      : {}),
-    ...(Object.keys(aggregate.evidenceRepos ?? {}).length > 0
-      ? { evidenceRepos: Object.keys(aggregate.evidenceRepos).sort().join(",") }
-      : {}),
-  }
+  validateDrillArtifactDiagnosticDimensions(aggregate)
+  return Object.fromEntries(DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS
+    .map((key) => [key, Object.keys(aggregate[key] ?? {}).sort().join(",")])
+    .filter(([, value]) => value.length > 0))
 }
 
 export function formatDrillArtifactIndexAggregateSummary(aggregate) {
@@ -231,36 +234,26 @@ export function formatDrillArtifactIndexAggregateSummary(aggregate) {
   if (schemas.length > 0) {
     lines.push(`schemas: ${schemas.map(([schema, count]) => `${schema}=${count}`).join(" ")}`)
   }
-  const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
-  if (runtimeSignals.length > 0) {
-    lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
-  }
-  const runtimeSignalOwners = Object.entries(aggregate.runtimeSignalOwners ?? {})
-  if (runtimeSignalOwners.length > 0) {
-    lines.push(`runtime_signal_owners: ${runtimeSignalOwners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
-  }
-  const coverageAreas = Object.entries(aggregate.coverageAreas ?? {})
-  if (coverageAreas.length > 0) {
-    lines.push(`coverage_areas: ${coverageAreas.map(([area, count]) => `${area}=${count}`).join(" ")}`)
-  }
-  const owners = Object.entries(aggregate.owners ?? {})
-  if (owners.length > 0) {
-    lines.push(`owners: ${owners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
-  }
-  const classifications = Object.entries(aggregate.classifications ?? {})
-  if (classifications.length > 0) {
-    lines.push(`classifications: ${classifications.map(([classification, count]) => `${classification}=${count}`).join(" ")}`)
-  }
-  const artifactKinds = Object.entries(aggregate.artifactKinds ?? {})
-  if (artifactKinds.length > 0) {
-    lines.push(`artifact_kinds: ${artifactKinds.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
-  }
-  const evidenceRepos = Object.entries(aggregate.evidenceRepos ?? {})
-  if (evidenceRepos.length > 0) {
-    lines.push(`evidence_repos: ${evidenceRepos.map(([repo, count]) => `${repo}=${count}`).join(" ")}`)
+  for (const key of DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS) {
+    const entries = Object.entries(aggregate[key] ?? {})
+    if (entries.length > 0) {
+      lines.push(`${DRILL_ARTIFACT_DIAGNOSTIC_LABELS[key]}: ${entries.map(([name, count]) => `${name}=${count}`).join(" ")}`)
+    }
   }
   lines.push("next: verify indexed artifacts before using them as validation evidence")
   return lines.join("\n")
+}
+
+export function validateDrillArtifactDiagnosticDimensions(value, source = "drill artifact diagnostics") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const key of DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS) {
+    if (!Object.hasOwn(value, key)) {
+      throw new Error(`${source} is missing ${key}`)
+    }
+    validateCountObject(value[key], `${source}.${key}`)
+  }
 }
 
 export function validateDrillArtifactIndex(index, source = "drill artifact index") {
@@ -303,14 +296,12 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
       throw new Error(`${source}.totals has invalid ${key}`)
     }
   }
-  validateCountObject(aggregate.schemas, `${source}.schemas`)
-  validateCountObject(aggregate.runtimeSignals ?? {}, `${source}.runtimeSignals`)
-  validateCountObject(aggregate.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
-  validateCountObject(aggregate.coverageAreas ?? {}, `${source}.coverageAreas`)
-  validateCountObject(aggregate.owners ?? {}, `${source}.owners`)
-  validateCountObject(aggregate.classifications ?? {}, `${source}.classifications`)
-  validateCountObject(aggregate.artifactKinds ?? {}, `${source}.artifactKinds`)
-  validateCountObject(aggregate.evidenceRepos ?? {}, `${source}.evidenceRepos`)
+  for (const key of DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS) {
+    if (!Object.hasOwn(aggregate, key)) {
+      throw new Error(`${source} is missing ${key}`)
+    }
+    validateCountObject(aggregate[key], `${source}.${key}`)
+  }
   if (!Array.isArray(aggregate.indexes)) {
     throw new Error(`${source} has invalid indexes`)
   }
@@ -442,14 +433,12 @@ function validateArtifactIndexSummary(summary, source) {
       throw new Error(`${source} has invalid ${key}`)
     }
   }
-  validateCountObject(summary.schemas, `${source}.schemas`)
-  validateCountObject(summary.runtimeSignals ?? {}, `${source}.runtimeSignals`)
-  validateCountObject(summary.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
-  validateCountObject(summary.coverageAreas ?? {}, `${source}.coverageAreas`)
-  validateCountObject(summary.owners ?? {}, `${source}.owners`)
-  validateCountObject(summary.classifications ?? {}, `${source}.classifications`)
-  validateCountObject(summary.artifactKinds ?? {}, `${source}.artifactKinds`)
-  validateCountObject(summary.evidenceRepos ?? {}, `${source}.evidenceRepos`)
+  for (const key of DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS) {
+    if (!Object.hasOwn(summary, key)) {
+      throw new Error(`${source} is missing ${key}`)
+    }
+    validateCountObject(summary[key], `${source}.${key}`)
+  }
 }
 
 function validateCountObject(value, source) {
