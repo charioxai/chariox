@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
+import net from "node:net"
 import test from "node:test"
 
-import { waitForCondition } from "./drill-runtime-helpers.mjs"
+import { waitForCondition, waitForTcpPort } from "./drill-runtime-helpers.mjs"
 
 test("waitForCondition returns the first ready observation", async () => {
   let count = 0
@@ -61,3 +62,36 @@ test("waitForCondition can fail immediately on definitive errors", async () => {
   )
   assert.equal(count, 1)
 })
+
+test("waitForTcpPort waits for reachable listeners", async () => {
+  const server = await listenOnEphemeralPort()
+  try {
+    await waitForTcpPort(server.address().port, "127.0.0.1", 100)
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test("waitForTcpPort reports the last reachability observation", async () => {
+  const server = await listenOnEphemeralPort()
+  const port = server.address().port
+  await closeServer(server)
+
+  await assert.rejects(
+    () => waitForTcpPort(port, "127.0.0.1", 5),
+    /last_observation=/,
+  )
+})
+
+async function listenOnEphemeralPort() {
+  const server = net.createServer()
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  return server
+}
+
+async function closeServer(server) {
+  await new Promise((resolve) => server.close(resolve))
+}

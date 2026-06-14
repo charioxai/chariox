@@ -61,23 +61,23 @@ export async function assertBinary(binaryPath, manifestPath, binName) {
 }
 
 export async function waitForTcpPort(port, host = "127.0.0.1", timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const ready = await new Promise((resolve) => {
+  await waitForCondition({
+    label: `TCP listener ${host}:${port}`,
+    timeoutMs,
+    pollMs: 100,
+    observe: async () => await new Promise((resolve) => {
       const socket = net.connect({ host, port })
       socket.once("connect", () => {
         socket.destroy()
-        resolve(true)
+        resolve({ host, port, reachable: true })
       })
-      socket.once("error", () => {
+      socket.once("error", (error) => {
         socket.destroy()
-        resolve(false)
+        resolve({ host, port, reachable: false, error: error.message })
       })
-    })
-    if (ready) return
-    await sleep(100)
-  }
-  throw new Error(`TCP listener ${host}:${port} did not become reachable`)
+    }),
+    isReady: (observation) => observation.reachable,
+  })
 }
 
 export async function terminateChild(child, signal = "SIGTERM") {
