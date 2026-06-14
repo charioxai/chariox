@@ -154,6 +154,7 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.match(result.message ?? "", /remote execution issues: missing_worker_runs=1 malformed=0/)
   assert.match(result.message ?? "", /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run: active remote agent has no worker run/)
   assert.match(result.message ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
+  assert.match(result.message ?? "", /remote runtime affected: agents=agent-remote/)
   assert.match(result.message ?? "", /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
   assert.match(result.message ?? "", /workspace live sync managed capability: unavailable \(managed mode needs selective write fencing\); tracked\/off modes unaffected/)
   assert.doesNotMatch(result.message ?? "", /next: select tracked mode on this worker or run the managed provider on a supported host/)
@@ -313,6 +314,84 @@ test("executeShellCommand renders aggregate remote extension recovery without we
   assert.match(result.message ?? "", /remote extension sync issues: failed=1 stale=0 missing=0 pending_revoke=1/)
   assert.match(result.message ?? "", /next: keep the home revoke in place; run \/kernel remote-runtime to identify affected agents, then use \/extension sync-status and \/extension sync-retry after the worker reconnects/)
   assert.doesNotMatch(result.message ?? "", /open Extensions|<agent>/)
+})
+
+test("executeShellCommand summarizes affected remote runtime targets", async () => {
+  const baseHealth = daemonHealth()
+  const fake = fakeClient((request) => {
+    assert.deepEqual(request, { GetDaemonHealth: null })
+    return {
+      DaemonHealth: {
+        projection: daemonHealth({
+          remote_extension_sync: {
+            ...baseHealth.remote_extension_sync,
+            remote_agents: 1,
+            home_proxy_agents: 1,
+            home_proxy_grants: 1,
+            failed_agents: 1,
+            issues: [{
+              session_id: "session-1",
+              agent_id: "agent-remote-id",
+              agent_ref: "agent-remote",
+              worker_kernel_id: "worker-kernel",
+              worker_machine_id: "worker-machine",
+              execution_lease_id: "lease-1",
+              leased_agent_id: "leased-agent-1",
+              active_worker_provider_run_id: "worker-run-1",
+              state: "failed",
+              manifest_hash: "abcdef1234567890",
+              last_error: "worker offline",
+              pending_revoke: false,
+              home_proxy_grants: ["script:home-tool"],
+              worktree_id: "/repo/worktree-a",
+            }],
+          },
+          slice_lifecycle: {
+            ...baseHealth.slice_lifecycle,
+            provider_auth_missing_slices: 1,
+            provider_auth_issues: [{
+              slice_id: "slice-1",
+              name: "slice-dev",
+              status: "running",
+              session_ids: ["session-1"],
+              agent_ids: ["agent-slice"],
+              worktree_id: "/repo/worktree-b",
+              provider: "codex",
+              provider_auth_state: "not_configured",
+              alias: null,
+              identity: null,
+              details: "codex auth missing",
+            }],
+          },
+          workspace_live_sync: {
+            ...baseHealth.workspace_live_sync,
+            workspace_identity: {
+              ...baseHealth.workspace_live_sync.workspace_identity,
+              identity_changed_provider_runs: 1,
+              issues: [{
+                provider_run_id: "provider-run-1",
+                root: "/repo/synced",
+                generation: 2,
+                valid: false,
+                baseline_fingerprint: "base",
+                current_fingerprint: "current",
+              }],
+            },
+          },
+        }),
+      },
+    }
+  })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(parseShellCommand("kernel remote-runtime"), context, { client: fake.client })
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /remote runtime readiness: blocked/)
+  assert.match(
+    result.message ?? "",
+    /remote runtime affected: agents=agent-remote,agent-slice worktrees=\/repo\/worktree-a,\/repo\/worktree-b roots=\/repo\/synced/,
+  )
+  assert.match(result.message ?? "", /remote runtime readiness next: run \/workspace sync status, \/workspace sync targets, and \/workspace sync conflicts/)
 })
 
 test("executeShellCommand renders attached session runtime context before kernel health", async () => {

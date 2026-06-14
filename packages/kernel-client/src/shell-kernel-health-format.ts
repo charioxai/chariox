@@ -89,14 +89,64 @@ function appendRemoteRuntimeReadiness(
   }
   if (readiness.state === "degraded") {
     lines.push(`remote runtime readiness: degraded (${readiness.attentionCount} attention)`)
+    appendRemoteRuntimeAffectedTargets(lines, health)
     lines.push(`remote runtime readiness next: ${remoteRuntimeDegradedNextAction(health)}`)
     return
   }
   lines.push(`remote runtime readiness: blocked (${readiness.issueCount} issue${readiness.issueCount === 1 ? "" : "s"}, ${readiness.attentionCount} attention)`)
+  appendRemoteRuntimeAffectedTargets(lines, health)
   lines.push(`remote runtime readiness next: ${remoteRuntimeBlockedNextAction(health)}`)
   if (includeSupportBundle) {
     lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
   }
+}
+
+function appendRemoteRuntimeAffectedTargets(lines: string[], health: DaemonHealthProjection): void {
+  const affected = remoteRuntimeAffectedTargets(health)
+  const parts = [
+    affected.agents.length > 0 ? `agents=${formatAffectedTargets(affected.agents)}` : null,
+    affected.worktrees.length > 0 ? `worktrees=${formatAffectedTargets(affected.worktrees)}` : null,
+    affected.roots.length > 0 ? `roots=${formatAffectedTargets(affected.roots)}` : null,
+  ].filter((part): part is string => Boolean(part))
+  if (parts.length > 0) {
+    lines.push(`remote runtime affected: ${parts.join(" ")}`)
+  }
+}
+
+function remoteRuntimeAffectedTargets(health: DaemonHealthProjection): {
+  readonly agents: string[]
+  readonly worktrees: string[]
+  readonly roots: string[]
+} {
+  const agents = [
+    ...health.remote_execution.issues.map((issue) => issue.agent_ref || issue.agent_id),
+    ...health.remote_extension_sync.issues.map((issue) => issue.agent_ref || issue.agent_id),
+    ...health.slice_lifecycle.issues.flatMap((issue) => issue.agent_ids),
+    ...health.slice_lifecycle.provider_auth_issues.flatMap((issue) => issue.agent_ids),
+  ]
+  const worktrees = [
+    ...health.remote_execution.issues.map((issue) => issue.worktree_id),
+    ...health.remote_extension_sync.issues.map((issue) => issue.worktree_id),
+    ...health.slice_lifecycle.issues.map((issue) => issue.worktree_id),
+    ...health.slice_lifecycle.provider_auth_issues.map((issue) => issue.worktree_id),
+    ...health.workspace_coordination.worktree_collisions.map((issue) => issue.worktree_id),
+    ...health.workspace_coordination.active_operation_claims.map((issue) => issue.worktree_id),
+  ]
+  const roots = [
+    ...health.workspace_live_sync.workspace_identity.issues.map((issue) => issue.root),
+    ...health.workspace_live_sync.external_changes.issues.map((issue) => issue.workspace_root),
+  ]
+  return {
+    agents: uniqueNonEmpty(agents.filter(nonEmptyRoot)),
+    worktrees: uniqueNonEmpty(worktrees.filter(nonEmptyRoot)),
+    roots: uniqueNonEmpty(roots.filter(nonEmptyRoot)),
+  }
+}
+
+function formatAffectedTargets(values: readonly string[]): string {
+  const shown = values.slice(0, 4).join(",")
+  const more = values.length > 4 ? `,+${values.length - 4} more` : ""
+  return `${shown}${more}`
 }
 
 function remoteRuntimeBlockedNextAction(health: DaemonHealthProjection): string {
