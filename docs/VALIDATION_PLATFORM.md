@@ -41,9 +41,11 @@ Collect the shared platform contracts as one artifact bundle with:
 
 ```bash
 node apps/cli/scripts/drill-platform-bundle.mjs --output-dir .artifacts/drill-platform
+node apps/cli/scripts/drill-platform-bundle.mjs --verify-dir .artifacts/drill-platform
 ```
 
 The bundle writes `index.json`, `validation-suite.json`, `failure-taxonomy-scenario.json`, and `failure-taxonomy-drill.json`.
+The verifier checks the bundle index, relative artifact paths, and artifact schema consistency.
 
 ## Matrix Reports
 
