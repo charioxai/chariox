@@ -51,11 +51,22 @@ export function validationGateNextActions(checks) {
     })
     const missingArtifactSchemas = checks.artifacts.missingArtifactSchemas ?? []
     if (missingArtifactSchemas.length > 0) {
-      countDrillAggregateNextAction(counts, {
-        owner: "validation-harness",
-        classification: "artifact-coverage",
-        nextAction: `produce artifact evidence with schemas: ${missingArtifactSchemas.join(", ")}`,
-      })
+      const validationSuiteRunMissing = missingArtifactSchemas.includes("arroba.drill.validation_suite_run.v1")
+      if (validationSuiteRunMissing) {
+        countDrillAggregateNextAction(counts, {
+          owner: "validation-harness",
+          classification: "artifact-coverage",
+          nextAction: "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate",
+        })
+      }
+      const remainingSchemas = missingArtifactSchemas.filter((schema) => schema !== "arroba.drill.validation_suite_run.v1")
+      if (remainingSchemas.length > 0) {
+        countDrillAggregateNextAction(counts, {
+          owner: "validation-harness",
+          classification: "artifact-coverage",
+          nextAction: `produce artifact evidence with schemas: ${remainingSchemas.join(", ")}`,
+        })
+      }
     }
   }
   if (checks.matrices.status === "failed") {

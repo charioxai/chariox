@@ -60,6 +60,34 @@ test("explains artifact index failures", () => {
   }])
 })
 
+test("explains missing executable validation suite artifacts", () => {
+  assert.deepEqual(validationGateNextActions(checks({
+    artifacts: {
+      status: "failed",
+      missingArtifactSchemas: ["arroba.drill.validation_suite_run.v1", "arroba.drill.matrix.v1"],
+    },
+  })), [
+    {
+      owner: "validation-harness",
+      classification: "artifact-coverage",
+      nextAction: "produce artifact evidence with schemas: arroba.drill.matrix.v1",
+      count: 1,
+    },
+    {
+      owner: "validation-harness",
+      classification: "artifact-coverage",
+      nextAction: "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate",
+      count: 1,
+    },
+    {
+      owner: "validation-harness",
+      classification: "artifact-index",
+      nextAction: "fix missing, unreadable, or tampered artifact indexes before using collected drill evidence",
+      count: 1,
+    },
+  ])
+})
+
 test("explains matrix errors, incomplete scenarios, missing coverage, and aggregate actions", () => {
   const actions = validationGateNextActions(checks({
     matrices: {

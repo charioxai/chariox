@@ -801,7 +801,7 @@ test("gates explicit artifact index paths by required schema", async () => {
       {
         owner: "validation-harness",
         classification: "artifact-coverage",
-        nextAction: "produce artifact evidence with schemas: arroba.drill.validation_suite_run.v1",
+        nextAction: "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate",
       },
       {
         owner: "validation-harness",
