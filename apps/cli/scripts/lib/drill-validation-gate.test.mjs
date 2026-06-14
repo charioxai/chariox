@@ -136,6 +136,54 @@ test("gates platform bundle failure taxonomy classifications", async () => {
   }
 })
 
+test("applies validation gate requirement presets", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    const reportPath = path.join(rootDir, "workspace-live-sync.json")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeMatrixReport(reportPath, matrixReport({
+      matrix: "workspace-live-sync-matrix",
+      scenarios: [
+        scenario("managed", "passed", { classification: "workspace-live-sync-conflict" }),
+        scenario("permission", "passed", { classification: "kernel-authority" }),
+        scenario("restart", "passed", { classification: "relay-target-freshness" }),
+      ],
+    }))
+
+    const report = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      matrixReports: [reportPath],
+      presets: ["workspace-live-sync"],
+    })
+
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.platformBundle.requiredFailureClassifications, [
+      "kernel-authority",
+      "relay-target-freshness",
+      "workspace-live-sync-conflict",
+    ])
+    assert.deepEqual(report.checks.matrices.requiredMatrices, ["workspace-live-sync-matrix"])
+    assert.deepEqual(report.checks.matrices.requiredMatrixClassifications, [
+      "kernel-authority",
+      "relay-target-freshness",
+      "workspace-live-sync-conflict",
+    ])
+    assert.match(formatDrillValidationGateSummary(report), /matrix_required_classifications=kernel-authority,relay-target-freshness,workspace-live-sync-conflict missing=none/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects unknown validation gate presets", async () => {
+  await assert.rejects(
+    () => runDrillValidationGate({
+      presets: ["workspace-live-synch"],
+    }),
+    /unknown validation gate preset: workspace-live-synch/,
+  )
+})
+
 test("fails platform coverage requirements without a platform bundle", async () => {
   const report = await runDrillValidationGate({
     requiredPlatformCoverageAreas: ["runtime-fixtures"],

@@ -142,6 +142,53 @@ test("drill validation gate requires platform coverage areas", async () => {
   }
 })
 
+test("drill validation gate applies requirement presets", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    const reportPath = path.join(rootDir, "workspace-live-sync.json")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeWorkspaceLiveSyncPresetReport(reportPath)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--platform-bundle",
+      bundleDir,
+      "--matrix-report",
+      reportPath,
+      "--preset",
+      "workspace-live-sync",
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.matrices.requiredMatrices, ["workspace-live-sync-matrix"])
+    assert.deepEqual(report.checks.matrices.requiredMatrixClassifications, [
+      "kernel-authority",
+      "relay-target-freshness",
+      "workspace-live-sync-conflict",
+    ])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate rejects unknown presets", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [
+      scriptPath,
+      "--preset",
+      "workspace-live-synch",
+      "--json",
+    ]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /unknown validation gate preset: workspace-live-synch/)
+      return true
+    },
+  )
+})
+
 test("drill validation gate requires matrix name coverage", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {
@@ -451,6 +498,25 @@ async function writeClassifiedMatrixReport(file) {
     scenarios: [
       scenario("kernel-authority", "kernel-authority"),
       scenario("relay-target-freshness", "relay-target-freshness"),
+    ],
+  }, null, 2)}\n`, "utf8")
+}
+
+async function writeWorkspaceLiveSyncPresetReport(file) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify({
+    schema: "arroba.drill.matrix.v1",
+    matrix: "workspace-live-sync-matrix",
+    status: "passed",
+    dryRun: false,
+    startedAt: "2026-06-13T00:00:00.000Z",
+    completedAt: "2026-06-13T00:00:01.000Z",
+    durationMs: 1000,
+    metadata: {},
+    scenarios: [
+      scenario("managed", "workspace-live-sync-conflict"),
+      scenario("permission", "kernel-authority"),
+      scenario("restart", "relay-target-freshness"),
     ],
   }, null, 2)}\n`, "utf8")
 }

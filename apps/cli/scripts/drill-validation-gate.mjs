@@ -14,6 +14,8 @@ function printHelp() {
     "Verifies collected validation platform artifacts for CI or staging gates.",
     "",
     "Options:",
+    "  --preset NAME[,NAME]  Apply named requirement preset; repeatable",
+    "                         Known: workspace-live-sync, remote-home-extension",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
     "  --artifact-index PATH  Read and verify a specific artifact index; repeatable",
     "  --artifact-root ROOT   Discover artifact indexes below ROOT; repeatable",
@@ -85,6 +87,7 @@ function parseArgs(argv) {
     outputArtifactIndexPath: null,
     outputPath: null,
     platformBundleDir: null,
+    presets: [],
     requireComplete: false,
     requiredPlatformCoverageAreas: [],
     requiredFailureClassifications: [],
@@ -99,6 +102,14 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
     else if (arg === "--require-complete") options.requireComplete = true
+    else if (arg === "--preset") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--preset requires a value")
+      options.presets.push(value)
+      index += 1
+    } else if (arg.startsWith("--preset=")) {
+      options.presets.push(arg.slice("--preset=".length))
+    }
     else if (arg === "--require-platform-coverage-area") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--require-platform-coverage-area requires a value")

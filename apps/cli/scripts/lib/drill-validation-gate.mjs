@@ -30,6 +30,20 @@ import { verifyDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
+export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
+  "workspace-live-sync": Object.freeze({
+    requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredFailureClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
+    requiredMatrices: Object.freeze(["workspace-live-sync-matrix"]),
+    requiredMatrixClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
+  }),
+  "remote-home-extension": Object.freeze({
+    requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredFailureClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
+    requiredMatrices: Object.freeze(["remote-home-extension-matrix"]),
+    requiredMatrixClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
+  }),
+})
 
 export async function readDrillValidationGateReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))
@@ -163,6 +177,7 @@ export async function runDrillValidationGate({
   matrixRoots = [],
   maxDepth = 8,
   platformBundleDir = null,
+  presets = [],
   requireComplete = false,
   requiredPlatformCoverageAreas = [],
   requiredFailureClassifications = [],
@@ -172,13 +187,23 @@ export async function runDrillValidationGate({
   requiredProviders = [],
   requiredScenarios = [],
 } = {}) {
-  const normalizedRequiredPlatformCoverageAreas = normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas)
-  const normalizedRequiredFailureClassifications = normalizeRequiredFailureClassifications(requiredFailureClassifications)
-  const normalizedRequiredMatrices = normalizeRequiredMatrices(requiredMatrices)
-  const normalizedRequiredMatrixClassifications = normalizeRequiredMatrixClassifications(requiredMatrixClassifications)
-  const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(requiredDeploymentPresets)
-  const normalizedRequiredProviders = normalizeRequiredProviders(requiredProviders)
-  const normalizedRequiredScenarios = normalizeRequiredScenarios(requiredScenarios)
+  const expandedRequirements = expandValidationGatePresetRequirements({
+    presets,
+    requiredPlatformCoverageAreas,
+    requiredFailureClassifications,
+    requiredMatrices,
+    requiredMatrixClassifications,
+    requiredDeploymentPresets,
+    requiredProviders,
+    requiredScenarios,
+  })
+  const normalizedRequiredPlatformCoverageAreas = normalizeRequiredPlatformCoverageAreas(expandedRequirements.requiredPlatformCoverageAreas)
+  const normalizedRequiredFailureClassifications = normalizeRequiredFailureClassifications(expandedRequirements.requiredFailureClassifications)
+  const normalizedRequiredMatrices = normalizeRequiredMatrices(expandedRequirements.requiredMatrices)
+  const normalizedRequiredMatrixClassifications = normalizeRequiredMatrixClassifications(expandedRequirements.requiredMatrixClassifications)
+  const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(expandedRequirements.requiredDeploymentPresets)
+  const normalizedRequiredProviders = normalizeRequiredProviders(expandedRequirements.requiredProviders)
+  const normalizedRequiredScenarios = normalizeRequiredScenarios(expandedRequirements.requiredScenarios)
   const checks = {
     configuration: configurationCheck({
       artifactIndexes,
@@ -1115,6 +1140,39 @@ function missingRequiredFailureClassifications(failureTaxonomy, requiredFailureC
   return requiredFailureClassifications.filter((classification) => !drill.has(classification) || !scenario.has(classification))
 }
 
+function expandValidationGatePresetRequirements({
+  presets,
+  requiredPlatformCoverageAreas,
+  requiredFailureClassifications,
+  requiredMatrices,
+  requiredMatrixClassifications,
+  requiredDeploymentPresets,
+  requiredProviders,
+  requiredScenarios,
+}) {
+  const normalizedPresets = normalizeRequiredPresets(presets)
+  const expanded = {
+    requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
+    requiredFailureClassifications: [...requiredFailureClassifications],
+    requiredMatrices: [...requiredMatrices],
+    requiredMatrixClassifications: [...requiredMatrixClassifications],
+    requiredDeploymentPresets: [...requiredDeploymentPresets],
+    requiredProviders: [...requiredProviders],
+    requiredScenarios: [...requiredScenarios],
+  }
+  for (const presetName of normalizedPresets) {
+    const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
+    expanded.requiredPlatformCoverageAreas.push(...(preset.requiredPlatformCoverageAreas ?? []))
+    expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
+    expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
+    expanded.requiredMatrixClassifications.push(...(preset.requiredMatrixClassifications ?? []))
+    expanded.requiredDeploymentPresets.push(...(preset.requiredDeploymentPresets ?? []))
+    expanded.requiredProviders.push(...(preset.requiredProviders ?? []))
+    expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
+  }
+  return expanded
+}
+
 async function matrixCheck({ matrixReports, matrixRoots }, {
   maxDepth,
   requireComplete,
@@ -1271,6 +1329,29 @@ function normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas) {
     }
   }
   return [...new Set(areas)].sort()
+}
+
+function normalizeRequiredPresets(presets) {
+  if (!Array.isArray(presets)) {
+    throw new Error("presets must be an array")
+  }
+  const names = []
+  for (const preset of presets) {
+    if (!nonEmptyString(preset)) {
+      throw new Error("presets has invalid preset")
+    }
+    for (const value of preset.split(",")) {
+      const normalized = value.trim()
+      if (normalized) names.push(normalized)
+    }
+  }
+  const normalizedNames = [...new Set(names)].sort()
+  for (const preset of normalizedNames) {
+    if (!Object.prototype.hasOwnProperty.call(DRILL_VALIDATION_GATE_PRESETS, preset)) {
+      throw new Error(`unknown validation gate preset: ${preset}`)
+    }
+  }
+  return normalizedNames
 }
 
 function normalizeRequiredFailureClassifications(requiredFailureClassifications) {
