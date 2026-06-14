@@ -13,14 +13,15 @@ import {
 
 function printHelp() {
   console.log([
-    "Usage: node apps/cli/scripts/drill-matrix-report-summary.mjs [--json] [--output PATH] [--find ROOT] [--require-complete] REPORT...",
+    "Usage: node apps/cli/scripts/drill-matrix-report-summary.mjs [--json] [--output PATH] [--find ROOT] [--max-depth N] [--require-complete] REPORT...",
     "",
     "Summarizes arroba.drill.matrix.v1 JSON reports and exits non-zero when any report failed.",
     "",
     "Options:",
-    "  --find ROOT    Discover valid matrix reports below ROOT; repeatable",
-    "  --json         Print aggregate JSON instead of human-readable summaries",
-    "  --output PATH  Write aggregate JSON to PATH",
+    "  --find ROOT     Discover valid matrix reports below ROOT; repeatable",
+    "  --max-depth N   Limit --find traversal depth; defaults to 8",
+    "  --json          Print aggregate JSON instead of human-readable summaries",
+    "  --output PATH   Write aggregate JSON to PATH",
     "  --require-complete",
     "                 Exit non-zero when selected reports contain skipped or dry-run scenarios",
   ].join("\n"))
@@ -33,7 +34,7 @@ async function main() {
     return
   }
   const discovered = options.findRoots.length > 0
-    ? await findDrillMatrixReportPaths(options.findRoots)
+    ? await findDrillMatrixReportPaths(options.findRoots, { maxDepth: options.maxDepth })
     : []
   const reportPaths = [...new Set([...options.reportPaths, ...discovered])].sort()
   if (reportPaths.length === 0) {
@@ -71,6 +72,7 @@ function parseArgs(argv) {
     json: false,
     requireComplete: false,
     findRoots: [],
+    maxDepth: 8,
     outputPath: null,
     reportPaths: [],
   }
@@ -86,6 +88,13 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--find=")) {
       options.findRoots.push(arg.slice("--find=".length))
+    } else if (arg === "--max-depth") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--max-depth requires a value")
+      options.maxDepth = parseMaxDepth(value)
+      index += 1
+    } else if (arg.startsWith("--max-depth=")) {
+      options.maxDepth = parseMaxDepth(arg.slice("--max-depth=".length))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -100,6 +109,14 @@ function parseArgs(argv) {
     }
   }
   return options
+}
+
+function parseMaxDepth(value) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error("--max-depth must be a non-negative integer")
+  }
+  return parsed
 }
 
 main().catch((error) => {

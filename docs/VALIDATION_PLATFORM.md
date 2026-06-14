@@ -26,12 +26,13 @@ Summarize one or more reports with:
 ```bash
 node apps/cli/scripts/drill-matrix-report-summary.mjs path/to/matrix-report.json
 node apps/cli/scripts/drill-matrix-report-summary.mjs --find .artifacts/drill-matrices
+node apps/cli/scripts/drill-matrix-report-summary.mjs --find .artifacts --max-depth 4
 node apps/cli/scripts/drill-matrix-report-summary.mjs --require-complete --find .artifacts/drill-matrices
 node apps/cli/scripts/drill-matrix-report-summary.mjs --json --output path/to/aggregate.json path/to/*.json
 ```
 
 The summary command exits non-zero when any input report has `status=failed`. `--find ROOT` discovers valid matrix reports below an artifact root and ignores unrelated JSON files.
-Matrix report discovery is bounded by default and prunes heavy irrelevant directories such as `.git`, `node_modules`, `.pnpm-store`, `debug`, and `release`, so broad artifact roots are safe to scan in CI.
+Matrix report discovery is bounded by default and prunes heavy irrelevant directories such as `.git`, `node_modules`, `.pnpm-store`, `debug`, and `release`, so broad artifact roots are safe to scan in CI. Use `--max-depth N` when a CI artifact layout needs a tighter or wider traversal bound.
 For dry-run reports, it prints selected scenario exit criteria so reviewers can confirm matrix scope before running live drills.
 Use `--require-complete` for release/staging gates that must reject skipped or dry-run scenarios even when no scenario failed.
 When more than one report is selected, the human summary prints an aggregate section with total coverage, failure owners, next actions, and incomplete scenarios.
