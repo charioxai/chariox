@@ -548,6 +548,7 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   }
   const requiresRuntimeSignalManifest = runtimeSignalsFromMetadata(metadata).length > 0
   if (parsed?.schema === "arroba.drill.validation_suite.v1") {
+    validateValidationSuiteManifestArtifact(parsed, artifactPath)
     if (requiresRuntimeSignalManifest && parsed.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing runtimeSignalsManifest`)
     }

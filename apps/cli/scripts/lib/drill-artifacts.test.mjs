@@ -26,13 +26,7 @@ import {
 import { drillRuntimeSignalsManifest } from "./drill-runtime-signals.mjs"
 
 function validationSuiteRunArtifact(overrides = {}) {
-  const manifest = overrides.manifest ?? {
-    schema: "arroba.drill.validation_suite.v1",
-    command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
-    testCount: 1,
-    testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
-    runtimeSignalsManifest: drillRuntimeSignalsManifest(),
-  }
+  const manifest = overrides.manifest ?? validationSuiteManifestArtifact()
   return {
     schema: "arroba.drill.validation_suite_run.v1",
     status: "passed",
@@ -47,6 +41,17 @@ function validationSuiteRunArtifact(overrides = {}) {
     testCount: manifest.testCount,
     testPaths: manifest.testPaths,
     manifest,
+    ...overrides,
+  }
+}
+
+function validationSuiteManifestArtifact(overrides = {}) {
+  return {
+    schema: "arroba.drill.validation_suite.v1",
+    command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
+    testCount: 1,
+    testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
+    runtimeSignalsManifest: drillRuntimeSignalsManifest(),
     ...overrides,
   }
 }
@@ -263,6 +268,28 @@ test("rejects validation suite run artifacts with inconsistent manifest fields",
     await assert.rejects(
       verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
       /suite-run\.json\.testCount must match manifest\.testCount/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects malformed validation suite manifest artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-manifest-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite.json"), `${JSON.stringify({
+      schema: "arroba.drill.validation_suite.v1",
+    }, null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite.json"],
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /suite\.json is missing command/,
     )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
