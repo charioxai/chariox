@@ -124,6 +124,10 @@ test("aggregates multiple matrix reports for CI", () => {
     durationMs: 1025,
   })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1 })
+  assert.deepEqual(aggregate.matrixNames, {
+    remote: 1,
+    workspace: 1,
+  })
   assert.deepEqual(aggregate.deploymentPresets, {
     hetzner: 1,
     "hosted-cloud": 1,
@@ -201,6 +205,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token source=\/tmp\/remote-matrix.json/)
   assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
   assert.match(text, /owners: provider-account=1/)
+  assert.match(text, /matrix_names: remote=1 workspace=1/)
   assert.match(text, /deployment_presets: hetzner=1 hosted-cloud=1 local=1 self-hosted-relay=1/)
   assert.match(text, /providers: claude=1 codex=1 opencode=1/)
   assert.match(text, /scenario_ids: hetzner=1 local=1 remote=1 tracked=1/)
@@ -255,6 +260,10 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     owners: { "runtime-network": 1 },
   }), /owners do not match failedScenarios/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    matrixNames: { remote: 2 },
+  }), /matrixNames do not match reports/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     deploymentPresets: { local: 1 },

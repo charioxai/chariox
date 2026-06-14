@@ -80,6 +80,39 @@ test("passes with explicit matrix report paths", async () => {
   }
 })
 
+test("gates matrix reports by required matrix name coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const localReport = path.join(rootDir, "local.json")
+    const remoteReport = path.join(rootDir, "remote.json")
+    await writeMatrixReport(localReport, matrixReport({ matrix: "local-runtime" }))
+    await writeMatrixReport(remoteReport, matrixReport({ matrix: "remote-runtime" }))
+
+    const pass = await runDrillValidationGate({
+      matrixReports: [localReport, remoteReport],
+      requiredMatrices: ["local-runtime,remote-runtime"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.matrices.requiredMatrices, ["local-runtime", "remote-runtime"])
+    assert.deepEqual(pass.checks.matrices.missingMatrices, [])
+    assert.match(formatDrillValidationGateSummary(pass), /matrix_required_names=local-runtime,remote-runtime missing=none/)
+
+    const fail = await runDrillValidationGate({
+      matrixReports: [localReport],
+      requiredMatrices: ["hosted-cloud", "local-runtime"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.matrices.missingMatrices, ["hosted-cloud"])
+    assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run missing drill matrices: hosted-cloud",
+    }])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("passes when matrix reports cover required deployment presets", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -492,12 +525,14 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     }))
     const passed = await runDrillValidationGate({
       matrixReports: [reportPath],
+      requiredMatrices: ["test-matrix"],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
       requiredScenarios: ["local"],
     })
     const failed = await runDrillValidationGate({
       matrixReports: [reportPath],
+      requiredMatrices: ["hosted-matrix", "test-matrix"],
       requiredDeploymentPresets: ["hosted-cloud", "local"],
       requiredProviders: ["claude", "codex"],
       requiredScenarios: ["remote"],
@@ -508,6 +543,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
 
     assert.equal(aggregate.status, "failed")
     assert.deepEqual(aggregate.coverage, {
+      requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
+      missingMatrices: { "hosted-matrix": 1 },
       requiredDeploymentPresets: { "hosted-cloud": 1, local: 2 },
       missingDeploymentPresets: { "hosted-cloud": 1 },
       requiredProviders: { claude: 1, codex: 2 },
@@ -517,6 +554,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     })
     assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
       {
+        requiredMatrices: ["test-matrix"],
+        missingMatrices: [],
         requiredDeploymentPresets: ["local"],
         missingDeploymentPresets: [],
         requiredProviders: ["codex"],
@@ -525,6 +564,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
         missingScenarios: [],
       },
       {
+        requiredMatrices: ["hosted-matrix", "test-matrix"],
+        missingMatrices: ["hosted-matrix"],
         requiredDeploymentPresets: ["hosted-cloud", "local"],
         missingDeploymentPresets: ["hosted-cloud"],
         requiredProviders: ["claude", "codex"],
@@ -535,6 +576,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     ])
     const text = formatDrillValidationGateAggregateSummary(aggregate)
     assert.match(text, /coverage:/)
+    assert.match(text, /missing_matrices: hosted-matrix=1/)
     assert.match(text, /required_deployment_presets: hosted-cloud=1 local=2/)
     assert.match(text, /missing_providers: claude=1/)
     assert.match(text, /missing_scenarios: remote=1/)

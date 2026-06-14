@@ -126,6 +126,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
   const classifications = new Map()
   const owners = new Map()
   const nextActions = new Map()
+  const matrixNames = new Map()
   const deploymentPresets = new Map()
   const providers = new Map()
   const scenarioIds = new Map()
@@ -139,6 +140,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     totals.skipped += summary.counts.skipped
     totals.dryRun += summary.counts.dryRun
     totals.durationMs += Number.isFinite(summary.durationMs) ? summary.durationMs : 0
+    matrixNames.set(summary.matrix, (matrixNames.get(summary.matrix) ?? 0) + 1)
     for (const preset of summary.deploymentPresets) {
       deploymentPresets.set(preset, (deploymentPresets.get(preset) ?? 0) + 1)
     }
@@ -187,6 +189,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
         : "passed",
     totals,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    matrixNames: Object.fromEntries([...matrixNames.entries()].sort(([left], [right]) => left.localeCompare(right))),
     deploymentPresets: Object.fromEntries([...deploymentPresets.entries()].sort(([left], [right]) => left.localeCompare(right))),
     providers: Object.fromEntries([...providers.entries()].sort(([left], [right]) => left.localeCompare(right))),
     scenarioIds: Object.fromEntries([...scenarioIds.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -269,6 +272,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const owners = Object.entries(aggregate.owners)
   if (owners.length > 0) {
     lines.push(`owners: ${owners.map(([owner, count]) => `${owner}=${count}`).join(" ")}`)
+  }
+  const matrixNames = Object.entries(aggregate.matrixNames ?? {})
+  if (matrixNames.length > 0) {
+    lines.push(`matrix_names: ${matrixNames.map(([name, count]) => `${name}=${count}`).join(" ")}`)
   }
   const deploymentPresets = Object.entries(aggregate.deploymentPresets ?? {})
   if (deploymentPresets.length > 0) {
@@ -538,6 +545,7 @@ function validateDrillMatrixAggregate(aggregate) {
   if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {
     throw new Error("aggregate is missing owners")
   }
+  validateCountObject(aggregate.matrixNames ?? {}, "aggregate.matrixNames")
   validateCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
   validateCountObject(aggregate.providers ?? {}, "aggregate.providers")
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
@@ -597,6 +605,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
     throw new Error("aggregate status does not match totals")
   }
   assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failedScenarios, "owner")
+  assertMatrixNameCountsMatchReports(aggregate)
   assertDeploymentPresetCountsMatchReports(aggregate)
   assertProviderCountsMatchReports(aggregate)
   assertScenarioIdCountsMatchReports(aggregate)
@@ -610,6 +619,17 @@ function assertObjectCountsMatchEntries(label, counts, entries, key) {
   )
   if (JSON.stringify(counts) !== JSON.stringify(expected)) {
     throw new Error(`${label} do not match failedScenarios`)
+  }
+}
+
+function assertMatrixNameCountsMatchReports(aggregate) {
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    expected.set(report.matrix, (expected.get(report.matrix) ?? 0) + 1)
+  }
+  const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(aggregate.matrixNames ?? {}) !== JSON.stringify(expectedCounts)) {
+    throw new Error("aggregate matrixNames do not match reports")
   }
 }
 

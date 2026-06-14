@@ -66,6 +66,8 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
   }
   const nextActions = new Map()
   const coverage = {
+    requiredMatrices: new Map(),
+    missingMatrices: new Map(),
     requiredDeploymentPresets: new Map(),
     missingDeploymentPresets: new Map(),
     requiredProviders: new Map(),
@@ -80,6 +82,8 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
       countDrillAggregateNextAction(nextActions, action)
     }
     const matrixCoverage = validationGateReportMatrixCoverage(report)
+    countStringValues(coverage.requiredMatrices, matrixCoverage.requiredMatrices)
+    countStringValues(coverage.missingMatrices, matrixCoverage.missingMatrices)
     countStringValues(coverage.requiredDeploymentPresets, matrixCoverage.requiredDeploymentPresets)
     countStringValues(coverage.missingDeploymentPresets, matrixCoverage.missingDeploymentPresets)
     countStringValues(coverage.requiredProviders, matrixCoverage.requiredProviders)
@@ -145,10 +149,12 @@ export async function runDrillValidationGate({
   maxDepth = 8,
   platformBundleDir = null,
   requireComplete = false,
+  requiredMatrices = [],
   requiredDeploymentPresets = [],
   requiredProviders = [],
   requiredScenarios = [],
 } = {}) {
+  const normalizedRequiredMatrices = normalizeRequiredMatrices(requiredMatrices)
   const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(requiredDeploymentPresets)
   const normalizedRequiredProviders = normalizeRequiredProviders(requiredProviders)
   const normalizedRequiredScenarios = normalizeRequiredScenarios(requiredScenarios)
@@ -161,6 +167,7 @@ export async function runDrillValidationGate({
       matrixReports,
       matrixRoots,
       platformBundleDir,
+      requiredMatrices: normalizedRequiredMatrices,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
@@ -173,6 +180,7 @@ export async function runDrillValidationGate({
     }, {
       maxDepth,
       requireComplete,
+      requiredMatrices: normalizedRequiredMatrices,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
@@ -219,6 +227,11 @@ export function formatDrillValidationGateSummary(report) {
 
   const matrices = report.checks.matrices
   lines.push(`matrices=${matrices.status} roots=${matrices.roots.length} inputs=${matrices.inputs.length} reports=${matrices.reportPaths.length} require_complete=${matrices.requireComplete}`)
+  const requiredMatrices = matrices.requiredMatrices ?? []
+  const missingMatrices = matrices.missingMatrices ?? []
+  if (requiredMatrices.length > 0) {
+    lines.push(`matrix_required_names=${requiredMatrices.join(",")} missing=${missingMatrices.join(",") || "none"}`)
+  }
   const requiredDeploymentPresets = matrices.requiredDeploymentPresets ?? []
   const missingDeploymentPresets = matrices.missingDeploymentPresets ?? []
   if (requiredDeploymentPresets.length > 0) {
@@ -393,6 +406,8 @@ function validateMatrixCheck(check, source) {
   validateStringArray(check.roots, `${source}.roots`)
   validateStringArray(check.inputs, `${source}.inputs`)
   validateStringArray(check.reportPaths, `${source}.reportPaths`)
+  validateStringArray(check.requiredMatrices ?? [], `${source}.requiredMatrices`)
+  validateStringArray(check.missingMatrices ?? [], `${source}.missingMatrices`)
   validateStringArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateStringArray(check.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -540,6 +555,8 @@ function validateGateAggregateReportSummary(report, source) {
 function validationGateReportMatrixCoverage(report) {
   const matrices = report.checks.matrices
   return {
+    requiredMatrices: [...(matrices.requiredMatrices ?? [])],
+    missingMatrices: [...(matrices.missingMatrices ?? [])],
     requiredDeploymentPresets: [...(matrices.requiredDeploymentPresets ?? [])],
     missingDeploymentPresets: [...(matrices.missingDeploymentPresets ?? [])],
     requiredProviders: [...(matrices.requiredProviders ?? [])],
@@ -557,6 +574,8 @@ function countStringValues(counts, values) {
 
 function formatValidationGateCoverageCounts(coverage) {
   return {
+    requiredMatrices: countMapToObject(coverage.requiredMatrices),
+    missingMatrices: countMapToObject(coverage.missingMatrices),
     requiredDeploymentPresets: countMapToObject(coverage.requiredDeploymentPresets),
     missingDeploymentPresets: countMapToObject(coverage.missingDeploymentPresets),
     requiredProviders: countMapToObject(coverage.requiredProviders),
@@ -572,6 +591,8 @@ function countMapToObject(counts) {
 
 function formatValidationGateCoverageSummary(coverage) {
   const lines = []
+  appendCoverageLine(lines, "required_matrices", coverage.requiredMatrices)
+  appendCoverageLine(lines, "missing_matrices", coverage.missingMatrices)
   appendCoverageLine(lines, "required_deployment_presets", coverage.requiredDeploymentPresets)
   appendCoverageLine(lines, "missing_deployment_presets", coverage.missingDeploymentPresets)
   appendCoverageLine(lines, "required_providers", coverage.requiredProviders)
@@ -592,6 +613,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error(`${source} is not an object`)
   }
+  validateCountObject(coverage.requiredMatrices ?? {}, `${source}.requiredMatrices`)
+  validateCountObject(coverage.missingMatrices ?? {}, `${source}.missingMatrices`)
   validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
   validateCountObject(coverage.missingDeploymentPresets ?? {}, `${source}.missingDeploymentPresets`)
   validateCountObject(coverage.requiredProviders ?? {}, `${source}.requiredProviders`)
@@ -604,6 +627,8 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error(`${source} is not an object`)
   }
+  validateStringArray(coverage.requiredMatrices ?? [], `${source}.requiredMatrices`)
+  validateStringArray(coverage.missingMatrices ?? [], `${source}.missingMatrices`)
   validateStringArray(coverage.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateStringArray(coverage.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateStringArray(coverage.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -614,6 +639,8 @@ function validateValidationGateMatrixCoverage(coverage, source) {
 
 function assertValidationGateCoverageMatchesReports(aggregate, source) {
   const expected = {
+    requiredMatrices: new Map(),
+    missingMatrices: new Map(),
     requiredDeploymentPresets: new Map(),
     missingDeploymentPresets: new Map(),
     requiredProviders: new Map(),
@@ -623,6 +650,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
   }
   for (const report of aggregate.reports) {
     const coverage = report.matrixCoverage ?? {
+      requiredMatrices: [],
+      missingMatrices: [],
       requiredDeploymentPresets: [],
       missingDeploymentPresets: [],
       requiredProviders: [],
@@ -630,6 +659,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
       requiredScenarios: [],
       missingScenarios: [],
     }
+    countStringValues(expected.requiredMatrices, coverage.requiredMatrices ?? [])
+    countStringValues(expected.missingMatrices, coverage.missingMatrices ?? [])
     countStringValues(expected.requiredDeploymentPresets, coverage.requiredDeploymentPresets ?? [])
     countStringValues(expected.missingDeploymentPresets, coverage.missingDeploymentPresets ?? [])
     countStringValues(expected.requiredProviders, coverage.requiredProviders ?? [])
@@ -684,6 +715,14 @@ function validationGateNextActions(checks) {
         nextAction: "run skipped or dry-run matrix scenarios before treating this validation set as complete",
       })
     }
+    const missingMatrices = checks.matrices.missingMatrices ?? []
+    if (missingMatrices.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "matrix-coverage",
+        nextAction: `run missing drill matrices: ${missingMatrices.join(", ")}`,
+      })
+    }
     const missingDeploymentPresets = checks.matrices.missingDeploymentPresets ?? []
     if (missingDeploymentPresets.length > 0) {
       countDrillAggregateNextAction(counts, {
@@ -732,6 +771,7 @@ function configurationCheck({
   matrixReports,
   matrixRoots,
   platformBundleDir,
+  requiredMatrices,
   requiredDeploymentPresets,
   requiredProviders,
   requiredScenarios,
@@ -743,6 +783,7 @@ function configurationCheck({
     || matrixReports.length > 0
     || failureRoots.length > 0
     || failureInputs.length > 0
+    || requiredMatrices.length > 0
     || requiredDeploymentPresets.length > 0
     || requiredProviders.length > 0
     || requiredScenarios.length > 0
@@ -833,14 +874,16 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
   }
 }
 
-async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete, requiredDeploymentPresets, requiredProviders, requiredScenarios }) {
-  if (matrixRoots.length === 0 && matrixReports.length === 0 && requiredDeploymentPresets.length === 0 && requiredProviders.length === 0 && requiredScenarios.length === 0) {
+async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete, requiredMatrices, requiredDeploymentPresets, requiredProviders, requiredScenarios }) {
+  if (matrixRoots.length === 0 && matrixReports.length === 0 && requiredMatrices.length === 0 && requiredDeploymentPresets.length === 0 && requiredProviders.length === 0 && requiredScenarios.length === 0) {
     return {
       status: "skipped",
       roots: [],
       inputs: [],
       reportPaths: [],
       requireComplete,
+      requiredMatrices: [],
+      missingMatrices: [],
       requiredDeploymentPresets: [],
       missingDeploymentPresets: [],
       requiredProviders: [],
@@ -861,6 +904,8 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
         inputs: [...matrixReports],
         reportPaths,
         requireComplete,
+        requiredMatrices: [...requiredMatrices],
+        missingMatrices: [...requiredMatrices],
         requiredDeploymentPresets: [...requiredDeploymentPresets],
         missingDeploymentPresets: [...requiredDeploymentPresets],
         requiredProviders: [...requiredProviders],
@@ -875,15 +920,18 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
     const exitCode = requireComplete
       ? drillMatrixReportCompletionExitCode(reports)
       : drillMatrixReportExitCode(reports)
+    const missingMatrices = missingRequiredMatrices(aggregate, requiredMatrices)
     const missingDeploymentPresets = missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets)
     const missingProviders = missingRequiredProviders(aggregate, requiredProviders)
     const missingScenarios = missingRequiredScenarios(aggregate, requiredScenarios)
     return {
-      status: exitCode === 0 && missingDeploymentPresets.length === 0 && missingProviders.length === 0 && missingScenarios.length === 0 ? "passed" : "failed",
+      status: exitCode === 0 && missingMatrices.length === 0 && missingDeploymentPresets.length === 0 && missingProviders.length === 0 && missingScenarios.length === 0 ? "passed" : "failed",
       roots: [...matrixRoots],
       inputs: [...matrixReports],
       reportPaths,
       requireComplete,
+      requiredMatrices: [...requiredMatrices],
+      missingMatrices,
       requiredDeploymentPresets: [...requiredDeploymentPresets],
       missingDeploymentPresets,
       requiredProviders: [...requiredProviders],
@@ -899,6 +947,8 @@ async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireCo
       inputs: [...matrixReports],
       reportPaths: [],
       requireComplete,
+      requiredMatrices: [...requiredMatrices],
+      missingMatrices: [...requiredMatrices],
       requiredDeploymentPresets: [...requiredDeploymentPresets],
       missingDeploymentPresets: [...requiredDeploymentPresets],
       requiredProviders: [...requiredProviders],
@@ -923,6 +973,28 @@ function missingRequiredProviders(aggregate, requiredProviders) {
 function missingRequiredScenarios(aggregate, requiredScenarios) {
   const present = new Set(Object.keys(aggregate.scenarioIds ?? {}))
   return requiredScenarios.filter((scenario) => !present.has(scenario))
+}
+
+function missingRequiredMatrices(aggregate, requiredMatrices) {
+  const present = new Set(Object.keys(aggregate.matrixNames ?? {}))
+  return requiredMatrices.filter((matrix) => !present.has(matrix))
+}
+
+function normalizeRequiredMatrices(requiredMatrices) {
+  if (!Array.isArray(requiredMatrices)) {
+    throw new Error("requiredMatrices must be an array")
+  }
+  const matrices = []
+  for (const matrix of requiredMatrices) {
+    if (!nonEmptyString(matrix)) {
+      throw new Error("requiredMatrices has invalid matrix")
+    }
+    for (const value of matrix.split(",")) {
+      const normalized = value.trim()
+      if (normalized) matrices.push(normalized)
+    }
+  }
+  return [...new Set(matrices)].sort()
 }
 
 function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {

@@ -88,6 +88,39 @@ test("drill validation gate accepts explicit matrix report paths", async () => {
   }
 })
 
+test("drill validation gate requires matrix name coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    await writeMatrixReport(reportPath)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--matrix-report",
+        reportPath,
+        "--require-matrix",
+        "cli-matrix,remote-runtime",
+        "--require-matrix=hosted-cloud",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.deepEqual(report.checks.matrices.requiredMatrices, ["cli-matrix", "hosted-cloud", "remote-runtime"])
+        assert.deepEqual(report.checks.matrices.missingMatrices, ["hosted-cloud", "remote-runtime"])
+        assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+          { owner: "validation-harness", classification: "matrix-coverage" },
+        ])
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill validation gate requires deployment preset coverage", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {
