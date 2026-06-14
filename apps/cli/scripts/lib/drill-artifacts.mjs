@@ -69,6 +69,23 @@ export async function writeDrillArtifactIndex({
   return index
 }
 
+export async function writeDrillJsonArtifactOutput({
+  outputPath,
+  value,
+  artifactIndexPath = null,
+  metadata = {},
+}) {
+  await mkdir(path.dirname(outputPath), { recursive: true })
+  await writeFile(outputPath, `${JSON.stringify(value, null, 2)}\n`, "utf8")
+  if (!artifactIndexPath) return null
+  return await writeDrillArtifactIndex({
+    rootDir: path.dirname(outputPath),
+    artifacts: [path.basename(outputPath)],
+    indexPath: artifactIndexPath,
+    metadata,
+  })
+}
+
 export async function findDrillArtifactIndexPaths(roots, { maxDepth = 8 } = {}) {
   const discovered = new Set()
   for (const root of roots) {

@@ -1,14 +1,11 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from "node:fs/promises"
-import path from "node:path"
-
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import {
   findDrillArtifactIndexPaths,
   formatDrillArtifactIndexAggregateSummary,
   summarizeDrillArtifactIndexes,
   verifyDrillArtifactIndex,
-  writeDrillArtifactIndex,
+  writeDrillJsonArtifactOutput,
 } from "./lib/drill-artifacts.mjs"
 
 function printHelp() {
@@ -44,19 +41,15 @@ async function main() {
   const indexes = await Promise.all(indexPaths.map((indexPath) => verifyDrillArtifactIndex(indexPath)))
   const aggregate = summarizeDrillArtifactIndexes(indexes, { sources: indexPaths })
   if (options.outputPath) {
-    await mkdir(path.dirname(options.outputPath), { recursive: true })
-    await writeFile(options.outputPath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8")
-    if (options.outputArtifactIndexPath) {
-      await writeDrillArtifactIndex({
-        rootDir: path.dirname(options.outputPath),
-        artifacts: [path.basename(options.outputPath)],
-        indexPath: options.outputArtifactIndexPath,
-        metadata: {
-          drill: "artifact-index-summary",
-          indexes: aggregate.totals.indexes,
-        },
-      })
-    }
+    await writeDrillJsonArtifactOutput({
+      outputPath: options.outputPath,
+      artifactIndexPath: options.outputArtifactIndexPath,
+      value: aggregate,
+      metadata: {
+        drill: "artifact-index-summary",
+        indexes: aggregate.totals.indexes,
+      },
+    })
   }
   if (options.json) {
     console.log(JSON.stringify(aggregate, null, 2))

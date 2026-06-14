@@ -17,6 +17,7 @@ import {
   validateDrillArtifactIndex,
   verifyDrillArtifactIndex,
   writeDrillArtifactIndex,
+  writeDrillJsonArtifactOutput,
 } from "./drill-artifacts.mjs"
 
 test("drill artifacts are removed after a passing run", async () => {
@@ -100,6 +101,42 @@ test("writes and verifies drill artifact indexes", async () => {
       null,
     ])
     assert.doesNotMatch(JSON.stringify(index), /should-not-persist/)
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("writes JSON artifact output with optional index", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-output-"))
+  try {
+    const outputPath = path.join(root, "reports", "gate.json")
+    const artifactIndexPath = path.join(root, "reports", "arroba-drill-artifacts.json")
+    const artifactIndex = await writeDrillJsonArtifactOutput({
+      outputPath,
+      artifactIndexPath,
+      value: {
+        schema: "arroba.drill.validation_gate.v1",
+        status: "passed",
+      },
+      metadata: {
+        drill: "validation-gate",
+        token: "sk-this-should-not-persist",
+      },
+    })
+    const fileValue = JSON.parse(await readFile(outputPath, "utf8"))
+    const verified = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.equal(fileValue.status, "passed")
+    assert.deepEqual(verified, artifactIndex)
+    assert.equal(artifactIndex.metadata.drill, "validation-gate")
+    assert.equal(artifactIndex.metadata.token, "<redacted>")
+    assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
+      path: artifact.path,
+      schema: artifact.schema,
+    })), [{
+      path: "gate.json",
+      schema: "arroba.drill.validation_gate.v1",
+    }])
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }

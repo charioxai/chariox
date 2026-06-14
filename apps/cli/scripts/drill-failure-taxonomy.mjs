@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from "node:fs/promises"
-import path from "node:path"
-
-import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 
 function printHelp() {
@@ -28,19 +25,15 @@ async function main() {
 
   const manifest = drillFailureTaxonomyManifest({ target: options.target })
   if (options.outputPath) {
-    await mkdir(path.dirname(options.outputPath), { recursive: true })
-    await writeFile(options.outputPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
-    if (options.outputArtifactIndexPath) {
-      await writeDrillArtifactIndex({
-        rootDir: path.dirname(options.outputPath),
-        artifacts: [path.basename(options.outputPath)],
-        indexPath: options.outputArtifactIndexPath,
-        metadata: {
-          drill: "failure-taxonomy",
-          target: manifest.target,
-        },
-      })
-    }
+    await writeDrillJsonArtifactOutput({
+      outputPath: options.outputPath,
+      artifactIndexPath: options.outputArtifactIndexPath,
+      value: manifest,
+      metadata: {
+        drill: "failure-taxonomy",
+        target: manifest.target,
+      },
+    })
   }
   console.log(JSON.stringify(manifest, null, 2))
 }

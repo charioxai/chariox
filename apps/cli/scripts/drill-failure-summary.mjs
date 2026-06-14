@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from "node:fs/promises"
-import path from "node:path"
 import {
   findDrillFailureManifestPaths,
   formatDrillFailureManifestAggregateSummary,
@@ -9,7 +7,7 @@ import {
   summarizeDrillFailureManifests,
 } from "./lib/drill-failure-manifest.mjs"
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
-import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 
 function printHelp() {
   console.log([
@@ -62,19 +60,15 @@ async function main() {
   }
   const aggregate = summarizeDrillFailureManifests(manifests, { sources: inputs })
   if (options.outputPath) {
-    await mkdir(path.dirname(options.outputPath), { recursive: true })
-    await writeFile(options.outputPath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8")
-    if (options.outputArtifactIndexPath) {
-      await writeDrillArtifactIndex({
-        rootDir: path.dirname(options.outputPath),
-        artifacts: [path.basename(options.outputPath)],
-        indexPath: options.outputArtifactIndexPath,
-        metadata: {
-          drill: "failure-summary",
-          total: aggregate.total,
-        },
-      })
-    }
+    await writeDrillJsonArtifactOutput({
+      outputPath: options.outputPath,
+      artifactIndexPath: options.outputArtifactIndexPath,
+      value: aggregate,
+      metadata: {
+        drill: "failure-summary",
+        total: aggregate.total,
+      },
+    })
   }
   if (options.json) {
     console.log(JSON.stringify(aggregate, null, 2))

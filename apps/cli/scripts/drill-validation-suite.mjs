@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { mkdir, writeFile } from "node:fs/promises"
-import path from "node:path"
 import {
   SHARED_DRILL_TEST_PATHS,
   drillValidationSuiteArgs,
@@ -9,7 +7,7 @@ import {
   drillValidationSuiteManifest,
   findMissingDrillValidationSuitePaths,
 } from "./lib/drill-validation-suite.mjs"
-import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 
 function printHelp() {
   console.log([
@@ -46,19 +44,15 @@ async function main() {
   if (options.json) {
     const manifest = drillValidationSuiteManifest()
     if (options.outputPath) {
-      await mkdir(path.dirname(options.outputPath), { recursive: true })
-      await writeFile(options.outputPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
-      if (options.outputArtifactIndexPath) {
-        await writeDrillArtifactIndex({
-          rootDir: path.dirname(options.outputPath),
-          artifacts: [path.basename(options.outputPath)],
-          indexPath: options.outputArtifactIndexPath,
-          metadata: {
-            drill: "validation-suite",
-            tests: manifest.testCount,
-          },
-        })
-      }
+      await writeDrillJsonArtifactOutput({
+        outputPath: options.outputPath,
+        artifactIndexPath: options.outputArtifactIndexPath,
+        value: manifest,
+        metadata: {
+          drill: "validation-suite",
+          tests: manifest.testCount,
+        },
+      })
     }
     console.log(JSON.stringify(manifest, null, 2))
     return

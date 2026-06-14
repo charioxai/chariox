@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from "node:fs/promises"
-import path from "node:path"
 import {
   drillMatrixReportExitCode,
   drillMatrixReportCompletionExitCode,
@@ -11,7 +9,7 @@ import {
   summarizeDrillMatrixReports,
 } from "./lib/drill-matrix-report.mjs"
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
-import { writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 
 function printHelp() {
   console.log([
@@ -57,19 +55,15 @@ async function main() {
   }
   const aggregate = summarizeDrillMatrixReports(reports, { sources: reportPaths })
   if (options.outputPath) {
-    await mkdir(path.dirname(options.outputPath), { recursive: true })
-    await writeFile(options.outputPath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8")
-    if (options.outputArtifactIndexPath) {
-      await writeDrillArtifactIndex({
-        rootDir: path.dirname(options.outputPath),
-        artifacts: [path.basename(options.outputPath)],
-        indexPath: options.outputArtifactIndexPath,
-        metadata: {
-          drill: "matrix-report-summary",
-          status: aggregate.status,
-        },
-      })
-    }
+    await writeDrillJsonArtifactOutput({
+      outputPath: options.outputPath,
+      artifactIndexPath: options.outputArtifactIndexPath,
+      value: aggregate,
+      metadata: {
+        drill: "matrix-report-summary",
+        status: aggregate.status,
+      },
+    })
   }
   if (options.json) {
     console.log(JSON.stringify(aggregate, null, 2))
