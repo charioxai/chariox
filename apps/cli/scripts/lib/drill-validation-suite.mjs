@@ -1,6 +1,9 @@
 import { access, readdir } from "node:fs/promises"
 import path from "node:path"
-import { drillRuntimeSignalOwnersFor } from "./drill-runtime-signals.mjs"
+import {
+  drillRuntimeSignalOwnersFor,
+  drillRuntimeSignalsManifest,
+} from "./drill-runtime-signals.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -168,6 +171,7 @@ export function drillValidationSuiteManifest({
     testCount: testPaths.length,
     command: drillValidationSuiteCommand({ nodeCommand, testPaths }),
     coverage,
+    runtimeSignalsManifest: drillRuntimeSignalsManifest(),
     validationPresets: normalizeValidationSuitePresetContracts(validationPresets),
     testPaths: [...testPaths],
   }

@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
-import { DRILL_RUNTIME_SIGNAL_IDS } from "./lib/drill-runtime-signals.mjs"
+import {
+  DRILL_RUNTIME_SIGNAL_IDS,
+  drillRuntimeSignalsManifest,
+} from "./lib/drill-runtime-signals.mjs"
 import { SHARED_DRILL_TEST_PATHS } from "./lib/drill-validation-suite.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -88,6 +91,7 @@ test("drill validation suite prints coverage manifest", async () => {
     manifest.validationPresets.find((preset) => preset.name === "slice-runtime").requiredScenarios,
     ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
   )
+  assert.deepEqual(manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
   assert.match(manifest.command, /^node --test /)
 })
 
@@ -110,6 +114,7 @@ test("drill validation suite writes coverage manifest", async () => {
 
     assert.deepEqual(fileManifest, stdoutManifest)
     assert.equal(fileManifest.schema, "arroba.drill.validation_suite.v1")
+    assert.deepEqual(fileManifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.tests, SHARED_DRILL_TEST_PATHS.length)
     assert.equal(artifactIndex.metadata.owners, "validation-platform")
@@ -166,6 +171,7 @@ test("drill validation suite writes passing run report artifact output", async (
     assert.equal(fileReport.testCount, 1)
     assert.deepEqual(fileReport.testPaths, [testPath])
     assert.equal(fileReport.manifest.schema, "arroba.drill.validation_suite.v1")
+    assert.deepEqual(fileReport.manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.tests, 1)
