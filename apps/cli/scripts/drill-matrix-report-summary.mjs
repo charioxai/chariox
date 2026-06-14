@@ -10,6 +10,7 @@ import {
   readDrillMatrixReport,
   summarizeDrillMatrixReports,
 } from "./lib/drill-matrix-report.mjs"
+import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 
 function printHelp() {
   console.log([
@@ -91,10 +92,10 @@ function parseArgs(argv) {
     } else if (arg === "--max-depth") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--max-depth requires a value")
-      options.maxDepth = parseMaxDepth(value)
+      options.maxDepth = parseDrillMaxDepth(value)
       index += 1
     } else if (arg.startsWith("--max-depth=")) {
-      options.maxDepth = parseMaxDepth(arg.slice("--max-depth=".length))
+      options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -109,14 +110,6 @@ function parseArgs(argv) {
     }
   }
   return options
-}
-
-function parseMaxDepth(value) {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error("--max-depth must be a non-negative integer")
-  }
-  return parsed
 }
 
 main().catch((error) => {

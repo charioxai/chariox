@@ -8,6 +8,7 @@ import {
   readDrillFailureManifest,
   summarizeDrillFailureManifests,
 } from "./lib/drill-failure-manifest.mjs"
+import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 
 function printHelp() {
   console.log([
@@ -88,10 +89,10 @@ function parseArgs(argv) {
     else if (arg === "--max-depth") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--max-depth requires a value")
-      options.maxDepth = parseMaxDepth(value)
+      options.maxDepth = parseDrillMaxDepth(value)
       index += 1
     } else if (arg.startsWith("--max-depth=")) {
-      options.maxDepth = parseMaxDepth(arg.slice("--max-depth=".length))
+      options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
     }
     else if (arg === "--json") options.json = true
     else if (arg === "--output") {
@@ -106,14 +107,6 @@ function parseArgs(argv) {
     else options.inputs.push(arg)
   }
   return options
-}
-
-function parseMaxDepth(value) {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error("--max-depth must be a non-negative integer")
-  }
-  return parsed
 }
 
 function emptyAggregate() {
