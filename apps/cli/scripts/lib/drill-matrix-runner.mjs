@@ -40,6 +40,16 @@ export function quoteDrillCommand(command, args) {
   return [command, ...args].map((part) => (/[ "'\\]/.test(part) ? JSON.stringify(part) : part)).join(" ")
 }
 
+export function defaultDrillMatrixReportPath(matrixName, { rootDir = process.cwd(), now = new Date() } = {}) {
+  const safeName = String(matrixName)
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "matrix"
+  const stamp = now.toISOString().replace(/[:.]/g, "-")
+  return path.join(rootDir, ".artifacts", "drill-matrices", safeName, `${stamp}.json`)
+}
+
 export function extractDrillArtifactHints(text) {
   const hints = new Set()
   for (const line of String(text ?? "").split("\n")) {

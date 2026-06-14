@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  defaultDrillMatrixReportPath,
   extractDrillArtifactHints,
   parseDrillScenarioIds,
   quoteDrillCommand,
@@ -46,6 +47,18 @@ test("selects default scenarios by enabled requirements", () => {
 
 test("quotes commands consistently", () => {
   assert.equal(quoteDrillCommand("node", ["plain", "two words", "quote'here"]), 'node plain "two words" "quote\'here"')
+})
+
+test("builds stable default matrix report paths", () => {
+  const reportPath = defaultDrillMatrixReportPath("workspace live/sync matrix", {
+    rootDir: "/repo",
+    now: new Date("2026-06-14T00:00:01.234Z"),
+  })
+
+  assert.equal(
+    reportPath,
+    "/repo/.artifacts/drill-matrices/workspace-live-sync-matrix/2026-06-14T00-00-01-234Z.json",
+  )
 })
 
 test("extracts artifact hints from structured and text drill output", () => {

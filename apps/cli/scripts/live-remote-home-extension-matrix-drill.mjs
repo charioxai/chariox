@@ -2,6 +2,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  defaultDrillMatrixReportPath,
   parseDrillScenarioIds,
   runDrillMatrix,
   selectDrillMatrixScenarios,
@@ -64,7 +65,7 @@ function printHelp() {
     '  --only IDS               Comma-separated scenario ids',
     '  --dry-run                Print selected commands without running drills',
     '  --continue-on-failure    Run every selected scenario before exiting non-zero',
-    '  --report PATH            Write a machine-readable matrix report',
+    '  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices',
     '  --hetzner-host HOST      Forwarded to Hetzner drill scenarios',
     '  --hetzner-key PATH       Forwarded to Hetzner drill scenarios',
     '  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios',
@@ -135,6 +136,7 @@ async function main() {
     return
   }
   const selected = selectScenarios(options)
+  const reportPath = options.reportPath ?? defaultDrillMatrixReportPath('remote-home-extension-matrix', { rootDir: repoRoot })
   const results = await runDrillMatrix({
     matrixName: 'remote-home-extension-matrix',
     scenarios: selected,
@@ -142,7 +144,7 @@ async function main() {
     cwd: repoRoot,
     continueOnFailure: options.continueOnFailure,
     dryRun: options.dryRun,
-    reportPath: options.reportPath,
+    reportPath,
     metadata: {
       includeHetzner: options.includeHetzner,
     },
