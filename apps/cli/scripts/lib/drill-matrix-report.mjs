@@ -261,7 +261,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
 }
 
 export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
-  const summary = summarizeDrillMatrixReport(report)
+  const summary = summarizeDrillMatrixReport(report, { source })
   const lines = [
     `matrix report: ${summary.matrix}${source ? ` (${source})` : ""}`,
     `status=${summary.status} scenarios=${summary.scenarioCount} passed=${summary.counts.passed} failed=${summary.counts.failed} skipped=${summary.counts.skipped} dry_run=${summary.counts.dryRun} duration_ms=${summary.durationMs ?? "-"}`,
@@ -299,12 +299,22 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
     lines.push(`skipped scenarios: ${summary.skippedScenarios.map((scenario) => scenario.id).join(", ")}`)
   }
 
+  if (summary.incompleteExitCriteria.length > 0) {
+    lines.push("incomplete exit criteria:")
+    for (const criterion of summary.incompleteExitCriteria) {
+      const reason = criterion.reason ? ` reason=${criterion.reason}` : ""
+      lines.push(`- ${criterion.scenarioId}/${criterion.id} status=${criterion.status}${reason}: ${criterion.criterion}`)
+    }
+  }
+
   if (summary.status === "dry-run") {
     appendDryRunCriteria(lines, report.scenarios)
   }
 
-  if (summary.failedScenarios.length === 0) {
+  if (summary.failedScenarios.length === 0 && summary.incompleteExitCriteria.length === 0) {
     lines.push(summary.status === "dry-run" ? "next: run without --dry-run to execute selected scenarios" : "next: no failed matrix scenarios")
+  } else if (summary.failedScenarios.length === 0) {
+    lines.push("next: run or reconcile incomplete criteria before treating this matrix report as complete")
   }
 
   return lines.join("\n")

@@ -72,6 +72,41 @@ test("matrix report summary writes artifact index for output", async () => {
   }
 })
 
+test("matrix report summary prints incomplete exit criteria", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  try {
+    const reportPath = path.join(dir, "dry-run-matrix.json")
+    await writeReport(reportPath, matrixReport({
+      matrix: "dry-run-matrix",
+      status: "dry-run",
+      dryRun: true,
+      scenarios: [{
+        id: "remote",
+        description: "remote scenario",
+        requires: [],
+        exitCriteria: ["remote worker acknowledges projection"],
+        status: "dry-run",
+        expectedFailure: false,
+        classification: null,
+        durationMs: 0,
+        reason: null,
+        command: "node",
+        args: ["remote.mjs"],
+        artifactHints: [],
+      }],
+    }))
+
+    const { stdout } = await execFile(process.execPath, [scriptPath, reportPath])
+
+    assert.match(stdout, /matrix report: dry-run-matrix/)
+    assert.match(stdout, /incomplete exit criteria:/)
+    assert.match(stdout, /remote\/remote:exit-01 status=dry-run reason=scenario command was selected but not executed: remote worker acknowledges projection/)
+    assert.match(stdout, /next: run or reconcile incomplete criteria before treating this matrix report as complete/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("matrix report summary rejects output artifact index without output", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
@@ -93,29 +128,32 @@ async function writeReport(file, report) {
   await writeFile(file, `${JSON.stringify(report)}\n`, "utf8")
 }
 
-function matrixReport({ matrix }) {
+function matrixReport({ matrix, ...overrides }) {
+  const scenarios = overrides.scenarios ?? [{
+    id: "local",
+    description: "local scenario",
+    requires: [],
+    exitCriteria: [],
+    status: "passed",
+    expectedFailure: false,
+    classification: null,
+    durationMs: 10,
+    reason: null,
+    command: "node",
+    args: ["local.mjs"],
+    artifactHints: [],
+  }]
+  const status = overrides.status ?? "passed"
   return {
     schema: "arroba.drill.matrix.v1",
     matrix,
-    status: "passed",
-    dryRun: false,
+    status,
+    dryRun: overrides.dryRun ?? status === "dry-run",
     startedAt: "2026-06-13T00:00:00.000Z",
     completedAt: "2026-06-13T00:00:01.000Z",
     durationMs: 1000,
     metadata: {},
-    scenarios: [{
-      id: "local",
-      description: "local scenario",
-      requires: [],
-      exitCriteria: [],
-      status: "passed",
-      expectedFailure: false,
-      classification: null,
-      durationMs: 10,
-      reason: null,
-      command: "node",
-      args: ["local.mjs"],
-      artifactHints: [],
-    }],
+    scenarios,
+    ...overrides,
   }
 }
