@@ -487,6 +487,11 @@ export function normalizeRequiredPresets(presets) {
   return normalizedNames
 }
 
+export function isKnownDrillValidationGatePreset(preset) {
+  return typeof preset === "string"
+    && Object.prototype.hasOwnProperty.call(DRILL_VALIDATION_GATE_PRESETS, preset)
+}
+
 export function normalizeRequiredFailureClassifications(requiredFailureClassifications) {
   if (!Array.isArray(requiredFailureClassifications)) {
     throw new Error("requiredFailureClassifications must be an array")

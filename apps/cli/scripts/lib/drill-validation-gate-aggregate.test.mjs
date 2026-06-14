@@ -330,6 +330,45 @@ test("rejects unknown deployment preset labels in aggregate reports", () => {
   )
 })
 
+test("rejects unknown validation gate preset labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredPresets: ["workspace-live-synch"],
+    }),
+    /requiredPresets\[0\] has unknown validation gate preset "workspace-live-synch"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      missingPresets: ["workspace-live-synch"],
+    }),
+    /missingPresets\[0\] has unknown validation gate preset "workspace-live-synch"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        presets: { "workspace-live-synch": 1 },
+      },
+    }),
+    /coverage\.presets has unknown validation gate preset "workspace-live-synch"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        presets: ["workspace-live-synch"],
+      }],
+    }),
+    /reports\[0\]\.presets\[0\] has unknown validation gate preset "workspace-live-synch"/,
+  )
+})
+
 test("rejects unknown runtime signal owners and failure classifications in aggregate reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
 

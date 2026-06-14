@@ -9,6 +9,7 @@ import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
+import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnerCounts,
@@ -323,8 +324,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   if (!Array.isArray(aggregate.nextActions)) {
     throw new Error(`${source} has invalid nextActions`)
   }
-  validateStringArray(aggregate.requiredPresets ?? [], `${source}.requiredPresets`)
-  validateStringArray(aggregate.missingPresets ?? [], `${source}.missingPresets`)
+  validatePresetArray(aggregate.requiredPresets ?? [], `${source}.requiredPresets`)
+  validatePresetArray(aggregate.missingPresets ?? [], `${source}.missingPresets`)
   validateStringArray(aggregate.requiredPlatformCoverageAreas ?? [], `${source}.requiredPlatformCoverageAreas`)
   validateStringArray(aggregate.missingPlatformCoverageAreas ?? [], `${source}.missingPlatformCoverageAreas`)
   validateStringArray(aggregate.requiredArtifactCoverageAreas ?? [], `${source}.requiredArtifactCoverageAreas`)
@@ -787,7 +788,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error(`${source} is not an object`)
   }
-  validateCountObject(coverage.presets ?? {}, `${source}.presets`)
+  validatePresetCountObject(coverage.presets ?? {}, `${source}.presets`)
   validateCountObject(coverage.requiredPlatformCoverageAreas ?? {}, `${source}.requiredPlatformCoverageAreas`)
   validateCountObject(coverage.missingPlatformCoverageAreas ?? {}, `${source}.missingPlatformCoverageAreas`)
   validateCountObject(coverage.requiredArtifactCoverageAreas ?? {}, `${source}.requiredArtifactCoverageAreas`)
@@ -1058,7 +1059,7 @@ function validateGateAggregateReportSummary(report, source) {
   if (!["passed", "failed"].includes(report.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
   }
-  validateStringArray(report.presets ?? [], `${source}.presets`)
+  validatePresetArray(report.presets ?? [], `${source}.presets`)
   if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
     throw new Error(`${source} has invalid checks`)
   }
@@ -1366,6 +1367,15 @@ function validateProviderArray(value, source) {
   }
 }
 
+function validatePresetArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, preset] of value.entries()) {
+    if (!isKnownDrillValidationGatePreset(preset)) {
+      throw new Error(`${source}[${index}] has unknown validation gate preset ${JSON.stringify(preset)}`)
+    }
+  }
+}
+
 function validateDeploymentPresetArray(value, source) {
   validateStringArray(value, source)
   for (const [index, preset] of value.entries()) {
@@ -1445,6 +1455,15 @@ function validateProviderCountObject(value, source) {
   for (const provider of Object.keys(value)) {
     if (!isKnownDrillProvider(provider)) {
       throw new Error(`${source} has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+}
+
+function validatePresetCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const preset of Object.keys(value)) {
+    if (!isKnownDrillValidationGatePreset(preset)) {
+      throw new Error(`${source} has unknown validation gate preset ${JSON.stringify(preset)}`)
     }
   }
 }

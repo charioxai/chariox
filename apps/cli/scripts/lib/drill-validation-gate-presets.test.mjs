@@ -5,6 +5,7 @@ import {
   DRILL_VALIDATION_GATE_PRESETS,
   describeDrillValidationGatePresets,
   expandValidationGatePresetRequirements,
+  isKnownDrillValidationGatePreset,
   normalizeRequiredDeploymentPresets,
   normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactClassifications,
@@ -96,6 +97,8 @@ test("describes stable validation gate presets", () => {
       requiredGeneratedEvidenceKinds: [],
     },
   )
+  assert.equal(isKnownDrillValidationGatePreset("workspace-live-sync"), true)
+  assert.equal(isKnownDrillValidationGatePreset("workspace-live-synch"), false)
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["slice-runtime"] })[0],
     {

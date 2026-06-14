@@ -24,6 +24,13 @@ test("rejects reports with unsupported schema or mismatched top-level status", (
   )
 })
 
+test("rejects unknown validation gate preset labels in reports", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({ presets: ["workspace-live-synch"] })),
+    /presets\[0\] has unknown validation gate preset "workspace-live-synch"/,
+  )
+})
+
 test("rejects invalid configuration and next-action records", () => {
   assert.throws(
     () => validateDrillValidationGateReport(report({

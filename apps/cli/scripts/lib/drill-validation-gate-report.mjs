@@ -8,6 +8,7 @@ import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
+import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   validateDrillRuntimeSignals,
@@ -25,7 +26,7 @@ export function validateDrillValidationGateReport(report, source = "validation g
   if (!["passed", "failed"].includes(report.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
   }
-  validateStringArray(report.presets ?? [], `${source}.presets`)
+  validatePresetArray(report.presets ?? [], `${source}.presets`)
   if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
     throw new Error(`${source} is missing checks`)
   }
@@ -392,6 +393,15 @@ function validateProviderArray(value, source) {
   for (const [index, provider] of value.entries()) {
     if (!isKnownDrillProvider(provider)) {
       throw new Error(`${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+}
+
+function validatePresetArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, preset] of value.entries()) {
+    if (!isKnownDrillValidationGatePreset(preset)) {
+      throw new Error(`${source}[${index}] has unknown validation gate preset ${JSON.stringify(preset)}`)
     }
   }
 }
