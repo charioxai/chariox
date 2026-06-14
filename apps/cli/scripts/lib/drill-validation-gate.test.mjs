@@ -1017,6 +1017,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingRuntimeSignals: {},
       requiredFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       missingFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
+      artifactRuntimeSignals: {},
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
       missingMatrices: { "hosted-matrix": 1 },
       requiredMatrixClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
@@ -1047,6 +1048,10 @@ test("summarizes validation gate matrix coverage across reports", async () => {
         requiredFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
         missingFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
       },
+    ])
+    assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
+      { runtimeSignals: {} },
+      { runtimeSignals: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
       {

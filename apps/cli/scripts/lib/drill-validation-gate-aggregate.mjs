@@ -30,6 +30,7 @@ export function summarizeValidationGateReportAggregate(
     missingRuntimeSignals: new Map(),
     requiredFailureClassifications: new Map(),
     missingFailureClassifications: new Map(),
+    artifactRuntimeSignals: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredMatrixClassifications: new Map(),
@@ -57,6 +58,8 @@ export function summarizeValidationGateReportAggregate(
     countStringValues(coverage.missingRuntimeSignals, platformCoverage.missingRuntimeSignals)
     countStringValues(coverage.requiredFailureClassifications, platformCoverage.requiredFailureClassifications)
     countStringValues(coverage.missingFailureClassifications, platformCoverage.missingFailureClassifications)
+    const artifactCoverage = validationGateReportArtifactCoverage(report)
+    countObjectValues(coverage.artifactRuntimeSignals, artifactCoverage.runtimeSignals)
     const matrixCoverage = validationGateReportMatrixCoverage(report)
     countStringValues(coverage.requiredMatrices, matrixCoverage.requiredMatrices)
     countStringValues(coverage.missingMatrices, matrixCoverage.missingMatrices)
@@ -80,6 +83,7 @@ export function summarizeValidationGateReportAggregate(
       presets: [...(report.presets ?? [])],
       checks: Object.fromEntries(Object.entries(report.checks).map(([name, check]) => [name, check.status])),
       platformCoverage,
+      artifactCoverage,
       matrixCoverage,
     }
   })
@@ -275,6 +279,12 @@ function validationGateReportPlatformCoverage(report) {
   }
 }
 
+function validationGateReportArtifactCoverage(report) {
+  return {
+    runtimeSignals: { ...(report.checks.artifacts.aggregate?.runtimeSignals ?? {}) },
+  }
+}
+
 function validationGateReportMatrixCoverage(report) {
   const matrices = report.checks.matrices
   const runtimeSignalScenarios = cloneRuntimeSignalScenarios(matrices.aggregate?.runtimeSignalScenarios)
@@ -298,6 +308,12 @@ function validationGateReportMatrixCoverage(report) {
 function countStringValues(counts, values) {
   for (const value of values) {
     counts.set(value, (counts.get(value) ?? 0) + 1)
+  }
+}
+
+function countObjectValues(counts, values) {
+  for (const [value, count] of Object.entries(values ?? {})) {
+    counts.set(value, (counts.get(value) ?? 0) + count)
   }
 }
 
@@ -373,6 +389,7 @@ function formatValidationGateCoverageCounts(coverage) {
     missingRuntimeSignals: countMapToObject(coverage.missingRuntimeSignals),
     requiredFailureClassifications: countMapToObject(coverage.requiredFailureClassifications),
     missingFailureClassifications: countMapToObject(coverage.missingFailureClassifications),
+    artifactRuntimeSignals: countMapToObject(coverage.artifactRuntimeSignals),
     requiredMatrices: countMapToObject(coverage.requiredMatrices),
     missingMatrices: countMapToObject(coverage.missingMatrices),
     requiredMatrixClassifications: countMapToObject(coverage.requiredMatrixClassifications),
@@ -401,6 +418,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_runtime_signals", coverage.missingRuntimeSignals)
   appendCoverageLine(lines, "required_failure_classifications", coverage.requiredFailureClassifications)
   appendCoverageLine(lines, "missing_failure_classifications", coverage.missingFailureClassifications)
+  appendCoverageLine(lines, "artifact_runtime_signals", coverage.artifactRuntimeSignals)
   appendCoverageLine(lines, "required_matrices", coverage.requiredMatrices)
   appendCoverageLine(lines, "missing_matrices", coverage.missingMatrices)
   appendCoverageLine(lines, "required_matrix_classifications", coverage.requiredMatrixClassifications)
@@ -458,6 +476,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingRuntimeSignals ?? {}, `${source}.missingRuntimeSignals`)
   validateCountObject(coverage.requiredFailureClassifications ?? {}, `${source}.requiredFailureClassifications`)
   validateCountObject(coverage.missingFailureClassifications ?? {}, `${source}.missingFailureClassifications`)
+  validateCountObject(coverage.artifactRuntimeSignals ?? {}, `${source}.artifactRuntimeSignals`)
   validateCountObject(coverage.requiredMatrices ?? {}, `${source}.requiredMatrices`)
   validateCountObject(coverage.missingMatrices ?? {}, `${source}.missingMatrices`)
   validateCountObject(coverage.requiredMatrixClassifications ?? {}, `${source}.requiredMatrixClassifications`)
@@ -514,6 +533,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingRuntimeSignals: new Map(),
     requiredFailureClassifications: new Map(),
     missingFailureClassifications: new Map(),
+    artifactRuntimeSignals: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredMatrixClassifications: new Map(),
@@ -543,6 +563,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingRuntimeSignals, platformCoverage.missingRuntimeSignals ?? [])
     countStringValues(expected.requiredFailureClassifications, platformCoverage.requiredFailureClassifications ?? [])
     countStringValues(expected.missingFailureClassifications, platformCoverage.missingFailureClassifications ?? [])
+    countObjectValues(expected.artifactRuntimeSignals, report.artifactCoverage?.runtimeSignals)
     const coverage = report.matrixCoverage ?? {
       requiredMatrices: [],
       missingMatrices: [],
@@ -615,6 +636,16 @@ function validateGateAggregateReportSummary(report, source) {
   if (report.platformCoverage !== undefined) {
     validateValidationGatePlatformCoverage(report.platformCoverage, `${source}.platformCoverage`)
   }
+  if (report.artifactCoverage !== undefined) {
+    validateValidationGateArtifactCoverage(report.artifactCoverage, `${source}.artifactCoverage`)
+  }
+}
+
+function validateValidationGateArtifactCoverage(coverage, source) {
+  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)
 }
 
 function cloneRuntimeSignalScenarios(runtimeSignalScenarios) {

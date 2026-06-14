@@ -29,6 +29,10 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.equal(drillValidationGateAggregateExitCode(aggregate), 0)
   assert.deepEqual(aggregate.totals, { reports: 1, passed: 1, failed: 0 })
   assert.deepEqual(aggregate.coverage.presets, { "workspace-live-sync": 1 })
+  assert.deepEqual(aggregate.coverage.artifactRuntimeSignals, {
+    "session-authority": 2,
+    "workspace-live-sync-state": 1,
+  })
   assert.deepEqual(aggregate.matrixRuntimeSignalSources, {
     "workspace-live-sync-state": [{
       reportSource: "workspace-live-sync.json",
@@ -41,9 +45,14 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.missingPresets, [])
   assert.deepEqual(aggregate.missingProviders, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeSignals, {
+    "session-authority": 2,
+    "workspace-live-sync-state": 1,
+  })
   assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
   const text = formatDrillValidationGateAggregateSummary(aggregate)
   assert.match(text, /required_providers=codex missing=none/)
+  assert.match(text, /- artifact_runtime_signals: session-authority=2 workspace-live-sync-state=1/)
   assert.match(text, /matrix_runtime_signal_sources:/)
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/workspace-live-sync-matrix\.json report=workspace-live-sync\.json/)
 })
@@ -168,7 +177,15 @@ function reportFixture(overrides = {}) {
         requiredFailureClassifications: ["kernel-authority"],
         missingFailureClassifications: [],
       },
-      artifacts: { status: "skipped" },
+      artifacts: {
+        status: "passed",
+        aggregate: {
+          runtimeSignals: {
+            "session-authority": 2,
+            "workspace-live-sync-state": 1,
+          },
+        },
+      },
       matrices: {
         status: "passed",
         requiredMatrices: ["workspace-live-sync-matrix"],
