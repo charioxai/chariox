@@ -388,6 +388,17 @@ test("cross repo validation gate rejects output artifact index without output", 
   )
 })
 
+test("cross repo validation gate rejects aggregate-only generated evidence requirements", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-evidence-kind", "matrix-report", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-evidence-kind is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+})
+
 async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
