@@ -207,6 +207,47 @@ test("rejects validation artifacts with malformed runtime signal manifests", asy
   }
 })
 
+test("rejects inconsistent drill runtime signal owner metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite.json"), `${JSON.stringify({
+      schema: "arroba.drill.validation_suite.v1",
+      runtimeSignalsManifest: drillRuntimeSignalsManifest(),
+    })}\n`, "utf8")
+
+    await assert.rejects(
+      writeDrillArtifactIndex({
+        rootDir: root,
+        artifacts: ["reports/suite.json"],
+        metadata: { runtimeSignals: "session-authority" },
+      }),
+      /runtimeSignalOwners must match runtimeSignals/,
+    )
+    await assert.rejects(
+      writeDrillArtifactIndex({
+        rootDir: root,
+        artifacts: ["reports/suite.json"],
+        metadata: { runtimeSignalOwners: "kernel-authority" },
+      }),
+      /runtimeSignalOwners requires runtimeSignals/,
+    )
+    await assert.rejects(
+      writeDrillArtifactIndex({
+        rootDir: root,
+        artifacts: ["reports/suite.json"],
+        metadata: {
+          runtimeSignals: "workspace-live-synch-state",
+          runtimeSignalOwners: "runtime-state",
+        },
+      }),
+      /drill runtime signals\[0\] has unknown runtime signal "workspace-live-synch-state"/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
 test("writes JSON artifact output with optional index", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-output-"))
   try {
@@ -290,6 +331,7 @@ test("summarizes drill artifact indexes", async () => {
         classifications: "validation-gate,artifact-coverage",
         owners: "validation-harness",
         runtimeSignals: "session-authority,provider-run-lifecycle",
+        runtimeSignalOwners: "kernel-authority,provider-runtime",
         artifactKinds: "validation-gate,validation-suite-run",
         generatedEvidenceKinds: "validation-suite-run",
         requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
@@ -304,6 +346,7 @@ test("summarizes drill artifact indexes", async () => {
         classifications: "matrix-coverage",
         owners: "validation-harness,runtime-network",
         runtimeSignals: "session-authority,lease-health",
+        runtimeSignalOwners: "kernel-authority",
         artifactKinds: "matrix-report",
         generatedEvidenceKinds: "matrix-report",
         requiredGeneratedEvidenceKinds: "matrix-report",
@@ -523,6 +566,47 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /unsafe path/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects duplicate drill artifact index records", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await assert.rejects(
+      writeDrillArtifactIndex({
+        rootDir: root,
+        artifacts: ["reports/gate.json", "reports/gate.json"],
+      }),
+      /duplicate artifact reports\/gate\.json/,
+    )
+
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: {},
+        artifacts: [
+          {
+            path: "reports/gate.json",
+            schema: null,
+            sha256: "0".repeat(64),
+            sizeBytes: 0,
+          },
+          {
+            path: "reports/gate.json",
+            schema: null,
+            sha256: "0".repeat(64),
+            sizeBytes: 0,
+          },
+        ],
+      }),
+      /duplicate artifact reports\/gate\.json/,
     )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })

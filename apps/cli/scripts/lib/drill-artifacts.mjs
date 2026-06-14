@@ -298,11 +298,17 @@ export function validateDrillArtifactIndex(index, source = "drill artifact index
   if (!index.metadata || typeof index.metadata !== "object" || Array.isArray(index.metadata)) {
     throw new Error(`${source} has invalid metadata`)
   }
+  validateDrillArtifactIndexRuntimeSignalOwnerMetadata(index.metadata, `${source}.metadata`)
   if (!Array.isArray(index.artifacts) || index.artifacts.length === 0) {
     throw new Error(`${source} has invalid artifacts`)
   }
+  const seen = new Set()
   for (const [artifactIndex, artifact] of index.artifacts.entries()) {
     validateArtifactIndexRecord(artifact, `${source}.artifacts[${artifactIndex}]`)
+    if (seen.has(artifact.path)) {
+      throw new Error(`${source} has duplicate artifact ${artifact.path}`)
+    }
+    seen.add(artifact.path)
   }
 }
 
@@ -509,6 +515,19 @@ function runtimeSignalsFromMetadata(metadata) {
 
 function runtimeSignalOwnersFromRuntimeSignals(runtimeSignals) {
   return drillRuntimeSignalOwnersFor(runtimeSignals)
+}
+
+function validateDrillArtifactIndexRuntimeSignalOwnerMetadata(metadata, source) {
+  const runtimeSignals = runtimeSignalsFromMetadata(metadata)
+  const runtimeSignalOwners = metadataListFromMetadata(metadata, "runtimeSignalOwners")
+  if (runtimeSignals.length === 0 && runtimeSignalOwners.length === 0) return
+  const expectedRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(runtimeSignals)
+  if (runtimeSignals.length === 0) {
+    throw new Error(`${source}.runtimeSignalOwners requires runtimeSignals`)
+  }
+  if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expectedRuntimeSignalOwners)) {
+    throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+  }
 }
 
 function metadataListFromMetadata(metadata, key) {

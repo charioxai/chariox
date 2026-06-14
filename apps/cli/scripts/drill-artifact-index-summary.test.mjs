@@ -11,6 +11,7 @@ import {
   verifyDrillArtifactIndex,
   writeDrillArtifactIndex,
 } from "./lib/drill-artifacts.mjs"
+import { drillRuntimeSignalOwnersFor } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-artifact-index-summary.mjs", import.meta.url))
@@ -163,6 +164,9 @@ async function writeIndexedReport(rootDir, name, schema) {
   const drillRoot = path.join(rootDir, name)
   await mkdir(path.join(drillRoot, "reports"), { recursive: true })
   await writeFile(path.join(drillRoot, "reports", "report.json"), `${JSON.stringify({ schema })}\n`, "utf8")
+  const runtimeSignals = name === "one"
+    ? ["session-authority", "lease-health"]
+    : ["session-authority", "workspace-live-sync-state"]
   await writeDrillArtifactIndex({
     rootDir: drillRoot,
     artifacts: ["reports/report.json"],
@@ -173,9 +177,8 @@ async function writeIndexedReport(rootDir, name, schema) {
       owners: name === "one"
         ? "validation-harness"
         : "runtime-network",
-      runtimeSignals: name === "one"
-        ? "session-authority,lease-health"
-        : "session-authority,workspace-live-sync-state",
+      runtimeSignals: runtimeSignals.join(","),
+      runtimeSignalOwners: drillRuntimeSignalOwnersFor(runtimeSignals).join(","),
       artifactKinds: name === "one"
         ? "validation-gate,artifact-index"
         : "matrix-report",

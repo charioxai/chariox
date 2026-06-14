@@ -828,6 +828,7 @@ test("gates explicit artifact index paths by required diagnostic metadata", asyn
         classifications: "validation-gate",
         owners: "validation-platform",
         runtimeSignals: "session-authority,workspace-live-sync-state",
+        runtimeSignalOwners: "kernel-authority,runtime-state",
       },
     })
     const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")

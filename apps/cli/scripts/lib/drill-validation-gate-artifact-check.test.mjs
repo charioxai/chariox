@@ -161,6 +161,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
       artifacts: ["reports/gate.json"],
       metadata: {
         runtimeSignals: "session-authority,workspace-live-sync-state",
+        runtimeSignalOwners: "kernel-authority,runtime-state",
         owners: "validation-platform",
         classifications: "validation-gate",
       },
