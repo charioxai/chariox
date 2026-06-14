@@ -387,6 +387,64 @@ test("rejects unknown deployment preset labels in report checks", () => {
   )
 })
 
+test("rejects unknown runtime signal and classification labels in report checks", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        platformBundle: {
+          status: "passed",
+          dir: "/tmp/platform",
+          requiredCoverageAreas: [],
+          missingCoverageAreas: [],
+          requiredRuntimeSignals: ["workspace-live-synch-state"],
+          missingRuntimeSignals: [],
+          requiredFailureClassifications: [],
+          missingFailureClassifications: [],
+          artifacts: [],
+          validationSuite: { testCount: 0, coverageAreas: [] },
+        },
+      },
+    })),
+    /checks\.platformBundle\.requiredRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactRuntimeSignalOwners: ["kernel-authorit"],
+        },
+      },
+    })),
+    /checks\.artifacts\.requiredArtifactRuntimeSignalOwners\[0\] has unknown runtime signal owner "kernel-authorit"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: {
+          ...matrixCheck(),
+          requiredMatrixClassifications: ["workspace-live-synch-conflict"],
+        },
+      },
+    })),
+    /checks\.matrices\.requiredMatrixClassifications\[0\] has unknown failure classification "workspace-live-synch-conflict"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: {
+          ...matrixCheck(),
+          requiredMatrixRuntimeSignals: ["workspace-live-synch-state"],
+        },
+      },
+    })),
+    /checks\.matrices\.requiredMatrixRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/,
+  )
+})
+
 function report(overrides = {}) {
   const checks = {
     configuration: { status: "passed" },

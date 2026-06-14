@@ -3,10 +3,15 @@ import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
+import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
+import {
+  DRILL_RUNTIME_SIGNAL_OWNERS,
+  validateDrillRuntimeSignals,
+} from "./drill-runtime-signals.mjs"
 
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
 
@@ -58,10 +63,10 @@ function validatePlatformBundleCheck(check, source) {
   validateCheckObject(check, source)
   validateStringArray(check.requiredCoverageAreas ?? [], `${source}.requiredCoverageAreas`)
   validateStringArray(check.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
-  validateStringArray(check.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
-  validateStringArray(check.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
-  validateStringArray(check.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
-  validateStringArray(check.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
+  validateRuntimeSignalArray(check.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
+  validateRuntimeSignalArray(check.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
+  validateFailureClassificationArray(check.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
+  validateFailureClassificationArray(check.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
   if (check.status === "skipped") {
     if (check.dir !== null) {
       throw new Error(`${source} skipped check has invalid dir`)
@@ -120,10 +125,10 @@ function validateArtifactIndexCheck(check, source) {
   validateGeneratedEvidenceKindArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateArtifactEvidenceRepoArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
-  validateStringArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
-  validateStringArray(check.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
-  validateStringArray(check.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
-  validateStringArray(check.missingArtifactRuntimeSignalOwners ?? [], `${source}.missingArtifactRuntimeSignalOwners`)
+  validateRuntimeSignalArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
+  validateRuntimeSignalArray(check.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
+  validateRuntimeSignalOwnerArray(check.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
+  validateRuntimeSignalOwnerArray(check.missingArtifactRuntimeSignalOwners ?? [], `${source}.missingArtifactRuntimeSignalOwners`)
   validateStringArray(check.requiredArtifactOwners ?? [], `${source}.requiredArtifactOwners`)
   validateStringArray(check.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
   validateStringArray(check.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
@@ -143,10 +148,10 @@ function validateMatrixCheck(check, source) {
   validateStringArray(check.reportPaths, `${source}.reportPaths`)
   validateStringArray(check.requiredMatrices ?? [], `${source}.requiredMatrices`)
   validateStringArray(check.missingMatrices ?? [], `${source}.missingMatrices`)
-  validateStringArray(check.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
-  validateStringArray(check.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
-  validateStringArray(check.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
-  validateStringArray(check.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
+  validateFailureClassificationArray(check.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
+  validateFailureClassificationArray(check.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
+  validateRuntimeSignalArray(check.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
+  validateRuntimeSignalArray(check.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
   validateDeploymentPresetArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateDeploymentPresetArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateProviderArray(check.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -396,6 +401,29 @@ function validateDeploymentPresetArray(value, source) {
   for (const [index, preset] of value.entries()) {
     if (!isKnownDrillDeploymentPreset(preset)) {
       throw new Error(`${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
+    }
+  }
+}
+
+function validateRuntimeSignalArray(value, source) {
+  validateStringArray(value, source)
+  validateDrillRuntimeSignals(value, source)
+}
+
+function validateRuntimeSignalOwnerArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, owner] of value.entries()) {
+    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
+      throw new Error(`${source}[${index}] has unknown runtime signal owner ${JSON.stringify(owner)}`)
+    }
+  }
+}
+
+function validateFailureClassificationArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, classification] of value.entries()) {
+    if (!isKnownDrillFailureClassification(classification)) {
+      throw new Error(`${source}[${index}] has unknown failure classification ${JSON.stringify(classification)}`)
     }
   }
 }

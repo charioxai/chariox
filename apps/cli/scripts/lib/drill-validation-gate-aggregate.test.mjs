@@ -330,6 +330,67 @@ test("rejects unknown deployment preset labels in aggregate reports", () => {
   )
 })
 
+test("rejects unknown runtime signal owners and failure classifications in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredFailureClassifications: ["workspace-live-synch-conflict"],
+    }),
+    /requiredFailureClassifications\[0\] has unknown failure classification "workspace-live-synch-conflict"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        requiredFailureClassifications: { "workspace-live-synch-conflict": 1 },
+      },
+    }),
+    /coverage\.requiredFailureClassifications has unknown failure classification "workspace-live-synch-conflict"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        platformCoverage: {
+          ...aggregate.reports[0].platformCoverage,
+          requiredFailureClassifications: ["workspace-live-synch-conflict"],
+        },
+      }],
+    }),
+    /reports\[0\]\.platformCoverage\.requiredFailureClassifications\[0\] has unknown failure classification "workspace-live-synch-conflict"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          requiredArtifactRuntimeSignalOwners: ["kernel-authorit"],
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.requiredArtifactRuntimeSignalOwners\[0\] has unknown runtime signal owner "kernel-authorit"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        matrixCoverage: {
+          ...aggregate.reports[0].matrixCoverage,
+          requiredMatrixClassifications: ["workspace-live-synch-conflict"],
+        },
+      }],
+    }),
+    /reports\[0\]\.matrixCoverage\.requiredMatrixClassifications\[0\] has unknown failure classification "workspace-live-synch-conflict"/,
+  )
+})
+
 test("fails aggregate requirements missing from otherwise passing reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["remote-home-extension"],
