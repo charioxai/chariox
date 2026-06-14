@@ -5,6 +5,7 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  defaultDrillMatrixArtifactIndexPath,
   defaultDrillMatrixReportPath,
   extractDrillArtifactHints,
   parseDrillScenarioIds,
@@ -166,6 +167,14 @@ test("builds stable default matrix report paths", () => {
     reportPath,
     "/repo/.artifacts/drill-matrices/workspace-live-sync-matrix/2026-06-14T00-00-01-234Z.json",
   )
+})
+
+test("builds stable default matrix artifact index paths", () => {
+  assert.equal(
+    defaultDrillMatrixArtifactIndexPath("/repo/.artifacts/drill-matrices/test-matrix/2026-06-14T00-00-01-234Z.json"),
+    "/repo/.artifacts/drill-matrices/test-matrix/2026-06-14T00-00-01-234Z-artifacts/arroba-drill-artifacts.json",
+  )
+  assert.throws(() => defaultDrillMatrixArtifactIndexPath(""), /reportPath is required/)
 })
 
 test("extracts artifact hints from structured and text drill output", () => {

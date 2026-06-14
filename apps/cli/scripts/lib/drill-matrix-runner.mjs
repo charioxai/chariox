@@ -54,6 +54,13 @@ export function defaultDrillMatrixReportPath(matrixName, { rootDir = process.cwd
   return path.join(rootDir, ".artifacts", "drill-matrices", safeName, `${stamp}.json`)
 }
 
+export function defaultDrillMatrixArtifactIndexPath(reportPath) {
+  if (!nonEmptyString(reportPath)) throw new Error("matrix reportPath is required")
+  const extension = path.extname(reportPath)
+  const baseName = path.basename(reportPath, extension)
+  return path.join(path.dirname(reportPath), `${baseName}-artifacts`, "arroba-drill-artifacts.json")
+}
+
 export function extractDrillArtifactHints(text) {
   const hints = new Set()
   for (const line of String(text ?? "").split("\n")) {

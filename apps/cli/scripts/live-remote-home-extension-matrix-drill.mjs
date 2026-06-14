@@ -2,6 +2,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  defaultDrillMatrixArtifactIndexPath,
   defaultDrillMatrixReportPath,
   parseDrillScenarioIds,
   runDrillMatrix,
@@ -71,6 +72,7 @@ function printHelp() {
     '  --dry-run                Print selected commands without running drills',
     '  --continue-on-failure    Run every selected scenario before exiting non-zero',
     '  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices',
+    '  --artifact-index PATH    Write a verifiable artifact index for the matrix report',
     '  --hetzner-host HOST      Forwarded to Hetzner drill scenarios',
     '  --hetzner-key PATH       Forwarded to Hetzner drill scenarios',
     '  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios',
@@ -93,6 +95,7 @@ function parseArgs(argv) {
     dryRun: false,
     continueOnFailure: false,
     reportPath: null,
+    artifactIndexPath: null,
     passthrough: [],
     help: false,
   }
@@ -104,6 +107,8 @@ function parseArgs(argv) {
     else if (arg === '--continue-on-failure') options.continueOnFailure = true
     else if (arg === '--report') options.reportPath = readValue(argv, i++, arg)
     else if (arg.startsWith('--report=')) options.reportPath = arg.slice('--report='.length)
+    else if (arg === '--artifact-index') options.artifactIndexPath = readValue(argv, i++, arg)
+    else if (arg.startsWith('--artifact-index=')) options.artifactIndexPath = arg.slice('--artifact-index='.length)
     else if (arg === '--help' || arg === '-h') options.help = true
     else if (arg === '--only') options.only = parseDrillScenarioIds(readValue(argv, i++, arg))
     else if (arg.startsWith('--only=')) options.only = parseDrillScenarioIds(arg.slice('--only='.length))
@@ -144,6 +149,7 @@ async function main() {
   }
   const selected = selectScenarios(options)
   const reportPath = options.reportPath ?? defaultDrillMatrixReportPath('remote-home-extension-matrix', { rootDir: repoRoot })
+  const artifactIndexPath = options.artifactIndexPath ?? defaultDrillMatrixArtifactIndexPath(reportPath)
   const results = await runDrillMatrix({
     matrixName: 'remote-home-extension-matrix',
     scenarios: selected,
@@ -152,6 +158,7 @@ async function main() {
     continueOnFailure: options.continueOnFailure,
     dryRun: options.dryRun,
     reportPath,
+    artifactIndexPath,
     metadata: {
       includeHetzner: options.includeHetzner,
       ...hetznerPassthroughMetadata(options.passthrough),
