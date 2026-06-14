@@ -9,6 +9,7 @@ import {
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import {
   drillFailureClassificationForKind,
+  drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
   isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
@@ -272,6 +273,10 @@ function validateDrillFailureAggregateEntry(failure, source) {
   const expectedOwner = drillFailureOwnerForClassification(failure.classification)
   if (failure.owner !== expectedOwner) {
     throw new Error(`${source} owner ${JSON.stringify(failure.owner)} does not match classification ${JSON.stringify(failure.classification)}`)
+  }
+  const expectedNextAction = drillFailureNextActionForClassification(failure.classification, { target: "drill", rootDir: failure.rootDir })
+  if (failure.nextAction !== expectedNextAction) {
+    throw new Error(`${source} nextAction does not match classification ${JSON.stringify(failure.classification)}`)
   }
   if (failure.source !== null && failure.source !== undefined && !nonEmptyString(failure.source)) {
     throw new Error(`${source} has invalid source`)
