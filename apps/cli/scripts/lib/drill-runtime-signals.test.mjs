@@ -70,6 +70,14 @@ test("rejects unknown drill runtime signals in shared helpers", () => {
     /unknown drill runtime signal "workspace-live-synch-state"/,
   )
   assert.throws(
+    () => drillRuntimeSignalOwnerCounts({ "session-authority": 0.5 }),
+    /drill runtime signal "session-authority" has invalid count/,
+  )
+  assert.throws(
+    () => drillRuntimeSignalOwnerCounts({ "session-authority": -1 }),
+    /drill runtime signal "session-authority" has invalid count/,
+  )
+  assert.throws(
     () => validateDrillRuntimeSignals(["session-authority", "runtime-projector-health"], "report.runtimeSignals"),
     /report\.runtimeSignals\[1\] has unknown runtime signal "runtime-projector-health"/,
   )

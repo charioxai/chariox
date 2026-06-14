@@ -76,6 +76,9 @@ export function drillRuntimeSignalOwnersFor(runtimeSignals) {
 export function drillRuntimeSignalOwnerCounts(runtimeSignals) {
   const counts = new Map()
   for (const [signal, count] of Object.entries(runtimeSignals ?? {})) {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`drill runtime signal ${JSON.stringify(signal)} has invalid count`)
+    }
     const owner = drillRuntimeSignalOwner(signal)
     counts.set(owner, (counts.get(owner) ?? 0) + count)
   }
