@@ -207,7 +207,7 @@ export function classifyDrillFailureManifest(manifest) {
   return drillFailureClassificationForKind(childClassification, { target: "drill", rootDir: manifest.rootDir })
 }
 
-function validateDrillFailureManifestAggregate(aggregate) {
+export function validateDrillFailureManifestAggregate(aggregate) {
   if (!aggregate || typeof aggregate !== "object") {
     throw new Error("aggregate is not an object")
   }

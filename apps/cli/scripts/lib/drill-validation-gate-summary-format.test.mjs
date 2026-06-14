@@ -101,53 +101,21 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
         roots: [],
         inputs: ["/tmp/artifacts.json"],
         indexPaths: ["/tmp/artifacts.json"],
-        aggregate: {
-          schema: "arroba.drill.artifact_index.aggregate.v1",
-          totals: { indexes: 1, artifacts: 3, sizeBytes: 42 },
-          runtimeSignals: {
-            "session-authority": 2,
-            "workspace-live-sync-state": 1,
-          },
-        },
+        aggregate: artifactAggregateFixture(),
       },
       matrices: matrixCheck({
         status: "passed",
         reportPaths: ["/tmp/matrix.json"],
         requiredMatrixRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
         missingMatrixRuntimeSignals: [],
-        aggregate: {
-          schema: "arroba.drill.matrix.aggregate.v1",
-          status: "passed",
-          totals: { failed: 0, skipped: 1, dryRun: 2 },
-          runtimeSignalScenarios: {
-            "session-authority": [{
-              matrix: "workspace-live-sync-matrix",
-              source: "/tmp/matrix.json",
-              id: "permission",
-              status: "passed",
-            }],
-            "workspace-live-sync-state": [{
-              matrix: "workspace-live-sync-matrix",
-              source: "/tmp/matrix.json",
-              id: "managed",
-              status: "passed",
-            }],
-          },
-        },
+        aggregate: matrixAggregateFixture(),
       }),
       failures: {
         status: "failed",
         roots: [],
         inputs: ["/tmp/failure.json"],
         manifestPaths: ["/tmp/failure.json"],
-        aggregate: {
-          schema: "arroba.drill.failure.aggregate.v1",
-          total: 1,
-          runtimeSignals: {
-            "lease-health": 1,
-            "relay-target-freshness": 1,
-          },
-        },
+        aggregate: failureAggregateFixture(),
       },
     },
     status: "failed",
@@ -219,5 +187,114 @@ function matrixCheck(overrides = {}) {
     requiredScenarios: [],
     missingScenarios: [],
     ...overrides,
+  }
+}
+
+function artifactAggregateFixture() {
+  return {
+    schema: "arroba.drill.artifact_index.aggregate.v1",
+    totals: { indexes: 1, artifacts: 3, sizeBytes: 42 },
+    schemas: {},
+    runtimeSignals: {
+      "session-authority": 2,
+      "workspace-live-sync-state": 1,
+    },
+    indexes: [{
+      source: "/tmp/artifacts.json",
+      rootDir: "/tmp/artifacts",
+      artifacts: 3,
+      sizeBytes: 42,
+      schemas: {},
+      runtimeSignals: {
+        "session-authority": 2,
+        "workspace-live-sync-state": 1,
+      },
+    }],
+  }
+}
+
+function matrixAggregateFixture() {
+  return {
+    schema: "arroba.drill.matrix.aggregate.v1",
+    status: "passed",
+    totals: { reports: 1, scenarios: 3, passed: 0, failed: 0, skipped: 1, dryRun: 2, durationMs: 30 },
+    failedScenarios: [],
+    skippedScenarios: [],
+    incompleteScenarios: [
+      matrixScenarioFixture("managed", "dry-run"),
+      matrixScenarioFixture("permission", "dry-run"),
+      matrixScenarioFixture("restart", "skipped"),
+    ],
+    owners: {},
+    matrixNames: { "workspace-live-sync-matrix": 1 },
+    deploymentPresets: {},
+    providers: {},
+    scenarioIds: { managed: 1, permission: 1, restart: 1 },
+    runtimeSignals: {
+      "session-authority": 1,
+      "workspace-live-sync-state": 1,
+    },
+    runtimeSignalScenarios: {
+      "session-authority": [matrixScenarioFixture("permission", "passed")],
+      "workspace-live-sync-state": [matrixScenarioFixture("managed", "passed")],
+    },
+    nextActions: [],
+    reports: [{
+      matrix: "workspace-live-sync-matrix",
+      source: "/tmp/matrix.json",
+      status: "passed",
+      deploymentPresets: [],
+      providers: [],
+      scenarioIds: ["managed", "permission", "restart"],
+      runtimeSignals: {
+        "session-authority": 1,
+        "workspace-live-sync-state": 1,
+      },
+      runtimeSignalScenarios: {
+        "session-authority": [matrixScenarioFixture("permission", "passed")],
+        "workspace-live-sync-state": [matrixScenarioFixture("managed", "passed")],
+      },
+      scenarioCount: 3,
+      counts: { passed: 0, failed: 0, skipped: 1, dryRun: 2 },
+      durationMs: 30,
+    }],
+  }
+}
+
+function matrixScenarioFixture(id, status) {
+  return {
+    matrix: "workspace-live-sync-matrix",
+    source: "/tmp/matrix.json",
+    id,
+    status,
+  }
+}
+
+function failureAggregateFixture() {
+  const nextAction = "inspect relay and kernel logs in the preserved artifact root, then rerun the drill"
+  return {
+    schema: "arroba.drill.failure.aggregate.v1",
+    total: 1,
+    owners: { "runtime-network": 1 },
+    classifications: { "relay-runtime": 1 },
+    runtimeSignals: {
+      "lease-health": 1,
+      "relay-target-freshness": 1,
+    },
+    nextActions: [{
+      owner: "runtime-network",
+      classification: "relay-runtime",
+      nextAction,
+      count: 1,
+    }],
+    failures: [{
+      drill: "relay-drill",
+      source: "/tmp/failure.json",
+      rootDir: "/tmp/failure",
+      owner: "runtime-network",
+      classification: "relay-runtime",
+      runtimeSignals: ["lease-health", "relay-target-freshness"],
+      nextAction,
+    }],
   }
 }

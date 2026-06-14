@@ -153,6 +153,51 @@ test("validates aggregate schemas for artifact, matrix, and failure checks", () 
     })),
     /checks\.failures\.aggregate has unsupported schema/,
   )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          aggregate: { schema: "arroba.drill.artifact_index.aggregate.v1" },
+        },
+      },
+    })),
+    /checks\.artifacts\.aggregate has invalid totals/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: {
+          ...matrixCheck(),
+          aggregate: {
+            ...matrixAggregate(),
+            runtimeSignals: { "session-authority": 2 },
+          },
+        },
+      },
+    })),
+    /checks\.matrices\.aggregate runtimeSignals do not match runtimeSignalScenarios/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        failures: {
+          status: "failed",
+          roots: [],
+          inputs: [],
+          manifestPaths: [],
+          aggregate: {
+            ...failureAggregate(),
+            runtimeSignals: { "lease-health": 2 },
+          },
+        },
+      },
+    })),
+    /checks\.failures\.aggregate runtimeSignals do not match failures/,
+  )
 })
 
 function report(overrides = {}) {
@@ -200,5 +245,73 @@ function matrixCheck(overrides = {}) {
     requiredScenarios: [],
     missingScenarios: [],
     ...overrides,
+  }
+}
+
+function matrixAggregate() {
+  return {
+    schema: "arroba.drill.matrix.aggregate.v1",
+    status: "passed",
+    totals: { reports: 1, scenarios: 1, passed: 1, failed: 0, skipped: 0, dryRun: 0, durationMs: 10 },
+    failedScenarios: [],
+    skippedScenarios: [],
+    incompleteScenarios: [],
+    owners: {},
+    matrixNames: { "test-matrix": 1 },
+    deploymentPresets: {},
+    providers: {},
+    scenarioIds: { local: 1 },
+    runtimeSignals: { "session-authority": 1 },
+    runtimeSignalScenarios: {
+      "session-authority": [{
+        matrix: "test-matrix",
+        source: "/tmp/matrix.json",
+        id: "local",
+        status: "passed",
+      }],
+    },
+    nextActions: [],
+    reports: [{
+      matrix: "test-matrix",
+      source: "/tmp/matrix.json",
+      status: "passed",
+      deploymentPresets: [],
+      providers: [],
+      scenarioIds: ["local"],
+      runtimeSignals: { "session-authority": 1 },
+      runtimeSignalScenarios: {
+        "session-authority": [{
+          id: "local",
+          status: "passed",
+        }],
+      },
+      scenarioCount: 1,
+      counts: { passed: 1, failed: 0, skipped: 0, dryRun: 0 },
+      durationMs: 10,
+    }],
+  }
+}
+
+function failureAggregate() {
+  return {
+    schema: "arroba.drill.failure.aggregate.v1",
+    total: 1,
+    owners: { "runtime-network": 1 },
+    classifications: { "relay-runtime": 1 },
+    runtimeSignals: { "lease-health": 1 },
+    nextActions: [{
+      owner: "runtime-network",
+      classification: "relay-runtime",
+      nextAction: "inspect relay and kernel logs in the preserved artifact root, then rerun the drill",
+      count: 1,
+    }],
+    failures: [{
+      drill: "relay-drill",
+      rootDir: "/tmp/failure",
+      owner: "runtime-network",
+      classification: "relay-runtime",
+      runtimeSignals: ["lease-health"],
+      nextAction: "inspect relay and kernel logs in the preserved artifact root, then rerun the drill",
+    }],
   }
 }

@@ -1,4 +1,7 @@
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
+import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
+import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
+import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
 
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
 
@@ -103,7 +106,7 @@ function validateArtifactIndexCheck(check, source) {
     throw new Error(`${source} is missing error`)
   }
   if (check.aggregate) {
-    validateAggregateSchema(check.aggregate, "arroba.drill.artifact_index.aggregate.v1", `${source}.aggregate`)
+    validateDrillArtifactIndexAggregate(check.aggregate, `${source}.aggregate`)
   }
 }
 
@@ -131,7 +134,12 @@ function validateMatrixCheck(check, source) {
     throw new Error(`${source} is missing error`)
   }
   if (check.aggregate) {
-    validateAggregateSchema(check.aggregate, "arroba.drill.matrix.aggregate.v1", `${source}.aggregate`)
+    try {
+      validateDrillMatrixAggregate(check.aggregate)
+    } catch (error) {
+      const message = String(error.message ?? error).replace(/^aggregate\s+/, "")
+      throw new Error(`${source}.aggregate ${message}`)
+    }
   }
 }
 
@@ -144,7 +152,12 @@ function validateFailureCheck(check, source) {
     throw new Error(`${source} is missing error`)
   }
   if (check.aggregate) {
-    validateAggregateSchema(check.aggregate, "arroba.drill.failure.aggregate.v1", `${source}.aggregate`)
+    try {
+      validateDrillFailureManifestAggregate(check.aggregate)
+    } catch (error) {
+      const message = String(error.message ?? error).replace(/^aggregate\s+/, "")
+      throw new Error(`${source}.aggregate ${message}`)
+    }
   }
 }
 
@@ -236,15 +249,6 @@ function validatePlatformRuntimeSignalsSummary(summary, source) {
     if (!nonEmptyString(signal.owner)) {
       throw new Error(`${signalSource} has invalid owner`)
     }
-  }
-}
-
-function validateAggregateSchema(aggregate, schema, source) {
-  if (!aggregate || typeof aggregate !== "object" || Array.isArray(aggregate)) {
-    throw new Error(`${source} is not an object`)
-  }
-  if (aggregate.schema !== schema) {
-    throw new Error(`${source} has unsupported schema ${JSON.stringify(aggregate.schema)}`)
   }
 }
 

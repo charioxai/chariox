@@ -524,7 +524,7 @@ function validateDrillMatrixScenarioOutcome(scenario, source) {
   }
 }
 
-function validateDrillMatrixAggregate(aggregate) {
+export function validateDrillMatrixAggregate(aggregate) {
   if (!aggregate || typeof aggregate !== "object") {
     throw new Error("aggregate is not an object")
   }
