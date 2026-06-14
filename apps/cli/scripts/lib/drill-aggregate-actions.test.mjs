@@ -68,6 +68,29 @@ test("validates aggregate next action entries", () => {
     nextAction: "inspect state",
     count: 0,
   }, "action"), /invalid count/)
+  assert.throws(() => validateDrillAggregateNextAction({
+    owner: "runtime-state",
+    classification: "runtime-timeout",
+    nextAction: "inspect state",
+    count: 1.5,
+  }, "action"), /invalid count/)
+})
+
+test("aggregate next action counting rejects incomplete actions", () => {
+  const counts = new Map()
+
+  assert.throws(() => countDrillAggregateNextAction(counts, {
+    owner: "runtime-state",
+    classification: "",
+    nextAction: "inspect state",
+  }), /missing classification/)
+  assert.throws(() => countDrillAggregateNextAction(counts, {
+    owner: "runtime-state",
+    classification: "runtime-timeout",
+    nextAction: "inspect state",
+    count: 1.5,
+  }), /invalid count/)
+  assert.equal(counts.size, 0)
 })
 
 test("counts aggregate entries by stable sorted key", () => {

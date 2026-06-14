@@ -1,4 +1,10 @@
 export function countDrillAggregateNextAction(counts, { owner, classification, nextAction, count = 1 }) {
+  validateDrillAggregateNextAction({
+    owner,
+    classification,
+    nextAction,
+    count,
+  }, "aggregate next action")
   const key = JSON.stringify([owner, classification, nextAction])
   const previous = counts.get(key)
   const increment = nextActionIncrement(count)
@@ -25,7 +31,7 @@ export function validateDrillAggregateNextAction(action, source) {
       throw new Error(`${source} is missing ${key}`)
     }
   }
-  if (!Number.isFinite(action.count) || action.count < 1) {
+  if (!Number.isSafeInteger(action.count) || action.count < 1) {
     throw new Error(`${source} has invalid count`)
   }
 }

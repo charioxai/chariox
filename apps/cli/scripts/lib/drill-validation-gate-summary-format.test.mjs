@@ -250,8 +250,8 @@ function artifactAggregateFixture() {
     schema: "arroba.drill.artifact_index.aggregate.v1",
     totals: { indexes: 1, artifacts: 3, sizeBytes: 42 },
     schemas: {
-      "arroba.drill.validation_suite_run.v1": 1,
       "arroba.drill.matrix.v1": 2,
+      "arroba.drill.validation_suite_run.v1": 1,
     },
     runtimeSignals: {
       "session-authority": 2,
@@ -353,6 +353,7 @@ function matrixAggregateFixture() {
       matrixScenarioFixture("restart", "skipped"),
     ],
     owners: {},
+    classifications: {},
     matrixNames: { "workspace-live-sync-matrix": 1 },
     deploymentPresets: {},
     providers: {},
@@ -384,6 +385,7 @@ function matrixAggregateFixture() {
       matrix: "workspace-live-sync-matrix",
       source: "/tmp/matrix.json",
       status: "passed",
+      classifications: {},
       deploymentPresets: [],
       providers: [],
       scenarioIds: ["managed", "permission", "restart"],
