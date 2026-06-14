@@ -104,6 +104,16 @@ test('classifies remote extension manifest sync failures', () => {
   )
 })
 
+test('classifies remote worker execution failures', () => {
+  const text = 'remote worker execution failed: leased agent agent-1 failed to launch provider run'
+
+  assert.equal(classifyDrillChildFailure(text), 'worker-execution')
+  assert.match(
+    formatDrillChildFailure('remote worker drill', 1, null, '', text),
+    /Remote worker execution failed/,
+  )
+})
+
 test('classifies workspace live sync conflicts', () => {
   const text = 'Workspace Live Sync result skipped_conflict for src/app.ts after target changed outside workspace live sync'
 

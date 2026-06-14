@@ -87,6 +87,14 @@ const REMOTE_EXTENSION_SYNC_PATTERNS = [
   /pending revoke/i,
 ]
 
+const WORKER_EXECUTION_PATTERNS = [
+  /worker kernel .*failed/i,
+  /remote worker .*failed/i,
+  /leased agent .*failed (?:to launch|to start|during execution)/i,
+  /remote lease .*provider run .*failed/i,
+  /worker execution failed/i,
+]
+
 const WORKSPACE_LIVE_SYNC_CONFLICT_PATTERNS = [
   /workspace live sync .*conflict/i,
   /skipped_conflict/i,
@@ -118,6 +126,9 @@ export function classifyDrillChildFailure(text) {
   }
   if (REMOTE_EXTENSION_SYNC_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'remote-extension-sync'
+  }
+  if (WORKER_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'worker-execution'
   }
   if (WORKSPACE_LIVE_SYNC_CONFLICT_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'workspace-live-sync-conflict'
@@ -164,6 +175,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'remote-extension-sync'
       ? 'Remote extension manifest state did not reconcile between home and worker kernels.'
+      : null,
+    classification === 'worker-execution'
+      ? 'Remote worker execution failed; inspect worker kernel logs, leased-agent state, and preserved worker artifacts.'
       : null,
     classification === 'workspace-live-sync-conflict'
       ? 'Workspace Live Sync detected a conflict or external change that needs reconciliation.'

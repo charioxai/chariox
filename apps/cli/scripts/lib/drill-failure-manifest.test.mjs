@@ -179,6 +179,14 @@ test("classifies common drill failure owners and next actions", () => {
     owner: "runtime-state",
     nextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the drill",
   })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "remote worker execution failed: leased agent agent-1 failed to launch provider run", stack: null },
+  })), {
+    kind: "worker-execution",
+    owner: "worker-kernel",
+    nextAction: "inspect worker kernel logs, leased-agent launch state, and preserved worker artifacts, then rerun the drill",
+  })
 })
 
 test("aggregates preserved drill failure summaries", () => {
