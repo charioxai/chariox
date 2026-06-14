@@ -68,6 +68,13 @@ export function validationGateNextActions(checks) {
         nextAction: "run skipped or dry-run matrix scenarios before treating this validation set as complete",
       })
     }
+    if (checks.matrices.requireComplete && (checks.matrices.aggregate?.incompleteExitCriteria?.length ?? 0) > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "incomplete-matrix",
+        nextAction: "run or reconcile incomplete matrix exit criteria before treating this validation set as complete",
+      })
+    }
     const missingMatrices = checks.matrices.missingMatrices ?? []
     if (missingMatrices.length > 0) {
       countDrillAggregateNextAction(counts, {

@@ -73,6 +73,7 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       missingScenarios: ["tracked"],
       aggregate: {
         incompleteScenarios: [{ id: "tracked", status: "dry-run" }],
+        incompleteExitCriteria: [{ id: "tracked:exit-01", status: "dry-run" }],
         nextActions: [{
           owner: "provider-account",
           classification: "provider-auth",
@@ -88,6 +89,12 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       owner: "provider-account",
       classification: "provider-auth",
       nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
+      count: 1,
+    },
+    {
+      owner: "validation-harness",
+      classification: "incomplete-matrix",
+      nextAction: "run or reconcile incomplete matrix exit criteria before treating this validation set as complete",
       count: 1,
     },
     {
