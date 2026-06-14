@@ -6,6 +6,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/drill-matrix-report-summary.test.mjs",
   "apps/cli/scripts/drill-platform-bundle.test.mjs",
+  "apps/cli/scripts/drill-validation-gate-summary.test.mjs",
   "apps/cli/scripts/drill-validation-gate.test.mjs",
   "apps/cli/scripts/drill-validation-suite.test.mjs",
   "apps/cli/scripts/lib/drill-aggregate-actions.test.mjs",

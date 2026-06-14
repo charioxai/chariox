@@ -86,6 +86,11 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   return lines.join("\n")
 }
 
+export function drillValidationGateAggregateExitCode(aggregate) {
+  validateDrillValidationGateAggregate(aggregate)
+  return aggregate.status === "failed" ? 1 : 0
+}
+
 export async function runDrillValidationGate({
   failureInputs = [],
   failureRoots = [],
