@@ -7,6 +7,11 @@ import {
   runDrillMatrix,
   selectDrillMatrixScenarios,
 } from './lib/drill-matrix-runner.mjs'
+import {
+  appendHetznerPassthrough,
+  hetznerPassthroughMetadata,
+  parseHetznerPassthroughArg,
+} from './lib/drill-environment-presets.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..', '..', '..')
@@ -161,11 +166,13 @@ function parseArgs(argv) {
     else if (arg === '--help' || arg === '-h') options.help = true
     else if (arg === '--only') options.only = parseDrillScenarioIds(readValue(argv, i++, arg))
     else if (arg.startsWith('--only=')) options.only = parseDrillScenarioIds(arg.slice('--only='.length))
-    else if (arg === '--hetzner-host' || arg === '--hetzner-key' || arg === '--hetzner-repo') {
-      const value = readValue(argv, i, arg)
-      options.passthrough.push(arg, value)
-      i += 1
-    } else {
+    else {
+      const hetznerArg = parseHetznerPassthroughArg(argv, i)
+      if (hetznerArg) {
+        options.passthrough.push(...hetznerArg.args)
+        i = hetznerArg.nextIndex
+        continue
+      }
       throw new Error(`unknown argument: ${arg}`)
     }
   }
@@ -195,7 +202,7 @@ function selectScenarios(options) {
 function commandForScenario(item, passthrough) {
   return {
     command: process.execPath,
-    args: [item.script, ...item.args, '--keep-artifacts-on-failure', ...(item.requires.includes('hetzner') ? passthrough : [])],
+    args: appendHetznerPassthrough([item.script, ...item.args, '--keep-artifacts-on-failure'], item, passthrough),
   }
 }
 
@@ -219,6 +226,7 @@ async function main() {
       includeRemote: options.includeRemote,
       includeHetzner: options.includeHetzner,
       includeOpencode: options.includeOpencode,
+      ...hetznerPassthroughMetadata(options.passthrough),
       codexModelId,
     },
   })
