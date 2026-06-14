@@ -60,6 +60,56 @@ test("passes with valid platform bundle and complete matrix reports", async () =
   }
 })
 
+test("gates platform bundle validation suite coverage areas", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+
+    const pass = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      requiredPlatformCoverageAreas: ["runtime-fixtures,matrix-validation"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.platformBundle.requiredCoverageAreas, ["matrix-validation", "runtime-fixtures"])
+    assert.deepEqual(pass.checks.platformBundle.missingCoverageAreas, [])
+    assert.match(formatDrillValidationGateSummary(pass), /platform_required_coverage_areas=matrix-validation,runtime-fixtures missing=none/)
+
+    const fail = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      requiredPlatformCoverageAreas: ["runtime-fixtures", "hosted-cloud-drills"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.platformBundle.missingCoverageAreas, ["hosted-cloud-drills"])
+    assert.match(fail.checks.platformBundle.error, /missing platform coverage areas: hosted-cloud-drills/)
+    assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [
+      {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: "provide a drill platform bundle covering: hosted-cloud-drills",
+      },
+      {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
+      },
+    ])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("fails platform coverage requirements without a platform bundle", async () => {
+  const report = await runDrillValidationGate({
+    requiredPlatformCoverageAreas: ["runtime-fixtures"],
+  })
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.checks.platformBundle.status, "failed")
+  assert.equal(report.checks.platformBundle.error, "no platform bundle provided")
+  assert.deepEqual(report.checks.platformBundle.missingCoverageAreas, ["runtime-fixtures"])
+})
+
 test("passes with explicit matrix report paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -525,6 +575,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     }))
     const passed = await runDrillValidationGate({
       matrixReports: [reportPath],
+      requiredPlatformCoverageAreas: ["runtime-fixtures"],
       requiredMatrices: ["test-matrix"],
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
@@ -532,6 +583,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     })
     const failed = await runDrillValidationGate({
       matrixReports: [reportPath],
+      requiredPlatformCoverageAreas: ["hosted-cloud-drills"],
       requiredMatrices: ["hosted-matrix", "test-matrix"],
       requiredDeploymentPresets: ["hosted-cloud", "local"],
       requiredProviders: ["claude", "codex"],
@@ -543,6 +595,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
 
     assert.equal(aggregate.status, "failed")
     assert.deepEqual(aggregate.coverage, {
+      requiredPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
+      missingPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
       missingMatrices: { "hosted-matrix": 1 },
       requiredDeploymentPresets: { "hosted-cloud": 1, local: 2 },
@@ -552,6 +606,16 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       requiredScenarios: { local: 1, remote: 1 },
       missingScenarios: { remote: 1 },
     })
+    assert.deepEqual(aggregate.reports.map((report) => report.platformCoverage), [
+      {
+        requiredCoverageAreas: ["runtime-fixtures"],
+        missingCoverageAreas: ["runtime-fixtures"],
+      },
+      {
+        requiredCoverageAreas: ["hosted-cloud-drills"],
+        missingCoverageAreas: ["hosted-cloud-drills"],
+      },
+    ])
     assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
       {
         requiredMatrices: ["test-matrix"],
@@ -576,6 +640,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
     ])
     const text = formatDrillValidationGateAggregateSummary(aggregate)
     assert.match(text, /coverage:/)
+    assert.match(text, /missing_platform_coverage_areas: hosted-cloud-drills=1 runtime-fixtures=1/)
     assert.match(text, /missing_matrices: hosted-matrix=1/)
     assert.match(text, /required_deployment_presets: hosted-cloud=1 local=2/)
     assert.match(text, /missing_providers: claude=1/)

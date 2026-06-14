@@ -66,6 +66,8 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
   }
   const nextActions = new Map()
   const coverage = {
+    requiredPlatformCoverageAreas: new Map(),
+    missingPlatformCoverageAreas: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredDeploymentPresets: new Map(),
@@ -81,6 +83,9 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
     for (const action of report.nextActions) {
       countDrillAggregateNextAction(nextActions, action)
     }
+    const platformCoverage = validationGateReportPlatformCoverage(report)
+    countStringValues(coverage.requiredPlatformCoverageAreas, platformCoverage.requiredCoverageAreas)
+    countStringValues(coverage.missingPlatformCoverageAreas, platformCoverage.missingCoverageAreas)
     const matrixCoverage = validationGateReportMatrixCoverage(report)
     countStringValues(coverage.requiredMatrices, matrixCoverage.requiredMatrices)
     countStringValues(coverage.missingMatrices, matrixCoverage.missingMatrices)
@@ -94,6 +99,7 @@ export function summarizeDrillValidationGateReports(reports, { sources = [] } = 
       source: sources[index] ?? null,
       status: report.status,
       checks: Object.fromEntries(Object.entries(report.checks).map(([name, check]) => [name, check.status])),
+      platformCoverage,
       matrixCoverage,
     }
   })
@@ -149,11 +155,13 @@ export async function runDrillValidationGate({
   maxDepth = 8,
   platformBundleDir = null,
   requireComplete = false,
+  requiredPlatformCoverageAreas = [],
   requiredMatrices = [],
   requiredDeploymentPresets = [],
   requiredProviders = [],
   requiredScenarios = [],
 } = {}) {
+  const normalizedRequiredPlatformCoverageAreas = normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas)
   const normalizedRequiredMatrices = normalizeRequiredMatrices(requiredMatrices)
   const normalizedRequiredDeploymentPresets = normalizeRequiredDeploymentPresets(requiredDeploymentPresets)
   const normalizedRequiredProviders = normalizeRequiredProviders(requiredProviders)
@@ -167,12 +175,15 @@ export async function runDrillValidationGate({
       matrixReports,
       matrixRoots,
       platformBundleDir,
+      requiredPlatformCoverageAreas: normalizedRequiredPlatformCoverageAreas,
       requiredMatrices: normalizedRequiredMatrices,
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
     }),
-    platformBundle: await platformBundleCheck(platformBundleDir),
+    platformBundle: await platformBundleCheck(platformBundleDir, {
+      requiredCoverageAreas: normalizedRequiredPlatformCoverageAreas,
+    }),
     artifacts: await artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
     matrices: await matrixCheck({
       matrixReports,
@@ -214,6 +225,11 @@ export function formatDrillValidationGateSummary(report) {
 
   const platform = report.checks.platformBundle
   lines.push(`platform_bundle=${platform.status}${platform.dir ? ` dir=${platform.dir}` : ""}${platform.error ? ` error=${platform.error}` : ""}`)
+  const requiredPlatformCoverageAreas = platform.requiredCoverageAreas ?? []
+  const missingPlatformCoverageAreas = platform.missingCoverageAreas ?? []
+  if (requiredPlatformCoverageAreas.length > 0) {
+    lines.push(`platform_required_coverage_areas=${requiredPlatformCoverageAreas.join(",")} missing=${missingPlatformCoverageAreas.join(",") || "none"}`)
+  }
   if (platform.validationSuite) {
     lines.push(`platform_validation_suite_tests=${platform.validationSuite.testCount} coverage=${platform.validationSuite.coverageAreas.map((area) => `${area.id}:${area.testCount}`).join(",")}`)
   }
@@ -364,20 +380,30 @@ function validateConfigurationCheck(check, source) {
 
 function validatePlatformBundleCheck(check, source) {
   validateCheckObject(check, source)
+  validateStringArray(check.requiredCoverageAreas ?? [], `${source}.requiredCoverageAreas`)
+  validateStringArray(check.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
   if (check.status === "skipped") {
     if (check.dir !== null) {
       throw new Error(`${source} skipped check has invalid dir`)
     }
+    if ((check.requiredCoverageAreas ?? []).length > 0 || (check.missingCoverageAreas ?? []).length > 0) {
+      throw new Error(`${source} skipped check has invalid coverage requirements`)
+    }
     return
-  }
-  if (!nonEmptyString(check.dir)) {
-    throw new Error(`${source} is missing dir`)
   }
   if (check.status === "failed") {
     if (!nonEmptyString(check.error)) {
       throw new Error(`${source} is missing error`)
     }
-    return
+    if (!check.validationSuite) {
+      if (check.dir !== null && check.dir !== undefined && !nonEmptyString(check.dir)) {
+        throw new Error(`${source} has invalid dir`)
+      }
+      return
+    }
+  }
+  if (!nonEmptyString(check.dir)) {
+    throw new Error(`${source} is missing dir`)
   }
   if (!Array.isArray(check.artifacts)) {
     throw new Error(`${source} has invalid artifacts`)
@@ -550,6 +576,17 @@ function validateGateAggregateReportSummary(report, source) {
   if (report.matrixCoverage !== undefined) {
     validateValidationGateMatrixCoverage(report.matrixCoverage, `${source}.matrixCoverage`)
   }
+  if (report.platformCoverage !== undefined) {
+    validateValidationGatePlatformCoverage(report.platformCoverage, `${source}.platformCoverage`)
+  }
+}
+
+function validationGateReportPlatformCoverage(report) {
+  const platform = report.checks.platformBundle
+  return {
+    requiredCoverageAreas: [...(platform.requiredCoverageAreas ?? [])],
+    missingCoverageAreas: [...(platform.missingCoverageAreas ?? [])],
+  }
 }
 
 function validationGateReportMatrixCoverage(report) {
@@ -574,6 +611,8 @@ function countStringValues(counts, values) {
 
 function formatValidationGateCoverageCounts(coverage) {
   return {
+    requiredPlatformCoverageAreas: countMapToObject(coverage.requiredPlatformCoverageAreas),
+    missingPlatformCoverageAreas: countMapToObject(coverage.missingPlatformCoverageAreas),
     requiredMatrices: countMapToObject(coverage.requiredMatrices),
     missingMatrices: countMapToObject(coverage.missingMatrices),
     requiredDeploymentPresets: countMapToObject(coverage.requiredDeploymentPresets),
@@ -591,6 +630,8 @@ function countMapToObject(counts) {
 
 function formatValidationGateCoverageSummary(coverage) {
   const lines = []
+  appendCoverageLine(lines, "required_platform_coverage_areas", coverage.requiredPlatformCoverageAreas)
+  appendCoverageLine(lines, "missing_platform_coverage_areas", coverage.missingPlatformCoverageAreas)
   appendCoverageLine(lines, "required_matrices", coverage.requiredMatrices)
   appendCoverageLine(lines, "missing_matrices", coverage.missingMatrices)
   appendCoverageLine(lines, "required_deployment_presets", coverage.requiredDeploymentPresets)
@@ -613,6 +654,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
     throw new Error(`${source} is not an object`)
   }
+  validateCountObject(coverage.requiredPlatformCoverageAreas ?? {}, `${source}.requiredPlatformCoverageAreas`)
+  validateCountObject(coverage.missingPlatformCoverageAreas ?? {}, `${source}.missingPlatformCoverageAreas`)
   validateCountObject(coverage.requiredMatrices ?? {}, `${source}.requiredMatrices`)
   validateCountObject(coverage.missingMatrices ?? {}, `${source}.missingMatrices`)
   validateCountObject(coverage.requiredDeploymentPresets ?? {}, `${source}.requiredDeploymentPresets`)
@@ -637,8 +680,18 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   validateStringArray(coverage.missingScenarios ?? [], `${source}.missingScenarios`)
 }
 
+function validateValidationGatePlatformCoverage(coverage, source) {
+  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateStringArray(coverage.requiredCoverageAreas ?? [], `${source}.requiredCoverageAreas`)
+  validateStringArray(coverage.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
+}
+
 function assertValidationGateCoverageMatchesReports(aggregate, source) {
   const expected = {
+    requiredPlatformCoverageAreas: new Map(),
+    missingPlatformCoverageAreas: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredDeploymentPresets: new Map(),
@@ -649,6 +702,12 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingScenarios: new Map(),
   }
   for (const report of aggregate.reports) {
+    const platformCoverage = report.platformCoverage ?? {
+      requiredCoverageAreas: [],
+      missingCoverageAreas: [],
+    }
+    countStringValues(expected.requiredPlatformCoverageAreas, platformCoverage.requiredCoverageAreas ?? [])
+    countStringValues(expected.missingPlatformCoverageAreas, platformCoverage.missingCoverageAreas ?? [])
     const coverage = report.matrixCoverage ?? {
       requiredMatrices: [],
       missingMatrices: [],
@@ -689,6 +748,14 @@ function validationGateNextActions(checks) {
       classification: "platform-bundle",
       nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
     })
+    const missingCoverageAreas = checks.platformBundle.missingCoverageAreas ?? []
+    if (missingCoverageAreas.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: `provide a drill platform bundle covering: ${missingCoverageAreas.join(", ")}`,
+      })
+    }
   }
   if (checks.artifacts.status === "failed") {
     countDrillAggregateNextAction(counts, {
@@ -771,6 +838,7 @@ function configurationCheck({
   matrixReports,
   matrixRoots,
   platformBundleDir,
+  requiredPlatformCoverageAreas,
   requiredMatrices,
   requiredDeploymentPresets,
   requiredProviders,
@@ -781,6 +849,7 @@ function configurationCheck({
     || artifactIndexes.length > 0
     || matrixRoots.length > 0
     || matrixReports.length > 0
+    || requiredPlatformCoverageAreas.length > 0
     || failureRoots.length > 0
     || failureInputs.length > 0
     || requiredMatrices.length > 0
@@ -838,14 +907,34 @@ async function artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth
   }
 }
 
-async function platformBundleCheck(platformBundleDir) {
-  if (!platformBundleDir) return { status: "skipped", dir: null }
+async function platformBundleCheck(platformBundleDir, { requiredCoverageAreas = [] } = {}) {
+  if (!platformBundleDir) {
+    if (requiredCoverageAreas.length > 0) {
+      return {
+        status: "failed",
+        dir: null,
+        requiredCoverageAreas: [...requiredCoverageAreas],
+        missingCoverageAreas: [...requiredCoverageAreas],
+        error: "no platform bundle provided",
+      }
+    }
+    return {
+      status: "skipped",
+      dir: null,
+      requiredCoverageAreas: [],
+      missingCoverageAreas: [],
+    }
+  }
   try {
     const bundle = await verifyDrillPlatformBundle(platformBundleDir)
     const validationSuite = await readPlatformBundleValidationSuite(platformBundleDir)
+    const missingCoverageAreas = missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageAreas)
     return {
-      status: "passed",
+      status: missingCoverageAreas.length === 0 ? "passed" : "failed",
       dir: platformBundleDir,
+      requiredCoverageAreas: [...requiredCoverageAreas],
+      missingCoverageAreas,
+      ...(missingCoverageAreas.length > 0 ? { error: `missing platform coverage areas: ${missingCoverageAreas.join(", ")}` } : {}),
       artifacts: bundle.artifacts.map((artifact) => ({
         path: artifact.path,
         schema: artifact.schema,
@@ -858,6 +947,8 @@ async function platformBundleCheck(platformBundleDir) {
     return {
       status: "failed",
       dir: platformBundleDir,
+      requiredCoverageAreas: [...requiredCoverageAreas],
+      missingCoverageAreas: [...requiredCoverageAreas],
       error: error instanceof Error ? error.message : String(error),
     }
   }
@@ -872,6 +963,11 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
       testCount: area.testCount,
     })),
   }
+}
+
+function missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageAreas) {
+  const present = new Set((validationSuite.coverageAreas ?? []).map((area) => area.id))
+  return requiredCoverageAreas.filter((area) => !present.has(area))
 }
 
 async function matrixCheck({ matrixReports, matrixRoots }, { maxDepth, requireComplete, requiredMatrices, requiredDeploymentPresets, requiredProviders, requiredScenarios }) {
@@ -978,6 +1074,23 @@ function missingRequiredScenarios(aggregate, requiredScenarios) {
 function missingRequiredMatrices(aggregate, requiredMatrices) {
   const present = new Set(Object.keys(aggregate.matrixNames ?? {}))
   return requiredMatrices.filter((matrix) => !present.has(matrix))
+}
+
+function normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas) {
+  if (!Array.isArray(requiredPlatformCoverageAreas)) {
+    throw new Error("requiredPlatformCoverageAreas must be an array")
+  }
+  const areas = []
+  for (const area of requiredPlatformCoverageAreas) {
+    if (!nonEmptyString(area)) {
+      throw new Error("requiredPlatformCoverageAreas has invalid area")
+    }
+    for (const value of area.split(",")) {
+      const normalized = value.trim()
+      if (normalized) areas.push(normalized)
+    }
+  }
+  return [...new Set(areas)].sort()
 }
 
 function normalizeRequiredMatrices(requiredMatrices) {

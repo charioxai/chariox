@@ -24,6 +24,8 @@ function printHelp() {
     "  --failure-root ROOT    Discover failure manifests below ROOT; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
     "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
+    "  --require-platform-coverage-area ID[,ID]",
+    "                         Fail when platform bundle validation suite lacks each coverage area; repeatable",
     "  --require-matrix NAME[,NAME]",
     "                         Fail when matrix reports do not include each matrix name; repeatable",
     "  --require-deployment-preset NAME[,NAME]",
@@ -80,6 +82,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    requiredPlatformCoverageAreas: [],
     requiredMatrices: [],
     requiredDeploymentPresets: [],
     requiredProviders: [],
@@ -90,6 +93,14 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
     else if (arg === "--require-complete") options.requireComplete = true
+    else if (arg === "--require-platform-coverage-area") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-platform-coverage-area requires a value")
+      options.requiredPlatformCoverageAreas.push(value)
+      index += 1
+    } else if (arg.startsWith("--require-platform-coverage-area=")) {
+      options.requiredPlatformCoverageAreas.push(arg.slice("--require-platform-coverage-area=".length))
+    }
     else if (arg === "--require-matrix") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--require-matrix requires a value")

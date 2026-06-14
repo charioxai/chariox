@@ -88,6 +88,40 @@ test("drill validation gate accepts explicit matrix report paths", async () => {
   }
 })
 
+test("drill validation gate requires platform coverage areas", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--platform-bundle",
+        bundleDir,
+        "--require-platform-coverage-area",
+        "runtime-fixtures,hosted-cloud-drills",
+        "--json",
+      ]),
+      (error) => {
+        const report = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(report.status, "failed")
+        assert.deepEqual(report.checks.platformBundle.requiredCoverageAreas, ["hosted-cloud-drills", "runtime-fixtures"])
+        assert.deepEqual(report.checks.platformBundle.missingCoverageAreas, ["hosted-cloud-drills"])
+        assert.match(report.checks.platformBundle.error, /missing platform coverage areas: hosted-cloud-drills/)
+        assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+          { owner: "validation-harness", classification: "platform-bundle" },
+          { owner: "validation-harness", classification: "platform-bundle" },
+        ])
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill validation gate requires matrix name coverage", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {
