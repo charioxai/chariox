@@ -26,6 +26,7 @@ export async function runDrillValidationGate({
   requireComplete = false,
 } = {}) {
   const checks = {
+    configuration: configurationCheck({ failureRoots, matrixRoots, platformBundleDir }),
     platformBundle: await platformBundleCheck(platformBundleDir),
     matrices: await matrixCheck(matrixRoots, { maxDepth, requireComplete }),
     failures: await failureCheck(failureRoots, { maxDepth }),
@@ -48,6 +49,9 @@ export function formatDrillValidationGateSummary(report) {
     "drill validation gate:",
     `status=${report.status}`,
   ]
+  const configuration = report.checks.configuration
+  lines.push(`configuration=${configuration.status}${configuration.error ? ` error=${configuration.error}` : ""}`)
+
   const platform = report.checks.platformBundle
   lines.push(`platform_bundle=${platform.status}${platform.dir ? ` dir=${platform.dir}` : ""}${platform.error ? ` error=${platform.error}` : ""}`)
 
@@ -80,6 +84,13 @@ export function formatDrillValidationGateSummary(report) {
 
 function validationGateNextActions(checks) {
   const counts = new Map()
+  if (checks.configuration.status === "failed") {
+    countDrillAggregateNextAction(counts, {
+      owner: "validation-harness",
+      classification: "validation-gate",
+      nextAction: "configure at least one platform bundle, matrix root, or failure root before using the validation gate",
+    })
+  }
   if (checks.platformBundle.status === "failed") {
     countDrillAggregateNextAction(counts, {
       owner: "validation-harness",
@@ -119,6 +130,16 @@ function validationGateNextActions(checks) {
     }
   }
   return formatDrillAggregateNextActionCounts(counts)
+}
+
+function configurationCheck({ failureRoots, matrixRoots, platformBundleDir }) {
+  const configured = Boolean(platformBundleDir) || matrixRoots.length > 0 || failureRoots.length > 0
+  return configured
+    ? { status: "passed" }
+    : {
+        status: "failed",
+        error: "no validation checks configured",
+      }
 }
 
 async function platformBundleCheck(platformBundleDir) {

@@ -38,6 +38,19 @@ test("drill validation gate writes passing JSON report", async () => {
   }
 })
 
+test("drill validation gate rejects empty configuration", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--json"]),
+    (error) => {
+      const report = JSON.parse(error.stdout)
+      assert.equal(error.code, 1)
+      assert.equal(report.status, "failed")
+      assert.equal(report.checks.configuration.error, "no validation checks configured")
+      return true
+    },
+  )
+})
+
 test("drill validation gate exits non-zero for preserved failures", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {

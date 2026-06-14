@@ -28,6 +28,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.equal(report.schema, "arroba.drill.validation_gate.v1")
     assert.equal(report.status, "passed")
     assert.equal(drillValidationGateExitCode(report), 0)
+    assert.equal(report.checks.configuration.status, "passed")
     assert.equal(report.checks.platformBundle.status, "passed")
     assert.equal(report.checks.matrices.status, "passed")
     assert.equal(report.checks.failures.status, "skipped")
@@ -36,6 +37,17 @@ test("passes with valid platform bundle and complete matrix reports", async () =
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("fails when no validation checks are configured", async () => {
+  const report = await runDrillValidationGate()
+
+  assert.equal(report.status, "failed")
+  assert.equal(report.checks.configuration.error, "no validation checks configured")
+  assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+    { owner: "validation-harness", classification: "validation-gate" },
+  ])
+  assert.match(formatDrillValidationGateSummary(report), /configuration=failed/)
 })
 
 test("fails when configured matrix roots contain no reports", async () => {
