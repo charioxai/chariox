@@ -98,6 +98,10 @@ test("rejects malformed failure manifests", () => {
   }), /missing rootDir/)
   assert.throws(() => validateDrillFailureManifest({
     ...validManifest(),
+    failedAt: "2026-06-13",
+  }), /failedAt must be an ISO timestamp/)
+  assert.throws(() => validateDrillFailureManifest({
+    ...validManifest(),
     metadata: [],
   }), /invalid metadata/)
   assert.throws(() => validateDrillFailureManifest({

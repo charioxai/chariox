@@ -8,6 +8,7 @@ import {
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import { drillFailureClassificationForKind } from "./drill-failure-taxonomy.mjs"
 import { isSensitiveDrillKey } from "./drill-secrets.mjs"
+import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
 const FAILURE_MANIFEST_FILE = "arroba-drill-failure.json"
 const FAILURE_MANIFEST_SCHEMA = "arroba.drill.failure.v1"
@@ -46,6 +47,7 @@ export function validateDrillFailureManifest(manifest, source = "manifest") {
   if (!nonEmptyString(manifest.failedAt)) {
     throw new Error(`${source} is missing failedAt`)
   }
+  parseDrillIsoTimestamp(manifest.failedAt, `${source}.failedAt`)
   if (!manifest.metadata || typeof manifest.metadata !== "object" || Array.isArray(manifest.metadata)) {
     throw new Error(`${source} has invalid metadata`)
   }

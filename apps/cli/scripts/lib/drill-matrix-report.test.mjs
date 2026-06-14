@@ -215,6 +215,17 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
+    startedAt: "2026-06-13",
+  }), /startedAt must be an ISO timestamp/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    startedAt: "2026-06-13T00:00:02.000Z",
+    completedAt: "2026-06-13T00:00:01.000Z",
+  }), /completedAt must not be before startedAt/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), command: "" }],
   }), /scenarios\[0\] is missing command/)
 

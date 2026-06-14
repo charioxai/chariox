@@ -9,6 +9,7 @@ Arroba runtime features must be validated through reusable drill primitives, not
 - Failure taxonomy: use `apps/cli/scripts/lib/drill-failure-taxonomy.mjs` for classification owners and next actions shared by failure manifests and matrix reports.
 - Aggregate actions: use `apps/cli/scripts/lib/drill-aggregate-actions.mjs` to group owner/classification/next-action counts consistently across reports.
 - Secret hygiene: use `apps/cli/scripts/lib/drill-secrets.mjs` for shared drill metadata redaction and token-shaped value detection.
+- Time fields: use `apps/cli/scripts/lib/drill-time.mjs` to validate strict ISO timestamps and report start/end ordering.
 - Matrix execution: use `apps/cli/scripts/lib/drill-matrix-runner.mjs` for scenario selection, include-gate enforcement, command rendering, expected-failure handling, failure classification, skipped-scenario accounting, summaries, and reports.
 - Environment presets: use `apps/cli/scripts/lib/drill-environment-presets.mjs` for shared Hetzner pass-through parsing and non-secret preset metadata.
 - Provider profiles: use `apps/cli/scripts/lib/drill-provider-profiles.mjs` for shared provider list parsing, provider-model overrides, model resolution, and non-secret profile metadata.
