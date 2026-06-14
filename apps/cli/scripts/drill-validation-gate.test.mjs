@@ -48,6 +48,11 @@ test("drill validation gate writes passing JSON report", async () => {
     assert.deepEqual(fileReport.checks.platformBundle.missingFailureClassifications, [])
     assert.equal(artifactIndex.metadata.drill, "validation-gate")
     assert.equal(artifactIndex.metadata.status, "passed")
+    assert.ok(metadataList(artifactIndex.metadata.coverageAreas).includes("matrix-validation"))
+    assert.ok(metadataList(artifactIndex.metadata.runtimeSignals).includes("session-authority"))
+    assert.ok(metadataList(artifactIndex.metadata.runtimeSignalOwners).includes("kernel-authority"))
+    assert.ok(metadataList(artifactIndex.metadata.classifications).includes("remote-extension-sync"))
+    assert.ok(metadataList(artifactIndex.metadata.owners).includes("kernel-authority"))
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -59,6 +64,10 @@ test("drill validation gate writes passing JSON report", async () => {
     await rm(rootDir, { recursive: true, force: true })
   }
 })
+
+function metadataList(value) {
+  return String(value ?? "").split(",").filter(Boolean).sort()
+}
 
 test("drill validation gate rejects unknown required failure classifications", async () => {
   await assert.rejects(

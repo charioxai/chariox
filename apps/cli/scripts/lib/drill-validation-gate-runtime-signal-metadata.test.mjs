@@ -39,6 +39,18 @@ test("builds runtime signal metadata for validation gate reports", () => {
 test("builds owner and classification metadata for validation gate reports", () => {
   const metadata = diagnosticMetadataForValidationGateReport({
     checks: {
+      platformBundle: {
+        validationSuite: {
+          coverageAreas: [{ id: "matrix-validation", testCount: 4 }],
+        },
+        runtimeSignals: [
+          { id: "client-projection-health", owner: "ui-client" },
+        ],
+        failureTaxonomy: {
+          drill: ["ui-client-projection"],
+          scenario: ["kernel-authority"],
+        },
+      },
       artifacts: {
         aggregate: {
           classifications: { "cloud-validation-suite": 1 },
@@ -71,11 +83,11 @@ test("builds owner and classification metadata for validation gate reports", () 
   })
 
   assert.deepEqual(metadata, {
-    classifications: "cloud-validation-suite,matrix-coverage,provider-auth,relay-runtime,slice-runtime",
-    coverageAreas: "distributed-observability",
-    owners: "provider-account,runtime-network,validation-harness,validation-platform",
-    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network",
-    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
+    classifications: "cloud-validation-suite,kernel-authority,matrix-coverage,provider-auth,relay-runtime,slice-runtime,ui-client-projection",
+    coverageAreas: "distributed-observability,matrix-validation",
+    owners: "kernel-authority,provider-account,runtime-network,ui-client,validation-harness,validation-platform",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
+    runtimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })
 

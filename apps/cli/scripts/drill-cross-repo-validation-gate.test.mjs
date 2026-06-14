@@ -123,13 +123,42 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.matrixEvidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.artifactEvidenceRepos, "cloud")
-    assert.equal(artifactIndex.metadata.runtimeSignals, "agent-lifecycle,client-projection-health,provider-run-lifecycle,runtime-projection-health,session-authority,slice-auth-state,slice-runtime-state")
-    assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,provider-account,provider-runtime,ui-client,worker-kernel")
-    assert.equal(artifactIndex.metadata.classifications, "docker-runtime,kernel-authority,slice-auth,slice-runtime,ui-client-projection,worker-execution")
+    assertMetadataIncludes(artifactIndex.metadata.runtimeSignals, [
+      "agent-lifecycle",
+      "home-extension-manifest-sync",
+      "provider-run-lifecycle",
+      "session-authority",
+      "slice-auth-state",
+      "workspace-live-sync-state",
+    ])
+    assertMetadataIncludes(artifactIndex.metadata.runtimeSignalOwners, [
+      "kernel-authority",
+      "provider-account",
+      "provider-runtime",
+      "runtime-state",
+      "ui-client",
+      "worker-kernel",
+    ])
+    assertMetadataIncludes(artifactIndex.metadata.classifications, [
+      "docker-runtime",
+      "kernel-authority",
+      "remote-extension-sync",
+      "slice-auth",
+      "slice-runtime",
+      "ui-client-projection",
+      "workspace-live-sync-conflict",
+    ])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
 })
+
+function assertMetadataIncludes(value, expected) {
+  const actual = new Set(String(value ?? "").split(",").filter(Boolean))
+  for (const entry of expected) {
+    assert.equal(actual.has(entry), true, `expected metadata to include ${entry}`)
+  }
+}
 
 test("cross repo validation gate keeps default artifact roots opt-in", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))

@@ -1,7 +1,9 @@
 import { drillRuntimeSignalOwnersFor } from "./drill-runtime-signals.mjs"
+import { drillFailureOwnerForClassification } from "./drill-failure-taxonomy.mjs"
 
 export function runtimeSignalMetadataForValidationGateReport(report) {
   const signals = new Set([
+    ...platformRuntimeSignals(report),
     ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignals ?? {}),
     ...Object.keys(report.checks?.failures?.aggregate?.runtimeSignals ?? {}),
     ...Object.keys(report.checks?.matrices?.aggregate?.runtimeSignals ?? {}),
@@ -9,6 +11,7 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
   ])
   const signalOwners = new Set([
     ...drillRuntimeSignalOwnersFor([...signals]),
+    ...platformRuntimeSignalOwners(report),
     ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignalOwners ?? {}),
   ])
   return signals.size > 0
@@ -21,15 +24,19 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
 
 export function diagnosticMetadataForValidationGateReport(report) {
   const coverageAreas = new Set([
+    ...platformCoverageAreas(report),
     ...Object.keys(report.checks?.artifacts?.aggregate?.coverageAreas ?? {}),
   ])
+  const platformClassifications = platformFailureClassifications(report)
   const owners = new Set([
+    ...platformClassifications.map((classification) => drillFailureOwnerForClassification(classification)),
     ...Object.keys(report.checks?.artifacts?.aggregate?.owners ?? {}),
     ...Object.keys(report.checks?.failures?.aggregate?.owners ?? {}),
     ...Object.keys(report.checks?.matrices?.aggregate?.owners ?? {}),
     ...(report.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
   ])
   const classifications = new Set([
+    ...platformClassifications,
     ...Object.keys(report.checks?.artifacts?.aggregate?.classifications ?? {}),
     ...Object.keys(report.checks?.failures?.aggregate?.classifications ?? {}),
     ...Object.keys(report.checks?.matrices?.aggregate?.classifications ?? {}),
@@ -115,4 +122,33 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.length > 0
+}
+
+function platformCoverageAreas(report) {
+  return (report.checks?.platformBundle?.validationSuite?.coverageAreas ?? [])
+    .map((area) => area?.id)
+    .filter(nonEmptyString)
+}
+
+function platformRuntimeSignals(report) {
+  return (report.checks?.platformBundle?.runtimeSignals ?? [])
+    .map((signal) => signal?.id)
+    .filter(nonEmptyString)
+}
+
+function platformRuntimeSignalOwners(report) {
+  return (report.checks?.platformBundle?.runtimeSignals ?? [])
+    .map((signal) => signal?.owner)
+    .filter(nonEmptyString)
+}
+
+function platformFailureClassifications(report) {
+  return sortedUnique([
+    ...(report.checks?.platformBundle?.failureTaxonomy?.drill ?? []),
+    ...(report.checks?.platformBundle?.failureTaxonomy?.scenario ?? []),
+  ].filter(nonEmptyString))
+}
+
+function sortedUnique(values) {
+  return [...new Set(values)].sort()
 }

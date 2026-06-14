@@ -12,6 +12,7 @@ import {
   formatDrillValidationGateSummary,
   runDrillValidationGate,
 } from "./lib/drill-validation-gate.mjs"
+import { diagnosticMetadataForValidationGateReport } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
 
 function printHelp() {
   console.log([
@@ -100,6 +101,7 @@ async function main() {
       metadata: {
         drill: "validation-gate",
         status: report.status,
+        ...diagnosticMetadataForValidationGateReport(report),
       },
     })
   }
