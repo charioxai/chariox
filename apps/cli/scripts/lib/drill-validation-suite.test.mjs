@@ -5,6 +5,7 @@ import {
   SHARED_DRILL_TEST_PATHS,
   drillValidationSuiteArgs,
   drillValidationSuiteCommand,
+  drillValidationSuiteManifest,
   findMissingDrillValidationSuitePaths,
 } from "./drill-validation-suite.mjs"
 
@@ -25,6 +26,18 @@ test("formats shared drill validation suite command", () => {
     drillValidationSuiteCommand({ nodeCommand: "node", testPaths: ["one.test.mjs", "two words.test.mjs"] }),
     'node --test one.test.mjs "two words.test.mjs"',
   )
+})
+
+test("builds shared drill validation suite manifest", () => {
+  assert.deepEqual(drillValidationSuiteManifest({
+    nodeCommand: "node",
+    testPaths: ["one.test.mjs", "two words.test.mjs"],
+  }), {
+    schema: "arroba.drill.validation_suite.v1",
+    testCount: 2,
+    command: 'node --test one.test.mjs "two words.test.mjs"',
+    testPaths: ["one.test.mjs", "two words.test.mjs"],
+  })
 })
 
 test("finds missing shared drill validation suite paths", async () => {

@@ -22,6 +22,16 @@ test("drill validation suite prints runnable command", async () => {
   assert.match(stdout, /apps\/cli\/scripts\/lib\/drill-matrix-runner\.test\.mjs/)
 })
 
+test("drill validation suite prints coverage manifest", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--json"])
+  const manifest = JSON.parse(stdout)
+
+  assert.equal(manifest.schema, "arroba.drill.validation_suite.v1")
+  assert.equal(manifest.testCount, SHARED_DRILL_TEST_PATHS.length)
+  assert.deepEqual(manifest.testPaths, SHARED_DRILL_TEST_PATHS)
+  assert.match(manifest.command, /^node --test /)
+})
+
 test("drill validation suite checks configured paths", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--check"])
 

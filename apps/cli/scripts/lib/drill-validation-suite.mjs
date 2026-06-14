@@ -32,6 +32,19 @@ export function drillValidationSuiteCommand({ nodeCommand = "node", testPaths = 
     .join(" ")
 }
 
+export function drillValidationSuiteManifest({
+  nodeCommand = "node",
+  schema = "arroba.drill.validation_suite.v1",
+  testPaths = SHARED_DRILL_TEST_PATHS,
+} = {}) {
+  return {
+    schema,
+    testCount: testPaths.length,
+    command: drillValidationSuiteCommand({ nodeCommand, testPaths }),
+    testPaths: [...testPaths],
+  }
+}
+
 export async function findMissingDrillValidationSuitePaths({
   rootDir = process.cwd(),
   testPaths = SHARED_DRILL_TEST_PATHS,
