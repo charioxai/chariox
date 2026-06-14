@@ -188,6 +188,51 @@ test("distributed runtime gate accepts explicit artifact evidence inputs", async
   }
 })
 
+test("distributed runtime gate can run validation suites as artifact evidence", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const validationSuiteOutputRoot = path.join(rootDir, "generated-validation-suites")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeFakeValidationSuiteScript({
+      classification: "validation-suite",
+      evidenceRepo: "oss",
+      file: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+    })
+    await writeFakeValidationSuiteScript({
+      classification: "cloud-validation-suite",
+      evidenceRepo: "cloud",
+      file: path.join(cloudRoot, "scripts", "cloud-validation-suite.mjs"),
+    })
+
+    const report = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--run-validation-suites",
+      "--validation-suite-output-root",
+      validationSuiteOutputRoot,
+      "--json",
+    ])).stdout)
+
+    const expectedArtifactIndexes = [
+      path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
+    ]
+    assert.equal(report.status, "passed")
+    assert.equal(report.checks.artifacts.status, "passed")
+    assert.deepEqual(report.checks.artifacts.inputs, expectedArtifactIndexes)
+    assert.equal(report.checks.artifacts.aggregate.evidenceRepos.cloud, 1)
+    assert.equal(report.checks.artifacts.aggregate.evidenceRepos.oss, 1)
+    assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 2)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("distributed runtime gate requires executed Cloud validation suite artifacts", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {
@@ -626,6 +671,90 @@ async function writeFailureManifest(file, {
     error: { name: "Error", message, stack: null },
   }, null, 2)}\n`, "utf8")
   return file
+}
+
+async function writeFakeValidationSuiteScript({
+  classification,
+  evidenceRepo,
+  file,
+}) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `#!/usr/bin/env node
+import { createHash } from "node:crypto"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import path from "node:path"
+
+const args = process.argv.slice(2)
+const outputPath = valueFor("--output")
+const artifactIndexPath = valueFor("--output-artifact-index")
+const outputDir = path.dirname(outputPath)
+await mkdir(outputDir, { recursive: true })
+const report = {
+  schema: "arroba.drill.validation_suite_run.v1",
+  status: "passed",
+  ok: true,
+  startedAt: "2026-06-13T00:00:00.000Z",
+  completedAt: "2026-06-13T00:00:01.000Z",
+  durationMs: 1000,
+  exitCode: 0,
+  signal: null,
+  error: null,
+  command: "node --test fake-validation-suite.test.mjs",
+  testCount: 1,
+  testPaths: ["fake-validation-suite.test.mjs"],
+  manifest: {
+    schema: "arroba.drill.validation_suite.v1",
+    testCount: 1,
+    command: "node --test fake-validation-suite.test.mjs",
+    coverage: [
+      {
+        id: "distributed-observability",
+        description: "Distributed observability evidence.",
+        testCount: 1,
+        testPaths: ["fake-validation-suite.test.mjs"],
+      },
+      {
+        id: "suite-contract",
+        description: "Suite contract evidence.",
+        testCount: 1,
+        testPaths: ["fake-validation-suite.test.mjs"],
+      },
+    ],
+    testPaths: ["fake-validation-suite.test.mjs"],
+  },
+}
+await writeFile(outputPath, \`\${JSON.stringify(report, null, 2)}\\n\`, "utf8")
+const bytes = await readFile(outputPath)
+const index = {
+  schema: "arroba.drill.artifact_index.v1",
+  rootDir: outputDir,
+  createdAt: "2026-06-13T00:00:02.000Z",
+  metadata: {
+    drill: "validation-suite",
+    tests: 1,
+    coverageAreas: "distributed-observability,suite-contract",
+    runtimeSignals: ${JSON.stringify(DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS.join(","))},
+    runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    owners: "validation-platform",
+    classifications: ${JSON.stringify(classification)},
+    artifactKinds: "validation-suite-run",
+    evidenceRepos: ${JSON.stringify(evidenceRepo)},
+  },
+  artifacts: [{
+    path: path.basename(outputPath),
+    schema: report.schema,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    sizeBytes: bytes.byteLength,
+  }],
+}
+await writeFile(artifactIndexPath, \`\${JSON.stringify(index, null, 2)}\\n\`, "utf8")
+
+function valueFor(flag) {
+  const index = args.indexOf(flag)
+  if (index < 0 || !args[index + 1]) throw new Error(\`\${flag} requires a value\`)
+  return args[index + 1]
+}
+`, "utf8")
 }
 
 function scenario(id, classification, runtimeSignals = [], overrides = {}) {

@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { execFile as execFileWithCallback } from "node:child_process"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
 
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
@@ -22,6 +24,7 @@ import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
 const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "arroba-cloud")
+const execFile = promisify(execFileWithCallback)
 
 function printHelp() {
   console.log([
@@ -44,6 +47,10 @@ function printHelp() {
     "  --failure-manifest PATH",
     "                         Read a specific failure manifest or preserved root; repeatable",
     "  --failure-root ROOT     Discover failure manifests below ROOT; repeatable",
+    "  --run-validation-suites",
+    "                         Run OSS and Cloud validation suites and feed their artifact indexes into this gate",
+    "  --validation-suite-output-root DIR",
+    "                         Write generated validation-suite evidence below DIR; defaults to each repo's .artifacts",
     "  --platform-bundle DIR   Use an existing drill platform bundle instead of generating one",
     "  --max-depth N           Limit artifact discovery depth; defaults to 8",
   "  --require-complete      Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
@@ -83,8 +90,9 @@ async function main() {
     if (!options.platformBundleDir) {
       await writeDrillPlatformBundle(platformBundleDir)
     }
+    const validationSuiteArtifactIndexes = await runValidationSuitesFor(options)
     const report = await runDrillValidationGate({
-      artifactIndexes: options.artifactIndexes,
+      artifactIndexes: [...options.artifactIndexes, ...validationSuiteArtifactIndexes],
       artifactRoots: artifactRootsFor(options),
       failureInputs: options.failureInputs,
       failureRoots: failureRootsFor(options),
@@ -162,6 +170,8 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    runValidationSuites: false,
+    validationSuiteOutputRoot: null,
     ...validationGateRequirementOptionDefaults(),
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -172,6 +182,7 @@ function parseArgs(argv) {
     else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
     else if (arg === "--include-default-failures") options.includeDefaultFailures = true
     else if (arg === "--require-complete") options.requireComplete = true
+    else if (arg === "--run-validation-suites") options.runValidationSuites = true
     else if (arg === "--oss-root") {
       options.ossRoot = path.resolve(readValue(argv, index, arg))
       index += 1
@@ -207,6 +218,11 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--failure-root=")) {
       options.failureRoots.push(arg.slice("--failure-root=".length))
+    } else if (arg === "--validation-suite-output-root") {
+      options.validationSuiteOutputRoot = path.resolve(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--validation-suite-output-root=")) {
+      options.validationSuiteOutputRoot = path.resolve(arg.slice("--validation-suite-output-root=".length))
     } else if (arg === "--platform-bundle") {
       options.platformBundleDir = readValue(argv, index, arg)
       index += 1
@@ -272,6 +288,64 @@ function artifactRootsFor(options) {
     )
   }
   return [...new Set(roots.map((item) => path.resolve(item)))].sort()
+}
+
+async function runValidationSuitesFor(options) {
+  if (!options.runValidationSuites) return []
+  const ossOutputDir = validationSuiteOutputDirFor(options, "oss")
+  const cloudOutputDir = validationSuiteOutputDirFor(options, "cloud")
+  const ossArtifactIndex = await runValidationSuiteCommand({
+    cwd: options.ossRoot,
+    outputDir: ossOutputDir,
+    reportFileName: "drill-validation-suite-run.json",
+    scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+  })
+  const cloudArtifactIndex = await runValidationSuiteCommand({
+    cwd: options.cloudRoot,
+    outputDir: cloudOutputDir,
+    reportFileName: "cloud-validation-suite-run.json",
+    scriptPath: path.join(options.cloudRoot, "scripts", "cloud-validation-suite.mjs"),
+  })
+  return [ossArtifactIndex, cloudArtifactIndex]
+}
+
+function validationSuiteOutputDirFor(options, repo) {
+  if (options.validationSuiteOutputRoot) {
+    return path.join(options.validationSuiteOutputRoot, repo)
+  }
+  if (repo === "oss") {
+    return path.join(options.ossRoot, ".artifacts", "validation-suite", "distributed-runtime-gate")
+  }
+  return path.join(options.cloudRoot, ".artifacts", "validation-suite", "distributed-runtime-gate")
+}
+
+async function runValidationSuiteCommand({
+  cwd,
+  outputDir,
+  reportFileName,
+  scriptPath,
+}) {
+  const outputPath = path.join(outputDir, reportFileName)
+  const artifactIndexPath = path.join(outputDir, "arroba-drill-artifacts.json")
+  try {
+    await execFile(process.execPath, [
+      scriptPath,
+      "--run-json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ], { cwd, maxBuffer: 1024 * 1024 * 20 })
+  } catch (error) {
+    const stderr = typeof error.stderr === "string" && error.stderr.trim().length > 0
+      ? `\nstderr:\n${error.stderr.trim()}`
+      : ""
+    const stdout = typeof error.stdout === "string" && error.stdout.trim().length > 0
+      ? `\nstdout:\n${error.stdout.trim()}`
+      : ""
+    throw new Error(`validation suite failed: ${scriptPath}${stderr}${stdout}`)
+  }
+  return artifactIndexPath
 }
 
 function failureRootsFor(options) {
