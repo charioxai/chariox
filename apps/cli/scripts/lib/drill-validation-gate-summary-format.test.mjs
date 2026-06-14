@@ -126,6 +126,9 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_total=3 size_bytes=42/)
   assert.match(text, /artifact_runtime_signals=session-authority:2,workspace-live-sync-state:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
+  assert.match(text, /matrix_exit_criteria=dry-run:1,satisfied:1/)
+  assert.match(text, /matrix_incomplete_exit_criteria:/)
+  assert.match(text, /workspace-live-sync-matrix\/managed\/managed:exit-02\(dry-run\) reason=scenario command was selected but not executed source=\/tmp\/matrix\.json: remote worker acknowledged projection/)
   assert.match(text, /matrix_runtime_signal_sources:/)
   assert.match(text, /- session-authority: workspace-live-sync-matrix\/permission\(passed\) source=\/tmp\/matrix\.json/)
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/matrix\.json/)
@@ -230,6 +233,16 @@ function matrixAggregateFixture() {
     deploymentPresets: {},
     providers: {},
     scenarioIds: { managed: 1, permission: 1, restart: 1 },
+    exitCriteria: { "dry-run": 1, satisfied: 1 },
+    incompleteExitCriteria: [{
+      matrix: "workspace-live-sync-matrix",
+      source: "/tmp/matrix.json",
+      scenarioId: "managed",
+      id: "managed:exit-02",
+      criterion: "remote worker acknowledged projection",
+      status: "dry-run",
+      reason: "scenario command was selected but not executed",
+    }],
     runtimeSignals: {
       "session-authority": 1,
       "workspace-live-sync-state": 1,
@@ -246,6 +259,7 @@ function matrixAggregateFixture() {
       deploymentPresets: [],
       providers: [],
       scenarioIds: ["managed", "permission", "restart"],
+      exitCriteria: { "dry-run": 1, satisfied: 1 },
       runtimeSignals: {
         "session-authority": 1,
         "workspace-live-sync-state": 1,

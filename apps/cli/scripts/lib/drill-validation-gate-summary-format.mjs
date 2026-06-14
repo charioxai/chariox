@@ -86,6 +86,17 @@ export function formatDrillValidationGateSummary(report) {
   if (matrices.error) lines.push(`matrix_error=${matrices.error}`)
   if (matrices.aggregate) {
     lines.push(`matrix_status=${matrices.aggregate.status} failed=${matrices.aggregate.totals.failed} skipped=${matrices.aggregate.totals.skipped} dry_run=${matrices.aggregate.totals.dryRun}`)
+    const exitCriteria = Object.entries(matrices.aggregate.exitCriteria ?? {})
+    if (exitCriteria.length > 0) {
+      lines.push(`matrix_exit_criteria=${exitCriteria.map(([status, count]) => `${status}:${count}`).join(",")}`)
+    }
+    const incompleteExitCriteria = matrices.aggregate.incompleteExitCriteria ?? []
+    if (incompleteExitCriteria.length > 0) {
+      lines.push("matrix_incomplete_exit_criteria:")
+      for (const criterion of incompleteExitCriteria) {
+        lines.push(`- ${formatMatrixExitCriterion(criterion)}`)
+      }
+    }
   }
 
   const failures = report.checks.failures
@@ -130,4 +141,16 @@ function formatMatrixRuntimeSignalScenario(scenario) {
   const status = typeof scenario.status === "string" && scenario.status ? scenario.status : "unknown"
   const source = typeof scenario.source === "string" && scenario.source ? ` source=${scenario.source}` : ""
   return `${matrix}/${id}(${status})${source}`
+}
+
+function formatMatrixExitCriterion(criterion) {
+  if (!criterion || typeof criterion !== "object" || Array.isArray(criterion)) return "invalid"
+  const matrix = typeof criterion.matrix === "string" && criterion.matrix ? criterion.matrix : "unknown-matrix"
+  const scenario = typeof criterion.scenarioId === "string" && criterion.scenarioId ? criterion.scenarioId : "unknown-scenario"
+  const id = typeof criterion.id === "string" && criterion.id ? criterion.id : "unknown-criterion"
+  const status = typeof criterion.status === "string" && criterion.status ? criterion.status : "unknown"
+  const reason = typeof criterion.reason === "string" && criterion.reason ? ` reason=${criterion.reason}` : ""
+  const source = typeof criterion.source === "string" && criterion.source ? ` source=${criterion.source}` : ""
+  const text = typeof criterion.criterion === "string" && criterion.criterion ? `: ${criterion.criterion}` : ""
+  return `${matrix}/${scenario}/${id}(${status})${reason}${source}${text}`
 }
