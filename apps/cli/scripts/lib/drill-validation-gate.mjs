@@ -13,13 +13,8 @@ import {
   summarizeValidationGateReportAggregate,
   validateDrillValidationGateAggregate,
 } from "./drill-validation-gate-aggregate.mjs"
-import {
-  findDrillFailureManifestPaths,
-  readDrillFailureManifest,
-  resolveFailureManifestPath,
-  summarizeDrillFailureManifests,
-} from "./drill-failure-manifest.mjs"
 import { artifactValidationGateCheck } from "./drill-validation-gate-artifact-check.mjs"
+import { failureValidationGateCheck } from "./drill-validation-gate-failure-check.mjs"
 import { matrixValidationGateCheck } from "./drill-validation-gate-matrix-check.mjs"
 import { platformValidationGateCheck } from "./drill-validation-gate-platform-check.mjs"
 import {
@@ -157,7 +152,7 @@ export async function runDrillValidationGate({
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
     }),
-    failures: await failureCheck({ failureInputs, failureRoots }, { maxDepth }),
+    failures: await failureValidationGateCheck({ failureInputs, failureRoots }, { maxDepth }),
   }
   const nextActions = validationGateNextActions(checks)
   const report = {
@@ -652,41 +647,6 @@ function configurationCheck({
         status: "failed",
         error: "no validation checks configured",
       }
-}
-
-async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {
-  if (failureRoots.length === 0 && failureInputs.length === 0) {
-    return {
-      status: "skipped",
-      roots: [],
-      inputs: [],
-      manifestPaths: [],
-    }
-  }
-  try {
-    const discovered = failureRoots.length > 0
-      ? await findDrillFailureManifestPaths(failureRoots, { maxDepth })
-      : []
-    const inputManifestPaths = await Promise.all(failureInputs.map((input) => resolveFailureManifestPath(input)))
-    const manifestPaths = [...new Set([...inputManifestPaths, ...discovered])].sort()
-    const manifests = await Promise.all(manifestPaths.map((manifestPath) => readDrillFailureManifest(manifestPath)))
-    const aggregate = summarizeDrillFailureManifests(manifests, { sources: manifestPaths })
-    return {
-      status: aggregate.total === 0 ? "passed" : "failed",
-      roots: [...failureRoots],
-      inputs: [...failureInputs],
-      manifestPaths,
-      aggregate,
-    }
-  } catch (error) {
-    return {
-      status: "failed",
-      roots: [...failureRoots],
-      inputs: [...failureInputs],
-      manifestPaths: [],
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
 }
 
 async function collectDrillValidationGateReportPaths(discovered, entryPath, { depth, maxDepth }) {
