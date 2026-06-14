@@ -16,6 +16,16 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredMatrices: Object.freeze(["remote-home-extension-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
   }),
+  "slice-runtime": Object.freeze({
+    description: "Slice lifecycle, provider-auth isolation, worker discovery, and UI projection evidence.",
+    requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredFailureClassifications: Object.freeze(["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),
+    requiredMatrices: Object.freeze(["slice-runtime-matrix"]),
+    requiredMatrixClassifications: Object.freeze(["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),
+    requiredDeploymentPresets: Object.freeze(["hosted-cloud", "local", "self-hosted-relay"]),
+    requiredProviders: Object.freeze(["claude", "codex", "opencode"]),
+    requiredScenarios: Object.freeze(["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"]),
+  }),
 })
 
 export function describeDrillValidationGatePresets({ names = null } = {}) {

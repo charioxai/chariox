@@ -51,11 +51,16 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     ])
     assert.deepEqual(validationSuite.validationPresets.map((preset) => preset.name), [
       "remote-home-extension",
+      "slice-runtime",
       "workspace-live-sync",
     ])
     assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "remote-home-extension").requiredMatrices,
       ["remote-home-extension-matrix"],
+    )
+    assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "slice-runtime").requiredDeploymentPresets,
+      ["hosted-cloud", "local", "self-hosted-relay"],
     )
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,

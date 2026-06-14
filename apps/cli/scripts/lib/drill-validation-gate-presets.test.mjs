@@ -18,15 +18,31 @@ import {
 test("describes stable validation gate presets", () => {
   assert.deepEqual(Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort(), [
     "remote-home-extension",
+    "slice-runtime",
     "workspace-live-sync",
   ])
   assert.deepEqual(describeDrillValidationGatePresets().map((preset) => preset.name), [
     "remote-home-extension",
+    "slice-runtime",
     "workspace-live-sync",
   ])
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,
     ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
+  )
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["slice-runtime"] })[0],
+    {
+      name: "slice-runtime",
+      description: "Slice lifecycle, provider-auth isolation, worker discovery, and UI projection evidence.",
+      requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredFailureClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
+      requiredMatrices: ["slice-runtime-matrix"],
+      requiredMatrixClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
+      requiredDeploymentPresets: ["hosted-cloud", "local", "self-hosted-relay"],
+      requiredProviders: ["claude", "codex", "opencode"],
+      requiredScenarios: ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
+    },
   )
 })
 
@@ -52,8 +68,9 @@ test("expands validation gate preset requirements", () => {
 })
 
 test("normalizes validation gate requirements", () => {
-  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "workspace-live-sync"]), [
+  assert.deepEqual(normalizeRequiredPresets(["workspace-live-sync,remote-home-extension", "slice-runtime"]), [
     "remote-home-extension",
+    "slice-runtime",
     "workspace-live-sync",
   ])
   assert.deepEqual(normalizeRequiredPlatformCoverageAreas(["runtime-fixtures,matrix-validation"]), [
