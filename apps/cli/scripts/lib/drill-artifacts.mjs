@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
@@ -301,6 +302,7 @@ export function validateDrillArtifactIndex(index, source = "drill artifact index
   if (!index.metadata || typeof index.metadata !== "object" || Array.isArray(index.metadata)) {
     throw new Error(`${source} has invalid metadata`)
   }
+  validateDrillArtifactIndexKindMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexGeneratedEvidenceMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexEvidenceRepoMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexRuntimeSignalOwnerMetadata(index.metadata, `${source}.metadata`)
@@ -455,6 +457,13 @@ function validateCountObject(value, source) {
 
 function validateDiagnosticCountObject(value, source, key) {
   validateCountObject(value, source)
+  if (key === "artifactKinds") {
+    for (const kind of Object.keys(value)) {
+      if (!isKnownDrillArtifactKind(kind)) {
+        throw new Error(`${source} has unknown artifact kind ${JSON.stringify(kind)}`)
+      }
+    }
+  }
   if ([
     "generatedEvidenceKinds",
     "requiredGeneratedEvidenceKinds",
@@ -592,6 +601,14 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
       if (!isKnownDrillGeneratedEvidenceKind(kind)) {
         throw new Error(`${source}.${key} has unknown generated evidence kind ${JSON.stringify(kind)}`)
       }
+    }
+  }
+}
+
+function validateDrillArtifactIndexKindMetadata(metadata, source) {
+  for (const kind of metadataListFromMetadata(metadata, "artifactKinds")) {
+    if (!isKnownDrillArtifactKind(kind)) {
+      throw new Error(`${source}.artifactKinds has unknown artifact kind ${JSON.stringify(kind)}`)
     }
   }
 }

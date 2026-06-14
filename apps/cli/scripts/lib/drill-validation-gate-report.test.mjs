@@ -341,6 +341,24 @@ test("rejects unknown generated evidence kind labels in report checks", () => {
   )
 })
 
+test("rejects unknown artifact kind labels in report checks", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactKinds: ["validation-sutie"],
+          missingArtifactKinds: [],
+        },
+      },
+    })),
+    /checks\.artifacts\.requiredArtifactKinds\[0\] has unknown artifact kind "validation-sutie"/,
+  )
+})
+
 function report(overrides = {}) {
   const checks = {
     configuration: { status: "passed" },

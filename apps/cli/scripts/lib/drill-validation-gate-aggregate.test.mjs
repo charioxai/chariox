@@ -225,6 +225,41 @@ test("rejects unknown generated evidence kind labels in aggregate reports", () =
   )
 })
 
+test("rejects unknown artifact kind labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredArtifactKinds: ["validation-sutie"],
+    }),
+    /requiredArtifactKinds\[0\] has unknown artifact kind "validation-sutie"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        artifactKinds: { "validation-sutie": 1 },
+      },
+    }),
+    /coverage\.artifactKinds has unknown artifact kind "validation-sutie"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          artifactKinds: { "validation-sutie": 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.artifactKinds has unknown artifact kind "validation-sutie"/,
+  )
+})
+
 test("fails aggregate requirements missing from otherwise passing reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["remote-home-extension"],

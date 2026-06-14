@@ -1,4 +1,5 @@
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
+import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
@@ -111,8 +112,8 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactCoverageAreas ?? [], `${source}.missingArtifactCoverageAreas`)
   validateStringArray(check.requiredArtifactSchemas ?? [], `${source}.requiredArtifactSchemas`)
   validateStringArray(check.missingArtifactSchemas ?? [], `${source}.missingArtifactSchemas`)
-  validateStringArray(check.requiredArtifactKinds ?? [], `${source}.requiredArtifactKinds`)
-  validateStringArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
+  validateArtifactKindArray(check.requiredArtifactKinds ?? [], `${source}.requiredArtifactKinds`)
+  validateArtifactKindArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(check.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateArtifactEvidenceRepoArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
@@ -357,6 +358,15 @@ function validateArtifactEvidenceRepoArray(value, source) {
   for (const [index, repo] of value.entries()) {
     if (!isKnownDrillArtifactEvidenceRepo(repo)) {
       throw new Error(`${source}[${index}] has unknown evidence repo ${JSON.stringify(repo)}`)
+    }
+  }
+}
+
+function validateArtifactKindArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, kind] of value.entries()) {
+    if (!isKnownDrillArtifactKind(kind)) {
+      throw new Error(`${source}[${index}] has unknown artifact kind ${JSON.stringify(kind)}`)
     }
   }
 }

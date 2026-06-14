@@ -1,3 +1,4 @@
+import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
@@ -331,20 +332,16 @@ export function normalizeRequiredArtifactSchemas(requiredArtifactSchemas) {
 }
 
 export function normalizeRequiredArtifactKinds(requiredArtifactKinds) {
-  if (!Array.isArray(requiredArtifactKinds)) {
-    throw new Error("requiredArtifactKinds must be an array")
-  }
-  const kinds = []
-  for (const kind of requiredArtifactKinds) {
-    if (!nonEmptyString(kind)) {
-      throw new Error("requiredArtifactKinds has invalid kind")
-    }
-    for (const value of kind.split(",")) {
-      const normalized = value.trim()
-      if (normalized) kinds.push(normalized)
+  const kinds = normalizeCommaSeparatedStrings(requiredArtifactKinds, {
+    fieldName: "requiredArtifactKinds",
+    itemName: "kind",
+  })
+  for (const kind of kinds) {
+    if (!isKnownDrillArtifactKind(kind)) {
+      throw new Error(`unknown required artifact kind: ${kind}`)
     }
   }
-  return [...new Set(kinds)].sort()
+  return kinds
 }
 
 export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenceKinds) {

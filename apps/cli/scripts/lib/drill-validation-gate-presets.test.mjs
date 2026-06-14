@@ -353,6 +353,10 @@ test("rejects unknown validation gate requirements", () => {
     /requiredArtifactSchemas has invalid schema/,
   )
   assert.throws(
+    () => normalizeRequiredArtifactKinds(["validation-sutie"]),
+    /unknown required artifact kind: validation-sutie/,
+  )
+  assert.throws(
     () => normalizeRequiredFailureClassifications(["not-a-classification"]),
     /unknown required failure classification: not-a-classification/,
   )
