@@ -503,6 +503,13 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
     assert.throws(
       () => validateDrillArtifactIndexAggregate({
         ...aggregate,
+        schemas: { "arroba.drill.matrix.v1": 1 },
+      }),
+      /schemas do not match indexes/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
         generatedEvidenceKinds: { "matrix-report": 1 },
       }),
       /generatedEvidenceKinds do not match indexes/,

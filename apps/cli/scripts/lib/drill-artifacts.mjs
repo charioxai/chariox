@@ -352,11 +352,11 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   }
   const expectedArtifacts = aggregate.indexes.reduce((sum, index) => sum + index.artifacts, 0)
   const expectedSizeBytes = aggregate.indexes.reduce((sum, index) => sum + index.sizeBytes, 0)
-  const expectedDiagnosticCounts = Object.fromEntries(
-    DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS.map((key) => [key, new Map()]),
+  const expectedAggregateCounts = Object.fromEntries(
+    DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS.map((key) => [key, new Map()]),
   )
   for (const index of aggregate.indexes) {
-    for (const [key, expectedCounts] of Object.entries(expectedDiagnosticCounts)) {
+    for (const [key, expectedCounts] of Object.entries(expectedAggregateCounts)) {
       for (const [value, count] of Object.entries(index[key] ?? {})) {
         expectedCounts.set(value, (expectedCounts.get(value) ?? 0) + count)
       }
@@ -365,7 +365,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   if (aggregate.totals.artifacts !== expectedArtifacts || aggregate.totals.sizeBytes !== expectedSizeBytes) {
     throw new Error(`${source} totals do not match indexes`)
   }
-  for (const [key, expectedCounts] of Object.entries(expectedDiagnosticCounts)) {
+  for (const [key, expectedCounts] of Object.entries(expectedAggregateCounts)) {
     if (JSON.stringify(aggregate[key] ?? {}) !== JSON.stringify(sortedCountObject(expectedCounts))) {
       throw new Error(`${source} ${key} do not match indexes`)
     }
