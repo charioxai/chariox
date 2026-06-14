@@ -6,9 +6,11 @@ import test from "node:test"
 
 import {
   drillValidationGateExitCode,
+  findDrillValidationGateAggregatePaths,
   findDrillValidationGateReportPaths,
   formatDrillValidationGateAggregateSummary,
   formatDrillValidationGateSummary,
+  readDrillValidationGateAggregate,
   readDrillValidationGateReport,
   runDrillValidationGate,
   summarizeDrillValidationGateReports,
@@ -244,6 +246,39 @@ test("summarizes validation gate reports", async () => {
   ])
   assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /status=failed reports=2 passed=1 failed=1/)
+})
+
+test("reads and discovers validation gate aggregate artifacts", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const aggregatePath = path.join(rootDir, "reports", "aggregate.json")
+    const aggregate = summarizeDrillValidationGateReports([await runDrillValidationGate({
+      failureRoots: ["/tmp/no-such-arroba-failure-root"],
+    })])
+    await mkdir(path.dirname(aggregatePath), { recursive: true })
+    await writeFile(aggregatePath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8")
+    await writeFile(path.join(rootDir, "reports", "gate.json"), `${JSON.stringify(await runDrillValidationGate(), null, 2)}\n`, "utf8")
+
+    assert.deepEqual(await findDrillValidationGateAggregatePaths([rootDir]), [aggregatePath])
+    assert.deepEqual(await readDrillValidationGateAggregate(aggregatePath), aggregate)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects inconsistent validation gate aggregates", async () => {
+  const aggregate = summarizeDrillValidationGateReports([await runDrillValidationGate()])
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      totals: {
+        ...aggregate.totals,
+        failed: 0,
+      },
+    }),
+    /totals do not match reports/,
+  )
 })
 
 async function writeMatrixReport(file, report) {
