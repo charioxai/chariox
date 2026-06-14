@@ -70,6 +70,46 @@ test('classifies runtime state timeouts', () => {
   )
 })
 
+test('classifies kernel authority drift failures', () => {
+  const text = "kernel rejected request: agent `agent-1` does not belong to session `session-2`"
+
+  assert.equal(classifyDrillChildFailure(text), 'kernel-authority')
+  assert.match(
+    formatDrillChildFailure('authority drill', 1, null, '', text),
+    /Kernel authority state rejected the request/,
+  )
+})
+
+test('classifies remote extension manifest sync failures', () => {
+  const text = 'remote extension manifest sync failed; home validation remains authoritative'
+
+  assert.equal(classifyDrillChildFailure(text), 'remote-extension-sync')
+  assert.match(
+    formatDrillChildFailure('remote extension drill', 1, null, '', text),
+    /Remote extension manifest state did not reconcile/,
+  )
+})
+
+test('classifies workspace live sync conflicts', () => {
+  const text = 'Workspace Live Sync result skipped_conflict for src/app.ts after target changed outside workspace live sync'
+
+  assert.equal(classifyDrillChildFailure(text), 'workspace-live-sync-conflict')
+  assert.match(
+    formatDrillChildFailure('workspace live sync drill', 1, null, '', text),
+    /Workspace Live Sync detected a conflict/,
+  )
+})
+
+test('classifies slice provider auth failures separately', () => {
+  const text = 'slice_lifecycle.provider_auth_issues: provider=codex status=not_configured'
+
+  assert.equal(classifyDrillChildFailure(text), 'slice-auth')
+  assert.match(
+    formatDrillChildFailure('slice drill', 1, null, '', text),
+    /Slice provider authentication is missing/,
+  )
+})
+
 test('keeps relay timeouts classified as relay runtime', () => {
   assert.equal(classifyDrillChildFailure('timed out waiting for relay target worker'), 'relay-runtime')
 })

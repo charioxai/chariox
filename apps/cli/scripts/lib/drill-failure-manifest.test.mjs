@@ -147,6 +147,14 @@ test("classifies common drill failure owners and next actions", () => {
     owner: "runtime-state",
     nextAction: "inspect preserved runtime state, provider run lifecycle, and drill timeout diagnostics, then rerun the drill",
   })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "workspace live sync result skipped_conflict for src/app.ts", stack: null },
+  })), {
+    kind: "workspace-live-sync-conflict",
+    owner: "runtime-state",
+    nextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the drill",
+  })
 })
 
 test("aggregates preserved drill failure summaries", () => {

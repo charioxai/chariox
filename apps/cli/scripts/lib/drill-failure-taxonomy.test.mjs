@@ -12,6 +12,10 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("cloud-runtime"), "cloud-deployment")
   assert.equal(drillFailureOwnerForClassification("relay-runtime"), "runtime-network")
   assert.equal(drillFailureOwnerForClassification("runtime-timeout"), "runtime-state")
+  assert.equal(drillFailureOwnerForClassification("kernel-authority"), "kernel-authority")
+  assert.equal(drillFailureOwnerForClassification("remote-extension-sync"), "kernel-authority")
+  assert.equal(drillFailureOwnerForClassification("workspace-live-sync-conflict"), "runtime-state")
+  assert.equal(drillFailureOwnerForClassification("slice-auth"), "provider-account")
   assert.equal(drillFailureOwnerForClassification("test-harness"), "validation-harness")
   assert.equal(drillFailureOwnerForClassification("unknown"), "drill-or-runtime")
 })
@@ -28,6 +32,10 @@ test("formats target-specific next actions", () => {
   assert.equal(
     drillFailureNextActionForClassification("unknown", { target: "drill", rootDir: "/tmp/arroba-drill" }),
     "inspect preserved artifacts under /tmp/arroba-drill; rerun the drill after addressing the failure",
+  )
+  assert.equal(
+    drillFailureNextActionForClassification("workspace-live-sync-conflict", { target: "scenario" }),
+    "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
   )
 })
 

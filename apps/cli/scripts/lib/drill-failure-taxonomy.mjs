@@ -34,6 +34,26 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect preserved runtime state, provider run lifecycle, and drill timeout diagnostics, then rerun the drill",
     scenarioNextAction: "inspect preserved runtime state, provider run lifecycle, and drill timeout diagnostics, then rerun the scenario",
   },
+  "kernel-authority": {
+    owner: "kernel-authority",
+    drillNextAction: "inspect session, agent, lease, provider-run, and projection authority state before rerunning the drill",
+    scenarioNextAction: "inspect session, agent, lease, provider-run, and projection authority state before rerunning the scenario",
+  },
+  "remote-extension-sync": {
+    owner: "kernel-authority",
+    drillNextAction: "inspect remote extension manifest sync status and audit events, retry sync if the grant is still valid, then rerun the drill",
+    scenarioNextAction: "inspect remote extension manifest sync status and audit events, retry sync if the grant is still valid, then rerun the scenario",
+  },
+  "workspace-live-sync-conflict": {
+    owner: "runtime-state",
+    drillNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the drill",
+    scenarioNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
+  },
+  "slice-auth": {
+    owner: "provider-account",
+    drillNextAction: "inspect slice provider auth summaries, login/import the intended account in the slice, then rerun the drill",
+    scenarioNextAction: "inspect slice provider auth summaries, login/import the intended account in the slice, then rerun the scenario",
+  },
   "test-harness": {
     owner: "validation-harness",
     drillNextAction: "install or build the missing local drill prerequisite, then rerun the drill",
