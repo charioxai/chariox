@@ -250,6 +250,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
       providers: summary.providers,
       scenarioIds: summary.scenarioIds,
       exitCriteria: summary.exitCriteria,
+      classifications: summary.classifications,
       runtimeSignals: summary.runtimeSignals,
       runtimeSignalScenarios: summary.runtimeSignalScenarios,
       scenarioCount: summary.scenarioCount,
@@ -602,6 +603,7 @@ export function validateDrillMatrixAggregate(aggregate) {
   if (!aggregate.owners || typeof aggregate.owners !== "object" || Array.isArray(aggregate.owners)) {
     throw new Error("aggregate is missing owners")
   }
+  validateFailureClassificationCountObject(aggregate.classifications, "aggregate.classifications")
   validateCountObject(aggregate.matrixNames ?? {}, "aggregate.matrixNames")
   validateDeploymentPresetCountObject(aggregate.deploymentPresets, "aggregate.deploymentPresets")
   validateProviderCountObject(aggregate.providers ?? {}, "aggregate.providers")
@@ -678,6 +680,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
     throw new Error("aggregate status does not match totals")
   }
   assertObjectCountsMatchEntries("aggregate owners", aggregate.owners, aggregate.failedScenarios, "owner")
+  assertClassificationCountsMatchReports(aggregate)
   assertMatrixNameCountsMatchReports(aggregate)
   assertDeploymentPresetCountsMatchReports(aggregate)
   assertProviderCountsMatchReports(aggregate)
@@ -707,6 +710,19 @@ function assertMatrixNameCountsMatchReports(aggregate) {
   const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
   if (JSON.stringify(aggregate.matrixNames ?? {}) !== JSON.stringify(expectedCounts)) {
     throw new Error("aggregate matrixNames do not match reports")
+  }
+}
+
+function assertClassificationCountsMatchReports(aggregate) {
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    for (const [classification, count] of Object.entries(report.classifications ?? {})) {
+      expected.set(classification, (expected.get(classification) ?? 0) + count)
+    }
+  }
+  const expectedCounts = Object.fromEntries([...expected.entries()].sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(aggregate.classifications ?? {}) !== JSON.stringify(expectedCounts)) {
+    throw new Error("aggregate classifications do not match reports")
   }
 }
 
@@ -831,6 +847,7 @@ function validateMatrixAggregateReport(report, source) {
   if (!["passed", "failed", "dry-run"].includes(report.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
   }
+  validateFailureClassificationCountObject(report.classifications, `${source}.classifications`)
   validateDeploymentPresetList(report.deploymentPresets, `${source}.deploymentPresets`)
   validateProviderList(report.providers ?? [], `${source}.providers`)
   if (!Array.isArray(report.scenarioIds ?? []) || !(report.scenarioIds ?? []).every(nonEmptyString)) {
@@ -1056,6 +1073,15 @@ function validateRuntimeSignalCountObject(value, source) {
   for (const signal of Object.keys(value)) {
     if (!isKnownDrillRuntimeSignal(signal)) {
       throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
+}
+
+function validateFailureClassificationCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const classification of Object.keys(value)) {
+    if (!isKnownDrillFailureClassification(classification)) {
+      throw new Error(`${source} has unknown classification ${JSON.stringify(classification)}`)
     }
   }
 }

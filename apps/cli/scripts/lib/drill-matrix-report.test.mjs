@@ -389,6 +389,21 @@ test("rejects inconsistent matrix aggregates", () => {
   }), /owners do not match failedScenarios/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
+    classifications: { "provider-error": 1 },
+  }), /classifications do not match reports/)
+  assert.throws(() => validateDrillMatrixAggregate({
+    ...aggregate,
+    classifications: { "provider-ath": 1 },
+  }), /aggregate\.classifications has unknown classification "provider-ath"/)
+  assert.throws(() => validateDrillMatrixAggregate({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      classifications: { "provider-ath": 1 },
+    }],
+  }), /reports\[0\]\.classifications has unknown classification "provider-ath"/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
     matrixNames: { remote: 2 },
   }), /matrixNames do not match reports/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
