@@ -24,7 +24,11 @@ import {
   normalizeRequiredDeploymentPresets,
   normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactEvidenceRepos,
+  normalizeRequiredArtifactClassifications,
   normalizeRequiredArtifactKinds,
+  normalizeRequiredArtifactOwners,
+  normalizeRequiredArtifactRuntimeSignalOwners,
+  normalizeRequiredArtifactRuntimeSignals,
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredMatrices,
@@ -86,6 +90,10 @@ export async function runDrillValidationGate({
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
   requiredArtifactEvidenceRepos = [],
+  requiredArtifactRuntimeSignals = [],
+  requiredArtifactRuntimeSignalOwners = [],
+  requiredArtifactOwners = [],
+  requiredArtifactClassifications = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -103,6 +111,10 @@ export async function runDrillValidationGate({
     requiredArtifactSchemas,
     requiredArtifactKinds,
     requiredArtifactEvidenceRepos,
+    requiredArtifactRuntimeSignals,
+    requiredArtifactRuntimeSignalOwners,
+    requiredArtifactOwners,
+    requiredArtifactClassifications,
     requiredRuntimeSignals,
     requiredFailureClassifications,
     requiredMatrices,
@@ -117,6 +129,10 @@ export async function runDrillValidationGate({
   const normalizedRequiredArtifactSchemas = normalizeRequiredArtifactSchemas(expandedRequirements.requiredArtifactSchemas)
   const normalizedRequiredArtifactKinds = normalizeRequiredArtifactKinds(expandedRequirements.requiredArtifactKinds)
   const normalizedRequiredArtifactEvidenceRepos = normalizeRequiredArtifactEvidenceRepos(expandedRequirements.requiredArtifactEvidenceRepos)
+  const normalizedRequiredArtifactRuntimeSignals = normalizeRequiredArtifactRuntimeSignals(expandedRequirements.requiredArtifactRuntimeSignals)
+  const normalizedRequiredArtifactRuntimeSignalOwners = normalizeRequiredArtifactRuntimeSignalOwners(expandedRequirements.requiredArtifactRuntimeSignalOwners)
+  const normalizedRequiredArtifactOwners = normalizeRequiredArtifactOwners(expandedRequirements.requiredArtifactOwners)
+  const normalizedRequiredArtifactClassifications = normalizeRequiredArtifactClassifications(expandedRequirements.requiredArtifactClassifications)
   const normalizedRequiredRuntimeSignals = normalizeRequiredRuntimeSignals(expandedRequirements.requiredRuntimeSignals)
   const normalizedRequiredFailureClassifications = normalizeRequiredFailureClassifications(expandedRequirements.requiredFailureClassifications)
   const normalizedRequiredMatrices = normalizeRequiredMatrices(expandedRequirements.requiredMatrices)
@@ -139,6 +155,10 @@ export async function runDrillValidationGate({
       requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
       requiredArtifactKinds: normalizedRequiredArtifactKinds,
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
+      requiredArtifactRuntimeSignals: normalizedRequiredArtifactRuntimeSignals,
+      requiredArtifactRuntimeSignalOwners: normalizedRequiredArtifactRuntimeSignalOwners,
+      requiredArtifactOwners: normalizedRequiredArtifactOwners,
+      requiredArtifactClassifications: normalizedRequiredArtifactClassifications,
       requiredRuntimeSignals: normalizedRequiredRuntimeSignals,
       requiredFailureClassifications: normalizedRequiredFailureClassifications,
       requiredMatrices: normalizedRequiredMatrices,
@@ -159,6 +179,10 @@ export async function runDrillValidationGate({
       requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
       requiredArtifactKinds: normalizedRequiredArtifactKinds,
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
+      requiredArtifactRuntimeSignals: normalizedRequiredArtifactRuntimeSignals,
+      requiredArtifactRuntimeSignalOwners: normalizedRequiredArtifactRuntimeSignalOwners,
+      requiredArtifactOwners: normalizedRequiredArtifactOwners,
+      requiredArtifactClassifications: normalizedRequiredArtifactClassifications,
     }),
     matrices: await matrixValidationGateCheck({
       matrixReports,
@@ -199,6 +223,10 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredArtifactSchemas: normalizeRequiredArtifactSchemas(options.requiredArtifactSchemas ?? []),
     requiredArtifactKinds: normalizeRequiredArtifactKinds(options.requiredArtifactKinds ?? []),
     requiredArtifactEvidenceRepos: normalizeRequiredArtifactEvidenceRepos(options.requiredArtifactEvidenceRepos ?? []),
+    requiredArtifactRuntimeSignals: normalizeRequiredArtifactRuntimeSignals(options.requiredArtifactRuntimeSignals ?? []),
+    requiredArtifactRuntimeSignalOwners: normalizeRequiredArtifactRuntimeSignalOwners(options.requiredArtifactRuntimeSignalOwners ?? []),
+    requiredArtifactOwners: normalizeRequiredArtifactOwners(options.requiredArtifactOwners ?? []),
+    requiredArtifactClassifications: normalizeRequiredArtifactClassifications(options.requiredArtifactClassifications ?? []),
     requiredRuntimeSignals: normalizeRequiredRuntimeSignals(options.requiredRuntimeSignals ?? []),
     requiredFailureClassifications: normalizeRequiredFailureClassifications(options.requiredFailureClassifications ?? []),
     requiredMatrices: normalizeRequiredMatrices(options.requiredMatrices ?? []),

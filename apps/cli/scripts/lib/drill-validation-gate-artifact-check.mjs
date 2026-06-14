@@ -10,12 +10,20 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
   requiredArtifactEvidenceRepos = [],
+  requiredArtifactRuntimeSignals = [],
+  requiredArtifactRuntimeSignalOwners = [],
+  requiredArtifactOwners = [],
+  requiredArtifactClassifications = [],
 }) {
   if (artifactRoots.length === 0 && artifactIndexes.length === 0) {
     if (requiredArtifactSchemas.length > 0
       || requiredArtifactCoverageAreas.length > 0
       || requiredArtifactKinds.length > 0
-      || requiredArtifactEvidenceRepos.length > 0) {
+      || requiredArtifactEvidenceRepos.length > 0
+      || requiredArtifactRuntimeSignals.length > 0
+      || requiredArtifactRuntimeSignalOwners.length > 0
+      || requiredArtifactOwners.length > 0
+      || requiredArtifactClassifications.length > 0) {
       return {
         status: "failed",
         roots: [],
@@ -29,11 +37,23 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactKinds: [...requiredArtifactKinds],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
+        requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+        missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+        requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+        missingArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+        requiredArtifactOwners: [...requiredArtifactOwners],
+        missingArtifactOwners: [...requiredArtifactOwners],
+        requiredArtifactClassifications: [...requiredArtifactClassifications],
+        missingArtifactClassifications: [...requiredArtifactClassifications],
         error: artifactRequirementError({
           missingArtifactCoverageAreas: requiredArtifactCoverageAreas,
           missingArtifactSchemas: requiredArtifactSchemas,
           missingArtifactKinds: requiredArtifactKinds,
           missingArtifactEvidenceRepos: requiredArtifactEvidenceRepos,
+          missingArtifactRuntimeSignals: requiredArtifactRuntimeSignals,
+          missingArtifactRuntimeSignalOwners: requiredArtifactRuntimeSignalOwners,
+          missingArtifactOwners: requiredArtifactOwners,
+          missingArtifactClassifications: requiredArtifactClassifications,
         }),
       }
     }
@@ -50,6 +70,14 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactKinds: [],
       requiredArtifactEvidenceRepos: [],
       missingArtifactEvidenceRepos: [],
+      requiredArtifactRuntimeSignals: [],
+      missingArtifactRuntimeSignals: [],
+      requiredArtifactRuntimeSignalOwners: [],
+      missingArtifactRuntimeSignalOwners: [],
+      requiredArtifactOwners: [],
+      missingArtifactOwners: [],
+      requiredArtifactClassifications: [],
+      missingArtifactClassifications: [],
     }
   }
   try {
@@ -71,6 +99,14 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactKinds: [...requiredArtifactKinds],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
+        requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+        missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+        requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+        missingArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+        requiredArtifactOwners: [...requiredArtifactOwners],
+        missingArtifactOwners: [...requiredArtifactOwners],
+        requiredArtifactClassifications: [...requiredArtifactClassifications],
+        missingArtifactClassifications: [...requiredArtifactClassifications],
         error: "no artifact indexes found",
       }
     }
@@ -80,10 +116,18 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactSchemas = requiredArtifactSchemas.filter((schema) => !Object.prototype.hasOwnProperty.call(aggregate.schemas, schema))
     const missingArtifactKinds = requiredArtifactKinds.filter((kind) => !Object.prototype.hasOwnProperty.call(aggregate.artifactKinds ?? {}, kind))
     const missingArtifactEvidenceRepos = requiredArtifactEvidenceRepos.filter((repo) => !Object.prototype.hasOwnProperty.call(aggregate.evidenceRepos ?? {}, repo))
+    const missingArtifactRuntimeSignals = requiredArtifactRuntimeSignals.filter((signal) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignals ?? {}, signal))
+    const missingArtifactRuntimeSignalOwners = requiredArtifactRuntimeSignalOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignalOwners ?? {}, owner))
+    const missingArtifactOwners = requiredArtifactOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.owners ?? {}, owner))
+    const missingArtifactClassifications = requiredArtifactClassifications.filter((classification) => !Object.prototype.hasOwnProperty.call(aggregate.classifications ?? {}, classification))
     const missingRequirements = missingArtifactCoverageAreas.length
       + missingArtifactSchemas.length
       + missingArtifactKinds.length
       + missingArtifactEvidenceRepos.length
+      + missingArtifactRuntimeSignals.length
+      + missingArtifactRuntimeSignalOwners.length
+      + missingArtifactOwners.length
+      + missingArtifactClassifications.length
     return {
       status: missingRequirements > 0 ? "failed" : "passed",
       roots: [...artifactRoots],
@@ -97,6 +141,14 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactKinds,
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
       missingArtifactEvidenceRepos,
+      requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+      missingArtifactRuntimeSignals,
+      requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+      missingArtifactRuntimeSignalOwners,
+      requiredArtifactOwners: [...requiredArtifactOwners],
+      missingArtifactOwners,
+      requiredArtifactClassifications: [...requiredArtifactClassifications],
+      missingArtifactClassifications,
       aggregate,
       ...(missingRequirements > 0
         ? {
@@ -105,6 +157,10 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactSchemas,
             missingArtifactKinds,
             missingArtifactEvidenceRepos,
+            missingArtifactRuntimeSignals,
+            missingArtifactRuntimeSignalOwners,
+            missingArtifactOwners,
+            missingArtifactClassifications,
           }),
         }
         : {}),
@@ -123,6 +179,14 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactKinds: [...requiredArtifactKinds],
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
       missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
+      requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+      missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+      requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+      missingArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+      requiredArtifactOwners: [...requiredArtifactOwners],
+      missingArtifactOwners: [...requiredArtifactOwners],
+      requiredArtifactClassifications: [...requiredArtifactClassifications],
+      missingArtifactClassifications: [...requiredArtifactClassifications],
       error: error instanceof Error ? error.message : String(error),
     }
   }
@@ -133,6 +197,10 @@ function artifactRequirementError({
   missingArtifactSchemas,
   missingArtifactKinds,
   missingArtifactEvidenceRepos,
+  missingArtifactRuntimeSignals,
+  missingArtifactRuntimeSignalOwners,
+  missingArtifactOwners,
+  missingArtifactClassifications,
 }) {
   const messages = []
   if (missingArtifactCoverageAreas.length > 0) {
@@ -146,6 +214,18 @@ function artifactRequirementError({
   }
   if (missingArtifactEvidenceRepos.length > 0) {
     messages.push(`missing required artifact evidence repos: ${missingArtifactEvidenceRepos.join(", ")}`)
+  }
+  if (missingArtifactRuntimeSignals.length > 0) {
+    messages.push(`missing required artifact runtime signals: ${missingArtifactRuntimeSignals.join(", ")}`)
+  }
+  if (missingArtifactRuntimeSignalOwners.length > 0) {
+    messages.push(`missing required artifact runtime signal owners: ${missingArtifactRuntimeSignalOwners.join(", ")}`)
+  }
+  if (missingArtifactOwners.length > 0) {
+    messages.push(`missing required artifact owners: ${missingArtifactOwners.join(", ")}`)
+  }
+  if (missingArtifactClassifications.length > 0) {
+    messages.push(`missing required artifact classifications: ${missingArtifactClassifications.join(", ")}`)
   }
   return messages.join("; ")
 }

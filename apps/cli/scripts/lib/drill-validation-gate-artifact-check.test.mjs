@@ -26,6 +26,14 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactKinds: [],
     requiredArtifactEvidenceRepos: [],
     missingArtifactEvidenceRepos: [],
+    requiredArtifactRuntimeSignals: [],
+    missingArtifactRuntimeSignals: [],
+    requiredArtifactRuntimeSignalOwners: [],
+    missingArtifactRuntimeSignalOwners: [],
+    requiredArtifactOwners: [],
+    missingArtifactOwners: [],
+    requiredArtifactClassifications: [],
+    missingArtifactClassifications: [],
   })
 })
 
@@ -130,6 +138,61 @@ test("gates required artifact kinds and evidence repos from artifact index metad
     assert.deepEqual(fail.missingArtifactEvidenceRepos, ["cloud"])
     assert.match(fail.error, /missing required artifact kinds: validation-suite-run/)
     assert.match(fail.error, /missing required artifact evidence repos: cloud/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("gates required artifact diagnostic dimensions from artifact index metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  try {
+    await writeReportArtifact(rootDir, "reports/gate.json")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+      metadata: {
+        runtimeSignals: "session-authority,workspace-live-sync-state",
+        owners: "validation-platform",
+        classifications: "validation-gate",
+      },
+    })
+    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+
+    const pass = await artifactValidationGateCheck({
+      artifactIndexes: [indexPath],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactRuntimeSignals: ["workspace-live-sync-state"],
+      requiredArtifactRuntimeSignalOwners: ["kernel-authority", "runtime-state"],
+      requiredArtifactOwners: ["validation-platform"],
+      requiredArtifactClassifications: ["validation-gate"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.missingArtifactRuntimeSignals, [])
+    assert.deepEqual(pass.missingArtifactRuntimeSignalOwners, [])
+    assert.deepEqual(pass.missingArtifactOwners, [])
+    assert.deepEqual(pass.missingArtifactClassifications, [])
+
+    const fail = await artifactValidationGateCheck({
+      artifactIndexes: [indexPath],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactRuntimeSignals: ["lease-health"],
+      requiredArtifactRuntimeSignalOwners: ["worker-kernel"],
+      requiredArtifactOwners: ["runtime-network"],
+      requiredArtifactClassifications: ["relay-runtime"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.missingArtifactRuntimeSignals, ["lease-health"])
+    assert.deepEqual(fail.missingArtifactRuntimeSignalOwners, ["worker-kernel"])
+    assert.deepEqual(fail.missingArtifactOwners, ["runtime-network"])
+    assert.deepEqual(fail.missingArtifactClassifications, ["relay-runtime"])
+    assert.match(fail.error, /missing required artifact runtime signals: lease-health/)
+    assert.match(fail.error, /missing required artifact runtime signal owners: worker-kernel/)
+    assert.match(fail.error, /missing required artifact owners: runtime-network/)
+    assert.match(fail.error, /missing required artifact classifications: relay-runtime/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

@@ -37,6 +37,14 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactKinds: new Map(),
     requiredArtifactEvidenceRepos: new Map(),
     missingArtifactEvidenceRepos: new Map(),
+    requiredArtifactRuntimeSignals: new Map(),
+    missingArtifactRuntimeSignals: new Map(),
+    requiredArtifactRuntimeSignalOwners: new Map(),
+    missingArtifactRuntimeSignalOwners: new Map(),
+    requiredArtifactOwners: new Map(),
+    missingArtifactOwners: new Map(),
+    requiredArtifactClassifications: new Map(),
+    missingArtifactClassifications: new Map(),
     requiredArtifactCoverageAreas: new Map(),
     missingArtifactCoverageAreas: new Map(),
     artifactSchemas: new Map(),
@@ -89,6 +97,14 @@ export function summarizeValidationGateReportAggregate(
     countStringValues(coverage.missingArtifactKinds, artifactCoverage.missingArtifactKinds)
     countStringValues(coverage.requiredArtifactEvidenceRepos, artifactCoverage.requiredArtifactEvidenceRepos)
     countStringValues(coverage.missingArtifactEvidenceRepos, artifactCoverage.missingArtifactEvidenceRepos)
+    countStringValues(coverage.requiredArtifactRuntimeSignals, artifactCoverage.requiredArtifactRuntimeSignals)
+    countStringValues(coverage.missingArtifactRuntimeSignals, artifactCoverage.missingArtifactRuntimeSignals)
+    countStringValues(coverage.requiredArtifactRuntimeSignalOwners, artifactCoverage.requiredArtifactRuntimeSignalOwners)
+    countStringValues(coverage.missingArtifactRuntimeSignalOwners, artifactCoverage.missingArtifactRuntimeSignalOwners)
+    countStringValues(coverage.requiredArtifactOwners, artifactCoverage.requiredArtifactOwners)
+    countStringValues(coverage.missingArtifactOwners, artifactCoverage.missingArtifactOwners)
+    countStringValues(coverage.requiredArtifactClassifications, artifactCoverage.requiredArtifactClassifications)
+    countStringValues(coverage.missingArtifactClassifications, artifactCoverage.missingArtifactClassifications)
     countStringValues(coverage.requiredArtifactCoverageAreas, artifactCoverage.requiredArtifactCoverageAreas)
     countStringValues(coverage.missingArtifactCoverageAreas, artifactCoverage.missingArtifactCoverageAreas)
     countObjectValues(coverage.artifactSchemas, artifactCoverage.schemas)
@@ -166,6 +182,14 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactKinds: missingRequirements.missingArtifactKinds,
     requiredArtifactEvidenceRepos: normalizedAggregateRequirements.requiredArtifactEvidenceRepos,
     missingArtifactEvidenceRepos: missingRequirements.missingArtifactEvidenceRepos,
+    requiredArtifactRuntimeSignals: normalizedAggregateRequirements.requiredArtifactRuntimeSignals,
+    missingArtifactRuntimeSignals: missingRequirements.missingArtifactRuntimeSignals,
+    requiredArtifactRuntimeSignalOwners: normalizedAggregateRequirements.requiredArtifactRuntimeSignalOwners,
+    missingArtifactRuntimeSignalOwners: missingRequirements.missingArtifactRuntimeSignalOwners,
+    requiredArtifactOwners: normalizedAggregateRequirements.requiredArtifactOwners,
+    missingArtifactOwners: missingRequirements.missingArtifactOwners,
+    requiredArtifactClassifications: normalizedAggregateRequirements.requiredArtifactClassifications,
+    missingArtifactClassifications: missingRequirements.missingArtifactClassifications,
     requiredRuntimeSignals: normalizedAggregateRequirements.requiredRuntimeSignals,
     missingRuntimeSignals: missingRequirements.missingRuntimeSignals,
     requiredFailureClassifications: normalizedAggregateRequirements.requiredFailureClassifications,
@@ -218,6 +242,10 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_artifact_schemas", aggregate.requiredArtifactSchemas, aggregate.missingArtifactSchemas)
   appendAggregateRequirementLine(lines, "required_artifact_kinds", aggregate.requiredArtifactKinds, aggregate.missingArtifactKinds)
   appendAggregateRequirementLine(lines, "required_artifact_evidence_repos", aggregate.requiredArtifactEvidenceRepos, aggregate.missingArtifactEvidenceRepos)
+  appendAggregateRequirementLine(lines, "required_artifact_runtime_signals", aggregate.requiredArtifactRuntimeSignals, aggregate.missingArtifactRuntimeSignals)
+  appendAggregateRequirementLine(lines, "required_artifact_runtime_signal_owners", aggregate.requiredArtifactRuntimeSignalOwners, aggregate.missingArtifactRuntimeSignalOwners)
+  appendAggregateRequirementLine(lines, "required_artifact_owners", aggregate.requiredArtifactOwners, aggregate.missingArtifactOwners)
+  appendAggregateRequirementLine(lines, "required_artifact_classifications", aggregate.requiredArtifactClassifications, aggregate.missingArtifactClassifications)
   appendAggregateRequirementLine(lines, "required_runtime_signals", aggregate.requiredRuntimeSignals, aggregate.missingRuntimeSignals)
   appendAggregateRequirementLine(lines, "required_failure_classifications", aggregate.requiredFailureClassifications, aggregate.missingFailureClassifications)
   appendAggregateRequirementLine(lines, "required_matrices", aggregate.requiredMatrices, aggregate.missingMatrices)
@@ -271,6 +299,14 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateStringArray(aggregate.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateStringArray(aggregate.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
+  validateStringArray(aggregate.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
+  validateStringArray(aggregate.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
+  validateStringArray(aggregate.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
+  validateStringArray(aggregate.missingArtifactRuntimeSignalOwners ?? [], `${source}.missingArtifactRuntimeSignalOwners`)
+  validateStringArray(aggregate.requiredArtifactOwners ?? [], `${source}.requiredArtifactOwners`)
+  validateStringArray(aggregate.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
+  validateStringArray(aggregate.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
+  validateStringArray(aggregate.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
   validateStringArray(aggregate.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
   validateStringArray(aggregate.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
   validateStringArray(aggregate.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
@@ -317,6 +353,10 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredArtifactSchemas: aggregate.requiredArtifactSchemas ?? [],
     requiredArtifactKinds: aggregate.requiredArtifactKinds ?? [],
     requiredArtifactEvidenceRepos: aggregate.requiredArtifactEvidenceRepos ?? [],
+    requiredArtifactRuntimeSignals: aggregate.requiredArtifactRuntimeSignals ?? [],
+    requiredArtifactRuntimeSignalOwners: aggregate.requiredArtifactRuntimeSignalOwners ?? [],
+    requiredArtifactOwners: aggregate.requiredArtifactOwners ?? [],
+    requiredArtifactClassifications: aggregate.requiredArtifactClassifications ?? [],
     requiredRuntimeSignals: aggregate.requiredRuntimeSignals ?? [],
     requiredFailureClassifications: aggregate.requiredFailureClassifications ?? [],
     requiredMatrices: aggregate.requiredMatrices ?? [],
@@ -362,6 +402,14 @@ function validationGateReportArtifactCoverage(report) {
     missingArtifactKinds: [...(report.checks.artifacts.missingArtifactKinds ?? [])],
     requiredArtifactEvidenceRepos: [...(report.checks.artifacts.requiredArtifactEvidenceRepos ?? [])],
     missingArtifactEvidenceRepos: [...(report.checks.artifacts.missingArtifactEvidenceRepos ?? [])],
+    requiredArtifactRuntimeSignals: [...(report.checks.artifacts.requiredArtifactRuntimeSignals ?? [])],
+    missingArtifactRuntimeSignals: [...(report.checks.artifacts.missingArtifactRuntimeSignals ?? [])],
+    requiredArtifactRuntimeSignalOwners: [...(report.checks.artifacts.requiredArtifactRuntimeSignalOwners ?? [])],
+    missingArtifactRuntimeSignalOwners: [...(report.checks.artifacts.missingArtifactRuntimeSignalOwners ?? [])],
+    requiredArtifactOwners: [...(report.checks.artifacts.requiredArtifactOwners ?? [])],
+    missingArtifactOwners: [...(report.checks.artifacts.missingArtifactOwners ?? [])],
+    requiredArtifactClassifications: [...(report.checks.artifacts.requiredArtifactClassifications ?? [])],
+    missingArtifactClassifications: [...(report.checks.artifacts.missingArtifactClassifications ?? [])],
     schemas: { ...(report.checks.artifacts.aggregate?.schemas ?? {}) },
     coverageAreas: { ...(report.checks.artifacts.aggregate?.coverageAreas ?? {}) },
     runtimeSignals: { ...(report.checks.artifacts.aggregate?.runtimeSignals ?? {}) },
@@ -428,6 +476,10 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingArtifactSchemas: missingCoverageRequirements(coverage.artifactSchemas, requirements.requiredArtifactSchemas ?? []),
     missingArtifactKinds: missingCoverageRequirements(coverage.artifactKinds, requirements.requiredArtifactKinds ?? []),
     missingArtifactEvidenceRepos: missingCoverageRequirements(coverage.artifactEvidenceRepos, requirements.requiredArtifactEvidenceRepos ?? []),
+    missingArtifactRuntimeSignals: missingCoverageRequirements(coverage.artifactRuntimeSignals, requirements.requiredArtifactRuntimeSignals ?? []),
+    missingArtifactRuntimeSignalOwners: missingCoverageRequirements(coverage.artifactRuntimeSignalOwners, requirements.requiredArtifactRuntimeSignalOwners ?? []),
+    missingArtifactOwners: missingCoverageRequirements(coverage.artifactOwners, requirements.requiredArtifactOwners ?? []),
+    missingArtifactClassifications: missingCoverageRequirements(coverage.artifactClassifications, requirements.requiredArtifactClassifications ?? []),
     missingRuntimeSignals: missingCoverageRequirements(coverage.requiredRuntimeSignals, requirements.requiredRuntimeSignals ?? []),
     missingFailureClassifications: missingCoverageRequirements(coverage.requiredFailureClassifications, requirements.requiredFailureClassifications ?? []),
     missingMatrices: missingCoverageRequirements(coverage.requiredMatrices, requirements.requiredMatrices ?? []),
@@ -450,6 +502,10 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingArtifactCoverageAreas", "artifact-coverage", "provide validation gate reports with artifact coverage areas"],
     ["missingArtifactKinds", "artifact-coverage", "provide validation gate reports with artifact kinds"],
     ["missingArtifactEvidenceRepos", "artifact-coverage", "provide validation gate reports with artifact evidence repos"],
+    ["missingArtifactRuntimeSignals", "artifact-coverage", "provide validation gate reports with artifact runtime signals"],
+    ["missingArtifactRuntimeSignalOwners", "artifact-coverage", "provide validation gate reports with artifact runtime signal owners"],
+    ["missingArtifactOwners", "artifact-coverage", "provide validation gate reports with artifact owners"],
+    ["missingArtifactClassifications", "artifact-coverage", "provide validation gate reports with artifact classifications"],
     ["missingRuntimeSignals", "platform-bundle", "provide validation gate reports requiring runtime signals"],
     ["missingFailureClassifications", "platform-bundle", "provide validation gate reports requiring failure classifications"],
     ["missingMatrices", "matrix-coverage", "provide validation gate reports requiring matrices"],
@@ -497,6 +553,10 @@ function assertValidationGateAggregateMissingRequirementsMatch(aggregate, expect
     "missingArtifactSchemas",
     "missingArtifactKinds",
     "missingArtifactEvidenceRepos",
+    "missingArtifactRuntimeSignals",
+    "missingArtifactRuntimeSignalOwners",
+    "missingArtifactOwners",
+    "missingArtifactClassifications",
     "missingRuntimeSignals",
     "missingFailureClassifications",
     "missingMatrices",
@@ -526,6 +586,14 @@ function formatValidationGateCoverageCounts(coverage) {
     missingArtifactKinds: countMapToObject(coverage.missingArtifactKinds),
     requiredArtifactEvidenceRepos: countMapToObject(coverage.requiredArtifactEvidenceRepos),
     missingArtifactEvidenceRepos: countMapToObject(coverage.missingArtifactEvidenceRepos),
+    requiredArtifactRuntimeSignals: countMapToObject(coverage.requiredArtifactRuntimeSignals),
+    missingArtifactRuntimeSignals: countMapToObject(coverage.missingArtifactRuntimeSignals),
+    requiredArtifactRuntimeSignalOwners: countMapToObject(coverage.requiredArtifactRuntimeSignalOwners),
+    missingArtifactRuntimeSignalOwners: countMapToObject(coverage.missingArtifactRuntimeSignalOwners),
+    requiredArtifactOwners: countMapToObject(coverage.requiredArtifactOwners),
+    missingArtifactOwners: countMapToObject(coverage.missingArtifactOwners),
+    requiredArtifactClassifications: countMapToObject(coverage.requiredArtifactClassifications),
+    missingArtifactClassifications: countMapToObject(coverage.missingArtifactClassifications),
     artifactSchemas: countMapToObject(coverage.artifactSchemas),
     artifactCoverageAreas: countMapToObject(coverage.artifactCoverageAreas),
     requiredRuntimeSignals: countMapToObject(coverage.requiredRuntimeSignals),
@@ -578,6 +646,14 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_artifact_kinds", coverage.missingArtifactKinds)
   appendCoverageLine(lines, "required_artifact_evidence_repos", coverage.requiredArtifactEvidenceRepos)
   appendCoverageLine(lines, "missing_artifact_evidence_repos", coverage.missingArtifactEvidenceRepos)
+  appendCoverageLine(lines, "required_artifact_runtime_signals", coverage.requiredArtifactRuntimeSignals)
+  appendCoverageLine(lines, "missing_artifact_runtime_signals", coverage.missingArtifactRuntimeSignals)
+  appendCoverageLine(lines, "required_artifact_runtime_signal_owners", coverage.requiredArtifactRuntimeSignalOwners)
+  appendCoverageLine(lines, "missing_artifact_runtime_signal_owners", coverage.missingArtifactRuntimeSignalOwners)
+  appendCoverageLine(lines, "required_artifact_owners", coverage.requiredArtifactOwners)
+  appendCoverageLine(lines, "missing_artifact_owners", coverage.missingArtifactOwners)
+  appendCoverageLine(lines, "required_artifact_classifications", coverage.requiredArtifactClassifications)
+  appendCoverageLine(lines, "missing_artifact_classifications", coverage.missingArtifactClassifications)
   appendCoverageLine(lines, "artifact_schemas", coverage.artifactSchemas)
   appendCoverageLine(lines, "artifact_coverage_areas", coverage.artifactCoverageAreas)
   appendCoverageLine(lines, "required_runtime_signals", coverage.requiredRuntimeSignals)
@@ -659,6 +735,14 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingArtifactKinds ?? {}, `${source}.missingArtifactKinds`)
   validateCountObject(coverage.requiredArtifactEvidenceRepos ?? {}, `${source}.requiredArtifactEvidenceRepos`)
   validateCountObject(coverage.missingArtifactEvidenceRepos ?? {}, `${source}.missingArtifactEvidenceRepos`)
+  validateCountObject(coverage.requiredArtifactRuntimeSignals ?? {}, `${source}.requiredArtifactRuntimeSignals`)
+  validateCountObject(coverage.missingArtifactRuntimeSignals ?? {}, `${source}.missingArtifactRuntimeSignals`)
+  validateCountObject(coverage.requiredArtifactRuntimeSignalOwners ?? {}, `${source}.requiredArtifactRuntimeSignalOwners`)
+  validateCountObject(coverage.missingArtifactRuntimeSignalOwners ?? {}, `${source}.missingArtifactRuntimeSignalOwners`)
+  validateCountObject(coverage.requiredArtifactOwners ?? {}, `${source}.requiredArtifactOwners`)
+  validateCountObject(coverage.missingArtifactOwners ?? {}, `${source}.missingArtifactOwners`)
+  validateCountObject(coverage.requiredArtifactClassifications ?? {}, `${source}.requiredArtifactClassifications`)
+  validateCountObject(coverage.missingArtifactClassifications ?? {}, `${source}.missingArtifactClassifications`)
   validateCountObject(coverage.artifactSchemas ?? {}, `${source}.artifactSchemas`)
   validateCountObject(coverage.artifactCoverageAreas ?? {}, `${source}.artifactCoverageAreas`)
   validateCountObject(coverage.requiredRuntimeSignals ?? {}, `${source}.requiredRuntimeSignals`)
@@ -743,6 +827,14 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingArtifactKinds: new Map(),
     requiredArtifactEvidenceRepos: new Map(),
     missingArtifactEvidenceRepos: new Map(),
+    requiredArtifactRuntimeSignals: new Map(),
+    missingArtifactRuntimeSignals: new Map(),
+    requiredArtifactRuntimeSignalOwners: new Map(),
+    missingArtifactRuntimeSignalOwners: new Map(),
+    requiredArtifactOwners: new Map(),
+    missingArtifactOwners: new Map(),
+    requiredArtifactClassifications: new Map(),
+    missingArtifactClassifications: new Map(),
     artifactSchemas: new Map(),
     artifactCoverageAreas: new Map(),
     requiredRuntimeSignals: new Map(),
@@ -800,6 +892,14 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactKinds, report.artifactCoverage?.missingArtifactKinds ?? [])
     countStringValues(expected.requiredArtifactEvidenceRepos, report.artifactCoverage?.requiredArtifactEvidenceRepos ?? [])
     countStringValues(expected.missingArtifactEvidenceRepos, report.artifactCoverage?.missingArtifactEvidenceRepos ?? [])
+    countStringValues(expected.requiredArtifactRuntimeSignals, report.artifactCoverage?.requiredArtifactRuntimeSignals ?? [])
+    countStringValues(expected.missingArtifactRuntimeSignals, report.artifactCoverage?.missingArtifactRuntimeSignals ?? [])
+    countStringValues(expected.requiredArtifactRuntimeSignalOwners, report.artifactCoverage?.requiredArtifactRuntimeSignalOwners ?? [])
+    countStringValues(expected.missingArtifactRuntimeSignalOwners, report.artifactCoverage?.missingArtifactRuntimeSignalOwners ?? [])
+    countStringValues(expected.requiredArtifactOwners, report.artifactCoverage?.requiredArtifactOwners ?? [])
+    countStringValues(expected.missingArtifactOwners, report.artifactCoverage?.missingArtifactOwners ?? [])
+    countStringValues(expected.requiredArtifactClassifications, report.artifactCoverage?.requiredArtifactClassifications ?? [])
+    countStringValues(expected.missingArtifactClassifications, report.artifactCoverage?.missingArtifactClassifications ?? [])
     countObjectValues(expected.artifactSchemas, report.artifactCoverage?.schemas)
     countObjectValues(expected.artifactCoverageAreas, report.artifactCoverage?.coverageAreas)
     countObjectValues(expected.artifactRuntimeSignals, report.artifactCoverage?.runtimeSignals)
@@ -912,6 +1012,14 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateStringArray(coverage.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateStringArray(coverage.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateStringArray(coverage.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
+  validateStringArray(coverage.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
+  validateStringArray(coverage.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
+  validateStringArray(coverage.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
+  validateStringArray(coverage.missingArtifactRuntimeSignalOwners ?? [], `${source}.missingArtifactRuntimeSignalOwners`)
+  validateStringArray(coverage.requiredArtifactOwners ?? [], `${source}.requiredArtifactOwners`)
+  validateStringArray(coverage.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
+  validateStringArray(coverage.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
+  validateStringArray(coverage.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
   validateCountObject(coverage.schemas ?? {}, `${source}.schemas`)
   validateCountObject(coverage.coverageAreas ?? {}, `${source}.coverageAreas`)
   validateCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)

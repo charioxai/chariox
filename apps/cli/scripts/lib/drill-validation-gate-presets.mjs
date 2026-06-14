@@ -1,6 +1,9 @@
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
-import { isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
+import {
+  DRILL_RUNTIME_SIGNAL_OWNERS,
+  isKnownDrillRuntimeSignal,
+} from "./drill-runtime-signals.mjs"
 import { WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS } from "./workspace-live-sync-fixtures.mjs"
 
 export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
@@ -177,6 +180,10 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
+      requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
+      requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
+      requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
+      requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
@@ -196,6 +203,10 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
   requiredArtifactEvidenceRepos = [],
+  requiredArtifactRuntimeSignals = [],
+  requiredArtifactRuntimeSignalOwners = [],
+  requiredArtifactOwners = [],
+  requiredArtifactClassifications = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications,
   requiredMatrices,
@@ -211,6 +222,10 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactSchemas: [...requiredArtifactSchemas],
     requiredArtifactKinds: [...requiredArtifactKinds],
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
+    requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+    requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+    requiredArtifactOwners: [...requiredArtifactOwners],
+    requiredArtifactClassifications: [...requiredArtifactClassifications],
     requiredRuntimeSignals: [...requiredRuntimeSignals],
     requiredFailureClassifications: [...requiredFailureClassifications],
     requiredMatrices: [...requiredMatrices],
@@ -227,6 +242,10 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
     expanded.requiredArtifactKinds.push(...(preset.requiredArtifactKinds ?? []))
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
+    expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
+    expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
+    expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
+    expanded.requiredArtifactClassifications.push(...(preset.requiredArtifactClassifications ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
     expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
@@ -305,6 +324,46 @@ export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceR
     }
   }
   return [...new Set(repos)].sort()
+}
+
+export function normalizeRequiredArtifactRuntimeSignals(requiredArtifactRuntimeSignals) {
+  const signals = normalizeCommaSeparatedStrings(requiredArtifactRuntimeSignals, {
+    fieldName: "requiredArtifactRuntimeSignals",
+    itemName: "signal",
+  })
+  for (const signal of signals) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`unknown required artifact runtime signal: ${signal}`)
+    }
+  }
+  return signals
+}
+
+export function normalizeRequiredArtifactRuntimeSignalOwners(requiredArtifactRuntimeSignalOwners) {
+  const owners = normalizeCommaSeparatedStrings(requiredArtifactRuntimeSignalOwners, {
+    fieldName: "requiredArtifactRuntimeSignalOwners",
+    itemName: "owner",
+  })
+  for (const owner of owners) {
+    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
+      throw new Error(`unknown required artifact runtime signal owner: ${owner}`)
+    }
+  }
+  return owners
+}
+
+export function normalizeRequiredArtifactOwners(requiredArtifactOwners) {
+  return normalizeCommaSeparatedStrings(requiredArtifactOwners, {
+    fieldName: "requiredArtifactOwners",
+    itemName: "owner",
+  })
+}
+
+export function normalizeRequiredArtifactClassifications(requiredArtifactClassifications) {
+  return normalizeCommaSeparatedStrings(requiredArtifactClassifications, {
+    fieldName: "requiredArtifactClassifications",
+    itemName: "classification",
+  })
 }
 
 export function normalizeRequiredRuntimeSignals(requiredRuntimeSignals) {
@@ -515,4 +574,21 @@ export function normalizeRequiredScenarios(requiredScenarios) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function normalizeCommaSeparatedStrings(values, { fieldName, itemName }) {
+  if (!Array.isArray(values)) {
+    throw new Error(`${fieldName} must be an array`)
+  }
+  const normalizedValues = []
+  for (const value of values) {
+    if (!nonEmptyString(value)) {
+      throw new Error(`${fieldName} has invalid ${itemName}`)
+    }
+    for (const part of value.split(",")) {
+      const normalized = part.trim()
+      if (normalized) normalizedValues.push(normalized)
+    }
+  }
+  return [...new Set(normalizedValues)].sort()
 }

@@ -814,6 +814,53 @@ test("gates explicit artifact index paths by required schema", async () => {
   }
 })
 
+test("gates explicit artifact index paths by required diagnostic metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+      metadata: {
+        classifications: "validation-gate",
+        owners: "validation-platform",
+        runtimeSignals: "session-authority,workspace-live-sync-state",
+      },
+    })
+    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+
+    const pass = await runDrillValidationGate({
+      artifactIndexes: [indexPath],
+      requiredArtifactRuntimeSignals: ["session-authority"],
+      requiredArtifactRuntimeSignalOwners: ["kernel-authority,runtime-state"],
+      requiredArtifactOwners: ["validation-platform"],
+      requiredArtifactClassifications: ["validation-gate"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.match(formatDrillValidationGateSummary(pass), /artifact_required_runtime_signals=session-authority missing=none/)
+    assert.match(formatDrillValidationGateSummary(pass), /artifact_required_runtime_signal_owners=kernel-authority,runtime-state missing=none/)
+    assert.match(formatDrillValidationGateSummary(pass), /artifact_required_owners=validation-platform missing=none/)
+    assert.match(formatDrillValidationGateSummary(pass), /artifact_required_classifications=validation-gate missing=none/)
+
+    const fail = await runDrillValidationGate({
+      artifactIndexes: [indexPath],
+      requiredArtifactRuntimeSignals: ["lease-health"],
+      requiredArtifactRuntimeSignalOwners: ["worker-kernel"],
+      requiredArtifactOwners: ["runtime-network"],
+      requiredArtifactClassifications: ["cloud-validation-suite"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.artifacts.missingArtifactRuntimeSignals, ["lease-health"])
+    assert.deepEqual(fail.checks.artifacts.missingArtifactRuntimeSignalOwners, ["worker-kernel"])
+    assert.deepEqual(fail.checks.artifacts.missingArtifactOwners, ["runtime-network"])
+    assert.deepEqual(fail.checks.artifacts.missingArtifactClassifications, ["cloud-validation-suite"])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("fails when configured artifact roots contain no indexes", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -1026,6 +1073,14 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactKinds: {},
       requiredArtifactEvidenceRepos: {},
       missingArtifactEvidenceRepos: {},
+      requiredArtifactRuntimeSignals: {},
+      missingArtifactRuntimeSignals: {},
+      requiredArtifactRuntimeSignalOwners: {},
+      missingArtifactRuntimeSignalOwners: {},
+      requiredArtifactOwners: {},
+      missingArtifactOwners: {},
+      requiredArtifactClassifications: {},
+      missingArtifactClassifications: {},
       artifactSchemas: {},
       artifactCoverageAreas: {},
       artifactRuntimeSignals: {},
@@ -1074,8 +1129,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, evidenceRepos: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },

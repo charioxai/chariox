@@ -62,6 +62,26 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactEvidenceRepos.length > 0) {
     lines.push(`artifact_required_evidence_repos=${requiredArtifactEvidenceRepos.join(",")} missing=${missingArtifactEvidenceRepos.join(",") || "none"}`)
   }
+  const requiredArtifactRuntimeSignals = artifacts.requiredArtifactRuntimeSignals ?? []
+  const missingArtifactRuntimeSignals = artifacts.missingArtifactRuntimeSignals ?? []
+  if (requiredArtifactRuntimeSignals.length > 0) {
+    lines.push(`artifact_required_runtime_signals=${requiredArtifactRuntimeSignals.join(",")} missing=${missingArtifactRuntimeSignals.join(",") || "none"}`)
+  }
+  const requiredArtifactRuntimeSignalOwners = artifacts.requiredArtifactRuntimeSignalOwners ?? []
+  const missingArtifactRuntimeSignalOwners = artifacts.missingArtifactRuntimeSignalOwners ?? []
+  if (requiredArtifactRuntimeSignalOwners.length > 0) {
+    lines.push(`artifact_required_runtime_signal_owners=${requiredArtifactRuntimeSignalOwners.join(",")} missing=${missingArtifactRuntimeSignalOwners.join(",") || "none"}`)
+  }
+  const requiredArtifactOwners = artifacts.requiredArtifactOwners ?? []
+  const missingArtifactOwners = artifacts.missingArtifactOwners ?? []
+  if (requiredArtifactOwners.length > 0) {
+    lines.push(`artifact_required_owners=${requiredArtifactOwners.join(",")} missing=${missingArtifactOwners.join(",") || "none"}`)
+  }
+  const requiredArtifactClassifications = artifacts.requiredArtifactClassifications ?? []
+  const missingArtifactClassifications = artifacts.missingArtifactClassifications ?? []
+  if (requiredArtifactClassifications.length > 0) {
+    lines.push(`artifact_required_classifications=${requiredArtifactClassifications.join(",")} missing=${missingArtifactClassifications.join(",") || "none"}`)
+  }
   if (artifacts.error) lines.push(`artifact_error=${artifacts.error}`)
   if (artifacts.aggregate) {
     lines.push(`artifact_total=${artifacts.aggregate.totals.artifacts} size_bytes=${artifacts.aggregate.totals.sizeBytes}`)

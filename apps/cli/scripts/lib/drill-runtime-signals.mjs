@@ -48,6 +48,9 @@ const RUNTIME_SIGNALS = Object.freeze({
 })
 
 export const DRILL_RUNTIME_SIGNAL_IDS = Object.freeze(Object.keys(RUNTIME_SIGNALS).sort())
+export const DRILL_RUNTIME_SIGNAL_OWNERS = Object.freeze([
+  ...new Set(Object.values(RUNTIME_SIGNALS).map((signal) => signal.owner)),
+].sort())
 
 export function isKnownDrillRuntimeSignal(signal) {
   return typeof signal === "string"

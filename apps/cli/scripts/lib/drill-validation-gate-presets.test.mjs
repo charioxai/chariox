@@ -7,8 +7,12 @@ import {
   expandValidationGatePresetRequirements,
   normalizeRequiredDeploymentPresets,
   normalizeRequiredArtifactCoverageAreas,
+  normalizeRequiredArtifactClassifications,
   normalizeRequiredArtifactEvidenceRepos,
   normalizeRequiredArtifactKinds,
+  normalizeRequiredArtifactOwners,
+  normalizeRequiredArtifactRuntimeSignalOwners,
+  normalizeRequiredArtifactRuntimeSignals,
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredMatrices,
@@ -49,6 +53,10 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
       requiredArtifactKinds: ["validation-suite-run"],
       requiredArtifactEvidenceRepos: ["cloud", "oss"],
+      requiredArtifactRuntimeSignals: [],
+      requiredArtifactRuntimeSignalOwners: [],
+      requiredArtifactOwners: [],
+      requiredArtifactClassifications: [],
       requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredFailureClassifications: ["cloud-runtime", "docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
       requiredMatrices: ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
@@ -69,6 +77,10 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactRuntimeSignals: [],
+      requiredArtifactRuntimeSignalOwners: [],
+      requiredArtifactOwners: [],
+      requiredArtifactClassifications: [],
       requiredRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
       requiredFailureClassifications: ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
       requiredMatrices: ["workspace-live-sync-matrix"],
@@ -89,6 +101,10 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactRuntimeSignals: [],
+      requiredArtifactRuntimeSignalOwners: [],
+      requiredArtifactOwners: [],
+      requiredArtifactClassifications: [],
       requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"],
       requiredFailureClassifications: ["cloud-runtime", "docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["cloud-slice-runtime-matrix", "slice-runtime-matrix"],
@@ -109,6 +125,10 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactRuntimeSignals: [],
+      requiredArtifactRuntimeSignalOwners: [],
+      requiredArtifactOwners: [],
+      requiredArtifactClassifications: [],
       requiredRuntimeSignals: ["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"],
       requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["native-provider-tui-matrix"],
@@ -129,6 +149,10 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactRuntimeSignals: [],
+      requiredArtifactRuntimeSignalOwners: [],
+      requiredArtifactOwners: [],
+      requiredArtifactClassifications: [],
       requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"],
       requiredFailureClassifications: ["cloud-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["remote-agent-runtime-matrix"],
@@ -160,6 +184,10 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: [],
     requiredArtifactEvidenceRepos: [],
+    requiredArtifactRuntimeSignals: [],
+    requiredArtifactRuntimeSignalOwners: [],
+    requiredArtifactOwners: [],
+    requiredArtifactClassifications: [],
     requiredRuntimeSignals: ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
     requiredMatrices: ["custom-matrix", "remote-home-extension-matrix"],
@@ -260,6 +288,22 @@ test("normalizes validation gate requirements", () => {
     "cloud",
     "oss",
   ])
+  assert.deepEqual(normalizeRequiredArtifactRuntimeSignals(["workspace-live-sync-state,session-authority"]), [
+    "session-authority",
+    "workspace-live-sync-state",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactRuntimeSignalOwners(["runtime-state,kernel-authority"]), [
+    "kernel-authority",
+    "runtime-state",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactOwners(["validation-platform,runtime-network", "validation-platform"]), [
+    "runtime-network",
+    "validation-platform",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactClassifications(["validation-gate,cloud-validation-suite"]), [
+    "cloud-validation-suite",
+    "validation-gate",
+  ])
   assert.deepEqual(normalizeRequiredRuntimeSignals(["session-authority,lease-health", "session-authority"]), [
     "lease-health",
     "session-authority",
@@ -298,6 +342,14 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredRuntimeSignals(["not-a-signal"]),
     /unknown required runtime signal: not-a-signal/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactRuntimeSignals(["not-a-signal"]),
+    /unknown required artifact runtime signal: not-a-signal/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactRuntimeSignalOwners(["not-an-owner"]),
+    /unknown required artifact runtime signal owner: not-an-owner/,
   )
   assert.throws(
     () => normalizeRequiredMatrixClassifications(["not-a-classification"]),

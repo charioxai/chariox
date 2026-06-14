@@ -20,6 +20,14 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-artifact-evidence-repo", "oss"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-runtime-signal", "session-authority"], 0, options)
+  assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-runtime-signal-owner=kernel-authority"], 0, options)
+  assert.equal(index, 0)
+  index = parseValidationGateRequirementArg(["--require-artifact-owner", "validation-platform"], 0, options)
+  assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-classification=validation-gate"], 0, options)
+  assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-provider", "codex"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-runtime-signal", "lease-health"], 0, options)
@@ -36,6 +44,10 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactEvidenceRepos: ["oss"],
+    requiredArtifactRuntimeSignals: ["session-authority"],
+    requiredArtifactRuntimeSignalOwners: ["kernel-authority"],
+    requiredArtifactOwners: ["validation-platform"],
+    requiredArtifactClassifications: ["validation-gate"],
     requiredRuntimeSignals: ["lease-health"],
     requiredFailureClassifications: [],
     requiredMatrices: [],
