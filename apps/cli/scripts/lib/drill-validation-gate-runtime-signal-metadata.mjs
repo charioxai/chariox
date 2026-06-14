@@ -43,11 +43,14 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
   const signals = new Set([
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignals ?? {}),
     ...Object.keys(aggregate.coverage?.failureRuntimeSignals ?? {}),
+    ...Object.keys(aggregate.coverage?.matrixRuntimeSignals ?? {}),
     ...Object.keys(aggregate.matrixRuntimeSignalSources ?? {}),
   ])
   const signalOwners = new Set([
     ...drillRuntimeSignalOwnersFor([...signals]),
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
+    ...Object.keys(aggregate.coverage?.failureRuntimeSignalOwners ?? {}),
+    ...Object.keys(aggregate.coverage?.matrixRuntimeSignalOwners ?? {}),
   ])
   return signals.size > 0
     ? {
@@ -60,6 +63,8 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
 export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const owners = new Set([
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
+    ...Object.keys(aggregate.coverage?.failureRuntimeSignalOwners ?? {}),
+    ...Object.keys(aggregate.coverage?.matrixRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.artifactOwners ?? {}),
     ...(aggregate.nextActions ?? []).map((action) => action.owner).filter(nonEmptyString),
   ])
