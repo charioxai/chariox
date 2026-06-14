@@ -47,6 +47,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactClassifications, {
     "cloud-validation-suite": 1,
   })
+  assert.deepEqual(aggregate.coverage.matrixRuntimeSignals, {
+    "workspace-live-sync-state": 1,
+  })
+  assert.deepEqual(aggregate.coverage.matrixRuntimeSignalOwners, {
+    "runtime-state": 1,
+  })
   assert.deepEqual(aggregate.matrixRuntimeSignalSources, {
     "workspace-live-sync-state": [{
       reportSource: "workspace-live-sync.json",
@@ -75,6 +81,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.reports[0].artifactCoverage.classifications, {
     "cloud-validation-suite": 1,
   })
+  assert.deepEqual(aggregate.reports[0].matrixCoverage.runtimeSignals, {
+    "workspace-live-sync-state": 1,
+  })
+  assert.deepEqual(aggregate.reports[0].matrixCoverage.runtimeSignalOwners, {
+    "runtime-state": 1,
+  })
   assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
   const text = formatDrillValidationGateAggregateSummary(aggregate)
   assert.match(text, /required_providers=codex missing=none/)
@@ -84,6 +96,8 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /- artifact_runtime_signal_owners: kernel-authority=1 runtime-state=1/)
   assert.match(text, /- artifact_owners: validation-platform=1/)
   assert.match(text, /- artifact_classifications: cloud-validation-suite=1/)
+  assert.match(text, /- matrix_runtime_signals: workspace-live-sync-state=1/)
+  assert.match(text, /- matrix_runtime_signal_owners: runtime-state=1/)
   assert.match(text, /matrix_runtime_signal_sources:/)
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/workspace-live-sync-matrix\.json report=workspace-live-sync\.json/)
 })
@@ -242,13 +256,25 @@ test("aggregates failure runtime signal coverage from failed reports", () => {
     "lease-health": 1,
     "provider-run-lifecycle": 2,
   })
+  assert.deepEqual(aggregate.coverage.failureRuntimeSignalOwners, {
+    "kernel-authority": 1,
+    "provider-runtime": 2,
+  })
   assert.deepEqual(aggregate.reports[0].failureCoverage.runtimeSignals, {
     "lease-health": 1,
     "provider-run-lifecycle": 2,
   })
+  assert.deepEqual(aggregate.reports[0].failureCoverage.runtimeSignalOwners, {
+    "kernel-authority": 1,
+    "provider-runtime": 2,
+  })
   assert.match(
     formatDrillValidationGateAggregateSummary(aggregate),
     /- failure_runtime_signals: lease-health=1 provider-run-lifecycle=2/,
+  )
+  assert.match(
+    formatDrillValidationGateAggregateSummary(aggregate),
+    /- failure_runtime_signal_owners: kernel-authority=1 provider-runtime=2/,
   )
 })
 
@@ -339,6 +365,9 @@ function reportFixture(overrides = {}) {
         requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
         missingMatrixRuntimeSignals: [],
         aggregate: {
+          runtimeSignals: {
+            "workspace-live-sync-state": 1,
+          },
           runtimeSignalScenarios: {
             "workspace-live-sync-state": [{
               matrix: "workspace-live-sync-matrix",
