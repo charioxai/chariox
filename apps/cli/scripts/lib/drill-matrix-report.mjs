@@ -605,7 +605,7 @@ export function validateDrillMatrixAggregate(aggregate) {
   validateCountObject(aggregate.providers ?? {}, "aggregate.providers")
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
   validateExitCriteriaCountObject(aggregate.exitCriteria ?? {}, "aggregate.exitCriteria")
-  validateCountObject(aggregate.runtimeSignals ?? {}, "aggregate.runtimeSignals")
+  validateRuntimeSignalCountObject(aggregate.runtimeSignals ?? {}, "aggregate.runtimeSignals")
   validateCountObject(aggregate.runtimeSignalOwners ?? {}, "aggregate.runtimeSignalOwners")
   if (aggregate.runtimeSignalScenarios !== undefined) {
     validateRuntimeSignalEvidenceObject(aggregate.runtimeSignalScenarios, "aggregate.runtimeSignalScenarios", { aggregate: true })
@@ -839,7 +839,7 @@ function validateMatrixAggregateReport(report, source) {
     throw new Error(`${source} has invalid scenarioIds`)
   }
   validateExitCriteriaCountObject(report.exitCriteria ?? {}, `${source}.exitCriteria`)
-  validateCountObject(report.runtimeSignals ?? {}, `${source}.runtimeSignals`)
+  validateRuntimeSignalCountObject(report.runtimeSignals ?? {}, `${source}.runtimeSignals`)
   if (report.runtimeSignalScenarios !== undefined) {
     validateRuntimeSignalEvidenceObject(report.runtimeSignalScenarios, `${source}.runtimeSignalScenarios`, { aggregate: false })
     assertRuntimeSignalEvidenceCounts(`${source}.runtimeSignals`, report.runtimeSignals ?? {}, report.runtimeSignalScenarios)
@@ -1034,6 +1034,15 @@ function validateExitCriteriaCountObject(value, source) {
   for (const status of Object.keys(value)) {
     if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
       throw new Error(`${source} has invalid status ${JSON.stringify(status)}`)
+    }
+  }
+}
+
+function validateRuntimeSignalCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const signal of Object.keys(value)) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
     }
   }
 }

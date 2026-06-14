@@ -430,6 +430,17 @@ test("rejects inconsistent matrix aggregates", () => {
   }), /runtimeSignalOwners do not match runtimeSignals/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
+    runtimeSignals: { "workspace-live-synch-state": 1 },
+  }), /aggregate\.runtimeSignals has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      runtimeSignals: { "workspace-live-synch-state": 1 },
+    }],
+  }), /reports\[0\]\.runtimeSignals has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
     reports: [{
       ...aggregate.reports[0],
       runtimeSignalScenarios: {
