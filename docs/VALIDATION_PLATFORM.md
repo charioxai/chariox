@@ -31,6 +31,7 @@ node apps/cli/scripts/drill-matrix-report-summary.mjs --json --output path/to/ag
 ```
 
 The summary command exits non-zero when any input report has `status=failed`. `--find ROOT` discovers valid matrix reports below an artifact root and ignores unrelated JSON files.
+Matrix report discovery is bounded by default and prunes heavy irrelevant directories such as `.git`, `node_modules`, `.pnpm-store`, `debug`, and `release`, so broad artifact roots are safe to scan in CI.
 For dry-run reports, it prints selected scenario exit criteria so reviewers can confirm matrix scope before running live drills.
 Use `--require-complete` for release/staging gates that must reject skipped or dry-run scenarios even when no scenario failed.
 When more than one report is selected, the human summary prints an aggregate section with total coverage, failure owners, next actions, and incomplete scenarios.

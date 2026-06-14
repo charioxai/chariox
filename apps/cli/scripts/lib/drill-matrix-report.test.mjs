@@ -245,13 +245,21 @@ test("discovers matrix reports below artifact roots", async () => {
   const first = path.join(dir, ".artifacts", "drill-matrices", "one", "matrix.json")
   const second = path.join(dir, ".artifacts", "drill-matrices", "two", "matrix.json")
   const unrelated = path.join(dir, ".artifacts", "drill-matrices", "two", "other.json")
+  const pruned = path.join(dir, "node_modules", "package", "matrix.json")
+  const deep = path.join(dir, "one", "two", "three", "four", "matrix.json")
   await writeFileWithDir(first, `${JSON.stringify(matrixReport({ matrix: "one" }))}\n`)
   await writeFileWithDir(second, `${JSON.stringify(matrixReport({ matrix: "two" }))}\n`)
   await writeFileWithDir(unrelated, `${JSON.stringify({ schema: "other" })}\n`)
+  await writeFileWithDir(pruned, `${JSON.stringify(matrixReport({ matrix: "pruned" }))}\n`)
+  await writeFileWithDir(deep, `${JSON.stringify(matrixReport({ matrix: "deep" }))}\n`)
 
   const reports = await findDrillMatrixReportPaths([path.join(dir, ".artifacts")])
+  const broadReports = await findDrillMatrixReportPaths([dir])
+  const shallowReports = await findDrillMatrixReportPaths([dir], { maxDepth: 2 })
 
   assert.deepEqual(reports, [first, second].sort())
+  assert.deepEqual(broadReports, [deep, first, second].sort())
+  assert.deepEqual(shallowReports, [])
   await rm(dir, { recursive: true, force: true })
 })
 
