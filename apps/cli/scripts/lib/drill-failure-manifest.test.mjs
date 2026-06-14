@@ -177,6 +177,14 @@ test("aggregates preserved drill failure summaries", () => {
   assert.equal(aggregate.total, 2)
   assert.deepEqual(aggregate.owners, { "provider-account": 1, "runtime-network": 1 })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1, "relay-runtime": 1 })
+  assert.deepEqual(aggregate.nextActions.map((action) => ({
+    owner: action.owner,
+    classification: action.classification,
+    count: action.count,
+  })), [
+    { owner: "provider-account", classification: "provider-auth", count: 1 },
+    { owner: "runtime-network", classification: "relay-runtime", count: 1 },
+  ])
   assert.deepEqual(aggregate.failures.map((failure) => ({
     drill: failure.drill,
     source: failure.source,
@@ -201,6 +209,8 @@ test("aggregates preserved drill failure summaries", () => {
   assert.match(text, /drill failure aggregate:/)
   assert.match(text, /owners: provider-account=1 runtime-network=1/)
   assert.match(text, /classifications: provider-auth=1 relay-runtime=1/)
+  assert.match(text, /next actions:/)
+  assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
   assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime root=\/tmp\/relay source=\/tmp\/relay\/arroba-drill-failure.json/)
   assert.match(text, /next: inspect relay and kernel logs/)
 })

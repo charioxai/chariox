@@ -102,6 +102,7 @@ function emptyAggregate() {
     total: 0,
     owners: {},
     classifications: {},
+    nextActions: [],
     failures: [],
   }
 }

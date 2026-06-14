@@ -117,6 +117,13 @@ test("aggregates multiple matrix reports for CI", () => {
   })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1 })
   assert.deepEqual(aggregate.owners, { "provider-account": 1 })
+  assert.deepEqual(aggregate.nextActions.map((action) => ({
+    owner: action.owner,
+    classification: action.classification,
+    count: action.count,
+  })), [
+    { owner: "provider-account", classification: "provider-auth", count: 1 },
+  ])
   assert.deepEqual(aggregate.reports.map((report) => ({ matrix: report.matrix, source: report.source })), [
     { matrix: "remote", source: "/tmp/remote-matrix.json" },
     { matrix: "workspace", source: "/tmp/workspace-matrix.json" },
@@ -160,6 +167,8 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token source=\/tmp\/remote-matrix.json/)
   assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
   assert.match(text, /owners: provider-account=1/)
+  assert.match(text, /next actions:/)
+  assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
   assert.match(text, /next: refresh provider login/)
   assert.match(text, /incomplete scenarios:/)
   assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure source=\/tmp\/remote-matrix.json/)

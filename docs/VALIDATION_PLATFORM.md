@@ -32,7 +32,7 @@ For dry-run reports, it prints selected scenario exit criteria so reviewers can 
 Use `--require-complete` for release/staging gates that must reject skipped or dry-run scenarios even when no scenario failed.
 When more than one report is selected, the human summary prints an aggregate section with total coverage, failure owners, next actions, and incomplete scenarios.
 Failed-scenario summaries include an owner and next action so humans and CI can route the fix without opening raw logs first.
-The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `reports`, `failedScenarios`, and `incompleteScenarios` entries include the originating report `source` path when available. Its `owners` map counts failed-scenario owners, its `failedScenarios` entries include `classification`, `owner`, `reason`, `artifactHints`, and `nextAction`, and its `incompleteScenarios` entries list skipped and dry-run coverage gaps.
+The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `reports`, `failedScenarios`, and `incompleteScenarios` entries include the originating report `source` path when available. Its `owners` map counts failed-scenario owners, `nextActions` groups repeated owner/classification/action pairs, its `failedScenarios` entries include `classification`, `owner`, `reason`, `artifactHints`, and `nextAction`, and its `incompleteScenarios` entries list skipped and dry-run coverage gaps.
 
 Required top-level fields:
 
@@ -80,6 +80,7 @@ Required top-level fields:
 Failure manifests redact sensitive metadata keys and token-shaped metadata values before writing. Failure summaries also redact sensitive metadata keys and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
 When more than one failure manifest is selected, the summary command prints an aggregate owner/classification section so preserved failure batches can be routed quickly.
 The `--json`/`--output` aggregate schema is `arroba.drill.failure.aggregate.v1`.
+Its `nextActions` entries group repeated owner/classification/action pairs so CI and humans can route a failure batch without scanning every manifest.
 Each failure entry includes the drill name, preserved artifact root, optional manifest `source` path, owner, classification, and next action.
 
 ## Scenario Selection

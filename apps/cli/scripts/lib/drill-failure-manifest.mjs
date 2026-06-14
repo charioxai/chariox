@@ -99,19 +99,22 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
   }))
   const owners = new Map()
   const classifications = new Map()
+  const nextActions = new Map()
   const failures = []
   for (const summary of summaries) {
     const owner = summary.classification.owner
     const kind = summary.classification.kind
+    const nextAction = summary.classification.nextAction
     owners.set(owner, (owners.get(owner) ?? 0) + 1)
     classifications.set(kind, (classifications.get(kind) ?? 0) + 1)
+    countNextAction(nextActions, { owner, classification: kind, nextAction })
     failures.push({
       drill: summary.metadata.drill ?? "unknown",
       source: summary.source,
       rootDir: summary.rootDir,
       owner,
       classification: kind,
-      nextAction: summary.classification.nextAction,
+      nextAction,
     })
   }
   return {
@@ -119,6 +122,7 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
     total: summaries.length,
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    nextActions: formatNextActionCounts(nextActions),
     failures,
   }
 }
@@ -136,6 +140,12 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
   const classifications = Object.entries(aggregate.classifications)
   if (classifications.length > 0) {
     lines.push(`classifications: ${classifications.map(([kind, count]) => `${kind}=${count}`).join(" ")}`)
+  }
+  if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
+    lines.push("next actions:")
+    for (const action of aggregate.nextActions) {
+      lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+    }
   }
   if (aggregate.failures.length > 0) {
     lines.push("failures:")
@@ -186,8 +196,28 @@ function validateDrillFailureManifestAggregate(aggregate) {
   if (!Array.isArray(aggregate.failures)) {
     throw new Error("aggregate has invalid failures")
   }
+  if (aggregate.nextActions !== undefined && !Array.isArray(aggregate.nextActions)) {
+    throw new Error("aggregate has invalid nextActions")
+  }
+  for (const [index, action] of (aggregate.nextActions ?? []).entries()) {
+    validateDrillFailureAggregateNextAction(action, `aggregate.nextActions[${index}]`)
+  }
   for (const [index, failure] of aggregate.failures.entries()) {
     validateDrillFailureAggregateEntry(failure, `aggregate.failures[${index}]`)
+  }
+}
+
+function validateDrillFailureAggregateNextAction(action, source) {
+  if (!action || typeof action !== "object" || Array.isArray(action)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const key of ["owner", "classification", "nextAction"]) {
+    if (!nonEmptyString(action[key])) {
+      throw new Error(`${source} is missing ${key}`)
+    }
+  }
+  if (!Number.isFinite(action.count) || action.count < 1) {
+    throw new Error(`${source} has invalid count`)
   }
 }
 
@@ -242,6 +272,23 @@ function isSensitiveKey(key) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function countNextAction(counts, { owner, classification, nextAction }) {
+  const key = JSON.stringify([owner, classification, nextAction])
+  const previous = counts.get(key)
+  counts.set(key, previous
+    ? { ...previous, count: previous.count + 1 }
+    : { owner, classification, nextAction, count: 1 })
+}
+
+function formatNextActionCounts(counts) {
+  return [...counts.values()].sort((left, right) => (
+    right.count - left.count
+    || left.owner.localeCompare(right.owner)
+    || left.classification.localeCompare(right.classification)
+    || left.nextAction.localeCompare(right.nextAction)
+  ))
 }
 
 async function collectFailureManifestPaths(manifests, currentPath, { depth, maxDepth }) {
