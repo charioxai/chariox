@@ -485,11 +485,28 @@ async function writeValidationSuiteArtifact(rootDir, {
       drill: "cloud-validation-suite",
       tests: 1,
       coverageAreas: coverageAreas.join(","),
+      runtimeSignals: DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS.join(","),
+      owners: "validation-platform",
+      classifications: evidenceRepo === "cloud" ? "cloud-validation-suite" : "validation-suite",
       artifactKinds: "validation-suite-run",
       evidenceRepos: evidenceRepo,
     },
   })
 }
+
+const DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS = Object.freeze([
+  "agent-lifecycle",
+  "client-projection-health",
+  "home-extension-manifest-sync",
+  "lease-health",
+  "permission-interaction",
+  "provider-run-lifecycle",
+  "relay-target-freshness",
+  "session-authority",
+  "slice-auth-state",
+  "slice-runtime-state",
+  "workspace-live-sync-state",
+])
 
 async function writeValidationSuiteManifestArtifact(rootDir) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
