@@ -49,9 +49,11 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
       "hosted-single-user-remote-agent",
       "hosted-collab-remote-agent",
     ])
-    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "provider-run-binding").args.slice(-2), [
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "provider-run-binding").args.slice(1, 5), [
+      "--provider",
+      "claude-headless",
       "--provider-model",
-      "claude=sonnet-test",
+      "claude-headless=sonnet-test",
     ])
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hosted-single-user-remote-agent").requires, ["hosted-cloud"])
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-single-user-remote-agent").requires, ["hetzner"])

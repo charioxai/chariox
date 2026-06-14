@@ -494,10 +494,18 @@ async function main() {
       'Start another remote prompt that will be cancelled.',
       [],
     ))
-    const cancelled = unwrapVariant(
-      await client.send({ CancelActivePrompt: { session_id: sessionId, attachment_id: attachment.id } }),
-      'PromptCancelled',
-    )
+    let cancelled = null
+    let cancellationAlreadySettled = false
+    try {
+      cancelled = unwrapVariant(
+        await client.send({ CancelActivePrompt: { session_id: sessionId, attachment_id: attachment.id } }),
+        'PromptCancelled',
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes('has no active prompt')) throw error
+      cancellationAlreadySettled = true
+    }
 
     finalState = unwrapVariant(await client.send(getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
     const finalAgent = finalState.session?.agents?.find((agent) => agent.id === remoteAgent.id) ?? remoteAgent
@@ -539,8 +547,9 @@ async function main() {
         pumpedOutputRecords: 0,
       },
       secondPrompt: {
-        cancelledPromptId: cancelled.cancellation?.prompt?.id ?? cancelled.prompt?.id ?? null,
-        cancelledStatus: cancelled.cancellation?.prompt?.status ?? cancelled.prompt?.status ?? null,
+        cancelledPromptId: cancelled?.cancellation?.prompt?.id ?? cancelled?.prompt?.id ?? null,
+        cancelledStatus: cancelled?.cancellation?.prompt?.status ?? cancelled?.prompt?.status ?? null,
+        alreadySettled: cancellationAlreadySettled,
       },
       machinesVisible: remoteMachines.map((machine) => ({
         machineId: machine.machine_id,

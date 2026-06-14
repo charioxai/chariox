@@ -59,7 +59,8 @@ const MATRIX = [
   }),
   providerScenario({
     id: "provider-run-binding",
-    provider: "claude",
+    provider: "claude-headless",
+    providerFamily: "claude",
     description: "same-host remote Claude provider-run binding and placement",
     classification: "provider-error",
     exitCriteria: [
@@ -179,10 +180,11 @@ const MATRIX = [
   },
 ]
 
-function providerScenario({ id, provider, description, classification, exitCriteria }) {
+function providerScenario({ id, provider, providerFamily = provider, description, classification, exitCriteria }) {
   return {
     id,
     provider,
+    providerFamily,
     description,
     script: remoteMachineDrill,
     args: ["--provider", provider],
@@ -285,13 +287,16 @@ function selectScenarios(options) {
   })
 }
 
-function modelForProvider(provider, options) {
-  const defaultModel = provider === "codex"
+function modelForScenario(scenario, options) {
+  const providerFamily = scenario.providerFamily ?? scenario.provider
+  const explicit = options.providerModels[scenario.provider] ?? options.providerModels[providerFamily]
+  if (explicit) return explicit
+  const defaultModel = providerFamily === "codex"
     ? DEFAULT_CODEX_MODEL
-    : provider === "opencode"
+    : providerFamily === "opencode"
       ? DEFAULT_OPENCODE_MODEL
       : DEFAULT_CLAUDE_MODEL
-  return resolveProviderModel(provider, {
+  return resolveProviderModel(scenario.provider, {
     defaultModel,
     providerModels: options.providerModels,
   })
@@ -300,7 +305,7 @@ function modelForProvider(provider, options) {
 function commandForScenario(scenario, options) {
   let args = [scenario.script, ...scenario.args]
   if (scenario.script === remoteMachineDrill) {
-    args = [...args, "--provider-model", `${scenario.provider}=${modelForProvider(scenario.provider, options)}`]
+    args = [...args, "--provider-model", `${scenario.provider}=${modelForScenario(scenario, options)}`]
   }
   return {
     command: process.execPath,
@@ -311,7 +316,7 @@ function commandForScenario(scenario, options) {
 
 function metadataFor(selected, options) {
   const providers = [...new Set(selected
-    .map((scenario) => scenario.provider)
+    .map((scenario) => scenario.providerFamily ?? scenario.provider)
     .filter((provider) => provider && provider !== "dev-stub"))].sort()
   return {
     includeHetzner: options.includeHetzner,
