@@ -79,6 +79,15 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
 
 Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
 
+To reject stale or discovered-only bundles, summarize the generated gate report and require both generated evidence kinds:
+
+```bash
+node apps/cli/scripts/drill-validation-gate-summary.mjs \
+  --gate-report .artifacts/validation-gates/distributed-runtime-gate.json \
+  --require-generated-evidence-kind validation-suite-run \
+  --require-generated-evidence-kind matrix-report
+```
+
 ## Cleanup
 
 Live drills should own their daemon/session/port/artifact lifecycle and clean up generated files on success. If a drill supports `--keep-artifacts-on-failure`, only leave artifacts behind on failure for debugging.
