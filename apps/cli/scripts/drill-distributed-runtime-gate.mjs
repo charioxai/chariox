@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-import { execFile as execFileWithCallback } from "node:child_process"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { promisify } from "node:util"
 
 import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
+import {
+  runDistributedRuntimeMatrixReportsFor,
+  runDistributedRuntimeValidationSuitesFor,
+} from "./lib/drill-distributed-runtime-evidence.mjs"
 import {
   parseValidationGateRequirementArg,
   validationGateRequirementOptionDefaults,
@@ -24,7 +26,6 @@ import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
 const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "arroba-cloud")
-const execFile = promisify(execFileWithCallback)
 
 function printHelp() {
   console.log([
@@ -97,8 +98,8 @@ async function main() {
     if (!options.platformBundleDir) {
       await writeDrillPlatformBundle(platformBundleDir)
     }
-    const validationSuiteArtifactIndexes = await runValidationSuitesFor(options)
-    const generatedMatrixRoots = await runMatrixReportsFor(options)
+    const validationSuiteArtifactIndexes = await runDistributedRuntimeValidationSuitesFor(options)
+    const generatedMatrixRoots = await runDistributedRuntimeMatrixReportsFor(options)
     const report = await runDrillValidationGate({
       artifactIndexes: [...options.artifactIndexes, ...validationSuiteArtifactIndexes],
       artifactRoots: artifactRootsFor(options),
@@ -308,174 +309,6 @@ function artifactRootsFor(options) {
     )
   }
   return [...new Set(roots.map((item) => path.resolve(item)))].sort()
-}
-
-async function runMatrixReportsFor(options) {
-  if (!options.runMatrixReports) return []
-  const ossOutputDir = matrixOutputDirFor(options, "oss")
-  const cloudOutputDir = matrixOutputDirFor(options, "cloud")
-  const commonArgs = [
-    ...(options.matrixDryRun ? ["--dry-run"] : []),
-    ...(options.matrixContinueOnFailure ? ["--continue-on-failure"] : []),
-  ]
-  const matrixCommands = [
-    {
-      artifactIndexFlag: "--artifact-index",
-      cwd: options.ossRoot,
-      outputDir: ossOutputDir,
-      reportFileName: "native-provider-tui-matrix.json",
-      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
-      extraArgs: ["--include-hetzner"],
-    },
-    {
-      artifactIndexFlag: "--artifact-index",
-      cwd: options.ossRoot,
-      outputDir: ossOutputDir,
-      reportFileName: "remote-agent-runtime-matrix.json",
-      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-remote-agent-runtime-matrix-drill.mjs"),
-      extraArgs: ["--include-hetzner", "--include-hosted-cloud"],
-    },
-    {
-      artifactIndexFlag: "--artifact-index",
-      cwd: options.ossRoot,
-      outputDir: ossOutputDir,
-      reportFileName: "remote-home-extension-matrix.json",
-      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-remote-home-extension-matrix-drill.mjs"),
-      extraArgs: ["--include-hetzner"],
-    },
-    {
-      artifactIndexFlag: "--artifact-index",
-      cwd: options.ossRoot,
-      outputDir: ossOutputDir,
-      reportFileName: "slice-runtime-matrix.json",
-      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-slice-runtime-matrix-drill.mjs"),
-      extraArgs: ["--include-self-hosted-relay"],
-    },
-    {
-      artifactIndexFlag: "--artifact-index",
-      cwd: options.ossRoot,
-      outputDir: ossOutputDir,
-      reportFileName: "workspace-live-sync-matrix.json",
-      scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "live-workspace-live-sync-matrix-drill.mjs"),
-      extraArgs: ["--include-remote", "--include-hetzner", "--include-opencode"],
-    },
-    {
-      artifactIndexFlag: "--output-artifact-index",
-      cwd: options.cloudRoot,
-      outputDir: cloudOutputDir,
-      reportFileName: "cloud-slice-runtime-matrix.json",
-      scriptPath: path.join(options.cloudRoot, "scripts", "staging-slice-runtime-matrix.mjs"),
-      extraArgs: ["--include-hosted-cloud", "--include-vault"],
-    },
-  ]
-  for (const command of matrixCommands) {
-    await runMatrixReportCommand({
-      ...command,
-      commonArgs,
-    })
-  }
-  return [ossOutputDir, cloudOutputDir]
-}
-
-function matrixOutputDirFor(options, repo) {
-  if (options.matrixOutputRoot) {
-    return path.join(options.matrixOutputRoot, repo)
-  }
-  if (repo === "oss") {
-    return path.join(options.ossRoot, ".artifacts", "drill-matrices", "distributed-runtime-gate")
-  }
-  return path.join(options.cloudRoot, ".artifacts", "drill-matrices", "distributed-runtime-gate")
-}
-
-async function runMatrixReportCommand({
-  artifactIndexFlag,
-  commonArgs,
-  cwd,
-  extraArgs,
-  outputDir,
-  reportFileName,
-  scriptPath,
-}) {
-  const reportPath = path.join(outputDir, reportFileName)
-  const artifactIndexPath = path.join(outputDir, `${path.basename(reportFileName, ".json")}-artifacts.json`)
-  try {
-    await execFile(process.execPath, [
-      scriptPath,
-      ...commonArgs,
-      ...extraArgs,
-      "--report",
-      reportPath,
-      artifactIndexFlag,
-      artifactIndexPath,
-    ], { cwd, maxBuffer: 1024 * 1024 * 20 })
-  } catch (error) {
-    const stderr = typeof error.stderr === "string" && error.stderr.trim().length > 0
-      ? `\nstderr:\n${error.stderr.trim()}`
-      : ""
-    const stdout = typeof error.stdout === "string" && error.stdout.trim().length > 0
-      ? `\nstdout:\n${error.stdout.trim()}`
-      : ""
-    throw new Error(`matrix report failed: ${scriptPath}${stderr}${stdout}`)
-  }
-  return reportPath
-}
-
-async function runValidationSuitesFor(options) {
-  if (!options.runValidationSuites) return []
-  const ossOutputDir = validationSuiteOutputDirFor(options, "oss")
-  const cloudOutputDir = validationSuiteOutputDirFor(options, "cloud")
-  const ossArtifactIndex = await runValidationSuiteCommand({
-    cwd: options.ossRoot,
-    outputDir: ossOutputDir,
-    reportFileName: "drill-validation-suite-run.json",
-    scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
-  })
-  const cloudArtifactIndex = await runValidationSuiteCommand({
-    cwd: options.cloudRoot,
-    outputDir: cloudOutputDir,
-    reportFileName: "cloud-validation-suite-run.json",
-    scriptPath: path.join(options.cloudRoot, "scripts", "cloud-validation-suite.mjs"),
-  })
-  return [ossArtifactIndex, cloudArtifactIndex]
-}
-
-function validationSuiteOutputDirFor(options, repo) {
-  if (options.validationSuiteOutputRoot) {
-    return path.join(options.validationSuiteOutputRoot, repo)
-  }
-  if (repo === "oss") {
-    return path.join(options.ossRoot, ".artifacts", "validation-suite", "distributed-runtime-gate")
-  }
-  return path.join(options.cloudRoot, ".artifacts", "validation-suite", "distributed-runtime-gate")
-}
-
-async function runValidationSuiteCommand({
-  cwd,
-  outputDir,
-  reportFileName,
-  scriptPath,
-}) {
-  const outputPath = path.join(outputDir, reportFileName)
-  const artifactIndexPath = path.join(outputDir, "arroba-drill-artifacts.json")
-  try {
-    await execFile(process.execPath, [
-      scriptPath,
-      "--run-json",
-      "--output",
-      outputPath,
-      "--output-artifact-index",
-      artifactIndexPath,
-    ], { cwd, maxBuffer: 1024 * 1024 * 20 })
-  } catch (error) {
-    const stderr = typeof error.stderr === "string" && error.stderr.trim().length > 0
-      ? `\nstderr:\n${error.stderr.trim()}`
-      : ""
-    const stdout = typeof error.stdout === "string" && error.stdout.trim().length > 0
-      ? `\nstdout:\n${error.stdout.trim()}`
-      : ""
-    throw new Error(`validation suite failed: ${scriptPath}${stderr}${stdout}`)
-  }
-  return artifactIndexPath
 }
 
 function failureRootsFor(options) {
