@@ -4,15 +4,17 @@ import {
   SHARED_DRILL_TEST_PATHS,
   drillValidationSuiteArgs,
   drillValidationSuiteCommand,
+  findMissingDrillValidationSuitePaths,
 } from "./lib/drill-validation-suite.mjs"
 
 function printHelp() {
   console.log([
-    "Usage: node apps/cli/scripts/drill-validation-suite.mjs [--list|--command]",
+    "Usage: node apps/cli/scripts/drill-validation-suite.mjs [--list|--command|--check]",
     "",
     "Runs the shared non-live drill validation suite.",
     "",
     "Options:",
+    "  --check    Validate that every suite test path exists without running tests",
     "  --list     Print test files included in the suite",
     "  --command  Print the node --test command without running it",
   ].join("\n"))
@@ -30,6 +32,14 @@ async function main() {
   }
   if (options.command) {
     console.log(drillValidationSuiteCommand())
+    return
+  }
+  const missing = await findMissingDrillValidationSuitePaths()
+  if (missing.length > 0) {
+    throw new Error(`validation suite references missing test paths:\n${missing.map((item) => `- ${item}`).join("\n")}`)
+  }
+  if (options.check) {
+    console.log(`validation suite paths ok (${SHARED_DRILL_TEST_PATHS.length} tests)`)
     return
   }
 
@@ -52,12 +62,14 @@ async function main() {
 
 function parseArgs(argv) {
   const options = {
+    check: false,
     command: false,
     help: false,
     list: false,
   }
   for (const arg of argv) {
     if (arg === "--help" || arg === "-h") options.help = true
+    else if (arg === "--check") options.check = true
     else if (arg === "--list") options.list = true
     else if (arg === "--command") options.command = true
     else throw new Error(`unknown argument: ${arg}`)

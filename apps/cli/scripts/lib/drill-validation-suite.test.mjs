@@ -5,6 +5,7 @@ import {
   SHARED_DRILL_TEST_PATHS,
   drillValidationSuiteArgs,
   drillValidationSuiteCommand,
+  findMissingDrillValidationSuitePaths,
 } from "./drill-validation-suite.mjs"
 
 test("shared drill validation suite lists stable test paths", () => {
@@ -24,4 +25,13 @@ test("formats shared drill validation suite command", () => {
     drillValidationSuiteCommand({ nodeCommand: "node", testPaths: ["one.test.mjs", "two words.test.mjs"] }),
     'node --test one.test.mjs "two words.test.mjs"',
   )
+})
+
+test("finds missing shared drill validation suite paths", async () => {
+  assert.deepEqual(await findMissingDrillValidationSuitePaths({
+    testPaths: ["apps/cli/scripts/lib/drill-validation-suite.test.mjs"],
+  }), [])
+  assert.deepEqual(await findMissingDrillValidationSuitePaths({
+    testPaths: ["apps/cli/scripts/lib/missing-suite-test.mjs"],
+  }), ["apps/cli/scripts/lib/missing-suite-test.mjs"])
 })

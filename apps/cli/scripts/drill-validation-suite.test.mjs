@@ -21,3 +21,9 @@ test("drill validation suite prints runnable command", async () => {
   assert.match(stdout, /^node --test /)
   assert.match(stdout, /apps\/cli\/scripts\/lib\/drill-matrix-runner\.test\.mjs/)
 })
+
+test("drill validation suite checks configured paths", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--check"])
+
+  assert.match(stdout, /validation suite paths ok/)
+})

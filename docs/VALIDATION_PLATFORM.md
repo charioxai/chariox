@@ -21,6 +21,7 @@ Run the shared non-live validation platform checks with:
 
 ```bash
 node apps/cli/scripts/drill-validation-suite.mjs
+node apps/cli/scripts/drill-validation-suite.mjs --check
 node apps/cli/scripts/drill-validation-suite.mjs --list
 node apps/cli/scripts/drill-validation-suite.mjs --command
 ```

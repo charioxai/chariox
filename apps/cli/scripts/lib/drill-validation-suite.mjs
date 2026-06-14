@@ -1,3 +1,6 @@
+import { access } from "node:fs/promises"
+import path from "node:path"
+
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/drill-failure-summary.test.mjs",
   "apps/cli/scripts/drill-matrix-report-summary.test.mjs",
@@ -27,4 +30,20 @@ export function drillValidationSuiteCommand({ nodeCommand = "node", testPaths = 
   return [nodeCommand, ...drillValidationSuiteArgs({ testPaths })]
     .map((part) => (/[ "'\\]/.test(part) ? JSON.stringify(part) : part))
     .join(" ")
+}
+
+export async function findMissingDrillValidationSuitePaths({
+  rootDir = process.cwd(),
+  testPaths = SHARED_DRILL_TEST_PATHS,
+} = {}) {
+  const missing = []
+  for (const testPath of testPaths) {
+    const absolutePath = path.resolve(rootDir, testPath)
+    try {
+      await access(absolutePath)
+    } catch {
+      missing.push(testPath)
+    }
+  }
+  return missing
 }
