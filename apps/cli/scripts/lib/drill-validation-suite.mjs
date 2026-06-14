@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises"
+import { access, readdir } from "node:fs/promises"
 import path from "node:path"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
@@ -277,4 +277,34 @@ export async function findMissingDrillValidationSuitePaths({
     }
   }
   return missing
+}
+
+export async function findUnlistedDrillValidationSuitePaths({
+  rootDir = process.cwd(),
+  scriptsDir = "apps/cli/scripts",
+  testPaths = SHARED_DRILL_TEST_PATHS,
+} = {}) {
+  const discovered = await discoverDrillValidationSuiteTestPaths({ rootDir, scriptsDir })
+  const listed = new Set(testPaths)
+  return discovered.filter((testPath) => !listed.has(testPath))
+}
+
+export async function discoverDrillValidationSuiteTestPaths({
+  rootDir = process.cwd(),
+  scriptsDir = "apps/cli/scripts",
+} = {}) {
+  const found = []
+  await collectDrillValidationSuiteTestPaths(path.resolve(rootDir, scriptsDir), rootDir, found)
+  return found.sort()
+}
+
+async function collectDrillValidationSuiteTestPaths(dir, rootDir, found) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      await collectDrillValidationSuiteTestPaths(fullPath, rootDir, found)
+    } else if (entry.isFile() && entry.name.endsWith(".test.mjs")) {
+      found.push(path.relative(rootDir, fullPath).split(path.sep).join("/"))
+    }
+  }
 }

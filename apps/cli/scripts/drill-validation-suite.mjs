@@ -6,6 +6,7 @@ import {
   drillValidationSuiteCommand,
   drillValidationSuiteManifest,
   findMissingDrillValidationSuitePaths,
+  findUnlistedDrillValidationSuitePaths,
 } from "./lib/drill-validation-suite.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 
@@ -62,6 +63,10 @@ async function main() {
   const missing = await findMissingDrillValidationSuitePaths()
   if (missing.length > 0) {
     throw new Error(`validation suite references missing test paths:\n${missing.map((item) => `- ${item}`).join("\n")}`)
+  }
+  const unlisted = await findUnlistedDrillValidationSuitePaths()
+  if (unlisted.length > 0) {
+    throw new Error(`validation suite does not list discovered test paths:\n${unlisted.map((item) => `- ${item}`).join("\n")}`)
   }
   if (options.check) {
     console.log(`validation suite paths ok (${SHARED_DRILL_TEST_PATHS.length} tests)`)

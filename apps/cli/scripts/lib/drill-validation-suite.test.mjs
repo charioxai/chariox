@@ -1,16 +1,15 @@
 import assert from "node:assert/strict"
-import { readdir } from "node:fs/promises"
-import path from "node:path"
 import test from "node:test"
-import { fileURLToPath } from "node:url"
 
 import {
   DRILL_VALIDATION_COVERAGE_AREAS,
   SHARED_DRILL_TEST_PATHS,
+  discoverDrillValidationSuiteTestPaths,
   drillValidationSuiteArgs,
   drillValidationSuiteCommand,
   drillValidationSuiteManifest,
   findMissingDrillValidationSuitePaths,
+  findUnlistedDrillValidationSuitePaths,
   normalizeValidationSuitePresetContracts,
   validateValidationSuiteCoverage,
   validationSuiteCoverage,
@@ -35,8 +34,7 @@ test("shared drill validation suite covers every test path exactly once", () => 
 })
 
 test("shared drill validation suite includes every CLI script test", async () => {
-  const scriptsDir = path.resolve(fileURLToPath(new URL("..", import.meta.url)))
-  const discovered = await discoverTestPaths(scriptsDir)
+  const discovered = await discoverDrillValidationSuiteTestPaths()
   assert.deepEqual(discovered, [...SHARED_DRILL_TEST_PATHS])
 })
 
@@ -158,19 +156,8 @@ test("finds missing shared drill validation suite paths", async () => {
   }), ["apps/cli/scripts/lib/missing-suite-test.mjs"])
 })
 
-async function discoverTestPaths(rootDir) {
-  const found = []
-  await collectTestPaths(rootDir, found)
-  return found.sort()
-}
-
-async function collectTestPaths(dir, found) {
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      await collectTestPaths(fullPath, found)
-    } else if (entry.isFile() && entry.name.endsWith(".test.mjs")) {
-      found.push(path.relative(process.cwd(), fullPath).split(path.sep).join("/"))
-    }
-  }
-}
+test("finds unlisted shared drill validation suite paths", async () => {
+  assert.deepEqual(await findUnlistedDrillValidationSuitePaths({
+    testPaths: SHARED_DRILL_TEST_PATHS.filter((testPath) => testPath !== "apps/cli/scripts/lib/drill-validation-suite.test.mjs"),
+  }), ["apps/cli/scripts/lib/drill-validation-suite.test.mjs"])
+})
