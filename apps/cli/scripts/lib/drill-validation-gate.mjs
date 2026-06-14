@@ -14,16 +14,12 @@ import {
   validateDrillValidationGateAggregate,
 } from "./drill-validation-gate-aggregate.mjs"
 import {
-  findDrillArtifactIndexPaths,
-  summarizeDrillArtifactIndexes,
-  verifyDrillArtifactIndex,
-} from "./drill-artifacts.mjs"
-import {
   findDrillFailureManifestPaths,
   readDrillFailureManifest,
   resolveFailureManifestPath,
   summarizeDrillFailureManifests,
 } from "./drill-failure-manifest.mjs"
+import { artifactValidationGateCheck } from "./drill-validation-gate-artifact-check.mjs"
 import { matrixValidationGateCheck } from "./drill-validation-gate-matrix-check.mjs"
 import { platformValidationGateCheck } from "./drill-validation-gate-platform-check.mjs"
 import {
@@ -148,7 +144,7 @@ export async function runDrillValidationGate({
       requiredCoverageAreas: normalizedRequiredPlatformCoverageAreas,
       requiredFailureClassifications: normalizedRequiredFailureClassifications,
     }),
-    artifacts: await artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
+    artifacts: await artifactValidationGateCheck({ artifactIndexes, artifactRoots }, { maxDepth }),
     matrices: await matrixValidationGateCheck({
       matrixReports,
       matrixRoots,
@@ -656,49 +652,6 @@ function configurationCheck({
         status: "failed",
         error: "no validation checks configured",
       }
-}
-
-async function artifactIndexCheck({ artifactIndexes, artifactRoots }, { maxDepth }) {
-  if (artifactRoots.length === 0 && artifactIndexes.length === 0) {
-    return {
-      status: "skipped",
-      roots: [],
-      inputs: [],
-      indexPaths: [],
-    }
-  }
-  try {
-    const discovered = artifactRoots.length > 0
-      ? await findDrillArtifactIndexPaths(artifactRoots, { maxDepth })
-      : []
-    const indexPaths = [...new Set([...artifactIndexes, ...discovered])].sort()
-    if (indexPaths.length === 0) {
-      return {
-        status: "failed",
-        roots: [...artifactRoots],
-        inputs: [...artifactIndexes],
-        indexPaths,
-        error: "no artifact indexes found",
-      }
-    }
-    const indexes = await Promise.all(indexPaths.map((indexPath) => verifyDrillArtifactIndex(indexPath)))
-    const aggregate = summarizeDrillArtifactIndexes(indexes, { sources: indexPaths })
-    return {
-      status: "passed",
-      roots: [...artifactRoots],
-      inputs: [...artifactIndexes],
-      indexPaths,
-      aggregate,
-    }
-  } catch (error) {
-    return {
-      status: "failed",
-      roots: [...artifactRoots],
-      inputs: [...artifactIndexes],
-      indexPaths: [],
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
 }
 
 async function failureCheck({ failureInputs, failureRoots }, { maxDepth }) {
