@@ -8,7 +8,7 @@ import {
   isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
-import { isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
+import { drillRuntimeSignalOwnerCounts, drillRuntimeSignalOwnersFor, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
 export function parseDrillScenarioIds(value) {
@@ -334,6 +334,8 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
   if (!reportPath) return
   const completedAt = new Date()
   const runtimeSignals = runtimeSignalCountsForResults(results)
+  const runtimeSignalIds = Object.keys(runtimeSignals)
+  const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignalIds)
   const report = {
     schema: "arroba.drill.matrix.v1",
     matrix: matrixName,
@@ -344,7 +346,12 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     durationMs: completedAt.getTime() - startedAt.getTime(),
     metadata: {
       ...metadata,
-      ...(Object.keys(runtimeSignals).length > 0 ? { runtimeSignals: Object.keys(runtimeSignals).join(",") } : {}),
+      ...(runtimeSignalIds.length > 0
+        ? {
+          runtimeSignals: runtimeSignalIds.join(","),
+          runtimeSignalOwners: runtimeSignalOwners.join(","),
+        }
+        : {}),
     },
     scenarios: results.map((result) => ({
       id: result.scenario.id,
@@ -375,12 +382,18 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
       status: report.status,
       dryRun: report.dryRun,
       scenarios: report.scenarios.length,
-      ...(Object.keys(runtimeSignals).length > 0 ? { runtimeSignals: Object.keys(runtimeSignals).join(",") } : {}),
+      ...(runtimeSignalIds.length > 0
+        ? {
+          runtimeSignals: runtimeSignalIds.join(","),
+          runtimeSignalOwners: runtimeSignalOwners.join(","),
+        }
+        : {}),
     },
   })
   console.log(`[${matrixName}] report ${reportPath}`)
-  if (Object.keys(runtimeSignals).length > 0) {
+  if (runtimeSignalIds.length > 0) {
     console.log(`[${matrixName}] runtime_signals ${formatRuntimeSignalCounts(runtimeSignals)}`)
+    console.log(`[${matrixName}] runtime_signal_owners ${formatRuntimeSignalCounts(drillRuntimeSignalOwnerCounts(runtimeSignals))}`)
   }
 }
 
