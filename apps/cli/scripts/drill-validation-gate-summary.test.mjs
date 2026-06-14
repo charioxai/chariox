@@ -112,12 +112,16 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
       "workspace-live-sync",
       "--require-platform-coverage-area",
       "matrix-validation",
+      "--require-runtime-signal",
+      "workspace-live-sync-state",
       "--require-failure-classification",
       "kernel-authority",
       "--require-matrix",
       "workspace-live-sync-matrix",
       "--require-matrix-classification",
       "workspace-live-sync-conflict",
+      "--require-matrix-runtime-signal",
+      "workspace-live-sync-state",
       "--require-deployment-preset",
       "local",
       "--require-provider",
@@ -130,6 +134,11 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
     assert.equal(passedAggregate.status, "passed")
     assert.deepEqual(passedAggregate.requiredPresets, ["workspace-live-sync"])
     assert.deepEqual(passedAggregate.missingPresets, [])
+    assert.deepEqual(passedAggregate.requiredRuntimeSignals, ["workspace-live-sync-state"])
+    assert.deepEqual(passedAggregate.missingRuntimeSignals, [])
+    assert.deepEqual(passedAggregate.requiredMatrixRuntimeSignals, ["workspace-live-sync-state"])
+    assert.deepEqual(passedAggregate.missingMatrixRuntimeSignals, [])
+    assert.deepEqual(passedAggregate.matrixRuntimeSignalSources["workspace-live-sync-state"].map((entry) => entry.id), ["managed"])
     assert.deepEqual(passedAggregate.missingProviders, [])
 
     await assert.rejects(

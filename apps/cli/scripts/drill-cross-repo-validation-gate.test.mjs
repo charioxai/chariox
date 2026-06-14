@@ -56,6 +56,10 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       bundleDir,
       "--preset",
       "slice-runtime",
+      "--require-runtime-signal",
+      "slice-auth-state",
+      "--require-matrix-runtime-signal",
+      "slice-auth-state",
       "--require-complete",
       "--json",
       "--output",
@@ -73,6 +77,25 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
     assert.deepEqual(report.checks.matrices.missingMatrixClassifications, [])
+    assert.deepEqual(report.checks.platformBundle.requiredRuntimeSignals, [
+      "agent-lifecycle",
+      "client-projection-health",
+      "provider-run-lifecycle",
+      "session-authority",
+      "slice-auth-state",
+      "slice-runtime-state",
+    ])
+    assert.deepEqual(report.checks.platformBundle.missingRuntimeSignals, [])
+    assert.deepEqual(report.checks.matrices.requiredMatrixRuntimeSignals, [
+      "agent-lifecycle",
+      "client-projection-health",
+      "provider-run-lifecycle",
+      "session-authority",
+      "slice-auth-state",
+      "slice-runtime-state",
+    ])
+    assert.deepEqual(report.checks.matrices.missingMatrixRuntimeSignals, [])
+    assert.deepEqual(report.checks.matrices.aggregate.runtimeSignalScenarios["slice-auth-state"].map((entry) => entry.id), ["provider-auth"])
     assert.equal(report.checks.matrices.aggregate.matrixNames["slice-runtime-matrix"], 1)
     assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
     assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 1)
