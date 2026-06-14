@@ -1,0 +1,111 @@
+#!/usr/bin/env node
+import { mkdir, writeFile } from "node:fs/promises"
+import path from "node:path"
+
+import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
+import {
+  drillValidationGateExitCode,
+  formatDrillValidationGateSummary,
+  runDrillValidationGate,
+} from "./lib/drill-validation-gate.mjs"
+
+function printHelp() {
+  console.log([
+    "Usage: node apps/cli/scripts/drill-validation-gate.mjs [options]",
+    "",
+    "Verifies collected validation platform artifacts for CI or staging gates.",
+    "",
+    "Options:",
+    "  --platform-bundle DIR  Verify a drill platform bundle directory",
+    "  --matrix-root ROOT     Discover matrix reports below ROOT; repeatable",
+    "  --failure-root ROOT    Discover failure manifests below ROOT; repeatable",
+    "  --max-depth N          Limit artifact discovery depth; defaults to 8",
+    "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
+    "  --json                 Print gate report JSON",
+    "  --output PATH          Write gate report JSON to PATH",
+  ].join("\n"))
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) {
+    printHelp()
+    return
+  }
+  const report = await runDrillValidationGate(options)
+  if (options.outputPath) {
+    await mkdir(path.dirname(options.outputPath), { recursive: true })
+    await writeFile(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+  }
+  if (options.json) {
+    console.log(JSON.stringify(report, null, 2))
+  } else {
+    console.log(formatDrillValidationGateSummary(report))
+  }
+  process.exitCode = drillValidationGateExitCode(report)
+}
+
+function parseArgs(argv) {
+  const options = {
+    failureRoots: [],
+    help: false,
+    json: false,
+    matrixRoots: [],
+    maxDepth: 8,
+    outputPath: null,
+    platformBundleDir: null,
+    requireComplete: false,
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === "--help" || arg === "-h") options.help = true
+    else if (arg === "--json") options.json = true
+    else if (arg === "--require-complete") options.requireComplete = true
+    else if (arg === "--platform-bundle") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--platform-bundle requires a value")
+      options.platformBundleDir = value
+      index += 1
+    } else if (arg.startsWith("--platform-bundle=")) {
+      options.platformBundleDir = arg.slice("--platform-bundle=".length)
+    } else if (arg === "--matrix-root") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--matrix-root requires a value")
+      options.matrixRoots.push(value)
+      index += 1
+    } else if (arg.startsWith("--matrix-root=")) {
+      options.matrixRoots.push(arg.slice("--matrix-root=".length))
+    } else if (arg === "--failure-root") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--failure-root requires a value")
+      options.failureRoots.push(value)
+      index += 1
+    } else if (arg.startsWith("--failure-root=")) {
+      options.failureRoots.push(arg.slice("--failure-root=".length))
+    } else if (arg === "--max-depth") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--max-depth requires a value")
+      options.maxDepth = parseDrillMaxDepth(value)
+      index += 1
+    } else if (arg.startsWith("--max-depth=")) {
+      options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
+    } else if (arg === "--output") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--output requires a value")
+      options.outputPath = value
+      index += 1
+    } else if (arg.startsWith("--output=")) {
+      options.outputPath = arg.slice("--output=".length)
+    } else if (arg.startsWith("--")) {
+      throw new Error(`unknown argument: ${arg}`)
+    } else {
+      throw new Error(`unexpected argument: ${arg}`)
+    }
+  }
+  return options
+}
+
+main().catch((error) => {
+  console.error(`[drill-validation-gate] ${error.stack ?? error.message}`)
+  process.exitCode = 1
+})

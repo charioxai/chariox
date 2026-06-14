@@ -47,6 +47,19 @@ node apps/cli/scripts/drill-platform-bundle.mjs --verify-dir .artifacts/drill-pl
 The bundle writes `index.json`, `validation-suite.json`, `failure-taxonomy-scenario.json`, and `failure-taxonomy-drill.json`.
 The verifier checks the bundle index, required artifact set, relative artifact paths, and artifact schema consistency.
 
+Gate collected artifacts before treating a drill run as release/staging evidence:
+
+```bash
+node apps/cli/scripts/drill-validation-gate.mjs \
+  --platform-bundle .artifacts/drill-platform \
+  --matrix-root .artifacts/drill-matrices \
+  --failure-root .artifacts \
+  --require-complete \
+  --json --output .artifacts/drill-validation-gate.json
+```
+
+The gate output schema is `arroba.drill.validation_gate.v1`. It verifies the platform bundle, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present.
+
 ## Matrix Reports
 
 Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.
