@@ -16,6 +16,7 @@ const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-deployment-preset", "requiredDeploymentPresets"],
   ["--require-provider", "requiredProviders"],
   ["--require-scenario", "requiredScenarios"],
+  ["--require-generated-evidence-kind", "requiredGeneratedEvidenceKinds"],
 ])
 
 export function validationGateRequirementOptionDefaults({ presetKey = "presets" } = {}) {
@@ -38,6 +39,7 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
     requiredDeploymentPresets: [],
     requiredProviders: [],
     requiredScenarios: [],
+    requiredGeneratedEvidenceKinds: [],
   }
 }
 

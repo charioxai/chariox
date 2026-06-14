@@ -49,6 +49,8 @@ function printHelp() {
     "  --require-provider PROVIDER",
     "                         Require aggregate evidence for provider profiles",
     "  --require-scenario ID  Require aggregate evidence for scenario ids",
+    "  --require-generated-evidence-kind KIND",
+    "                         Require generated validation-suite-run or matrix-report evidence",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -86,6 +88,7 @@ async function main() {
     requiredDeploymentPresets: options.requiredDeploymentPresets,
     requiredProviders: options.requiredProviders,
     requiredScenarios: options.requiredScenarios,
+    requiredGeneratedEvidenceKinds: options.requiredGeneratedEvidenceKinds,
   })
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({

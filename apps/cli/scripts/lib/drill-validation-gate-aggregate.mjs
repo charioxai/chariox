@@ -76,6 +76,8 @@ export function summarizeValidationGateReportAggregate(
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
     generatedEvidenceKinds: new Map(),
+    requiredGeneratedEvidenceKinds: new Map(),
+    missingGeneratedEvidenceKinds: new Map(),
   }
   const summaries = reports.map((report, index) => {
     validateReport(report, sources[index] ?? "validation gate report")
@@ -156,6 +158,14 @@ export function summarizeValidationGateReportAggregate(
       ...(generatedEvidence ? { generatedEvidence } : {}),
     }
   })
+  countStringValues(coverage.requiredGeneratedEvidenceKinds, normalizedAggregateRequirements.requiredGeneratedEvidenceKinds ?? [])
+  countStringValues(
+    coverage.missingGeneratedEvidenceKinds,
+    missingCoverageRequirements(
+      countMapToObject(coverage.generatedEvidenceKinds),
+      normalizedAggregateRequirements.requiredGeneratedEvidenceKinds ?? [],
+    ),
+  )
   const coverageCounts = formatValidationGateCoverageCounts(coverage)
   const missingRequirements = missingValidationGateAggregateRequirements(coverageCounts, {
     ...normalizedAggregateRequirements,
@@ -210,6 +220,8 @@ export function summarizeValidationGateReportAggregate(
     missingProviders: missingRequirements.missingProviders,
     requiredScenarios: normalizedAggregateRequirements.requiredScenarios,
     missingScenarios: missingRequirements.missingScenarios,
+    requiredGeneratedEvidenceKinds: normalizedAggregateRequirements.requiredGeneratedEvidenceKinds,
+    missingGeneratedEvidenceKinds: missingRequirements.missingGeneratedEvidenceKinds,
     matrixRuntimeSignalSources: formatMatrixRuntimeSignalSources(matrixRuntimeSignalSources),
     coverage: coverageCounts,
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
@@ -259,6 +271,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_deployment_presets", aggregate.requiredDeploymentPresets, aggregate.missingDeploymentPresets)
   appendAggregateRequirementLine(lines, "required_providers", aggregate.requiredProviders, aggregate.missingProviders)
   appendAggregateRequirementLine(lines, "required_scenarios", aggregate.requiredScenarios, aggregate.missingScenarios)
+  appendAggregateRequirementLine(lines, "required_generated_evidence_kinds", aggregate.requiredGeneratedEvidenceKinds, aggregate.missingGeneratedEvidenceKinds)
   lines.push(aggregate.status === "passed"
     ? "next: all validation gate reports passed"
     : "next: inspect failed validation gate reports and rerun the relevant drills")
@@ -330,6 +343,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(aggregate.requiredScenarios ?? [], `${source}.requiredScenarios`)
   validateStringArray(aggregate.missingScenarios ?? [], `${source}.missingScenarios`)
+  validateStringArray(aggregate.requiredGeneratedEvidenceKinds ?? [], `${source}.requiredGeneratedEvidenceKinds`)
+  validateStringArray(aggregate.missingGeneratedEvidenceKinds ?? [], `${source}.missingGeneratedEvidenceKinds`)
   for (const [index, action] of aggregate.nextActions.entries()) {
     validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
   }
@@ -369,6 +384,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredDeploymentPresets: aggregate.requiredDeploymentPresets ?? [],
     requiredProviders: aggregate.requiredProviders ?? [],
     requiredScenarios: aggregate.requiredScenarios ?? [],
+    requiredGeneratedEvidenceKinds: aggregate.requiredGeneratedEvidenceKinds ?? [],
   })
   assertValidationGateAggregateMissingRequirementsMatch(aggregate, expectedMissingRequirements, source)
   const hasMissingRequirements = Object.values(expectedMissingRequirements).some((missing) => missing.length > 0)
@@ -492,6 +508,7 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingDeploymentPresets: missingCoverageRequirements(coverage.requiredDeploymentPresets, requirements.requiredDeploymentPresets ?? []),
     missingProviders: missingCoverageRequirements(coverage.requiredProviders, requirements.requiredProviders ?? []),
     missingScenarios: missingCoverageRequirements(coverage.requiredScenarios, requirements.requiredScenarios ?? []),
+    missingGeneratedEvidenceKinds: missingCoverageRequirements(coverage.generatedEvidenceKinds, requirements.requiredGeneratedEvidenceKinds ?? []),
   }
 }
 
@@ -518,6 +535,7 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingDeploymentPresets", "matrix-coverage", "provide validation gate reports requiring deployment presets"],
     ["missingProviders", "matrix-coverage", "provide validation gate reports requiring providers"],
     ["missingScenarios", "matrix-coverage", "provide validation gate reports requiring scenarios"],
+    ["missingGeneratedEvidenceKinds", "generated-evidence", "provide validation gate reports with generated evidence kinds"],
   ]
   for (const [key, classification, prefix] of specs) {
     if ((missing[key] ?? []).length > 0) {
@@ -569,6 +587,7 @@ function assertValidationGateAggregateMissingRequirementsMatch(aggregate, expect
     "missingDeploymentPresets",
     "missingProviders",
     "missingScenarios",
+    "missingGeneratedEvidenceKinds",
   ]
   for (const field of fields) {
     if (JSON.stringify(aggregate[field] ?? []) !== JSON.stringify(expected[field] ?? [])) {
@@ -631,6 +650,8 @@ function formatValidationGateCoverageCounts(coverage) {
     requiredScenarios: countMapToObject(coverage.requiredScenarios),
     missingScenarios: countMapToObject(coverage.missingScenarios),
     generatedEvidenceKinds: countMapToObject(coverage.generatedEvidenceKinds),
+    requiredGeneratedEvidenceKinds: countMapToObject(coverage.requiredGeneratedEvidenceKinds),
+    missingGeneratedEvidenceKinds: countMapToObject(coverage.missingGeneratedEvidenceKinds),
   }
 }
 
@@ -692,6 +713,8 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "required_scenarios", coverage.requiredScenarios)
   appendCoverageLine(lines, "missing_scenarios", coverage.missingScenarios)
   appendCoverageLine(lines, "generated_evidence_kinds", coverage.generatedEvidenceKinds)
+  appendCoverageLine(lines, "required_generated_evidence_kinds", coverage.requiredGeneratedEvidenceKinds)
+  appendCoverageLine(lines, "missing_generated_evidence_kinds", coverage.missingGeneratedEvidenceKinds)
   return lines
 }
 
@@ -782,6 +805,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
   validateCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
+  validateCountObject(coverage.requiredGeneratedEvidenceKinds ?? {}, `${source}.requiredGeneratedEvidenceKinds`)
+  validateCountObject(coverage.missingGeneratedEvidenceKinds ?? {}, `${source}.missingGeneratedEvidenceKinds`)
 }
 
 function validateValidationGateMatrixCoverage(coverage, source) {
@@ -875,6 +900,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
     generatedEvidenceKinds: new Map(),
+    requiredGeneratedEvidenceKinds: new Map(),
+    missingGeneratedEvidenceKinds: new Map(),
   }
   for (const report of aggregate.reports) {
     countStringValues(expected.presets, report.presets ?? [])
@@ -956,6 +983,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingScenarios, coverage.missingScenarios ?? [])
     countStringValues(expected.generatedEvidenceKinds, report.generatedEvidence?.kinds ?? [])
   }
+  countStringValues(expected.requiredGeneratedEvidenceKinds, aggregate.requiredGeneratedEvidenceKinds ?? [])
+  countStringValues(expected.missingGeneratedEvidenceKinds, aggregate.missingGeneratedEvidenceKinds ?? [])
   const expectedCoverage = formatValidationGateCoverageCounts(expected)
   if (JSON.stringify(aggregate.coverage) !== JSON.stringify(expectedCoverage)) {
     throw new Error(`${source} coverage does not match reports`)

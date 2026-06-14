@@ -190,6 +190,8 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   }),
 })
 
+const GENERATED_EVIDENCE_KINDS = Object.freeze(["matrix-report", "validation-suite-run"])
+
 export function describeDrillValidationGatePresets({ names = null } = {}) {
   const presetNames = names == null
     ? Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort()
@@ -216,6 +218,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredDeploymentPresets: [...(preset.requiredDeploymentPresets ?? [])],
       requiredProviders: [...(preset.requiredProviders ?? [])],
       requiredScenarios: [...(preset.requiredScenarios ?? [])],
+      requiredGeneratedEvidenceKinds: [...(preset.requiredGeneratedEvidenceKinds ?? [])],
     }
   })
 }
@@ -239,6 +242,7 @@ export function expandValidationGatePresetRequirements({
   requiredDeploymentPresets,
   requiredProviders,
   requiredScenarios,
+  requiredGeneratedEvidenceKinds = [],
 }) {
   const expanded = {
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
@@ -258,6 +262,7 @@ export function expandValidationGatePresetRequirements({
     requiredDeploymentPresets: [...requiredDeploymentPresets],
     requiredProviders: [...requiredProviders],
     requiredScenarios: [...requiredScenarios],
+    requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds],
   }
   for (const presetName of presets) {
     const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
@@ -278,6 +283,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredDeploymentPresets.push(...(preset.requiredDeploymentPresets ?? []))
     expanded.requiredProviders.push(...(preset.requiredProviders ?? []))
     expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
+    expanded.requiredGeneratedEvidenceKinds.push(...(preset.requiredGeneratedEvidenceKinds ?? []))
   }
   return expanded
 }
@@ -331,6 +337,19 @@ export function normalizeRequiredArtifactKinds(requiredArtifactKinds) {
     }
   }
   return [...new Set(kinds)].sort()
+}
+
+export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenceKinds) {
+  const kinds = normalizeCommaSeparatedStrings(requiredGeneratedEvidenceKinds, {
+    fieldName: "requiredGeneratedEvidenceKinds",
+    itemName: "kind",
+  })
+  for (const kind of kinds) {
+    if (!GENERATED_EVIDENCE_KINDS.includes(kind)) {
+      throw new Error(`unknown required generated evidence kind: ${kind}`)
+    }
+  }
+  return kinds
 }
 
 export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceRepos) {

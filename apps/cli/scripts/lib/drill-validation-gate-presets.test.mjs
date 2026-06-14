@@ -15,6 +15,7 @@ import {
   normalizeRequiredArtifactRuntimeSignals,
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
+  normalizeRequiredGeneratedEvidenceKinds,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
   normalizeRequiredMatrixRuntimeSignals,
@@ -65,6 +66,7 @@ test("describes stable validation gate presets", () => {
       requiredDeploymentPresets: ["hetzner", "hosted-cloud", "local", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["agent-reuse", "collab-remote-agent", "hetzner-collab", "hetzner-single", "lease-reconnect", "local-collab", "local-managed-codex", "local-native-tui", "local-single", "local-tracked-codex", "permission-visibility", "provider-auth", "provider-run-binding", "remote-managed-codex", "remote-native-tui", "remote-prompt-dispatch", "remote-tracked-codex", "session-start", "single-user-remote-agent", "slice-lifecycle", "slice-native-tui", "transcript-parity", "ui-projection"],
+      requiredGeneratedEvidenceKinds: [],
     },
   )
   assert.deepEqual(
@@ -89,6 +91,7 @@ test("describes stable validation gate presets", () => {
       requiredDeploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["codex", "opencode"],
       requiredScenarios: workspaceLiveSyncRequiredScenarioIds(),
+      requiredGeneratedEvidenceKinds: [],
     },
   )
   assert.deepEqual(
@@ -113,6 +116,7 @@ test("describes stable validation gate presets", () => {
       requiredDeploymentPresets: ["hosted-cloud", "local", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
+      requiredGeneratedEvidenceKinds: [],
     },
   )
   assert.deepEqual(
@@ -137,6 +141,7 @@ test("describes stable validation gate presets", () => {
       requiredDeploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
+      requiredGeneratedEvidenceKinds: [],
     },
   )
   assert.deepEqual(
@@ -161,6 +166,7 @@ test("describes stable validation gate presets", () => {
       requiredDeploymentPresets: ["hetzner", "hosted-cloud", "same-host-remote", "self-hosted-relay"],
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
+      requiredGeneratedEvidenceKinds: [],
     },
   )
 })
@@ -196,6 +202,7 @@ test("expands validation gate preset requirements", () => {
     requiredDeploymentPresets: ["local"],
     requiredProviders: ["codex"],
     requiredScenarios: ["local"],
+    requiredGeneratedEvidenceKinds: [],
   })
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["distributed-runtime"],
@@ -284,6 +291,10 @@ test("normalizes validation gate requirements", () => {
     "matrix-report",
     "validation-suite-run",
   ])
+  assert.deepEqual(normalizeRequiredGeneratedEvidenceKinds(["validation-suite-run,matrix-report", "matrix-report"]), [
+    "matrix-report",
+    "validation-suite-run",
+  ])
   assert.deepEqual(normalizeRequiredArtifactEvidenceRepos(["oss,cloud", "cloud"]), [
     "cloud",
     "oss",
@@ -362,5 +373,9 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredDeploymentPresets(["not-a-preset"]),
     /unknown required deployment preset: not-a-preset/,
+  )
+  assert.throws(
+    () => normalizeRequiredGeneratedEvidenceKinds(["not-generated"]),
+    /unknown required generated evidence kind: not-generated/,
   )
 })

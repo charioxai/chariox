@@ -34,6 +34,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-matrix-runtime-signal=workspace-live-sync-state"], 0, options)
   assert.equal(index, 0)
+  index = parseValidationGateRequirementArg(["--require-generated-evidence-kind", "matrix-report"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--unknown"], 0, options)
   assert.equal(index, null)
 
@@ -56,6 +58,7 @@ test("parses validation gate requirement arguments", () => {
     requiredDeploymentPresets: [],
     requiredProviders: ["codex"],
     requiredScenarios: [],
+    requiredGeneratedEvidenceKinds: ["matrix-report"],
   })
 })
 

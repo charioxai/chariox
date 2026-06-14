@@ -24,6 +24,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
       requiredDeploymentPresets: ["local"],
       requiredProviders: ["codex"],
       requiredScenarios: ["managed"],
+      requiredGeneratedEvidenceKinds: [],
     },
     validateReport: () => {},
   })
@@ -153,6 +154,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       requiredDeploymentPresets: ["hosted-cloud"],
       requiredProviders: ["claude"],
       requiredScenarios: ["hetzner-collab"],
+      requiredGeneratedEvidenceKinds: ["matrix-report"],
     },
     validateReport: () => {},
   })
@@ -166,6 +168,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.deepEqual(aggregate.missingMatrixRuntimeSignals, ["home-extension-manifest-sync"])
   assert.deepEqual(aggregate.missingProviders, ["claude"])
   assert.deepEqual(aggregate.missingScenarios, ["hetzner-collab"])
+  assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, ["matrix-report"])
   assert.deepEqual(
     aggregate.nextActions.map(({ classification, nextAction }) => ({ classification, nextAction })),
     [
@@ -180,6 +183,10 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       {
         classification: "artifact-coverage",
         nextAction: "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
+      },
+      {
+        classification: "generated-evidence",
+        nextAction: "provide validation gate reports with generated evidence kinds: matrix-report",
       },
       {
         classification: "matrix-coverage",
@@ -363,6 +370,9 @@ test("aggregates generated evidence provenance from gate reports", () => {
     generatedEvidence: generatedEvidenceFixture(),
   })], {
     sources: ["distributed-runtime-gate.json"],
+    normalizedAggregateRequirements: {
+      requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
+    },
     validateReport: () => {},
   })
 
@@ -370,6 +380,13 @@ test("aggregates generated evidence provenance from gate reports", () => {
     "matrix-report": 1,
     "validation-suite-run": 1,
   })
+  assert.deepEqual(aggregate.requiredGeneratedEvidenceKinds, ["matrix-report", "validation-suite-run"])
+  assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
+  assert.deepEqual(aggregate.coverage.requiredGeneratedEvidenceKinds, {
+    "matrix-report": 1,
+    "validation-suite-run": 1,
+  })
+  assert.deepEqual(aggregate.coverage.missingGeneratedEvidenceKinds, {})
   assert.deepEqual(aggregate.reports[0].generatedEvidence, {
     kinds: ["validation-suite-run", "matrix-report"],
     validationSuites: {
@@ -395,6 +412,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
     },
   })
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_evidence_kinds: matrix-report=1 validation-suite-run=1/)
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_evidence_kinds=matrix-report,validation-suite-run missing=none/)
 })
 
 test("rejects inconsistent aggregate status and coverage", () => {

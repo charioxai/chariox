@@ -116,6 +116,48 @@ test("drill validation gate summary accepts explicit report paths", async () => 
   }
 })
 
+test("drill validation gate summary gates generated evidence kinds", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  try {
+    const reportPath = path.join(rootDir, "gate.json")
+    await writeGateReport(reportPath, {
+      ...(await passingGateReport(rootDir)),
+      generatedEvidence: generatedEvidence(),
+    })
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--gate-report",
+      reportPath,
+      "--require-generated-evidence-kind",
+      "matrix-report,validation-suite-run",
+      "--json",
+    ])
+    const aggregate = JSON.parse(stdout)
+    assert.equal(aggregate.status, "passed")
+    assert.deepEqual(aggregate.requiredGeneratedEvidenceKinds, ["matrix-report", "validation-suite-run"])
+    assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-generated-evidence-kind",
+        "not-generated",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /unknown required generated evidence kind: not-generated/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill validation gate summary gates aggregate preset coverage", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
   try {
@@ -318,6 +360,29 @@ async function passingGateReport(rootDir) {
   const bundleDir = path.join(rootDir, `bundle-${Date.now()}-${Math.random().toString(16).slice(2)}`)
   await writeDrillPlatformBundle(bundleDir)
   return runDrillValidationGate({ platformBundleDir: bundleDir })
+}
+
+function generatedEvidence() {
+  return {
+    validationSuites: {
+      enabled: true,
+      artifactIndexes: ["/tmp/generated-validation-suite/arroba-drill-artifacts.json"],
+      outputRoots: ["/tmp/generated-validation-suite"],
+    },
+    matrixReports: {
+      enabled: true,
+      roots: ["/tmp/generated-matrix"],
+      dryRun: false,
+      continueOnFailure: true,
+      commands: [{
+        artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+        args: ["--include-remote"],
+        cwd: "/tmp/arroba",
+        reportPath: "/tmp/generated-matrix/workspace-live-sync-matrix.json",
+        scriptPath: "/tmp/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
+      }],
+    },
+  }
 }
 
 async function passingWorkspaceLiveSyncGateReport(rootDir) {
