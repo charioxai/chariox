@@ -56,6 +56,7 @@ test("formats failed and skipped scenarios with next actions", () => {
         reason: "insufficient balance",
         exitCriteria: ["remote worker executes the selected provider turn", "home observes completion"],
         artifactHints: ["/tmp/arroba-drill-remote"],
+        runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
       scenario("cloud", "failed", { classification: "cloud-runtime", reason: "deployment did not become ready" }),
       scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
@@ -67,6 +68,8 @@ test("formats failed and skipped scenarios with next actions", () => {
   assert.match(text, /matrix report: test-matrix \(\/tmp\/report\.json\)/)
   assert.match(text, /status=failed scenarios=3 passed=0 failed=2 skipped=1 dry_run=0/)
   assert.match(text, /classifications: cloud-runtime=1 provider-account=1/)
+  assert.match(text, /runtime_signals: lease-health=1 provider-run-lifecycle=1/)
+  assert.match(text, /runtime_signal_owners: kernel-authority=1 provider-runtime=1/)
   assert.match(text, /- remote classification=provider-account owner=provider-account reason=insufficient balance/)
   assert.match(text, /criteria: remote worker executes the selected provider turn; home observes completion/)
   assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
@@ -319,6 +322,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /providers: claude=1 codex=1 opencode=1/)
   assert.match(text, /scenario_ids: hetzner=1 local=1 remote=1 tracked=1/)
   assert.match(text, /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=1 workspace-live-sync-state=1/)
+  assert.match(text, /runtime_signal_owners: kernel-authority=2 provider-runtime=1 runtime-state=1/)
   assert.match(text, /runtime_signal_sources:/)
   assert.match(text, /- lease-health: remote\/remote\(failed\) source=\/tmp\/remote-matrix\.json/)
   assert.match(text, /- workspace-live-sync-state: workspace\/tracked\(dry-run\) source=\/tmp\/workspace-matrix\.json/)

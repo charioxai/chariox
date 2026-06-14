@@ -18,6 +18,7 @@ import {
   looksLikeDrillSecretValue,
   redactDrillSecretText,
 } from "./drill-secrets.mjs"
+import { drillRuntimeSignalOwner } from "./drill-runtime-signals.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
@@ -167,6 +168,7 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
   const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
+    lines.push(`runtime_signal_owners: ${formatCountObject(runtimeSignalOwnerCounts(aggregate.runtimeSignals))}`)
   }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -374,6 +376,19 @@ function runtimeSignalsFromMetadata(metadata) {
   const value = metadata.runtimeSignals
   if (typeof value !== "string") return []
   return [...new Set(value.split(",").map((signal) => signal.trim()).filter(nonEmptyString))].sort()
+}
+
+function runtimeSignalOwnerCounts(runtimeSignals) {
+  const counts = new Map()
+  for (const [signal, count] of Object.entries(runtimeSignals ?? {})) {
+    const owner = drillRuntimeSignalOwner(signal)
+    counts.set(owner, (counts.get(owner) ?? 0) + count)
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function formatCountObject(counts) {
+  return Object.entries(counts).map(([key, count]) => `${key}=${count}`).join(" ")
 }
 
 function countRuntimeSignals(target, signals) {

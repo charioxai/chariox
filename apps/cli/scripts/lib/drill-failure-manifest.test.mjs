@@ -260,6 +260,7 @@ test("aggregates preserved drill failure summaries", () => {
   assert.match(text, /owners: provider-account=1 runtime-network=1/)
   assert.match(text, /classifications: provider-auth=1 relay-runtime=1/)
   assert.match(text, /runtime_signals: lease-health=2 provider-run-lifecycle=1 relay-target-freshness=1/)
+  assert.match(text, /runtime_signal_owners: kernel-authority=2 provider-runtime=1 runtime-network=1/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
   assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime runtime_signals=lease-health,relay-target-freshness root=\/tmp\/relay source=\/tmp\/relay\/arroba-drill-failure.json/)
