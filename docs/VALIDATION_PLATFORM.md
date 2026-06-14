@@ -6,13 +6,13 @@ Arroba runtime features must be validated through reusable drill primitives, not
 
 - Artifact lifecycle: use `apps/cli/scripts/lib/drill-artifacts.mjs` to prepare drill roots and preserve failed runs with `arroba-drill-failure.json`.
 - Failure summaries: use `apps/cli/scripts/lib/drill-failure-manifest.mjs` or `apps/cli/scripts/drill-failure-summary.mjs` to validate and summarize preserved failed runs without printing credentials or large payloads.
-- Matrix execution: use `apps/cli/scripts/lib/drill-matrix-runner.mjs` for scenario selection, include-gate enforcement, command rendering, expected-failure handling, failure classification, skipped-scenario accounting, summaries, and optional reports.
+- Matrix execution: use `apps/cli/scripts/lib/drill-matrix-runner.mjs` for scenario selection, include-gate enforcement, command rendering, expected-failure handling, failure classification, skipped-scenario accounting, summaries, and reports.
 - Child failure classification: use `apps/cli/scripts/lib/drill-child-process.mjs` so provider auth/account failures are separated from runtime regressions.
 - Feature fixtures: put reusable setup and assertions under `apps/cli/scripts/lib/`; entry scripts should stay thin.
 
 ## Matrix Reports
 
-Matrix scripts that support `--report PATH` write JSON with schema `arroba.drill.matrix.v1`.
+Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.
 
 Summarize one or more reports with:
 
@@ -83,5 +83,6 @@ Every new runtime feature should define:
 - Matrix scenarios for remote, hosted, collab, native TUI, slice, and provider variants when the feature crosses those surfaces.
 - Failure artifacts sufficient to identify the failing owner: provider account/auth, relay, kernel authority, worker execution, UI/client projection, or test harness.
 - A reportable command that can be run by humans and CI without editing the script.
+- Default matrix report output under `.artifacts/drill-matrices` so dry-runs and live runs leave auditable evidence without requiring a custom `--report` flag.
 
 Feature work is not complete until the relevant matrix reports prove the intended scope or clearly classify external blockers that prevented validation.
