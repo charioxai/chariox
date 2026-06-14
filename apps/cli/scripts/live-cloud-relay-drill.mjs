@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
-import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
@@ -561,7 +561,7 @@ function createMinimalCommandDeps({
 async function main() {
   const ports = makePorts()
   const runId = `cloud-relay-${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), runId)
+  const rootDir = path.join(repoRoot, ".artifacts", "live-cloud-relay-drill", runId)
   const workspace = path.join(rootDir, "workspace")
   const home = path.join(rootDir, "home")
   const configHome = path.join(rootDir, "xdg-config")
@@ -569,18 +569,9 @@ async function main() {
   const daemonAlias = `cloud-home-${process.pid}`
   const clientId = `cloud-cli-${process.pid}-${Date.now()}`
   const apiUrl = `http://127.0.0.1:${ports.cloudPort}`
-  await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+  await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
 
-  const [{ LocalIpcClient }, requests, cloudRelay, commandActions, cloudDb] = await Promise.all([
-    import("../../../packages/kernel-client/dist/ipc.js"),
-    import("../../../packages/kernel-client/dist/ipc-requests.js"),
-    import("../dist/cloud-relay.js"),
-    import("../dist/command-actions.js"),
-    import(path.join(cloudRoot, "packages/db/dist/index.js")),
-  ])
-
-  const kernelPath = await buildKernelIfNeeded()
   const relayEnv = {
     ...process.env,
     ARROBA_RELAY_HOST: "127.0.0.1",
@@ -621,9 +612,21 @@ async function main() {
   let remoteClient = null
   const profileRef = { current: null }
   const notices = []
-  const db = cloudDb.createCloudDatabase({ databaseUrl: DATABASE_URL })
+  let db = null
+  let succeeded = false
+  let failure = null
 
   try {
+    const [{ LocalIpcClient }, requests, cloudRelay, commandActions, cloudDb] = await Promise.all([
+      import("../../../packages/kernel-client/dist/ipc.js"),
+      import("../../../packages/kernel-client/dist/ipc-requests.js"),
+      import("../dist/cloud-relay.js"),
+      import("../dist/command-actions.js"),
+      import(path.join(cloudRoot, "packages/db/dist/index.js")),
+    ])
+    const kernelPath = await buildKernelIfNeeded()
+    db = cloudDb.createCloudDatabase({ databaseUrl: DATABASE_URL })
+
     log("build-cli")
     const cliBuild = await run("pnpm", ["run", "build"], { cwd: cliRoot, env: process.env })
     if (cliBuild.code !== 0) {
@@ -1091,7 +1094,11 @@ async function main() {
       await ownerScopedClient.close().catch(() => {})
     }
 
+    succeeded = true
     console.log("live cloud relay drill passed")
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
     const accountId = profileRef?.current?.accountId
     const realmId = profileRef?.current?.realmId
@@ -1108,10 +1115,35 @@ async function main() {
     }
     await terminateChild(relay)
     await terminateChild(cloudServer)
-    await db.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`, `${runId}-third`] } } }).catch(() => {})
-    await db.user.deleteMany({ where: { email: { in: [`${runId}@example.com`, `${runId}-peer@example.com`, `${runId}-third@example.com`] } } }).catch(() => {})
-    await db.$disconnect().catch(() => {})
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await db?.account.deleteMany({ where: { slug: { in: [runId, `${runId}-peer`, `${runId}-third`] } } }).catch(() => {})
+    await db?.user.deleteMany({ where: { email: { in: [`${runId}@example.com`, `${runId}-peer@example.com`, `${runId}-third@example.com`] } } }).catch(() => {})
+    await db?.$disconnect().catch(() => {})
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: true,
+      failure,
+      metadata: {
+        drill: "live-cloud-relay",
+        runId,
+        apiUrl,
+        relayUrl: `ws://127.0.0.1:${ports.relayPort}`,
+        daemonId,
+        daemonAlias,
+        clientId,
+        cloudRoot,
+        databaseUrl: DATABASE_URL.replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@"),
+        machineCredentialOnly,
+        profile: profileRef.current ? {
+          accountId: profileRef.current.accountId,
+          userId: profileRef.current.userId,
+          machineId: profileRef.current.machineId,
+          clientId: profileRef.current.clientId,
+          relayUrl: profileRef.current.relayUrl,
+        } : null,
+        noticeCount: notices.length,
+      },
+    })
   }
 }
 
