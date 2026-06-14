@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
@@ -7,6 +9,8 @@ import {
   distributedRuntimeMatrixCommandsFor,
   distributedRuntimeMatrixOutputDirFor,
   distributedRuntimeValidationSuiteOutputDirFor,
+  runDistributedRuntimeMatrixReportCommand,
+  runDistributedRuntimeValidationSuiteCommand,
 } from "./drill-distributed-runtime-evidence.mjs"
 
 test("builds distributed runtime matrix command contracts", () => {
@@ -167,3 +171,73 @@ test("builds empty generated evidence summary when generation is disabled", () =
     },
   })
 })
+
+test("matrix report child failures include generated evidence context", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-evidence-"))
+  try {
+    const scriptPath = path.join(rootDir, "failing-matrix.mjs")
+    await writeFailingScript(scriptPath, "matrix failed")
+
+    await assert.rejects(
+      runDistributedRuntimeMatrixReportCommand({
+        artifactIndexFlag: "--artifact-index",
+        args: ["--include-hetzner"],
+        cwd: rootDir,
+        outputDir: path.join(rootDir, "out"),
+        reportFileName: "matrix.json",
+        scriptPath,
+      }),
+      (error) => {
+        assert.match(error.message, /matrix report failed:/)
+        assert.match(error.message, new RegExp(`cwd: ${escapeRegExp(rootDir)}`))
+        assert.match(error.message, /args: .*--include-hetzner .*--report .*matrix\.json .*--artifact-index .*matrix-artifacts\.json/)
+        assert.match(error.message, /report: .*matrix\.json/)
+        assert.match(error.message, /artifact-index: .*matrix-artifacts\.json/)
+        assert.match(error.message, /stderr:\nmatrix failed/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("validation suite child failures include generated evidence context", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-evidence-"))
+  try {
+    const scriptPath = path.join(rootDir, "failing-suite.mjs")
+    await writeFailingScript(scriptPath, "suite failed")
+
+    await assert.rejects(
+      runDistributedRuntimeValidationSuiteCommand({
+        cwd: rootDir,
+        outputDir: path.join(rootDir, "out"),
+        reportFileName: "suite.json",
+        scriptPath,
+      }),
+      (error) => {
+        assert.match(error.message, /validation suite failed:/)
+        assert.match(error.message, new RegExp(`cwd: ${escapeRegExp(rootDir)}`))
+        assert.match(error.message, /args: .*--run-json .*--output .*suite\.json .*--output-artifact-index .*arroba-drill-artifacts\.json/)
+        assert.match(error.message, /report: .*suite\.json/)
+        assert.match(error.message, /artifact-index: .*arroba-drill-artifacts\.json/)
+        assert.match(error.message, /stderr:\nsuite failed/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+async function writeFailingScript(file, message) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `#!/usr/bin/env node
+console.error(${JSON.stringify(message)})
+process.exit(42)
+`, "utf8")
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}

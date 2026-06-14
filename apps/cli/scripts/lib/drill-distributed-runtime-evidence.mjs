@@ -150,17 +150,23 @@ export async function runDistributedRuntimeMatrixReportCommand({
 }) {
   const reportPath = path.join(outputDir, reportFileName)
   const artifactIndexPath = path.join(outputDir, `${path.basename(reportFileName, ".json")}-artifacts.json`)
+  const commandArgs = [
+    scriptPath,
+    ...args,
+    "--report",
+    reportPath,
+    artifactIndexFlag,
+    artifactIndexPath,
+  ]
   try {
-    await execFile(process.execPath, [
-      scriptPath,
-      ...args,
-      "--report",
-      reportPath,
-      artifactIndexFlag,
-      artifactIndexPath,
-    ], { cwd, maxBuffer: 1024 * 1024 * 20 })
+    await execFile(process.execPath, commandArgs, { cwd, maxBuffer: 1024 * 1024 * 20 })
   } catch (error) {
-    throw new Error(`matrix report failed: ${scriptPath}${childProcessOutputFor(error)}`)
+    throw new Error(`matrix report failed: ${scriptPath}${childCommandContextFor({
+      args: commandArgs,
+      artifactIndexPath,
+      cwd,
+      reportPath,
+    })}${childProcessOutputFor(error)}`)
   }
   return reportPath
 }
@@ -202,19 +208,39 @@ export async function runDistributedRuntimeValidationSuiteCommand({
 }) {
   const outputPath = path.join(outputDir, reportFileName)
   const artifactIndexPath = path.join(outputDir, "arroba-drill-artifacts.json")
+  const args = [
+    scriptPath,
+    "--run-json",
+    "--output",
+    outputPath,
+    "--output-artifact-index",
+    artifactIndexPath,
+  ]
   try {
-    await execFile(process.execPath, [
-      scriptPath,
-      "--run-json",
-      "--output",
-      outputPath,
-      "--output-artifact-index",
-      artifactIndexPath,
-    ], { cwd, maxBuffer: 1024 * 1024 * 20 })
+    await execFile(process.execPath, args, { cwd, maxBuffer: 1024 * 1024 * 20 })
   } catch (error) {
-    throw new Error(`validation suite failed: ${scriptPath}${childProcessOutputFor(error)}`)
+    throw new Error(`validation suite failed: ${scriptPath}${childCommandContextFor({
+      args,
+      artifactIndexPath,
+      cwd,
+      reportPath: outputPath,
+    })}${childProcessOutputFor(error)}`)
   }
   return artifactIndexPath
+}
+
+function childCommandContextFor({
+  args,
+  artifactIndexPath,
+  cwd,
+  reportPath,
+}) {
+  return [
+    `\ncwd: ${cwd}`,
+    `\nargs: ${args.join(" ")}`,
+    `\nreport: ${reportPath}`,
+    `\nartifact-index: ${artifactIndexPath}`,
+  ].join("")
 }
 
 function childProcessOutputFor(error) {
