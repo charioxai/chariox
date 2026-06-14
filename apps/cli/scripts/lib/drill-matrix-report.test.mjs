@@ -243,7 +243,7 @@ test("rejects malformed matrix reports", () => {
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
       status: "passed",
-      scenarios: [scenario("remote", "failed", { classification: "provider-auth" })],
+      scenarios: [scenario("remote", "failed", { classification: "provider-auth", reason: "expired token" })],
     }),
   }), /status does not match scenario statuses/)
 
@@ -295,6 +295,60 @@ test("rejects malformed matrix reports", () => {
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), artifactHints: ["/tmp/arroba-drill-sk-this-should-not-persist"] }],
   }), /scenarios\[0\] includes secret-looking artifactHints/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("broken", "failed", { classification: "child-process", reason: "" })],
+    }),
+  }), /scenarios\[0\] failed scenario is missing reason/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("broken", "failed", { reason: "code=1" })],
+    }),
+  }), /scenarios\[0\] failed scenario is missing classification/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("broken", "skipped", { reason: null })],
+    }),
+  }), /scenarios\[0\] skipped scenario is missing reason/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("broken", "skipped", { reason: "not selected", durationMs: 1 })],
+    }),
+  }), /scenarios\[0\] skipped scenario must have zero durationMs/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      status: "dry-run",
+      dryRun: true,
+      scenarios: [scenario("broken", "dry-run", { durationMs: 1 })],
+    }),
+  }), /scenarios\[0\] dry-run scenario must have zero durationMs/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      status: "dry-run",
+      dryRun: true,
+      scenarios: [scenario("broken", "dry-run", { reason: "not run" })],
+    }),
+  }), /scenarios\[0\] dry-run scenario must not include reason/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      status: "dry-run",
+      dryRun: true,
+      scenarios: [scenario("broken", "dry-run", { classification: "expected-failure" })],
+    }),
+  }), /scenarios\[0\] dry-run scenario must not include classification/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("broken", "passed", { reason: "unexpected warning" })],
+    }),
+  }), /scenarios\[0\] passed scenario must not include reason/)
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),

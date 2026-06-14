@@ -380,6 +380,45 @@ function validateDrillMatrixScenario(scenario, source) {
   if (scenario.artifactHints?.some((value) => looksLikeDrillSecretValue(value))) {
     throw new Error(`${source} includes secret-looking artifactHints`)
   }
+  validateDrillMatrixScenarioOutcome(scenario, source)
+}
+
+function validateDrillMatrixScenarioOutcome(scenario, source) {
+  const hasReason = nonEmptyString(scenario.reason)
+  const hasClassification = nonEmptyString(scenario.classification)
+  if (scenario.status === "failed") {
+    if (!hasReason) {
+      throw new Error(`${source} failed scenario is missing reason`)
+    }
+    if (!hasClassification) {
+      throw new Error(`${source} failed scenario is missing classification`)
+    }
+    return
+  }
+  if (scenario.status === "skipped") {
+    if (!hasReason) {
+      throw new Error(`${source} skipped scenario is missing reason`)
+    }
+    if (scenario.durationMs !== 0) {
+      throw new Error(`${source} skipped scenario must have zero durationMs`)
+    }
+    return
+  }
+  if (scenario.status === "dry-run") {
+    if (scenario.durationMs !== 0) {
+      throw new Error(`${source} dry-run scenario must have zero durationMs`)
+    }
+    if (hasReason) {
+      throw new Error(`${source} dry-run scenario must not include reason`)
+    }
+    if (hasClassification) {
+      throw new Error(`${source} dry-run scenario must not include classification`)
+    }
+    return
+  }
+  if (hasReason) {
+    throw new Error(`${source} passed scenario must not include reason`)
+  }
 }
 
 function validateDrillMatrixAggregate(aggregate) {

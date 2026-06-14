@@ -56,6 +56,8 @@ Required scenario fields:
 - `command`, `args`.
 - `artifactHints`: optional paths to preserved artifact roots or failure manifests discovered from child drill output.
 
+Scenario outcome fields must be internally consistent. Failed scenarios require a non-empty `reason` and `classification` so CI can route the failure. Skipped scenarios require a non-empty `reason` and zero `durationMs`. Dry-run scenarios require zero `durationMs` and must not include a `reason` or `classification`. Passed scenarios must not include a `reason`.
+
 Reports must not include credentials, relay tokens, provider tokens, prompt bodies, file contents, or unredacted connector payloads. If a drill needs detailed failure output, preserve the artifact directory and record a pointer in the failure manifest instead of embedding sensitive logs in the matrix report.
 The matrix report validator rejects secret-looking metadata keys, token-shaped metadata values, and token-shaped artifact hints. Matrix runners validate before writing reports and skip token-shaped artifact hints extracted from child output. Child failure summaries redact token-shaped values before preserving output tails.
 
