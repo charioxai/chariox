@@ -600,6 +600,21 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
     }),
     /evidenceRepos has unknown evidence repo "cluod"/,
   )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: { "matrix-reprot": 1 },
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      evidenceRepos: {},
+    }),
+    /generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
+  )
 })
 
 test("rejects unsafe drill artifact index paths", async () => {
@@ -642,6 +657,21 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.evidenceRepos has unknown evidence repo "cluod"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { generatedEvidenceKinds: "matrix-reprot" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
     )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })

@@ -314,6 +314,33 @@ test("rejects unknown artifact evidence repo labels in report checks", () => {
   )
 })
 
+test("rejects unknown generated evidence kind labels in report checks", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactGeneratedEvidenceKinds: ["matrix-reprot"],
+          missingArtifactGeneratedEvidenceKinds: [],
+        },
+      },
+    })),
+    /checks\.artifacts\.requiredArtifactGeneratedEvidenceKinds\[0\] has unknown generated evidence kind "matrix-reprot"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        kinds: ["matrix-reprot"],
+      },
+    })),
+    /generatedEvidence\.kinds\[0\] has unknown generated evidence kind "matrix-reprot"/,
+  )
+})
+
 function report(overrides = {}) {
   const checks = {
     configuration: { status: "passed" },

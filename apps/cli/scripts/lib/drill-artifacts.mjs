@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import {
   redactDrillSecretText,
@@ -300,6 +301,7 @@ export function validateDrillArtifactIndex(index, source = "drill artifact index
   if (!index.metadata || typeof index.metadata !== "object" || Array.isArray(index.metadata)) {
     throw new Error(`${source} has invalid metadata`)
   }
+  validateDrillArtifactIndexGeneratedEvidenceMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexEvidenceRepoMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexRuntimeSignalOwnerMetadata(index.metadata, `${source}.metadata`)
   if (!Array.isArray(index.artifacts) || index.artifacts.length === 0) {
@@ -453,6 +455,17 @@ function validateCountObject(value, source) {
 
 function validateDiagnosticCountObject(value, source, key) {
   validateCountObject(value, source)
+  if ([
+    "generatedEvidenceKinds",
+    "requiredGeneratedEvidenceKinds",
+    "missingGeneratedEvidenceKinds",
+  ].includes(key)) {
+    for (const kind of Object.keys(value)) {
+      if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+        throw new Error(`${source} has unknown generated evidence kind ${JSON.stringify(kind)}`)
+      }
+    }
+  }
   if (key === "runtimeSignals") {
     for (const signal of Object.keys(value)) {
       if (!isKnownDrillRuntimeSignal(signal)) {
@@ -565,6 +578,20 @@ function validateDrillArtifactIndexEvidenceRepoMetadata(metadata, source) {
   for (const repo of metadataListFromMetadata(metadata, "evidenceRepos")) {
     if (!isKnownDrillArtifactEvidenceRepo(repo)) {
       throw new Error(`${source}.evidenceRepos has unknown evidence repo ${JSON.stringify(repo)}`)
+    }
+  }
+}
+
+function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
+  for (const key of [
+    "generatedEvidenceKinds",
+    "requiredGeneratedEvidenceKinds",
+    "missingGeneratedEvidenceKinds",
+  ]) {
+    for (const kind of metadataListFromMetadata(metadata, key)) {
+      if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+        throw new Error(`${source}.${key} has unknown generated evidence kind ${JSON.stringify(kind)}`)
+      }
     }
   }
 }

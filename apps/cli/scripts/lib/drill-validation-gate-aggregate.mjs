@@ -4,6 +4,7 @@ import {
   validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnerCounts,
@@ -328,8 +329,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingArtifactSchemas ?? [], `${source}.missingArtifactSchemas`)
   validateStringArray(aggregate.requiredArtifactKinds ?? [], `${source}.requiredArtifactKinds`)
   validateStringArray(aggregate.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
-  validateStringArray(aggregate.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
-  validateStringArray(aggregate.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(aggregate.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(aggregate.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateArtifactEvidenceRepoArray(aggregate.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(aggregate.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateRuntimeSignalArray(aggregate.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
@@ -359,8 +360,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingProviders ?? [], `${source}.missingProviders`)
   validateStringArray(aggregate.requiredScenarios ?? [], `${source}.requiredScenarios`)
   validateStringArray(aggregate.missingScenarios ?? [], `${source}.missingScenarios`)
-  validateStringArray(aggregate.requiredGeneratedEvidenceKinds ?? [], `${source}.requiredGeneratedEvidenceKinds`)
-  validateStringArray(aggregate.missingGeneratedEvidenceKinds ?? [], `${source}.missingGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(aggregate.requiredGeneratedEvidenceKinds ?? [], `${source}.requiredGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(aggregate.missingGeneratedEvidenceKinds ?? [], `${source}.missingGeneratedEvidenceKinds`)
   for (const [index, action] of aggregate.nextActions.entries()) {
     validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
   }
@@ -791,8 +792,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingArtifactSchemas ?? {}, `${source}.missingArtifactSchemas`)
   validateCountObject(coverage.requiredArtifactKinds ?? {}, `${source}.requiredArtifactKinds`)
   validateCountObject(coverage.missingArtifactKinds ?? {}, `${source}.missingArtifactKinds`)
-  validateCountObject(coverage.requiredArtifactGeneratedEvidenceKinds ?? {}, `${source}.requiredArtifactGeneratedEvidenceKinds`)
-  validateCountObject(coverage.missingArtifactGeneratedEvidenceKinds ?? {}, `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindCountObject(coverage.requiredArtifactGeneratedEvidenceKinds ?? {}, `${source}.requiredArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindCountObject(coverage.missingArtifactGeneratedEvidenceKinds ?? {}, `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateArtifactEvidenceRepoCountObject(coverage.requiredArtifactEvidenceRepos ?? {}, `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoCountObject(coverage.missingArtifactEvidenceRepos ?? {}, `${source}.missingArtifactEvidenceRepos`)
   validateRuntimeSignalCountObject(coverage.requiredArtifactRuntimeSignals ?? {}, `${source}.requiredArtifactRuntimeSignals`)
@@ -814,7 +815,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.artifactOwners ?? {}, `${source}.artifactOwners`)
   validateCountObject(coverage.artifactClassifications ?? {}, `${source}.artifactClassifications`)
   validateCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
-  validateCountObject(coverage.artifactGeneratedEvidenceKinds ?? {}, `${source}.artifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindCountObject(coverage.artifactGeneratedEvidenceKinds ?? {}, `${source}.artifactGeneratedEvidenceKinds`)
   validateArtifactEvidenceRepoCountObject(coverage.artifactEvidenceRepos ?? {}, `${source}.artifactEvidenceRepos`)
   validateRuntimeSignalCountObject(coverage.failureRuntimeSignals ?? {}, `${source}.failureRuntimeSignals`)
   validateRuntimeSignalOwnerCountsMatch(coverage.failureRuntimeSignals ?? {}, coverage.failureRuntimeSignalOwners ?? {}, `${source}.failureRuntimeSignalOwners`)
@@ -836,9 +837,9 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingProviders ?? {}, `${source}.missingProviders`)
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
-  validateCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
-  validateCountObject(coverage.requiredGeneratedEvidenceKinds ?? {}, `${source}.requiredGeneratedEvidenceKinds`)
-  validateCountObject(coverage.missingGeneratedEvidenceKinds ?? {}, `${source}.missingGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
+  validateGeneratedEvidenceKindCountObject(coverage.requiredGeneratedEvidenceKinds ?? {}, `${source}.requiredGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindCountObject(coverage.missingGeneratedEvidenceKinds ?? {}, `${source}.missingGeneratedEvidenceKinds`)
 }
 
 function validateValidationGateMatrixCoverage(coverage, source) {
@@ -1118,7 +1119,7 @@ function validateValidationGateGeneratedEvidenceSummary(generatedEvidence, sourc
   if (!generatedEvidence || typeof generatedEvidence !== "object" || Array.isArray(generatedEvidence)) {
     throw new Error(`${source} is not an object`)
   }
-  validateStringArray(generatedEvidence.kinds ?? [], `${source}.kinds`)
+  validateGeneratedEvidenceKindArray(generatedEvidence.kinds ?? [], `${source}.kinds`)
   validateGeneratedValidationSuitesSummary(generatedEvidence.validationSuites, `${source}.validationSuites`)
   validateGeneratedMatrixReportsSummary(generatedEvidence.matrixReports, `${source}.matrixReports`)
 }
@@ -1190,8 +1191,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateStringArray(coverage.missingArtifactSchemas ?? [], `${source}.missingArtifactSchemas`)
   validateStringArray(coverage.requiredArtifactKinds ?? [], `${source}.requiredArtifactKinds`)
   validateStringArray(coverage.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
-  validateStringArray(coverage.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
-  validateStringArray(coverage.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(coverage.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(coverage.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateArtifactEvidenceRepoArray(coverage.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(coverage.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateRuntimeSignalArray(coverage.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
@@ -1209,7 +1210,7 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateCountObject(coverage.owners ?? {}, `${source}.owners`)
   validateCountObject(coverage.classifications ?? {}, `${source}.classifications`)
   validateCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
-  validateCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
+  validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
   validateArtifactEvidenceRepoCountObject(coverage.evidenceRepos ?? {}, `${source}.evidenceRepos`)
 }
 
@@ -1325,6 +1326,15 @@ function validateArtifactEvidenceRepoArray(value, source) {
   }
 }
 
+function validateGeneratedEvidenceKindArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, kind] of value.entries()) {
+    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+      throw new Error(`${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
+    }
+  }
+}
+
 function validateStringArray(value, source) {
   if (!Array.isArray(value)) {
     throw new Error(`${source} is not an array`)
@@ -1359,6 +1369,15 @@ function validateArtifactEvidenceRepoCountObject(value, source) {
   for (const repo of Object.keys(value)) {
     if (!isKnownDrillArtifactEvidenceRepo(repo)) {
       throw new Error(`${source} has unknown evidence repo ${JSON.stringify(repo)}`)
+    }
+  }
+}
+
+function validateGeneratedEvidenceKindCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const kind of Object.keys(value)) {
+    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+      throw new Error(`${source} has unknown generated evidence kind ${JSON.stringify(kind)}`)
     }
   }
 }

@@ -1,6 +1,7 @@
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   isKnownDrillRuntimeSignal,
@@ -195,8 +196,6 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   }),
 })
 
-const GENERATED_EVIDENCE_KINDS = Object.freeze(["matrix-report", "validation-suite-run"])
-
 export function describeDrillValidationGatePresets({ names = null } = {}) {
   const presetNames = names == null
     ? Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort()
@@ -354,7 +353,7 @@ export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenc
     itemName: "kind",
   })
   for (const kind of kinds) {
-    if (!GENERATED_EVIDENCE_KINDS.includes(kind)) {
+    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
       throw new Error(`unknown required generated evidence kind: ${kind}`)
     }
   }
@@ -367,7 +366,7 @@ export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifact
     itemName: "kind",
   })
   for (const kind of kinds) {
-    if (!GENERATED_EVIDENCE_KINDS.includes(kind)) {
+    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
       throw new Error(`unknown required artifact generated evidence kind: ${kind}`)
     }
   }

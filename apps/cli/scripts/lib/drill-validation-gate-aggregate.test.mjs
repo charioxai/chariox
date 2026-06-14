@@ -174,6 +174,57 @@ test("rejects unknown artifact evidence repo labels in aggregate reports", () =>
   )
 })
 
+test("rejects unknown generated evidence kind labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture({
+    generatedEvidence: {
+      kinds: ["matrix-report"],
+      validationSuites: {
+        enabled: false,
+        artifactIndexes: [],
+        outputRoots: [],
+      },
+      matrixReports: {
+        enabled: false,
+        roots: [],
+        commands: [],
+        dryRun: false,
+        continueOnFailure: false,
+      },
+    },
+  })], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredGeneratedEvidenceKinds: ["matrix-reprot"],
+    }),
+    /requiredGeneratedEvidenceKinds\[0\] has unknown generated evidence kind "matrix-reprot"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        generatedEvidenceKinds: { "matrix-reprot": 1 },
+      },
+    }),
+    /coverage\.generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          kinds: ["matrix-reprot"],
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.kinds\[0\] has unknown generated evidence kind "matrix-reprot"/,
+  )
+})
+
 test("fails aggregate requirements missing from otherwise passing reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["remote-home-extension"],

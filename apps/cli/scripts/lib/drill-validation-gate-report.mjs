@@ -2,6 +2,7 @@ import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
+import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
 
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
@@ -112,8 +113,8 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactSchemas ?? [], `${source}.missingArtifactSchemas`)
   validateStringArray(check.requiredArtifactKinds ?? [], `${source}.requiredArtifactKinds`)
   validateStringArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
-  validateStringArray(check.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
-  validateStringArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(check.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
+  validateGeneratedEvidenceKindArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
   validateArtifactEvidenceRepoArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateStringArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
@@ -278,6 +279,7 @@ function validateGeneratedEvidence(generatedEvidence, source) {
   if (!generatedEvidence || typeof generatedEvidence !== "object" || Array.isArray(generatedEvidence)) {
     throw new Error(`${source} is not an object`)
   }
+  validateGeneratedEvidenceKindArray(generatedEvidence.kinds ?? [], `${source}.kinds`)
   validateGeneratedValidationSuites(generatedEvidence.validationSuites, `${source}.validationSuites`)
   validateGeneratedMatrixReports(generatedEvidence.matrixReports, `${source}.matrixReports`)
 }
@@ -355,6 +357,15 @@ function validateArtifactEvidenceRepoArray(value, source) {
   for (const [index, repo] of value.entries()) {
     if (!isKnownDrillArtifactEvidenceRepo(repo)) {
       throw new Error(`${source}[${index}] has unknown evidence repo ${JSON.stringify(repo)}`)
+    }
+  }
+}
+
+function validateGeneratedEvidenceKindArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, kind] of value.entries()) {
+    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+      throw new Error(`${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
     }
   }
 }
