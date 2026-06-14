@@ -8,6 +8,10 @@ import {
   drillFailureOwnerForClassification,
   drillFailureTaxonomyManifest,
 } from "./drill-failure-taxonomy.mjs"
+import {
+  drillRuntimeSignalsManifest,
+  validateDrillRuntimeSignalsManifest,
+} from "./drill-runtime-signals.mjs"
 import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import {
   drillValidationSuiteManifest,
@@ -24,6 +28,10 @@ export const DRILL_PLATFORM_BUNDLE_ARTIFACTS = Object.freeze([
   {
     path: "failure-taxonomy-scenario.json",
     schema: "arroba.drill.failure_taxonomy.v1",
+  },
+  {
+    path: "runtime-signals.json",
+    schema: "arroba.drill.runtime_signals.v1",
   },
   {
     path: "validation-suite.json",
@@ -45,6 +53,10 @@ export async function writeDrillPlatformBundle(outputDir) {
     {
       path: "failure-taxonomy-drill.json",
       contents: drillFailureTaxonomyManifest({ target: "drill" }),
+    },
+    {
+      path: "runtime-signals.json",
+      contents: drillRuntimeSignalsManifest(),
     },
   ]
 
@@ -133,6 +145,10 @@ function validateBundleArtifactContents(artifactPath, contents) {
   }
   if (artifactPath === "failure-taxonomy-drill.json") {
     validateFailureTaxonomyArtifact(contents, "drill")
+    return
+  }
+  if (artifactPath === "runtime-signals.json") {
+    validateDrillRuntimeSignalsManifest(contents, "runtime-signals.json")
   }
 }
 

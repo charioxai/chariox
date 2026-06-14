@@ -15,6 +15,8 @@ test("skips platform bundle validation when no bundle or requirements are config
     dir: null,
     requiredCoverageAreas: [],
     missingCoverageAreas: [],
+    requiredRuntimeSignals: [],
+    missingRuntimeSignals: [],
     requiredFailureClassifications: [],
     missingFailureClassifications: [],
   })
@@ -31,6 +33,8 @@ test("fails when platform evidence is required but no bundle is provided", async
     dir: null,
     requiredCoverageAreas: ["matrix-validation"],
     missingCoverageAreas: ["matrix-validation"],
+    requiredRuntimeSignals: [],
+    missingRuntimeSignals: [],
     requiredFailureClassifications: ["kernel-authority"],
     missingFailureClassifications: ["kernel-authority"],
     error: "no platform bundle provided",
@@ -43,15 +47,18 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
     await writeDrillPlatformBundle(rootDir)
 
     const check = await platformValidationGateCheck(rootDir, {
-      requiredCoverageAreas: ["matrix-validation"],
-      requiredFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
-    })
+    requiredCoverageAreas: ["matrix-validation"],
+    requiredRuntimeSignals: ["lease-health", "session-authority"],
+    requiredFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
+  })
 
     assert.equal(check.status, "passed")
     assert.equal(check.dir, rootDir)
     assert.deepEqual(check.missingCoverageAreas, [])
+    assert.deepEqual(check.missingRuntimeSignals, [])
     assert.deepEqual(check.missingFailureClassifications, [])
     assert.equal(check.validationSuite.coverageAreas.some((area) => area.id === "matrix-validation"), true)
+    assert.equal(check.runtimeSignals.some((signal) => signal.id === "lease-health"), true)
     assert.deepEqual(check.validationSuite.validationPresets.map((preset) => preset.name), [
       "distributed-runtime",
       "native-provider-tui",
@@ -83,11 +90,13 @@ test("fails when platform bundle misses required coverage dimensions", async () 
 
     const check = await platformValidationGateCheck(rootDir, {
       requiredCoverageAreas: ["hosted-cloud-drills"],
+      requiredRuntimeSignals: ["workspace-live-sync-state"],
       requiredFailureClassifications: ["unknown-diagnostic-class"],
     })
 
     assert.equal(check.status, "failed")
     assert.deepEqual(check.missingCoverageAreas, ["hosted-cloud-drills"])
+    assert.deepEqual(check.missingRuntimeSignals, [])
     assert.deepEqual(check.missingFailureClassifications, ["unknown-diagnostic-class"])
     assert.match(check.error, /missing platform coverage areas: hosted-cloud-drills/)
     assert.match(check.error, /missing failure classifications: unknown-diagnostic-class/)

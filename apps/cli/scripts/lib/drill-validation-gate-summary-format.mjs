@@ -19,6 +19,11 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredPlatformCoverageAreas.length > 0) {
     lines.push(`platform_required_coverage_areas=${requiredPlatformCoverageAreas.join(",")} missing=${missingPlatformCoverageAreas.join(",") || "none"}`)
   }
+  const requiredRuntimeSignals = platform.requiredRuntimeSignals ?? []
+  const missingRuntimeSignals = platform.missingRuntimeSignals ?? []
+  if (requiredRuntimeSignals.length > 0) {
+    lines.push(`platform_required_runtime_signals=${requiredRuntimeSignals.join(",")} missing=${missingRuntimeSignals.join(",") || "none"}`)
+  }
   const requiredFailureClassifications = platform.requiredFailureClassifications ?? []
   const missingFailureClassifications = platform.missingFailureClassifications ?? []
   if (requiredFailureClassifications.length > 0) {
@@ -29,6 +34,9 @@ export function formatDrillValidationGateSummary(report) {
   }
   if (platform.failureTaxonomy) {
     lines.push(`platform_failure_taxonomy=drill:${platform.failureTaxonomy.drill.length} scenario:${platform.failureTaxonomy.scenario.length}`)
+  }
+  if (platform.runtimeSignals) {
+    lines.push(`platform_runtime_signals=${platform.runtimeSignals.map((signal) => `${signal.id}:${signal.owner}`).join(",")}`)
   }
 
   const artifacts = report.checks.artifacts

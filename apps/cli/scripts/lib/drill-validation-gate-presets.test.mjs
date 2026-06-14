@@ -12,6 +12,7 @@ import {
   normalizeRequiredPlatformCoverageAreas,
   normalizeRequiredPresets,
   normalizeRequiredProviders,
+  normalizeRequiredRuntimeSignals,
   normalizeRequiredScenarios,
 } from "./drill-validation-gate-presets.mjs"
 
@@ -38,6 +39,7 @@ test("describes stable validation gate presets", () => {
       name: "distributed-runtime",
       description: "End-to-end distributed runtime authority evidence across native TUI, remote agents, home extensions, slices, and Workspace Live Sync.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredFailureClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
       requiredMatrices: ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
@@ -56,6 +58,7 @@ test("describes stable validation gate presets", () => {
       name: "slice-runtime",
       description: "Slice lifecycle, provider-auth isolation, worker discovery, and UI projection evidence.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"],
       requiredFailureClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["slice-runtime-matrix"],
       requiredMatrixClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
@@ -70,6 +73,7 @@ test("describes stable validation gate presets", () => {
       name: "native-provider-tui",
       description: "Native provider TUI parity across local, remote, slice, permissions, and UI projection paths.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredRuntimeSignals: ["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"],
       requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["native-provider-tui-matrix"],
       requiredMatrixClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
@@ -84,6 +88,7 @@ test("describes stable validation gate presets", () => {
       name: "remote-agent-runtime",
       description: "Leased remote-agent lifecycle, worker provider-run binding, relay freshness, and collab projection evidence.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+      requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"],
       requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"],
       requiredMatrices: ["remote-agent-runtime-matrix"],
       requiredMatrixClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"],
@@ -106,6 +111,7 @@ test("expands validation gate preset requirements", () => {
     requiredScenarios: ["local"],
   }), {
     requiredPlatformCoverageAreas: ["runtime-fixtures", "failure-diagnostics", "matrix-validation", "runtime-fixtures"],
+    requiredRuntimeSignals: ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
     requiredMatrices: ["custom-matrix", "remote-home-extension-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "worker-execution"],
@@ -127,6 +133,10 @@ test("normalizes validation gate requirements", () => {
   assert.deepEqual(normalizeRequiredPlatformCoverageAreas(["runtime-fixtures,matrix-validation"]), [
     "matrix-validation",
     "runtime-fixtures",
+  ])
+  assert.deepEqual(normalizeRequiredRuntimeSignals(["session-authority,lease-health", "session-authority"]), [
+    "lease-health",
+    "session-authority",
   ])
   assert.deepEqual(normalizeRequiredFailureClassifications(["kernel-authority,worker-execution"]), [
     "kernel-authority",
@@ -150,6 +160,10 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredFailureClassifications(["not-a-classification"]),
     /unknown required failure classification: not-a-classification/,
+  )
+  assert.throws(
+    () => normalizeRequiredRuntimeSignals(["not-a-signal"]),
+    /unknown required runtime signal: not-a-signal/,
   )
   assert.throws(
     () => normalizeRequiredMatrixClassifications(["not-a-classification"]),

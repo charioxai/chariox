@@ -3,14 +3,23 @@ import path from "node:path"
 
 import { verifyDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
-export async function platformValidationGateCheck(platformBundleDir, { requiredCoverageAreas = [], requiredFailureClassifications = [] } = {}) {
+export async function platformValidationGateCheck(
+  platformBundleDir,
+  {
+    requiredCoverageAreas = [],
+    requiredRuntimeSignals = [],
+    requiredFailureClassifications = [],
+  } = {},
+) {
   if (!platformBundleDir) {
-    if (requiredCoverageAreas.length > 0 || requiredFailureClassifications.length > 0) {
+    if (requiredCoverageAreas.length > 0 || requiredRuntimeSignals.length > 0 || requiredFailureClassifications.length > 0) {
       return {
         status: "failed",
         dir: null,
         requiredCoverageAreas: [...requiredCoverageAreas],
         missingCoverageAreas: [...requiredCoverageAreas],
+        requiredRuntimeSignals: [...requiredRuntimeSignals],
+        missingRuntimeSignals: [...requiredRuntimeSignals],
         requiredFailureClassifications: [...requiredFailureClassifications],
         missingFailureClassifications: [...requiredFailureClassifications],
         error: "no platform bundle provided",
@@ -21,6 +30,8 @@ export async function platformValidationGateCheck(platformBundleDir, { requiredC
       dir: null,
       requiredCoverageAreas: [],
       missingCoverageAreas: [],
+      requiredRuntimeSignals: [],
+      missingRuntimeSignals: [],
       requiredFailureClassifications: [],
       missingFailureClassifications: [],
     }
@@ -28,11 +39,14 @@ export async function platformValidationGateCheck(platformBundleDir, { requiredC
   try {
     const bundle = await verifyDrillPlatformBundle(platformBundleDir)
     const validationSuite = await readPlatformBundleValidationSuite(platformBundleDir)
+    const runtimeSignals = await readPlatformBundleRuntimeSignals(platformBundleDir)
     const failureTaxonomy = await readPlatformBundleFailureTaxonomy(platformBundleDir)
     const missingCoverageAreas = missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageAreas)
+    const missingRuntimeSignals = missingRequiredRuntimeSignals(runtimeSignals, requiredRuntimeSignals)
     const missingFailureClassifications = missingRequiredFailureClassifications(failureTaxonomy, requiredFailureClassifications)
     const errors = [
       ...(missingCoverageAreas.length > 0 ? [`missing platform coverage areas: ${missingCoverageAreas.join(", ")}`] : []),
+      ...(missingRuntimeSignals.length > 0 ? [`missing runtime signals: ${missingRuntimeSignals.join(", ")}`] : []),
       ...(missingFailureClassifications.length > 0 ? [`missing failure classifications: ${missingFailureClassifications.join(", ")}`] : []),
     ]
     return {
@@ -40,6 +54,8 @@ export async function platformValidationGateCheck(platformBundleDir, { requiredC
       dir: platformBundleDir,
       requiredCoverageAreas: [...requiredCoverageAreas],
       missingCoverageAreas,
+      requiredRuntimeSignals: [...requiredRuntimeSignals],
+      missingRuntimeSignals,
       requiredFailureClassifications: [...requiredFailureClassifications],
       missingFailureClassifications,
       ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
@@ -50,6 +66,7 @@ export async function platformValidationGateCheck(platformBundleDir, { requiredC
         sizeBytes: artifact.sizeBytes,
       })),
       validationSuite,
+      runtimeSignals,
       failureTaxonomy,
     }
   } catch (error) {
@@ -58,11 +75,29 @@ export async function platformValidationGateCheck(platformBundleDir, { requiredC
       dir: platformBundleDir,
       requiredCoverageAreas: [...requiredCoverageAreas],
       missingCoverageAreas: [...requiredCoverageAreas],
+      requiredRuntimeSignals: [...requiredRuntimeSignals],
+      missingRuntimeSignals: [...requiredRuntimeSignals],
       requiredFailureClassifications: [...requiredFailureClassifications],
       missingFailureClassifications: [...requiredFailureClassifications],
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+async function readPlatformBundleRuntimeSignals(platformBundleDir) {
+  const manifest = JSON.parse(await readFile(path.join(platformBundleDir, "runtime-signals.json"), "utf8"))
+  if (manifest.schema !== "arroba.drill.runtime_signals.v1") {
+    throw new Error(`runtime signals has unsupported schema ${JSON.stringify(manifest.schema)}`)
+  }
+  if (!Array.isArray(manifest.signals)) {
+    throw new Error("runtime signals has invalid signals")
+  }
+  return manifest.signals
+    .map((signal) => ({
+      id: signal.id,
+      owner: signal.owner,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id))
 }
 
 async function readPlatformBundleValidationSuite(platformBundleDir) {
@@ -76,6 +111,7 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
     validationPresets: (suite.validationPresets ?? []).map((preset) => ({
       name: preset.name,
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
+      requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
     })),
   }
@@ -108,6 +144,11 @@ async function readPlatformBundleFailureTaxonomyKinds(platformBundleDir, target)
 function missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageAreas) {
   const present = new Set((validationSuite.coverageAreas ?? []).map((area) => area.id))
   return requiredCoverageAreas.filter((area) => !present.has(area))
+}
+
+function missingRequiredRuntimeSignals(runtimeSignals, requiredRuntimeSignals) {
+  const present = new Set((runtimeSignals ?? []).map((signal) => signal.id))
+  return requiredRuntimeSignals.filter((signal) => !present.has(signal))
 }
 
 function missingRequiredFailureClassifications(failureTaxonomy, requiredFailureClassifications) {

@@ -27,7 +27,7 @@ test("shared drill validation suite covers every test path exactly once", () => 
   assert.equal(new Set(covered).size, SHARED_DRILL_TEST_PATHS.length)
   assert.deepEqual(
     DRILL_VALIDATION_COVERAGE_AREAS.map((area) => area.id),
-    ["artifact-contracts", "failure-diagnostics", "matrix-validation", "runtime-fixtures", "suite-contract"],
+    ["distributed-observability", "artifact-contracts", "failure-diagnostics", "matrix-validation", "runtime-fixtures", "suite-contract"],
   )
 })
 
@@ -101,6 +101,7 @@ test("builds shared drill validation suite manifest", () => {
       name: "sample-preset",
       description: "sample preset",
       requiredPlatformCoverageAreas: [],
+      requiredRuntimeSignals: [],
       requiredFailureClassifications: [],
       requiredMatrices: ["sample-matrix"],
       requiredMatrixClassifications: [],
@@ -122,6 +123,7 @@ test("normalizes validation suite preset contracts", () => {
     name: "workspace-live-sync",
     description: "Workspace Live Sync",
     requiredPlatformCoverageAreas: ["matrix-validation", "runtime-fixtures"],
+    requiredRuntimeSignals: [],
     requiredFailureClassifications: [],
     requiredMatrices: ["workspace-live-sync-matrix"],
     requiredMatrixClassifications: [],

@@ -27,6 +27,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-platform-bundle.test.mjs",
   "apps/cli/scripts/lib/drill-provider-profiles.test.mjs",
   "apps/cli/scripts/lib/drill-runtime-helpers.test.mjs",
+  "apps/cli/scripts/lib/drill-runtime-signals.test.mjs",
   "apps/cli/scripts/lib/drill-secrets.test.mjs",
   "apps/cli/scripts/lib/drill-time.test.mjs",
   "apps/cli/scripts/lib/drill-validation-gate-aggregate.test.mjs",
@@ -52,6 +53,13 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
 ])
 
 export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
+  {
+    id: "distributed-observability",
+    description: "Runtime signal contracts for authority, health, projection, sync, slice, provider, and relay diagnostics.",
+    testPaths: Object.freeze([
+      "apps/cli/scripts/lib/drill-runtime-signals.test.mjs",
+    ]),
+  },
   {
     id: "artifact-contracts",
     description: "Artifact indexes, failure manifests, aggregate actions, summaries, and platform bundles.",
@@ -227,6 +235,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     name: preset.name,
     description: preset.description,
     requiredPlatformCoverageAreas: sortedStringArray(preset.requiredPlatformCoverageAreas, `${preset.name}.requiredPlatformCoverageAreas`),
+    requiredRuntimeSignals: sortedStringArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
     requiredFailureClassifications: sortedStringArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
     requiredMatrixClassifications: sortedStringArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),

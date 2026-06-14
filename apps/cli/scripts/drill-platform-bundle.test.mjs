@@ -40,6 +40,10 @@ test("drill platform bundle writes shared contract artifacts", async () => {
         path: "failure-taxonomy-drill.json",
         schema: "arroba.drill.failure_taxonomy.v1",
       },
+      {
+        path: "runtime-signals.json",
+        schema: "arroba.drill.runtime_signals.v1",
+      },
     ])
     for (const artifact of indexBundle.artifacts) {
       assert.match(artifact.sha256, /^[a-f0-9]{64}$/)
@@ -56,6 +60,7 @@ test("drill platform bundle writes shared contract artifacts", async () => {
       "failure-taxonomy-drill.json",
       "failure-taxonomy-scenario.json",
       "index.json",
+      "runtime-signals.json",
       "validation-suite.json",
     ])
   } finally {
@@ -72,7 +77,7 @@ test("drill platform bundle verifies written artifacts", async () => {
     const verified = JSON.parse(stdout)
 
     assert.equal(verified.schema, "arroba.drill.platform_bundle.v1")
-    assert.equal(verified.artifacts.length, 3)
+    assert.equal(verified.artifacts.length, 4)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

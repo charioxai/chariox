@@ -14,12 +14,15 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-provider", "codex"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-runtime-signal", "lease-health"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--unknown"], 0, options)
   assert.equal(index, null)
 
   assert.deepEqual(options, {
     presets: ["workspace-live-sync"],
     requiredPlatformCoverageAreas: ["runtime-fixtures"],
+    requiredRuntimeSignals: ["lease-health"],
     requiredFailureClassifications: [],
     requiredMatrices: [],
     requiredMatrixClassifications: [],

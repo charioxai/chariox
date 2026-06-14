@@ -35,6 +35,8 @@ function printHelp() {
     "  --require-complete     Fail when matrix reports include skipped or dry-run scenarios",
     "  --require-platform-coverage-area ID[,ID]",
     "                         Fail when platform bundle validation suite lacks each coverage area; repeatable",
+    "  --require-runtime-signal ID[,ID]",
+    "                         Fail when platform bundle lacks each distributed runtime signal; repeatable",
     "  --require-failure-classification KIND[,KIND]",
     "                         Fail when platform bundle failure taxonomy lacks each classification; repeatable",
     "  --require-matrix NAME[,NAME]",
@@ -207,6 +209,7 @@ function formatPresetList(presets) {
   for (const preset of presets) {
     lines.push(`- ${preset.name}: ${preset.description}`)
     lines.push(`  platform_coverage=${preset.requiredPlatformCoverageAreas.join(",") || "none"}`)
+    lines.push(`  runtime_signals=${preset.requiredRuntimeSignals.join(",") || "none"}`)
     lines.push(`  failure_classifications=${preset.requiredFailureClassifications.join(",") || "none"}`)
     lines.push(`  matrices=${preset.requiredMatrices.join(",") || "none"}`)
     lines.push(`  matrix_classifications=${preset.requiredMatrixClassifications.join(",") || "none"}`)

@@ -47,6 +47,8 @@ function validatePlatformBundleCheck(check, source) {
   validateCheckObject(check, source)
   validateStringArray(check.requiredCoverageAreas ?? [], `${source}.requiredCoverageAreas`)
   validateStringArray(check.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
+  validateStringArray(check.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
+  validateStringArray(check.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
   validateStringArray(check.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
   validateStringArray(check.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
   if (check.status === "skipped") {
@@ -55,6 +57,8 @@ function validatePlatformBundleCheck(check, source) {
     }
     if ((check.requiredCoverageAreas ?? []).length > 0
       || (check.missingCoverageAreas ?? []).length > 0
+      || (check.requiredRuntimeSignals ?? []).length > 0
+      || (check.missingRuntimeSignals ?? []).length > 0
       || (check.requiredFailureClassifications ?? []).length > 0
       || (check.missingFailureClassifications ?? []).length > 0) {
       throw new Error(`${source} skipped check has invalid coverage requirements`)
@@ -84,6 +88,9 @@ function validatePlatformBundleCheck(check, source) {
   validatePlatformValidationSuiteSummary(check.validationSuite, `${source}.validationSuite`)
   if (check.failureTaxonomy !== undefined) {
     validatePlatformFailureTaxonomySummary(check.failureTaxonomy, `${source}.failureTaxonomy`)
+  }
+  if (check.runtimeSignals !== undefined) {
+    validatePlatformRuntimeSignalsSummary(check.runtimeSignals, `${source}.runtimeSignals`)
   }
 }
 
@@ -205,6 +212,29 @@ function validatePlatformFailureTaxonomySummary(summary, source) {
   }
   validateStringArray(summary.drill, `${source}.drill`)
   validateStringArray(summary.scenario, `${source}.scenario`)
+}
+
+function validatePlatformRuntimeSignalsSummary(summary, source) {
+  if (!Array.isArray(summary)) {
+    throw new Error(`${source} is not an array`)
+  }
+  const ids = new Set()
+  for (const [index, signal] of summary.entries()) {
+    const signalSource = `${source}[${index}]`
+    if (!signal || typeof signal !== "object" || Array.isArray(signal)) {
+      throw new Error(`${signalSource} is not an object`)
+    }
+    if (!nonEmptyString(signal.id)) {
+      throw new Error(`${signalSource} has invalid id`)
+    }
+    if (ids.has(signal.id)) {
+      throw new Error(`${source} has duplicate signal ${signal.id}`)
+    }
+    ids.add(signal.id)
+    if (!nonEmptyString(signal.owner)) {
+      throw new Error(`${signalSource} has invalid owner`)
+    }
+  }
 }
 
 function validateAggregateSchema(aggregate, schema, source) {

@@ -24,6 +24,10 @@ test("defines stable drill platform bundle artifacts", () => {
       schema: "arroba.drill.failure_taxonomy.v1",
     },
     {
+      path: "runtime-signals.json",
+      schema: "arroba.drill.runtime_signals.v1",
+    },
+    {
       path: "validation-suite.json",
       schema: "arroba.drill.validation_suite.v1",
     },
@@ -41,8 +45,9 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     assert.equal(bundle.schema, DRILL_PLATFORM_BUNDLE_SCHEMA)
     assert.deepEqual(verified, bundle)
     assert.equal(artifactIndex.metadata.drill, "platform-bundle")
-    assert.equal(validationSuite.coverage.length, 5)
+    assert.equal(validationSuite.coverage.length, 6)
     assert.deepEqual(validationSuite.coverage.map((area) => area.id), [
+      "distributed-observability",
       "artifact-contracts",
       "failure-diagnostics",
       "matrix-validation",
@@ -92,6 +97,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       {
         path: "index.json",
         schema: "arroba.drill.platform_bundle.v1",
+      },
+      {
+        path: "runtime-signals.json",
+        schema: "arroba.drill.runtime_signals.v1",
       },
       {
         path: "validation-suite.json",

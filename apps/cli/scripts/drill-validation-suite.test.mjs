@@ -36,6 +36,7 @@ test("drill validation suite prints coverage manifest", async () => {
   assert.deepEqual(manifest.testPaths, SHARED_DRILL_TEST_PATHS)
   assert.deepEqual(covered.sort(), [...SHARED_DRILL_TEST_PATHS])
   assert.deepEqual(manifest.coverage.map((area) => area.id), [
+    "distributed-observability",
     "artifact-contracts",
     "failure-diagnostics",
     "matrix-validation",

@@ -70,8 +70,9 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.equal(report.checks.configuration.status, "passed")
     assert.equal(report.checks.platformBundle.status, "passed")
     assert.deepEqual(report.checks.platformBundle.validationSuite, {
-      testCount: 46,
+      testCount: 47,
       coverageAreas: [
+        { id: "distributed-observability", testCount: 1 },
         { id: "artifact-contracts", testCount: 11 },
         { id: "failure-diagnostics", testCount: 3 },
         { id: "matrix-validation", testCount: 22 },
@@ -82,31 +83,37 @@ test("passes with valid platform bundle and complete matrix reports", async () =
         {
           name: "distributed-runtime",
           requiredMatrices: ["native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+          requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
           requiredFailureClassifications: ["docker-runtime", "kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
         },
         {
           name: "native-provider-tui",
           requiredMatrices: ["native-provider-tui-matrix"],
+          requiredRuntimeSignals: ["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"],
           requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"],
         },
         {
           name: "remote-agent-runtime",
           requiredMatrices: ["remote-agent-runtime-matrix"],
+          requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"],
           requiredFailureClassifications: ["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"],
         },
         {
           name: "remote-home-extension",
           requiredMatrices: ["remote-home-extension-matrix"],
+          requiredRuntimeSignals: ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
           requiredFailureClassifications: ["kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
         },
         {
           name: "slice-runtime",
           requiredMatrices: ["slice-runtime-matrix"],
+          requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"],
           requiredFailureClassifications: ["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"],
         },
         {
           name: "workspace-live-sync",
           requiredMatrices: ["workspace-live-sync-matrix"],
+          requiredRuntimeSignals: ["relay-target-freshness", "session-authority", "workspace-live-sync-state"],
           requiredFailureClassifications: ["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"],
         },
       ],
@@ -118,7 +125,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.deepEqual(report.nextActions, [])
     assert.doesNotThrow(() => validateDrillValidationGateReport(report))
     assert.match(formatDrillValidationGateSummary(report), /status=passed/)
-    assert.match(formatDrillValidationGateSummary(report), /platform_validation_suite_tests=46 coverage=artifact-contracts:11/)
+    assert.match(formatDrillValidationGateSummary(report), /platform_validation_suite_tests=47 coverage=distributed-observability:1/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -192,6 +199,62 @@ test("gates platform bundle failure taxonomy classifications", async () => {
         requiredFailureClassifications: ["kernel-authority", "kernel-authorities"],
       }),
       /unknown required failure classification: kernel-authorities/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("gates platform bundle runtime signal coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+
+    const pass = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      requiredRuntimeSignals: ["session-authority,lease-health", "workspace-live-sync-state"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.platformBundle.requiredRuntimeSignals, [
+      "lease-health",
+      "session-authority",
+      "workspace-live-sync-state",
+    ])
+    assert.deepEqual(pass.checks.platformBundle.missingRuntimeSignals, [])
+    assert.match(
+      formatDrillValidationGateSummary(pass),
+      /platform_required_runtime_signals=lease-health,session-authority,workspace-live-sync-state missing=none/,
+    )
+
+    const fail = await runDrillValidationGate({
+      requiredRuntimeSignals: ["lease-health"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.checks.platformBundle.missingRuntimeSignals, ["lease-health"])
+    assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [
+      {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: "provide a drill platform bundle covering runtime signals: lease-health",
+      },
+      {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
+      },
+      {
+        owner: "validation-harness",
+        classification: "validation-gate",
+        nextAction: "configure at least one platform bundle, artifact root, matrix root, or failure root before using the validation gate",
+      },
+    ])
+
+    await assert.rejects(
+      () => runDrillValidationGate({
+        requiredRuntimeSignals: ["workspace-live-synch-state"],
+      }),
+      /unknown required runtime signal: workspace-live-synch-state/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -941,6 +1004,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       presets: {},
       requiredPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
       missingPlatformCoverageAreas: { "hosted-cloud-drills": 1, "runtime-fixtures": 1 },
+      requiredRuntimeSignals: {},
+      missingRuntimeSignals: {},
       requiredFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       missingFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       requiredMatrices: { "hosted-matrix": 1, "test-matrix": 2 },
@@ -958,12 +1023,16 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       {
         requiredCoverageAreas: ["runtime-fixtures"],
         missingCoverageAreas: ["runtime-fixtures"],
+        requiredRuntimeSignals: [],
+        missingRuntimeSignals: [],
         requiredFailureClassifications: ["kernel-authority"],
         missingFailureClassifications: ["kernel-authority"],
       },
       {
         requiredCoverageAreas: ["hosted-cloud-drills"],
         missingCoverageAreas: ["hosted-cloud-drills"],
+        requiredRuntimeSignals: [],
+        missingRuntimeSignals: [],
         requiredFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
         missingFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
       },

@@ -1,10 +1,24 @@
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import { isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 
 export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "distributed-runtime": Object.freeze({
     description: "End-to-end distributed runtime authority evidence across native TUI, remote agents, home extensions, slices, and Workspace Live Sync.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredRuntimeSignals: Object.freeze([
+      "agent-lifecycle",
+      "client-projection-health",
+      "home-extension-manifest-sync",
+      "lease-health",
+      "permission-interaction",
+      "provider-run-lifecycle",
+      "relay-target-freshness",
+      "session-authority",
+      "slice-auth-state",
+      "slice-runtime-state",
+      "workspace-live-sync-state",
+    ]),
     requiredFailureClassifications: Object.freeze([
       "docker-runtime",
       "kernel-authority",
@@ -73,6 +87,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "native-provider-tui": Object.freeze({
     description: "Native provider TUI parity across local, remote, slice, permissions, and UI projection paths.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredRuntimeSignals: Object.freeze(["client-projection-health", "permission-interaction", "provider-run-lifecycle", "session-authority"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"]),
     requiredMatrices: Object.freeze(["native-provider-tui-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "ui-client-projection", "worker-execution"]),
@@ -83,6 +98,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "remote-agent-runtime": Object.freeze({
     description: "Leased remote-agent lifecycle, worker provider-run binding, relay freshness, and collab projection evidence.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "lease-health", "provider-run-lifecycle", "relay-target-freshness", "session-authority"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-host-capacity", "remote-worker-version", "ui-client-projection", "worker-execution"]),
     requiredMatrices: Object.freeze(["remote-agent-runtime-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "ui-client-projection", "worker-execution"]),
@@ -93,6 +109,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "workspace-live-sync": Object.freeze({
     description: "Workspace Live Sync local/remote matrix evidence and distributed sync diagnostics.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredRuntimeSignals: Object.freeze(["relay-target-freshness", "session-authority", "workspace-live-sync-state"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
     requiredMatrices: Object.freeze(["workspace-live-sync-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "relay-target-freshness", "workspace-live-sync-conflict"]),
@@ -100,6 +117,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "remote-home-extension": Object.freeze({
     description: "Home-owned extension execution evidence for remote agents and collab authority checks.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
     requiredFailureClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"]),
     requiredMatrices: Object.freeze(["remote-home-extension-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
@@ -107,6 +125,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   "slice-runtime": Object.freeze({
     description: "Slice lifecycle, provider-auth isolation, worker discovery, and UI projection evidence.",
     requiredPlatformCoverageAreas: Object.freeze(["failure-diagnostics", "matrix-validation", "runtime-fixtures"]),
+    requiredRuntimeSignals: Object.freeze(["agent-lifecycle", "client-projection-health", "provider-run-lifecycle", "session-authority", "slice-auth-state", "slice-runtime-state"]),
     requiredFailureClassifications: Object.freeze(["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),
     requiredMatrices: Object.freeze(["slice-runtime-matrix"]),
     requiredMatrixClassifications: Object.freeze(["docker-runtime", "kernel-authority", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution"]),
@@ -126,6 +145,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       name,
       description: preset.description,
       requiredPlatformCoverageAreas: [...(preset.requiredPlatformCoverageAreas ?? [])],
+      requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
       requiredMatrixClassifications: [...(preset.requiredMatrixClassifications ?? [])],
@@ -139,6 +159,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
 export function expandValidationGatePresetRequirements({
   presets,
   requiredPlatformCoverageAreas,
+  requiredRuntimeSignals = [],
   requiredFailureClassifications,
   requiredMatrices,
   requiredMatrixClassifications,
@@ -148,6 +169,7 @@ export function expandValidationGatePresetRequirements({
 }) {
   const expanded = {
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
+    requiredRuntimeSignals: [...requiredRuntimeSignals],
     requiredFailureClassifications: [...requiredFailureClassifications],
     requiredMatrices: [...requiredMatrices],
     requiredMatrixClassifications: [...requiredMatrixClassifications],
@@ -158,6 +180,7 @@ export function expandValidationGatePresetRequirements({
   for (const presetName of presets) {
     const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
     expanded.requiredPlatformCoverageAreas.push(...(preset.requiredPlatformCoverageAreas ?? []))
+    expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
     expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
     expanded.requiredMatrixClassifications.push(...(preset.requiredMatrixClassifications ?? []))
@@ -166,6 +189,29 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
   }
   return expanded
+}
+
+export function normalizeRequiredRuntimeSignals(requiredRuntimeSignals) {
+  if (!Array.isArray(requiredRuntimeSignals)) {
+    throw new Error("requiredRuntimeSignals must be an array")
+  }
+  const signals = []
+  for (const signal of requiredRuntimeSignals) {
+    if (!nonEmptyString(signal)) {
+      throw new Error("requiredRuntimeSignals has invalid signal")
+    }
+    for (const value of signal.split(",")) {
+      const normalized = value.trim()
+      if (normalized) signals.push(normalized)
+    }
+  }
+  const normalizedSignals = [...new Set(signals)].sort()
+  for (const signal of normalizedSignals) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`unknown required runtime signal: ${signal}`)
+    }
+  }
+  return normalizedSignals
 }
 
 export function normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas) {

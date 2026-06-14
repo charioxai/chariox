@@ -26,6 +26,14 @@ export function validationGateNextActions(checks) {
         nextAction: `provide a drill platform bundle covering: ${missingCoverageAreas.join(", ")}`,
       })
     }
+    const missingRuntimeSignals = checks.platformBundle.missingRuntimeSignals ?? []
+    if (missingRuntimeSignals.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: `provide a drill platform bundle covering runtime signals: ${missingRuntimeSignals.join(", ")}`,
+      })
+    }
     const missingFailureClassifications = checks.platformBundle.missingFailureClassifications ?? []
     if (missingFailureClassifications.length > 0) {
       countDrillAggregateNextAction(counts, {
