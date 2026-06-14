@@ -19,8 +19,12 @@ import {
 test("summarizes matrix report status and scenario counts", () => {
   const report = matrixReport({
     scenarios: [
-      scenario("local", "passed"),
-      scenario("remote", "failed", { classification: "provider-auth", reason: "Token refresh failed: 401" }),
+      scenario("local", "passed", { runtimeSignals: ["session-authority"] }),
+      scenario("remote", "failed", {
+        classification: "provider-auth",
+        reason: "Token refresh failed: 401",
+        runtimeSignals: ["lease-health", "provider-run-lifecycle"],
+      }),
       scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
     ],
   })
@@ -30,6 +34,16 @@ test("summarizes matrix report status and scenario counts", () => {
   assert.equal(summary.status, "failed")
   assert.deepEqual(summary.counts, { passed: 1, failed: 1, skipped: 1, dryRun: 0 })
   assert.deepEqual(summary.classifications, { "provider-auth": 1 })
+  assert.deepEqual(summary.runtimeSignals, {
+    "lease-health": 1,
+    "provider-run-lifecycle": 1,
+    "session-authority": 1,
+  })
+  assert.deepEqual(summary.runtimeSignalScenarios, {
+    "lease-health": [{ id: "remote", status: "failed" }],
+    "provider-run-lifecycle": [{ id: "remote", status: "failed" }],
+    "session-authority": [{ id: "local", status: "passed" }],
+  })
   assert.equal(drillMatrixReportExitCode([report]), 1)
   assert.equal(drillMatrixReportCompletionExitCode([report]), 1)
 })
@@ -87,11 +101,12 @@ test("aggregates multiple matrix reports for CI", () => {
       providers: "codex,opencode",
     },
     scenarios: [
-      scenario("local", "passed"),
+      scenario("local", "passed", { runtimeSignals: ["session-authority"] }),
       scenario("remote", "failed", {
         classification: "provider-auth",
         reason: "expired token",
         artifactHints: ["/tmp/arroba-drill-remote"],
+        runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
       scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
     ],
@@ -105,7 +120,7 @@ test("aggregates multiple matrix reports for CI", () => {
       deploymentPresets: "hosted-cloud",
       providers: "claude",
     },
-    scenarios: [scenario("tracked", "dry-run")],
+    scenarios: [scenario("tracked", "dry-run", { runtimeSignals: ["workspace-live-sync-state"] })],
   })
 
   const aggregate = summarizeDrillMatrixReports([failed, dryRun], {
@@ -124,6 +139,38 @@ test("aggregates multiple matrix reports for CI", () => {
     durationMs: 1025,
   })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1 })
+  assert.deepEqual(aggregate.runtimeSignals, {
+    "lease-health": 1,
+    "provider-run-lifecycle": 1,
+    "session-authority": 1,
+    "workspace-live-sync-state": 1,
+  })
+  assert.deepEqual(aggregate.runtimeSignalScenarios, {
+    "lease-health": [{
+      matrix: "remote",
+      source: "/tmp/remote-matrix.json",
+      id: "remote",
+      status: "failed",
+    }],
+    "provider-run-lifecycle": [{
+      matrix: "remote",
+      source: "/tmp/remote-matrix.json",
+      id: "remote",
+      status: "failed",
+    }],
+    "session-authority": [{
+      matrix: "remote",
+      source: "/tmp/remote-matrix.json",
+      id: "local",
+      status: "passed",
+    }],
+    "workspace-live-sync-state": [{
+      matrix: "workspace",
+      source: "/tmp/workspace-matrix.json",
+      id: "tracked",
+      status: "dry-run",
+    }],
+  })
   assert.deepEqual(aggregate.matrixNames, {
     remote: 1,
     workspace: 1,
@@ -209,6 +256,10 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /deployment_presets: hetzner=1 hosted-cloud=1 local=1 self-hosted-relay=1/)
   assert.match(text, /providers: claude=1 codex=1 opencode=1/)
   assert.match(text, /scenario_ids: hetzner=1 local=1 remote=1 tracked=1/)
+  assert.match(text, /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=1 workspace-live-sync-state=1/)
+  assert.match(text, /runtime_signal_sources:/)
+  assert.match(text, /- lease-health: remote\/remote\(failed\) source=\/tmp\/remote-matrix\.json/)
+  assert.match(text, /- workspace-live-sync-state: workspace\/tracked\(dry-run\) source=\/tmp\/workspace-matrix\.json/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
   assert.match(text, /next: refresh provider login/)
@@ -222,7 +273,11 @@ test("rejects inconsistent matrix aggregates", () => {
     matrixReport({
       matrix: "remote",
       scenarios: [
-        scenario("remote", "failed", { classification: "provider-auth", reason: "expired token" }),
+        scenario("remote", "failed", {
+          classification: "provider-auth",
+          reason: "expired token",
+          runtimeSignals: ["provider-run-lifecycle"],
+        }),
       ],
     }),
   ])
@@ -276,6 +331,26 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     scenarioIds: { remote: 2 },
   }), /scenarioIds do not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    runtimeSignalScenarios: {
+      "provider-run-lifecycle": [{
+        matrix: "other",
+        source: null,
+        id: "remote",
+        status: "failed",
+      }],
+    },
+  }), /runtimeSignalScenarios do not match reports/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
+      runtimeSignalScenarios: {
+        "provider-run-lifecycle": [],
+      },
+    }],
+  }), /runtimeSignalScenarios\.provider-run-lifecycle has invalid scenarios/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
     reports: [{

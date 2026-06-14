@@ -90,6 +90,7 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
   const counts = countScenarioStatuses(report.scenarios)
   const classifications = new Map()
   const runtimeSignals = new Map()
+  const runtimeSignalScenarios = new Map()
   for (const scenario of report.scenarios) {
     const classification = scenario.classification
     if (typeof classification === "string" && classification) {
@@ -97,6 +98,10 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
     }
     for (const signal of runtimeSignalsForScenario(scenario)) {
       runtimeSignals.set(signal, (runtimeSignals.get(signal) ?? 0) + 1)
+      appendRuntimeSignalEvidence(runtimeSignalScenarios, signal, {
+        id: scenario.id,
+        status: scenario.status,
+      })
     }
   }
   return {
@@ -111,6 +116,7 @@ export function summarizeDrillMatrixReport(report, { source = null } = {}) {
     counts,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
     runtimeSignals: Object.fromEntries([...runtimeSignals.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    runtimeSignalScenarios: formatRuntimeSignalEvidence(runtimeSignalScenarios),
     failedScenarios: report.scenarios.filter((scenario) => scenario.status === "failed"),
     skippedScenarios: report.scenarios.filter((scenario) => scenario.status === "skipped"),
     dryRunScenarios: report.scenarios.filter((scenario) => scenario.status === "dry-run"),
@@ -132,6 +138,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
   }
   const classifications = new Map()
   const runtimeSignals = new Map()
+  const runtimeSignalScenarios = new Map()
   const owners = new Map()
   const nextActions = new Map()
   const matrixNames = new Map()
@@ -163,6 +170,16 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     }
     for (const [signal, count] of Object.entries(summary.runtimeSignals)) {
       runtimeSignals.set(signal, (runtimeSignals.get(signal) ?? 0) + count)
+    }
+    for (const [signal, scenarios] of Object.entries(summary.runtimeSignalScenarios)) {
+      for (const scenario of scenarios) {
+        appendRuntimeSignalEvidence(runtimeSignalScenarios, signal, {
+          matrix: summary.matrix,
+          source: summary.source,
+          id: scenario.id,
+          status: scenario.status,
+        })
+      }
     }
     for (const scenario of summary.failedScenarios) {
       failedScenarios.push({
@@ -201,6 +218,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     totals,
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
     runtimeSignals: Object.fromEntries([...runtimeSignals.entries()].sort(([left], [right]) => left.localeCompare(right))),
+    runtimeSignalScenarios: formatRuntimeSignalEvidence(runtimeSignalScenarios),
     matrixNames: Object.fromEntries([...matrixNames.entries()].sort(([left], [right]) => left.localeCompare(right))),
     deploymentPresets: Object.fromEntries([...deploymentPresets.entries()].sort(([left], [right]) => left.localeCompare(right))),
     providers: Object.fromEntries([...providers.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -215,6 +233,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
       providers: summary.providers,
       scenarioIds: summary.scenarioIds,
       runtimeSignals: summary.runtimeSignals,
+      runtimeSignalScenarios: summary.runtimeSignalScenarios,
       scenarioCount: summary.scenarioCount,
       counts: summary.counts,
       durationMs: summary.durationMs,
@@ -309,6 +328,13 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
   const runtimeSignals = Object.entries(aggregate.runtimeSignals ?? {})
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
+  }
+  const runtimeSignalScenarios = Object.entries(aggregate.runtimeSignalScenarios ?? {})
+  if (runtimeSignalScenarios.length > 0) {
+    lines.push("runtime_signal_sources:")
+    for (const [signal, scenarios] of runtimeSignalScenarios) {
+      lines.push(`- ${signal}: ${scenarios.map(formatRuntimeSignalScenarioRef).join(", ")}`)
+    }
   }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -531,6 +557,10 @@ function validateDrillMatrixAggregate(aggregate) {
   validateCountObject(aggregate.providers ?? {}, "aggregate.providers")
   validateCountObject(aggregate.scenarioIds ?? {}, "aggregate.scenarioIds")
   validateCountObject(aggregate.runtimeSignals ?? {}, "aggregate.runtimeSignals")
+  if (aggregate.runtimeSignalScenarios !== undefined) {
+    validateRuntimeSignalEvidenceObject(aggregate.runtimeSignalScenarios, "aggregate.runtimeSignalScenarios", { aggregate: true })
+    assertRuntimeSignalEvidenceCounts("aggregate runtimeSignals", aggregate.runtimeSignals ?? {}, aggregate.runtimeSignalScenarios)
+  }
   if (aggregate.nextActions !== undefined && !Array.isArray(aggregate.nextActions)) {
     throw new Error("aggregate has invalid nextActions")
   }
@@ -592,6 +622,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   assertProviderCountsMatchReports(aggregate)
   assertScenarioIdCountsMatchReports(aggregate)
   assertRuntimeSignalCountsMatchReports(aggregate)
+  assertRuntimeSignalScenariosMatchReports(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
 }
 
@@ -683,6 +714,27 @@ function assertRuntimeSignalCountsMatchReports(aggregate) {
   }
 }
 
+function assertRuntimeSignalScenariosMatchReports(aggregate) {
+  if (aggregate.runtimeSignalScenarios === undefined) return
+  const expected = new Map()
+  for (const report of aggregate.reports) {
+    for (const [signal, scenarios] of Object.entries(report.runtimeSignalScenarios ?? {})) {
+      for (const scenario of scenarios) {
+        appendRuntimeSignalEvidence(expected, signal, {
+          matrix: report.matrix,
+          source: report.source,
+          id: scenario.id,
+          status: scenario.status,
+        })
+      }
+    }
+  }
+  const expectedEvidence = formatRuntimeSignalEvidence(expected)
+  if (JSON.stringify(aggregate.runtimeSignalScenarios ?? {}) !== JSON.stringify(expectedEvidence)) {
+    throw new Error("aggregate runtimeSignalScenarios do not match reports")
+  }
+}
+
 function validateMatrixAggregateReport(report, source) {
   if (!report || typeof report !== "object" || Array.isArray(report)) {
     throw new Error(`${source} is not an object`)
@@ -706,6 +758,10 @@ function validateMatrixAggregateReport(report, source) {
     throw new Error(`${source} has invalid scenarioIds`)
   }
   validateCountObject(report.runtimeSignals ?? {}, `${source}.runtimeSignals`)
+  if (report.runtimeSignalScenarios !== undefined) {
+    validateRuntimeSignalEvidenceObject(report.runtimeSignalScenarios, `${source}.runtimeSignalScenarios`, { aggregate: false })
+    assertRuntimeSignalEvidenceCounts(`${source}.runtimeSignals`, report.runtimeSignals ?? {}, report.runtimeSignalScenarios)
+  }
   if (!Number.isFinite(report.scenarioCount) || report.scenarioCount < 0) {
     throw new Error(`${source} has invalid scenarioCount`)
   }
@@ -824,6 +880,50 @@ function validateCountObject(value, source) {
   }
 }
 
+function validateRuntimeSignalEvidenceObject(value, source, { aggregate }) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} is missing`)
+  }
+  for (const [signal, scenarios] of Object.entries(value)) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+    if (!Array.isArray(scenarios) || scenarios.length === 0) {
+      throw new Error(`${source}.${signal} has invalid scenarios`)
+    }
+    for (const [index, scenario] of scenarios.entries()) {
+      validateRuntimeSignalEvidenceEntry(scenario, `${source}.${signal}[${index}]`, { aggregate })
+    }
+  }
+}
+
+function validateRuntimeSignalEvidenceEntry(entry, source, { aggregate }) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (aggregate && !nonEmptyString(entry.matrix)) {
+    throw new Error(`${source} is missing matrix`)
+  }
+  if (aggregate && entry.source !== null && entry.source !== undefined && !nonEmptyString(entry.source)) {
+    throw new Error(`${source} has invalid source`)
+  }
+  if (!nonEmptyString(entry.id)) {
+    throw new Error(`${source} is missing id`)
+  }
+  if (!["passed", "failed", "skipped", "dry-run"].includes(entry.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(entry.status)}`)
+  }
+}
+
+function assertRuntimeSignalEvidenceCounts(label, counts, evidence) {
+  const expected = Object.fromEntries(Object.entries(evidence)
+    .map(([signal, scenarios]) => [signal, scenarios.length])
+    .sort(([left], [right]) => left.localeCompare(right)))
+  if (JSON.stringify(counts) !== JSON.stringify(expected)) {
+    throw new Error(`${label} do not match runtimeSignalScenarios`)
+  }
+}
+
 function deploymentPresetsForReport(report) {
   const value = report.metadata?.deploymentPresets
   if (!nonEmptyString(value)) return []
@@ -908,4 +1008,35 @@ function runtimeSignalsForScenario(scenario) {
   return Array.isArray(scenario.runtimeSignals)
     ? [...new Set(scenario.runtimeSignals.filter(nonEmptyString))].sort()
     : []
+}
+
+function appendRuntimeSignalEvidence(evidence, signal, entry) {
+  const entries = evidence.get(signal) ?? []
+  entries.push(entry)
+  evidence.set(signal, entries)
+}
+
+function formatRuntimeSignalEvidence(evidence) {
+  return Object.fromEntries([...evidence.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([signal, entries]) => [signal, entries
+      .map((entry) => ({
+        ...(entry.matrix !== undefined ? { matrix: entry.matrix } : {}),
+        ...(entry.source !== undefined ? { source: entry.source } : {}),
+        id: entry.id,
+        status: entry.status,
+      }))
+      .sort(compareRuntimeSignalEvidenceEntries)]))
+}
+
+function compareRuntimeSignalEvidenceEntries(left, right) {
+  return String(left.matrix ?? "").localeCompare(String(right.matrix ?? ""))
+    || String(left.source ?? "").localeCompare(String(right.source ?? ""))
+    || left.id.localeCompare(right.id)
+    || left.status.localeCompare(right.status)
+}
+
+function formatRuntimeSignalScenarioRef(scenario) {
+  const source = scenario.source ? ` source=${scenario.source}` : ""
+  return `${scenario.matrix}/${scenario.id}(${scenario.status})${source}`
 }
