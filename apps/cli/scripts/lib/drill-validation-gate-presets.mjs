@@ -1,4 +1,5 @@
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
+import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -195,7 +196,6 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
 })
 
 const GENERATED_EVIDENCE_KINDS = Object.freeze(["matrix-report", "validation-suite-run"])
-const ARTIFACT_EVIDENCE_REPOS = Object.freeze(["cloud", "external", "oss"])
 
 export function describeDrillValidationGatePresets({ names = null } = {}) {
   const presetNames = names == null
@@ -380,7 +380,7 @@ export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceR
     itemName: "repo",
   })
   for (const repo of repos) {
-    if (!ARTIFACT_EVIDENCE_REPOS.includes(repo)) {
+    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
       throw new Error(`unknown required artifact evidence repo: ${repo}`)
     }
   }
