@@ -86,6 +86,12 @@ test("drill validation gate summary rejects output artifact index without output
   )
 })
 
+test("drill validation gate summary help lists artifact coverage requirements", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
+
+  assert.match(stdout, /--require-artifact-coverage-area AREA/)
+})
+
 test("drill validation gate summary accepts explicit report paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
   try {
@@ -204,6 +210,40 @@ test("drill validation gate summary gates aggregate artifact schema coverage", a
         assert.equal(
           aggregate.nextActions.some((action) =>
             action.nextAction === "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate aggregate"),
+          true,
+        )
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate summary gates aggregate artifact coverage areas", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  try {
+    const reportPath = path.join(rootDir, "gate.json")
+    await writeGateReport(reportPath, await passingGateReport(rootDir))
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-artifact-coverage-area",
+        "distributed-observability",
+        "--json",
+      ]),
+      (error) => {
+        const aggregate = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(aggregate.status, "failed")
+        assert.deepEqual(aggregate.requiredArtifactCoverageAreas, ["distributed-observability"])
+        assert.deepEqual(aggregate.missingArtifactCoverageAreas, ["distributed-observability"])
+        assert.equal(
+          aggregate.nextActions.some((action) =>
+            action.nextAction === "provide validation gate reports with artifact coverage areas: distributed-observability"),
           true,
         )
         return true

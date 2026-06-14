@@ -35,6 +35,8 @@ function printHelp() {
     "  --require-complete     Fail when matrix reports include skipped/dry-run scenarios or unresolved exit criteria",
     "  --require-platform-coverage-area ID[,ID]",
     "                         Fail when platform bundle validation suite lacks each coverage area; repeatable",
+    "  --require-artifact-coverage-area ID[,ID]",
+    "                         Fail when artifact index metadata lacks each coverage area; repeatable",
     "  --require-artifact-schema SCHEMA[,SCHEMA]",
     "                         Fail when artifact indexes do not include each artifact schema; repeatable",
     "  --require-runtime-signal ID[,ID]",
