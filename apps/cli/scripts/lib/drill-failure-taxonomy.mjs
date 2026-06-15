@@ -118,8 +118,8 @@ export function isKnownDrillFailureClassification(classification) {
     && Object.prototype.hasOwnProperty.call(FAILURE_CLASSIFICATIONS, classification)
 }
 
-export function drillFailureOwnerForClassification(classification) {
-  return FAILURE_CLASSIFICATIONS[classification]?.owner ?? "drill-or-runtime"
+export function drillFailureOwnerForClassification(classification, { fallback = "drill-or-runtime" } = {}) {
+  return FAILURE_CLASSIFICATIONS[classification]?.owner ?? fallback
 }
 
 export function drillFailureNextActionForClassification(classification, { target = "scenario", rootDir = null } = {}) {

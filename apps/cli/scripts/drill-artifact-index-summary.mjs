@@ -25,6 +25,7 @@ import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./lib/drill-evidence-repos.mjs"
+import { drillFailureOwnerForClassification } from "./lib/drill-failure-taxonomy.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
@@ -965,19 +966,8 @@ function countArtifactIndexSummaryNextAction(nextActions, {
 }
 
 function artifactIndexSummaryOwnerForClassification(classification) {
-  return ARTIFACT_INDEX_SUMMARY_CLASSIFICATION_OWNERS[classification] ?? "validation-harness"
+  return drillFailureOwnerForClassification(classification, { fallback: "validation-harness" })
 }
-
-const ARTIFACT_INDEX_SUMMARY_CLASSIFICATION_OWNERS = Object.freeze({
-  "kernel-authority": "kernel-authority",
-  "provider-auth": "provider-account",
-  "provider-error": "provider-runtime",
-  "runtime-projection-health": "kernel-authority",
-  "slice-auth": "provider-account",
-  "slice-runtime": "worker-kernel",
-  "ui-client-projection": "ui-client",
-  "workspace-live-sync-conflict": "runtime-state",
-})
 
 main().catch((error) => {
   console.error(`[drill-artifact-index-summary] ${error.stack ?? error.message}`)

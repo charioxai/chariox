@@ -28,6 +28,7 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("slice-runtime"), "worker-kernel")
   assert.equal(drillFailureOwnerForClassification("test-harness"), "validation-harness")
   assert.equal(drillFailureOwnerForClassification("unknown"), "drill-or-runtime")
+  assert.equal(drillFailureOwnerForClassification("unknown", { fallback: "validation-harness" }), "validation-harness")
 })
 
 test("exposes known classifications", () => {
