@@ -141,11 +141,18 @@ export function validationGateNextActions(checks) {
       countDrillAggregateNextAction(counts, action)
     }
     if (checks.matrices.requireComplete && (checks.matrices.aggregate?.incompleteScenarios?.length ?? 0) > 0) {
-      countDrillAggregateNextAction(counts, {
-        owner: "validation-harness",
-        classification: "incomplete-matrix",
-        nextAction: "run skipped or dry-run matrix scenarios before treating this validation set as complete",
-      })
+      const scenariosWithoutSpecificAction = countIncompleteScenarioPlannedActions(
+        counts,
+        checks.matrices.aggregate,
+      )
+      if (scenariosWithoutSpecificAction > 0) {
+        countDrillAggregateNextAction(counts, {
+          owner: "validation-harness",
+          classification: "incomplete-matrix",
+          nextAction: "run skipped or dry-run matrix scenarios before treating this validation set as complete",
+          count: scenariosWithoutSpecificAction,
+        })
+      }
     }
     if (checks.matrices.requireComplete && (checks.matrices.aggregate?.incompleteExitCriteria?.length ?? 0) > 0) {
       const criteriaWithoutSpecificAction = countIncompleteExitCriterionNextActions(
@@ -266,4 +273,18 @@ function countIncompleteExitCriterionNextActions(counts, criteria) {
     }
   }
   return missingSpecificActionCount
+}
+
+function countIncompleteScenarioPlannedActions(counts, aggregate) {
+  for (const action of aggregate?.plannedNextActions ?? []) {
+    countDrillAggregateNextAction(counts, {
+      owner: action.owner,
+      classification: action.classification,
+      nextAction: action.plannedNextAction,
+      count: action.count,
+    })
+  }
+  return (aggregate?.incompleteScenarios ?? [])
+    .filter((scenario) => !scenario?.plannedNextAction)
+    .length
 }

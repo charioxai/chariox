@@ -114,7 +114,16 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       missingProviders: ["claude"],
       missingScenarios: ["tracked"],
       aggregate: {
-        incompleteScenarios: [{ id: "tracked", status: "dry-run" }],
+        incompleteScenarios: [
+          {
+            id: "tracked",
+            status: "dry-run",
+            plannedClassification: "workspace-live-sync-conflict",
+            plannedOwner: "runtime-state",
+            plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
+          },
+          { id: "hetzner", status: "skipped" },
+        ],
         incompleteExitCriteria: [
           {
             id: "auth:exit-01",
@@ -130,6 +139,12 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
           classification: "provider-auth",
           nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
           count: 2,
+        }],
+        plannedNextActions: [{
+          owner: "runtime-state",
+          classification: "workspace-live-sync-conflict",
+          plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
+          count: 1,
         }],
       },
     },
@@ -152,6 +167,12 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       owner: "runtime-state",
       classification: "runtime-signal-coverage",
       nextAction: "run matrix scenarios that prove workspace-live-sync-state owned by runtime-state: Workspace Live Sync mode, included paths, ignored paths, conflict/reconcile status, and peer propagation state.",
+      count: 1,
+    },
+    {
+      owner: "runtime-state",
+      classification: "workspace-live-sync-conflict",
+      nextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
       count: 1,
     },
     {
