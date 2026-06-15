@@ -840,6 +840,25 @@ test("distributed runtime gate rejects generated matrix registry drift", async (
   }
 })
 
+test("distributed runtime gate rejects unsupported provider account aliases", async () => {
+  for (const args of [
+    ["--provider-account", "dev-stub=stub"],
+    ["--provider-account=claude-headless=headless"],
+  ]) {
+    const rawAlias = args.at(-1).replace("--provider-account=", "")
+    await assert.rejects(
+      execFile(process.execPath, [scriptPath, ...args, "--json"]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /unsupported distributed-runtime provider account alias provider/)
+        assert.doesNotMatch(error.stderr, new RegExp(rawAlias))
+        assert.doesNotMatch(error.stdout, new RegExp(rawAlias))
+        return true
+      },
+    )
+  }
+})
+
 test("distributed runtime gate rejects requirement flags without values", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--require-runtime-signal", "--json"]),

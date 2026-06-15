@@ -37,6 +37,7 @@ import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
 const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "arroba-cloud")
+const DISTRIBUTED_RUNTIME_PROVIDER_ACCOUNT_PROVIDERS = Object.freeze(["claude", "codex", "opencode"])
 
 function printHelp() {
   console.log([
@@ -412,6 +413,10 @@ function applyProviderAccountAliasRequirement(providerAccounts, value, flag) {
     if (provider && !isKnownDrillProvider(provider)) {
       delete providerAccounts[provider]
       throw new Error(`unknown provider account alias provider: ${provider}`)
+    }
+    if (provider && !DISTRIBUTED_RUNTIME_PROVIDER_ACCOUNT_PROVIDERS.includes(provider)) {
+      delete providerAccounts[provider]
+      throw new Error(`unsupported distributed-runtime provider account alias provider: ${provider}`)
     }
   } catch (error) {
     throw new Error(`${flag} has invalid value: ${error.message}`)
