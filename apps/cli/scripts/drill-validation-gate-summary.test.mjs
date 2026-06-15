@@ -102,6 +102,7 @@ test("drill validation gate summary help lists artifact coverage requirements", 
   assert.match(stdout, /--require-artifact-owner OWNER/)
   assert.match(stdout, /--require-artifact-classification CLASSIFICATION/)
   assert.match(stdout, /--require-generated-matrix-limitation KIND/)
+  assert.match(stdout, /--require-generated-validation-suite-failure-root PATH/)
 })
 
 test("drill validation gate summary accepts explicit report paths", async () => {
@@ -142,6 +143,8 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
       "matrix-report,validation-suite-run",
       "--require-generated-matrix-limitation",
       "dry-run-classification-coverage",
+      "--require-generated-validation-suite-failure-root",
+      "/tmp/generated-validation-suite/failed-run",
       "--json",
     ])
     const aggregate = JSON.parse(stdout)
@@ -150,6 +153,8 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
     assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
     assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
     assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, [])
+    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, ["/tmp/generated-validation-suite/failed-run"])
+    assert.deepEqual(aggregate.missingGeneratedValidationSuiteFailureRoots, [])
 
     await assert.rejects(
       execFile(process.execPath, [
@@ -163,6 +168,22 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
       (error) => {
         assert.equal(error.code, 1)
         assert.match(error.stderr, /unknown required generated evidence kind: not-generated/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-generated-validation-suite-failure-root",
+        "/tmp/generated-validation-suite/missing-run",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const missing = JSON.parse(error.stdout)
+        assert.deepEqual(missing.missingGeneratedValidationSuiteFailureRoots, ["/tmp/generated-validation-suite/missing-run"])
         return true
       },
     )

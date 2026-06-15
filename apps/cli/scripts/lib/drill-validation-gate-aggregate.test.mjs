@@ -892,6 +892,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
     normalizedAggregateRequirements: {
       requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
       requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+      requiredGeneratedValidationSuiteFailureRoots: ["/tmp/suites/cloud/failed-run", "/tmp/suites/oss/failed-run"],
     },
     validateReport: () => {},
   })
@@ -903,10 +904,16 @@ test("aggregates generated evidence provenance from gate reports", () => {
   assert.deepEqual(aggregate.coverage.generatedMatrixLimitations, {
     "dry-run-classification-coverage": 1,
   })
+  assert.deepEqual(aggregate.coverage.generatedValidationSuiteFailureRoots, {
+    "/tmp/suites/cloud/failed-run": 1,
+    "/tmp/suites/oss/failed-run": 1,
+  })
   assert.deepEqual(aggregate.requiredGeneratedEvidenceKinds, ["matrix-report", "validation-suite-run"])
   assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
   assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
   assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, [])
+  assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, ["/tmp/suites/cloud/failed-run", "/tmp/suites/oss/failed-run"])
+  assert.deepEqual(aggregate.missingGeneratedValidationSuiteFailureRoots, [])
   assert.deepEqual(aggregate.coverage.requiredGeneratedEvidenceKinds, {
     "matrix-report": 1,
     "validation-suite-run": 1,
@@ -916,6 +923,11 @@ test("aggregates generated evidence provenance from gate reports", () => {
     "dry-run-classification-coverage": 1,
   })
   assert.deepEqual(aggregate.coverage.missingGeneratedMatrixLimitations, {})
+  assert.deepEqual(aggregate.coverage.requiredGeneratedValidationSuiteFailureRoots, {
+    "/tmp/suites/cloud/failed-run": 1,
+    "/tmp/suites/oss/failed-run": 1,
+  })
+  assert.deepEqual(aggregate.coverage.missingGeneratedValidationSuiteFailureRoots, {})
   assert.deepEqual(aggregate.reports[0].generatedEvidence, {
     kinds: ["validation-suite-run", "matrix-report"],
     validationSuites: {

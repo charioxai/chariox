@@ -127,6 +127,7 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const generatedValidationSuiteFailureRoots = new Set(
     [
       ...Object.keys(aggregate.coverage?.artifactGeneratedValidationSuiteFailureRoots ?? {}),
+      ...Object.keys(aggregate.coverage?.generatedValidationSuiteFailureRoots ?? {}),
       ...(aggregate.reports ?? [])
       .flatMap((report) => generatedValidationSuiteFailureRootsFor(report?.generatedEvidence)),
     ].filter(nonEmptyString),
@@ -157,6 +158,14 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.missingArtifactGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
     ...(aggregate.missingGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
   ])
+  const requiredGeneratedValidationSuiteFailureRoots = new Set([
+    ...Object.keys(aggregate.coverage?.requiredGeneratedValidationSuiteFailureRoots ?? {}),
+    ...(aggregate.requiredGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
+  ])
+  const missingGeneratedValidationSuiteFailureRoots = new Set([
+    ...Object.keys(aggregate.coverage?.missingGeneratedValidationSuiteFailureRoots ?? {}),
+    ...(aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
+  ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
@@ -171,6 +180,8 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(missingGeneratedEvidenceKinds.size > 0 ? { missingGeneratedEvidenceKinds: [...missingGeneratedEvidenceKinds].sort().join(",") } : {}),
     ...(requiredGeneratedMatrixLimitations.size > 0 ? { requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations].sort().join(",") } : {}),
     ...(missingGeneratedMatrixLimitations.size > 0 ? { missingGeneratedMatrixLimitations: [...missingGeneratedMatrixLimitations].sort().join(",") } : {}),
+    ...(requiredGeneratedValidationSuiteFailureRoots.size > 0 ? { requiredGeneratedValidationSuiteFailureRoots: [...requiredGeneratedValidationSuiteFailureRoots].sort().join(",") } : {}),
+    ...(missingGeneratedValidationSuiteFailureRoots.size > 0 ? { missingGeneratedValidationSuiteFailureRoots: [...missingGeneratedValidationSuiteFailureRoots].sort().join(",") } : {}),
     ...(artifactCoverageInputs.length > 0 ? { artifactCoverageInputCount: String(artifactCoverageInputs.length) } : {}),
     ...(artifactCoverageInputSources.length > 0 || artifactCoverageCoverageSources.length > 0
       ? { artifactCoverageInputSources: sortedUnique([...artifactCoverageInputSources, ...artifactCoverageCoverageSources]).join(",") }

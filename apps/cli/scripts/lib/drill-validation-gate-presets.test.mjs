@@ -76,6 +76,7 @@ test("describes stable validation gate presets", () => {
       requiredScenarios: ["agent-reuse", "collab-remote-agent", "hetzner-collab", "hetzner-single", "lease-reconnect", "local-collab", "local-managed-codex", "local-native-tui", "local-single", "local-tracked-codex", "permission-visibility", "provider-auth", "provider-run-binding", "remote-managed-codex", "remote-native-tui", "remote-prompt-dispatch", "remote-tracked-codex", "session-start", "single-user-remote-agent", "slice-lifecycle", "slice-native-tui", "transcript-parity", "ui-projection"],
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
   assert.deepEqual(
@@ -106,6 +107,7 @@ test("describes stable validation gate presets", () => {
       requiredScenarios: workspaceLiveSyncRequiredScenarioIds(),
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
   assert.equal(isKnownDrillValidationGatePreset("workspace-live-sync"), true)
@@ -138,6 +140,7 @@ test("describes stable validation gate presets", () => {
       requiredScenarios: ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
   assert.deepEqual(
@@ -168,6 +171,7 @@ test("describes stable validation gate presets", () => {
       requiredScenarios: ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
   assert.deepEqual(
@@ -198,6 +202,7 @@ test("describes stable validation gate presets", () => {
       requiredScenarios: ["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
 })
@@ -239,6 +244,7 @@ test("expands validation gate preset requirements", () => {
     requiredScenarios: ["local"],
     requiredGeneratedEvidenceKinds: [],
     requiredGeneratedMatrixLimitations: [],
+    requiredGeneratedValidationSuiteFailureRoots: [],
   })
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["distributed-runtime"],

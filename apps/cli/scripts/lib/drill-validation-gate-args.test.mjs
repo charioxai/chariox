@@ -46,6 +46,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--unknown"], 0, options)
   assert.equal(index, null)
 
@@ -74,6 +76,7 @@ test("parses validation gate requirement arguments", () => {
     requiredScenarios: [],
     requiredGeneratedEvidenceKinds: ["matrix-report"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   })
 })
 

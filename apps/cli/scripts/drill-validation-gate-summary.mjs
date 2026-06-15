@@ -77,6 +77,8 @@ function printHelp() {
     "                         Require generated validation-suite-run or matrix-report evidence",
     "  --require-generated-matrix-limitation KIND",
     "                         Require aggregate evidence for generated matrix limitations",
+    "  --require-generated-validation-suite-failure-root PATH",
+    "                         Require generated validation-suite failure-root evidence",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -127,6 +129,7 @@ async function main() {
     requiredScenarios: options.requiredScenarios,
     requiredGeneratedEvidenceKinds: options.requiredGeneratedEvidenceKinds,
     requiredGeneratedMatrixLimitations: options.requiredGeneratedMatrixLimitations,
+    requiredGeneratedValidationSuiteFailureRoots: options.requiredGeneratedValidationSuiteFailureRoots,
   })
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({

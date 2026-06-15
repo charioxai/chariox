@@ -232,6 +232,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredScenarios: [...(preset.requiredScenarios ?? [])],
       requiredGeneratedEvidenceKinds: [...(preset.requiredGeneratedEvidenceKinds ?? [])],
       requiredGeneratedMatrixLimitations: [...(preset.requiredGeneratedMatrixLimitations ?? [])],
+      requiredGeneratedValidationSuiteFailureRoots: [...(preset.requiredGeneratedValidationSuiteFailureRoots ?? [])],
     }
   })
 }
@@ -261,6 +262,7 @@ export function expandValidationGatePresetRequirements({
   requiredScenarios,
   requiredGeneratedEvidenceKinds = [],
   requiredGeneratedMatrixLimitations = [],
+  requiredGeneratedValidationSuiteFailureRoots = [],
 }) {
   const expanded = {
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
@@ -286,6 +288,7 @@ export function expandValidationGatePresetRequirements({
     requiredScenarios: [...requiredScenarios],
     requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds],
     requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations],
+    requiredGeneratedValidationSuiteFailureRoots: [...requiredGeneratedValidationSuiteFailureRoots],
   }
   for (const presetName of presets) {
     const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
@@ -312,6 +315,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
     expanded.requiredGeneratedEvidenceKinds.push(...(preset.requiredGeneratedEvidenceKinds ?? []))
     expanded.requiredGeneratedMatrixLimitations.push(...(preset.requiredGeneratedMatrixLimitations ?? []))
+    expanded.requiredGeneratedValidationSuiteFailureRoots.push(...(preset.requiredGeneratedValidationSuiteFailureRoots ?? []))
   }
   return expanded
 }
@@ -387,6 +391,13 @@ export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMat
     }
   }
   return limitations
+}
+
+export function normalizeRequiredGeneratedValidationSuiteFailureRoots(requiredGeneratedValidationSuiteFailureRoots) {
+  return normalizeCommaSeparatedStrings(requiredGeneratedValidationSuiteFailureRoots, {
+    fieldName: "requiredGeneratedValidationSuiteFailureRoots",
+    itemName: "root",
+  })
 }
 
 export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifactGeneratedEvidenceKinds) {

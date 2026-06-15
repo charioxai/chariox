@@ -1291,10 +1291,13 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingScenarios: { remote: 1 },
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
+      generatedValidationSuiteFailureRoots: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
+      requiredGeneratedValidationSuiteFailureRoots: {},
+      missingGeneratedValidationSuiteFailureRoots: {},
     })
     assert.deepEqual(aggregate.reports.map((report) => report.platformCoverage), [
       {
