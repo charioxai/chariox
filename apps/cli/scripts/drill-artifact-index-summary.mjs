@@ -31,7 +31,7 @@ import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalNextAction,
-  isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignal,
 } from "./lib/drill-runtime-signals.mjs"
 import { isKnownDrillArtifactValidationPreset } from "./lib/drill-validation-gate-presets.mjs"
 
@@ -436,9 +436,9 @@ function parseRuntimeSignalRequirement(value, flag) {
     throw new Error(`${flag} requires a value`)
   }
   for (const signal of signals) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${flag} has unknown runtime signal: ${signal}`)
-    }
+    validateDrillRuntimeSignal(signal, flag, {
+      message: () => `${flag} has unknown runtime signal: ${signal}`,
+    })
   }
   return signals
 }

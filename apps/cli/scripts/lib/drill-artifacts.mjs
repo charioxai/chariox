@@ -28,7 +28,7 @@ import { isKnownDrillArtifactValidationPreset } from "./drill-validation-gate-pr
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
   drillRuntimeSignalOwnersFor,
-  isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignal,
   validateDrillRuntimeSignals,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
@@ -782,9 +782,7 @@ function validateDiagnosticCountObject(value, source, key) {
   }
   if (["runtimeSignals", "requiredRuntimeSignals", "missingRuntimeSignals"].includes(key)) {
     for (const signal of Object.keys(value)) {
-      if (!isKnownDrillRuntimeSignal(signal)) {
-        throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-      }
+      validateDrillRuntimeSignal(signal, source)
     }
   }
   if (key === "exitCriterionStatuses" || key === "incompleteExitCriterionStatuses") {

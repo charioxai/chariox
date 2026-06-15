@@ -10,6 +10,7 @@ import {
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
   isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignal,
   validateDrillRuntimeSignals,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
@@ -66,6 +67,21 @@ test("writes and validates runtime signal manifest", () => {
   })
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-sync-state"), true)
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-synch-state"), false)
+  assert.doesNotThrow(() => validateDrillRuntimeSignal("workspace-live-sync-state", "report.runtimeSignals[0]"))
+  assert.throws(
+    () => validateDrillRuntimeSignal("workspace-live-synch-state", "report.runtimeSignals[0]"),
+    /report\.runtimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillRuntimeSignal("workspace-live-synch-state", "manifest.signals[0]", { label: "id" }),
+    /manifest\.signals\[0\] has unknown id "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillRuntimeSignal("workspace-live-synch-state", "--require-runtime-signal", {
+      message: (signal) => `--require-runtime-signal has unknown runtime signal: ${signal}`,
+    }),
+    /--require-runtime-signal has unknown runtime signal: workspace-live-synch-state/,
+  )
   assert.doesNotThrow(() => validateDrillRuntimeSignalsManifest(manifest))
 })
 

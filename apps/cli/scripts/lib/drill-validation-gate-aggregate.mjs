@@ -24,7 +24,7 @@ import {
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnerCounts,
-  isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
 
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
@@ -2149,9 +2149,7 @@ function validateRuntimeSignalScenarioMap(value, source, { reportSource }) {
     throw new Error(`${source} is not an object`)
   }
   for (const [signal, scenarios] of Object.entries(value)) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, source)
     if (!Array.isArray(scenarios)) {
       throw new Error(`${source}.${signal} is not an array`)
     }
@@ -2185,9 +2183,7 @@ function validateRuntimeSignalScenario(scenario, source, { reportSource }) {
 function validateRuntimeSignalArray(value, source) {
   validateStringArray(value, source)
   for (const [index, signal] of value.entries()) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source}[${index}] has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, `${source}[${index}]`)
   }
 }
 
@@ -2315,9 +2311,7 @@ function validateGeneratedEvidencePathText(value, source) {
 function validateRuntimeSignalCountObject(value, source) {
   validateCountObject(value, source)
   for (const signal of Object.keys(value)) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, source)
   }
 }
 

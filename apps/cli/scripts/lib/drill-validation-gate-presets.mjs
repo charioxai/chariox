@@ -19,7 +19,7 @@ import {
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
-  isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
 import { WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS } from "./workspace-live-sync-fixtures.mjs"
@@ -611,9 +611,9 @@ export function normalizeRequiredArtifactRuntimeSignals(requiredArtifactRuntimeS
     itemName: "signal",
   })
   for (const signal of signals) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`unknown required artifact runtime signal: ${signal}`)
-    }
+    validateDrillRuntimeSignal(signal, "required artifact runtime signals", {
+      message: () => `unknown required artifact runtime signal: ${signal}`,
+    })
   }
   return signals
 }
@@ -706,9 +706,9 @@ export function normalizeRequiredRuntimeSignals(requiredRuntimeSignals) {
   }
   const normalizedSignals = [...new Set(signals)].sort()
   for (const signal of normalizedSignals) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`unknown required runtime signal: ${signal}`)
-    }
+    validateDrillRuntimeSignal(signal, "required runtime signals", {
+      message: () => `unknown required runtime signal: ${signal}`,
+    })
   }
   return normalizedSignals
 }
@@ -842,9 +842,9 @@ export function normalizeRequiredMatrixRuntimeSignals(requiredMatrixRuntimeSigna
   }
   const normalizedSignals = [...new Set(signals)].sort()
   for (const signal of normalizedSignals) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`unknown required matrix runtime signal: ${signal}`)
-    }
+    validateDrillRuntimeSignal(signal, "required matrix runtime signals", {
+      message: () => `unknown required matrix runtime signal: ${signal}`,
+    })
   }
   return normalizedSignals
 }

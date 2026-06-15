@@ -4,7 +4,7 @@ import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
-  isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignal,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
@@ -392,9 +392,7 @@ function sortedStringArray(value, source) {
 function sortedRuntimeSignalArray(value, source) {
   const signals = sortedStringArray(value, source)
   for (const [index, signal] of signals.entries()) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, `validation suite preset ${source}[${index}]`)
   }
   return signals
 }

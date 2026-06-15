@@ -23,7 +23,7 @@ import {
 } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
-  isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignal,
   validateDrillRuntimeSignals,
 } from "./drill-runtime-signals.mjs"
 
@@ -264,9 +264,7 @@ function validateRequiredMatrixRuntimeSignalScenarios(value, source, requiredMat
     throw new Error(`${source} is not an object`)
   }
   for (const signal of Object.keys(value)) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, source)
   }
   for (const signal of requiredMatrixRuntimeSignals) {
     if (!Object.prototype.hasOwnProperty.call(value, signal)) {

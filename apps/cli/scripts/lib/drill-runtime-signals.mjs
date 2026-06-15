@@ -61,17 +61,26 @@ export function isKnownDrillRuntimeSignal(signal) {
     && Object.prototype.hasOwnProperty.call(RUNTIME_SIGNALS, signal)
 }
 
-export function drillRuntimeSignalOwner(signal) {
+export function validateDrillRuntimeSignal(signal, source, { label = "runtime signal", message } = {}) {
   if (!isKnownDrillRuntimeSignal(signal)) {
-    throw new Error(`unknown drill runtime signal ${JSON.stringify(signal)}`)
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(signal) : message)
+    }
+    throw new Error(`${source} has unknown ${label} ${JSON.stringify(signal)}`)
   }
+}
+
+export function drillRuntimeSignalOwner(signal) {
+  validateDrillRuntimeSignal(signal, "drill runtime signal", {
+    message: () => `unknown drill runtime signal ${JSON.stringify(signal)}`,
+  })
   return RUNTIME_SIGNALS[signal].owner
 }
 
 export function drillRuntimeSignalNextAction(signal, { target = "matrix" } = {}) {
-  if (!isKnownDrillRuntimeSignal(signal)) {
-    throw new Error(`unknown drill runtime signal ${JSON.stringify(signal)}`)
-  }
+  validateDrillRuntimeSignal(signal, "drill runtime signal", {
+    message: () => `unknown drill runtime signal ${JSON.stringify(signal)}`,
+  })
   const owner = drillRuntimeSignalOwner(signal)
   if (target === "platform-bundle") {
     return `add runtime-signal contract coverage for ${signal} owned by ${owner} to the drill platform bundle`
@@ -101,9 +110,7 @@ export function drillRuntimeSignalOwnerCounts(runtimeSignals) {
 
 export function validateDrillRuntimeSignals(runtimeSignals, source = "drill runtime signals") {
   for (const [index, signal] of (runtimeSignals ?? []).entries()) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source}[${index}] has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, `${source}[${index}]`)
   }
 }
 
@@ -135,9 +142,7 @@ export function validateDrillRuntimeSignalsManifest(manifest, source = "runtime 
     if (!signal || typeof signal !== "object" || Array.isArray(signal)) {
       throw new Error(`${signalSource} is not an object`)
     }
-    if (!isKnownDrillRuntimeSignal(signal.id)) {
-      throw new Error(`${signalSource} has unknown id ${JSON.stringify(signal.id)}`)
-    }
+    validateDrillRuntimeSignal(signal.id, signalSource, { label: "id" })
     if (seen.has(signal.id)) {
       throw new Error(`${source} has duplicate signal ${signal.id}`)
     }

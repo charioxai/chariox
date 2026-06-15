@@ -10,7 +10,7 @@ import {
   drillFailureOwnerForClassification,
   validateDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
-import { drillRuntimeSignalOwnerCounts, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
+import { drillRuntimeSignalOwnerCounts, validateDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import {
   isSensitiveDrillKey,
   looksLikeDrillSecretValue,
@@ -1331,9 +1331,7 @@ function validateExitCriteriaCountObject(value, source) {
 function validateRuntimeSignalCountObject(value, source) {
   validateCountObject(value, source)
   for (const signal of Object.keys(value)) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, source)
   }
 }
 
@@ -1349,9 +1347,7 @@ function validateRuntimeSignalEvidenceObject(value, source, { aggregate }) {
     throw new Error(`${source} is missing`)
   }
   for (const [signal, scenarios] of Object.entries(value)) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, source)
     if (!Array.isArray(scenarios) || scenarios.length === 0) {
       throw new Error(`${source}.${signal} has invalid scenarios`)
     }
@@ -1475,9 +1471,7 @@ function validateRuntimeSignals(value, source) {
     throw new Error(`${source} has invalid runtimeSignals`)
   }
   for (const signal of value) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, source)
   }
 }
 

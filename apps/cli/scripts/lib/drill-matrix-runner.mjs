@@ -9,7 +9,7 @@ import {
 } from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { isKnownDrillProvider, validateDrillProvider } from "./drill-provider-profiles.mjs"
-import { drillRuntimeSignalOwnerCounts, drillRuntimeSignalOwnersFor, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
+import { drillRuntimeSignalOwnerCounts, drillRuntimeSignalOwnersFor, validateDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
 export function parseDrillScenarioIds(value) {
@@ -330,9 +330,7 @@ function validateRuntimeSignals(value, source) {
     throw new Error(`${source} has invalid runtimeSignals`)
   }
   for (const signal of value) {
-    if (!isKnownDrillRuntimeSignal(signal)) {
-      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
-    }
+    validateDrillRuntimeSignal(signal, source)
   }
 }
 
