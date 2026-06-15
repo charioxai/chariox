@@ -1,3 +1,5 @@
+import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
+
 export function countDrillAggregateNextAction(counts, { owner, classification, nextAction, count = 1 }) {
   validateDrillAggregateNextAction({
     owner,
@@ -29,6 +31,9 @@ export function validateDrillAggregateNextAction(action, source) {
   for (const key of ["owner", "classification", "nextAction"]) {
     if (!nonEmptyString(action[key])) {
       throw new Error(`${source} is missing ${key}`)
+    }
+    if (looksLikeDrillSecretValue(action[key])) {
+      throw new Error(`${source} includes secret-looking ${key}`)
     }
   }
   if (!Number.isSafeInteger(action.count) || action.count < 1) {

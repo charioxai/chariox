@@ -74,6 +74,12 @@ test("validates aggregate next action entries", () => {
     nextAction: "inspect state",
     count: 1.5,
   }, "action"), /invalid count/)
+  assert.throws(() => validateDrillAggregateNextAction({
+    owner: "runtime-state",
+    classification: "runtime-timeout",
+    nextAction: "use Bearer abcdefghijklmnopqrstuvwxyz",
+    count: 1,
+  }, "action"), /secret-looking nextAction/)
 })
 
 test("aggregate next action counting rejects incomplete actions", () => {
@@ -90,6 +96,11 @@ test("aggregate next action counting rejects incomplete actions", () => {
     nextAction: "inspect state",
     count: 1.5,
   }), /invalid count/)
+  assert.throws(() => countDrillAggregateNextAction(counts, {
+    owner: "runtime-state",
+    classification: "runtime-timeout",
+    nextAction: "use sk-secretsecretsecretsecret",
+  }), /secret-looking nextAction/)
   assert.equal(counts.size, 0)
 })
 
