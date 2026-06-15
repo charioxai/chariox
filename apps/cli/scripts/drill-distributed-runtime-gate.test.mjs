@@ -46,6 +46,8 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       "codex=work",
       "--require-artifact-provider-account-alias",
       "opencode=zen",
+      "--require-artifact-validation-preset",
+      "cloud-distributed-runtime",
       "--json",
       "--output",
       outputPath,
@@ -90,7 +92,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       "codex=work": 1,
       "opencode=zen": 1,
     })
-    assert.deepEqual(report.checks.artifacts.requiredArtifactValidationPresets, ["distributed-runtime"])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactValidationPresets, ["cloud-distributed-runtime", "distributed-runtime"])
     assert.deepEqual(report.checks.artifacts.missingArtifactValidationPresets, [])
     assert.deepEqual(report.checks.artifacts.aggregate.validationPresets, {
       "cloud-distributed-runtime": 1,
