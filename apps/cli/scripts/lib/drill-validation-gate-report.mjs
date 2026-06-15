@@ -201,6 +201,14 @@ function validateMatrixCheck(check, source) {
   if (typeof check.requireComplete !== "boolean") {
     throw new Error(`${source} has invalid requireComplete`)
   }
+  if (check.requiredMatrixMaxAgeMs !== undefined
+    && check.requiredMatrixMaxAgeMs !== null
+    && (!Number.isSafeInteger(check.requiredMatrixMaxAgeMs) || check.requiredMatrixMaxAgeMs < 0)) {
+    throw new Error(`${source} has invalid requiredMatrixMaxAgeMs`)
+  }
+  if (check.staleMatrixReports !== undefined) {
+    validateStaleMatrixReports(check.staleMatrixReports, `${source}.staleMatrixReports`)
+  }
   if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
     throw new Error(`${source} is missing error`)
   }
@@ -210,6 +218,33 @@ function validateMatrixCheck(check, source) {
     } catch (error) {
       const message = String(error.message ?? error).replace(/^aggregate\s+/, "")
       throw new Error(`${source}.aggregate ${message}`)
+    }
+  }
+}
+
+function validateStaleMatrixReports(reports, source) {
+  if (!Array.isArray(reports)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, entry] of reports.entries()) {
+    const entrySource = `${source}[${index}]`
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${entrySource} is not an object`)
+    }
+    if (entry.source !== null && typeof entry.source !== "string") {
+      throw new Error(`${entrySource} has invalid source`)
+    }
+    if (!nonEmptyString(entry.matrix)) {
+      throw new Error(`${entrySource} has invalid matrix`)
+    }
+    if (!nonEmptyString(entry.completedAt)) {
+      throw new Error(`${entrySource} has invalid completedAt`)
+    }
+    if (!Number.isSafeInteger(entry.ageMs) || entry.ageMs < 0) {
+      throw new Error(`${entrySource} has invalid ageMs`)
+    }
+    if (!Number.isSafeInteger(entry.maxAgeMs) || entry.maxAgeMs < 0) {
+      throw new Error(`${entrySource} has invalid maxAgeMs`)
     }
   }
 }

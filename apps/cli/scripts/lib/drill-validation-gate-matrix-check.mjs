@@ -5,6 +5,7 @@ import {
   readDrillMatrixReport,
   summarizeDrillMatrixReports,
 } from "./drill-matrix-report.mjs"
+import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
 export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, {
   maxDepth,
@@ -15,6 +16,8 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
   requiredDeploymentPresets,
   requiredProviders,
   requiredScenarios,
+  requiredMatrixMaxAgeMs = null,
+  nowMs = Date.now(),
 }) {
   if (matrixRoots.length === 0
     && matrixReports.length === 0
@@ -23,13 +26,16 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
     && requiredMatrixRuntimeSignals.length === 0
     && requiredDeploymentPresets.length === 0
     && requiredProviders.length === 0
-    && requiredScenarios.length === 0) {
+    && requiredScenarios.length === 0
+    && requiredMatrixMaxAgeMs === null) {
     return {
       status: "skipped",
       roots: [],
       inputs: [],
       reportPaths: [],
       requireComplete,
+      requiredMatrixMaxAgeMs,
+      staleMatrixReports: [],
       requiredMatrices: [],
       missingMatrices: [],
       requiredMatrixClassifications: [],
@@ -56,6 +62,8 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
         inputs: [...matrixReports],
         reportPaths,
         requireComplete,
+        requiredMatrixMaxAgeMs,
+        staleMatrixReports: [],
         requiredMatrices: [...requiredMatrices],
         missingMatrices: [...requiredMatrices],
         requiredMatrixClassifications: [...requiredMatrixClassifications],
@@ -73,6 +81,10 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
     }
     const reports = await Promise.all(reportPaths.map((reportPath) => readDrillMatrixReport(reportPath)))
     const aggregate = summarizeDrillMatrixReports(reports, { sources: reportPaths })
+    const staleMatrixReports = staleMatrixReportsFor(reports, reportPaths, {
+      nowMs,
+      requiredMatrixMaxAgeMs,
+    })
     const exitCode = requireComplete
       ? drillMatrixReportCompletionExitCode(reports)
       : drillMatrixReportExitCode(reports)
@@ -90,12 +102,15 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
         && missingDeploymentPresets.length === 0
         && missingProviders.length === 0
         && missingScenarios.length === 0
+        && staleMatrixReports.length === 0
         ? "passed"
         : "failed",
       roots: [...matrixRoots],
       inputs: [...matrixReports],
       reportPaths,
       requireComplete,
+      requiredMatrixMaxAgeMs,
+      staleMatrixReports,
       requiredMatrices: [...requiredMatrices],
       missingMatrices,
       requiredMatrixClassifications: [...requiredMatrixClassifications],
@@ -117,6 +132,8 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
       inputs: [...matrixReports],
       reportPaths: [],
       requireComplete,
+      requiredMatrixMaxAgeMs,
+      staleMatrixReports: [],
       requiredMatrices: [...requiredMatrices],
       missingMatrices: [...requiredMatrices],
       requiredMatrixClassifications: [...requiredMatrixClassifications],
@@ -162,4 +179,26 @@ function missingRequiredMatrixClassifications(aggregate, requiredMatrixClassific
 function missingRequiredMatrixRuntimeSignals(aggregate, requiredMatrixRuntimeSignals) {
   const present = new Set(Object.keys(aggregate.runtimeSignals ?? {}))
   return requiredMatrixRuntimeSignals.filter((signal) => !present.has(signal))
+}
+
+function staleMatrixReportsFor(reports, sources, { nowMs, requiredMatrixMaxAgeMs }) {
+  if (requiredMatrixMaxAgeMs === null) return []
+  if (!Number.isSafeInteger(requiredMatrixMaxAgeMs) || requiredMatrixMaxAgeMs < 0) {
+    throw new Error("requiredMatrixMaxAgeMs must be a non-negative integer")
+  }
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("nowMs must be finite")
+  }
+  return reports
+    .map((report, position) => {
+      const completedMs = parseDrillIsoTimestamp(report.completedAt, `matrix report ${sources[position] ?? position}.completedAt`)
+      return {
+        source: sources[position] ?? null,
+        matrix: report.matrix,
+        completedAt: report.completedAt,
+        ageMs: Math.max(0, Math.floor(nowMs - completedMs)),
+        maxAgeMs: requiredMatrixMaxAgeMs,
+      }
+    })
+    .filter((entry) => entry.ageMs > requiredMatrixMaxAgeMs)
 }

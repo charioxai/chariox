@@ -72,6 +72,7 @@ function printHelp() {
     "  --require-deployment-preset NAME[,NAME]",
     "  --require-provider NAME[,NAME]",
     "  --require-scenario ID[,ID]",
+    "  --require-matrix-max-age-ms MS",
     "  --json                 Print gate report JSON",
     "  --output PATH          Write gate report JSON to PATH",
     "  --output-artifact-index PATH",
@@ -133,6 +134,7 @@ function parseArgs(argv) {
     platformBundleDir: null,
     requireComplete: false,
     requiredArtifactMaxAgeMs: null,
+    requiredMatrixMaxAgeMs: null,
     ...validationGateRequirementOptionDefaults({ presetKey: "presets" }),
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -201,6 +203,14 @@ function parseArgs(argv) {
         options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(
           arg.slice("--require-artifact-max-age-ms=".length),
           "--require-artifact-max-age-ms",
+        )
+      } else if (arg === "--require-matrix-max-age-ms") {
+        options.requiredMatrixMaxAgeMs = parseDrillNonNegativeInteger(readValue(argv, index, arg), "--require-matrix-max-age-ms")
+        index += 1
+      } else if (arg.startsWith("--require-matrix-max-age-ms=")) {
+        options.requiredMatrixMaxAgeMs = parseDrillNonNegativeInteger(
+          arg.slice("--require-matrix-max-age-ms=".length),
+          "--require-matrix-max-age-ms",
         )
       } else if (arg === "--output") {
         options.outputPath = readValue(argv, index, arg)
@@ -291,6 +301,7 @@ function gateOptionsFor(options) {
     requiredDeploymentPresets: options.requiredDeploymentPresets,
     requiredProviders: options.requiredProviders,
     requiredScenarios: options.requiredScenarios,
+    requiredMatrixMaxAgeMs: options.requiredMatrixMaxAgeMs,
   }
 }
 

@@ -28,6 +28,7 @@ export function configurationValidationGateCheck({
   requiredDeploymentPresets = [],
   requiredProviders = [],
   requiredScenarios = [],
+  requiredMatrixMaxAgeMs = null,
 }) {
   const configured = Boolean(platformBundleDir)
     || artifactRoots.length > 0
@@ -58,6 +59,7 @@ export function configurationValidationGateCheck({
     || requiredDeploymentPresets.length > 0
     || requiredProviders.length > 0
     || requiredScenarios.length > 0
+    || requiredMatrixMaxAgeMs !== null
   return configured
     ? { status: "passed" }
     : {

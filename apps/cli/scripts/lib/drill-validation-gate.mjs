@@ -120,6 +120,7 @@ export async function runDrillValidationGate({
   requiredDeploymentPresets = [],
   requiredProviders = [],
   requiredScenarios = [],
+  requiredMatrixMaxAgeMs = null,
   suppressedPresetRequirements = [],
 } = {}) {
   const normalizedPresets = normalizeRequiredPresets(presets)
@@ -202,6 +203,7 @@ export async function runDrillValidationGate({
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
+      requiredMatrixMaxAgeMs,
     }),
     platformBundle: await platformValidationGateCheck(platformBundleDir, {
       requiredCoverageAreas: normalizedRequiredPlatformCoverageAreas,
@@ -236,6 +238,7 @@ export async function runDrillValidationGate({
       requiredDeploymentPresets: normalizedRequiredDeploymentPresets,
       requiredProviders: normalizedRequiredProviders,
       requiredScenarios: normalizedRequiredScenarios,
+      requiredMatrixMaxAgeMs,
     }),
     failures: await failureValidationGateCheck({ failureInputs, failureRoots }, { maxDepth }),
   }

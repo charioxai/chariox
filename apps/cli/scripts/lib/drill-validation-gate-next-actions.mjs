@@ -181,6 +181,14 @@ export function validationGateNextActions(checks) {
         nextAction: `run matrix reports for missing scenarios: ${missingScenarios.join(", ")}`,
       })
     }
+    if ((checks.matrices.staleMatrixReports ?? []).length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "matrix-staleness",
+        nextAction: "regenerate stale matrix reports, then rerun the validation gate",
+        count: checks.matrices.staleMatrixReports.length,
+      })
+    }
   }
   if (checks.failures.status === "failed") {
     if (checks.failures.error) {

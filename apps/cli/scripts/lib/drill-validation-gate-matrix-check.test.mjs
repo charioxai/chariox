@@ -18,6 +18,8 @@ test("skips matrix validation when no matrix evidence or requirements are config
     inputs: [],
     reportPaths: [],
     requireComplete: false,
+    requiredMatrixMaxAgeMs: null,
+    staleMatrixReports: [],
     requiredMatrices: [],
     missingMatrices: [],
     requiredMatrixClassifications: [],
@@ -90,6 +92,43 @@ test("passes with matrix, classification, deployment, provider, and scenario cov
     assert.deepEqual(check.missingProviders, [])
     assert.deepEqual(check.missingScenarios, [])
     assert.deepEqual(check.aggregate.matrixNames, { "workspace-live-sync-matrix": 1 })
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("gates matrix reports by required freshness", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    const completedAt = new Date(Date.now() - 500).toISOString()
+    const startedAt = new Date(Date.parse(completedAt) - 1000).toISOString()
+    await writeMatrixReport(reportPath, matrixReport({
+      startedAt,
+      completedAt,
+      durationMs: 1000,
+    }))
+
+    const fresh = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({
+      requiredMatrixMaxAgeMs: 3_600_000,
+    }))
+    assert.equal(fresh.status, "passed")
+    assert.equal(fresh.requiredMatrixMaxAgeMs, 3_600_000)
+    assert.deepEqual(fresh.staleMatrixReports, [])
+
+    const stale = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({
+      requiredMatrixMaxAgeMs: 100,
+    }))
+    assert.equal(stale.status, "failed")
+    assert.equal(stale.staleMatrixReports.length, 1)
+    assert.equal(stale.staleMatrixReports[0].source, reportPath)
+    assert.equal(stale.staleMatrixReports[0].matrix, "test-matrix")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -212,6 +251,7 @@ function matrixOptions(overrides = {}) {
     requiredDeploymentPresets: [],
     requiredProviders: [],
     requiredScenarios: [],
+    requiredMatrixMaxAgeMs: null,
     ...overrides,
   }
 }

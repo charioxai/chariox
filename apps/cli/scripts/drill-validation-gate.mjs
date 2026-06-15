@@ -81,6 +81,8 @@ function printHelp() {
     "                         Fail when matrix reports do not cover each provider; repeatable",
     "  --require-scenario ID[,ID]",
     "                         Fail when matrix reports do not include each scenario id; repeatable",
+    "  --require-matrix-max-age-ms MS",
+    "                         Fail when matrix reports are older than this many milliseconds",
     "  --json                 Print gate report JSON",
     "  --output PATH          Write gate report JSON to PATH",
     "  --output-artifact-index PATH",
@@ -141,6 +143,7 @@ function parseArgs(argv) {
     platformBundleDir: null,
     requireComplete: false,
     requiredArtifactMaxAgeMs: null,
+    requiredMatrixMaxAgeMs: null,
     ...validationGateRequirementOptionDefaults({ presetKey: "presets" }),
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -220,6 +223,16 @@ function parseArgs(argv) {
         options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(
           arg.slice("--require-artifact-max-age-ms=".length),
           "--require-artifact-max-age-ms",
+        )
+      } else if (arg === "--require-matrix-max-age-ms") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--require-matrix-max-age-ms requires a value")
+        options.requiredMatrixMaxAgeMs = parseDrillNonNegativeInteger(value, "--require-matrix-max-age-ms")
+        index += 1
+      } else if (arg.startsWith("--require-matrix-max-age-ms=")) {
+        options.requiredMatrixMaxAgeMs = parseDrillNonNegativeInteger(
+          arg.slice("--require-matrix-max-age-ms=".length),
+          "--require-matrix-max-age-ms",
         )
       } else if (arg === "--output") {
         const value = argv[index + 1]

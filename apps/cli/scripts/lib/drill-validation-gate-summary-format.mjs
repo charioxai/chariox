@@ -197,6 +197,12 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredScenarios.length > 0) {
     lines.push(`matrix_required_scenarios=${requiredScenarios.join(",")} missing=${missingScenarios.join(",") || "none"}`)
   }
+  if (matrices.requiredMatrixMaxAgeMs !== undefined && matrices.requiredMatrixMaxAgeMs !== null) {
+    lines.push(`matrix_required_max_age_ms=${matrices.requiredMatrixMaxAgeMs} stale_reports=${(matrices.staleMatrixReports ?? []).length}`)
+    for (const staleReport of matrices.staleMatrixReports ?? []) {
+      lines.push(`- stale_matrix_report=${staleReport.source ?? "unknown"} matrix=${staleReport.matrix} completed_at=${staleReport.completedAt} age_ms=${staleReport.ageMs} max_age_ms=${staleReport.maxAgeMs}`)
+    }
+  }
   if (matrices.error) lines.push(`matrix_error=${matrices.error}`)
   if (matrices.aggregate) {
     lines.push(`matrix_status=${matrices.aggregate.status} failed=${matrices.aggregate.totals.failed} skipped=${matrices.aggregate.totals.skipped} dry_run=${matrices.aggregate.totals.dryRun}`)

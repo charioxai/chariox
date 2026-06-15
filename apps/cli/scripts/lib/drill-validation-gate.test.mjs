@@ -499,6 +499,43 @@ test("passes with explicit matrix report paths", async () => {
   }
 })
 
+test("gates matrix reports by required freshness", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    const completedAt = new Date(Date.now() - 500).toISOString()
+    const startedAt = new Date(Date.parse(completedAt) - 1000).toISOString()
+    await writeMatrixReport(reportPath, matrixReport({
+      startedAt,
+      completedAt,
+      durationMs: 1000,
+    }))
+
+    const pass = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredMatrixMaxAgeMs: 3_600_000,
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.checks.matrices.staleMatrixReports, [])
+    assert.match(formatDrillValidationGateSummary(pass), /matrix_required_max_age_ms=3600000 stale_reports=0/)
+
+    const fail = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      requiredMatrixMaxAgeMs: 100,
+    })
+    assert.equal(fail.status, "failed")
+    assert.equal(fail.checks.matrices.staleMatrixReports.length, 1)
+    assert.equal(fail.checks.matrices.staleMatrixReports[0].source, reportPath)
+    assert.match(formatDrillValidationGateSummary(fail), /matrix_required_max_age_ms=100 stale_reports=1/)
+    assert.equal(
+      fail.nextActions.some(({ classification }) => classification === "matrix-staleness"),
+      true,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("gates matrix reports by required matrix name coverage", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
