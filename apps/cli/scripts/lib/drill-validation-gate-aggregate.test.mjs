@@ -1030,6 +1030,84 @@ test("aggregates generated evidence provenance from gate reports", () => {
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
 })
 
+test("rejects secret-looking generated evidence paths in validation gate aggregates", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture({
+    generatedEvidence: generatedEvidenceFixture(),
+  })], {
+    sources: ["distributed-runtime-gate.json"],
+    normalizedAggregateRequirements: {
+      requiredGeneratedValidationSuiteFailureRoots: ["/tmp/suites/cloud/failed-run"],
+    },
+    validateReport: () => {},
+  })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredGeneratedValidationSuiteFailureRoots: ["/tmp/Bearer abcdefghijklmnop"],
+    }),
+    /requiredGeneratedValidationSuiteFailureRoots\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        generatedValidationSuiteFailureRoots: { "/tmp/Bearer abcdefghijklmnop": 1 },
+      },
+    }),
+    /coverage\.generatedValidationSuiteFailureRoots\.\/tmp\/Bearer abcdefghijklmnop includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          validationSuites: {
+            ...aggregate.reports[0].generatedEvidence.validationSuites,
+            outputRoots: ["/tmp/Bearer abcdefghijklmnop"],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.validationSuites\.outputRoots\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          matrixReports: {
+            ...aggregate.reports[0].generatedEvidence.matrixReports,
+            commands: [{
+              ...aggregate.reports[0].generatedEvidence.matrixReports.commands[0],
+              args: ["--artifact-index", "/tmp/Bearer abcdefghijklmnop.json"],
+            }],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.args\[1\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          generatedValidationSuiteFailureRoots: { "/tmp/Bearer abcdefghijklmnop": 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.generatedValidationSuiteFailureRoots\.\/tmp\/Bearer abcdefghijklmnop includes secret-looking generated evidence path/,
+  )
+})
+
 test("formats supplemental artifact coverage inputs without inflating report totals", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     sources: ["distributed-runtime-gate.json"],

@@ -19,6 +19,7 @@ import {
   drillRuntimeSignalOwnerCounts,
   isKnownDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
+import { redactDrillSecretText } from "./drill-secrets.mjs"
 
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
 
@@ -424,8 +425,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateArtifactKindArray(aggregate.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(aggregate.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(aggregate.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
-  validateStringArray(aggregate.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
-  validateStringArray(aggregate.missingArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathArray(aggregate.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathArray(aggregate.missingArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationArray(aggregate.requiredArtifactGeneratedMatrixLimitations ?? [], `${source}.requiredArtifactGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationArray(aggregate.missingArtifactGeneratedMatrixLimitations ?? [], `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoArray(aggregate.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
@@ -465,12 +466,12 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingScenarios ?? [], `${source}.missingScenarios`)
   validateGeneratedEvidenceKindArray(aggregate.requiredGeneratedEvidenceKinds ?? [], `${source}.requiredGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(aggregate.missingGeneratedEvidenceKinds ?? [], `${source}.missingGeneratedEvidenceKinds`)
-  validateStringArray(aggregate.requiredGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredGeneratedMatrixArtifactIndexes`)
-  validateStringArray(aggregate.missingGeneratedMatrixArtifactIndexes ?? [], `${source}.missingGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathArray(aggregate.requiredGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathArray(aggregate.missingGeneratedMatrixArtifactIndexes ?? [], `${source}.missingGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationArray(aggregate.requiredGeneratedMatrixLimitations ?? [], `${source}.requiredGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationArray(aggregate.missingGeneratedMatrixLimitations ?? [], `${source}.missingGeneratedMatrixLimitations`)
-  validateStringArray(aggregate.requiredGeneratedValidationSuiteFailureRoots ?? [], `${source}.requiredGeneratedValidationSuiteFailureRoots`)
-  validateStringArray(aggregate.missingGeneratedValidationSuiteFailureRoots ?? [], `${source}.missingGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathArray(aggregate.requiredGeneratedValidationSuiteFailureRoots ?? [], `${source}.requiredGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathArray(aggregate.missingGeneratedValidationSuiteFailureRoots ?? [], `${source}.missingGeneratedValidationSuiteFailureRoots`)
   for (const [index, action] of aggregate.nextActions.entries()) {
     validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
   }
@@ -1078,8 +1079,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateArtifactKindCountObject(coverage.missingArtifactKinds ?? {}, `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.requiredArtifactGeneratedEvidenceKinds ?? {}, `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.missingArtifactGeneratedEvidenceKinds ?? {}, `${source}.missingArtifactGeneratedEvidenceKinds`)
-  validateCountObject(coverage.requiredArtifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
-  validateCountObject(coverage.missingArtifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathCountObject(coverage.requiredArtifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathCountObject(coverage.missingArtifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.requiredArtifactGeneratedMatrixLimitations ?? {}, `${source}.requiredArtifactGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationCountObject(coverage.missingArtifactGeneratedMatrixLimitations ?? {}, `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoCountObject(coverage.requiredArtifactEvidenceRepos ?? {}, `${source}.requiredArtifactEvidenceRepos`)
@@ -1112,9 +1113,9 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateExitCriterionStatusCountObject(coverage.artifactIncompleteExitCriterionStatuses ?? {}, `${source}.artifactIncompleteExitCriterionStatuses`)
   validateArtifactKindCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.artifactGeneratedEvidenceKinds ?? {}, `${source}.artifactGeneratedEvidenceKinds`)
-  validateCountObject(coverage.artifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.artifactGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathCountObject(coverage.artifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.artifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.artifactGeneratedMatrixLimitations ?? {}, `${source}.artifactGeneratedMatrixLimitations`)
-  validateCountObject(coverage.artifactGeneratedValidationSuiteFailureRoots ?? {}, `${source}.artifactGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathCountObject(coverage.artifactGeneratedValidationSuiteFailureRoots ?? {}, `${source}.artifactGeneratedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoCountObject(coverage.artifactEvidenceRepos ?? {}, `${source}.artifactEvidenceRepos`)
   validateProviderAccountAliasCountObject(coverage.artifactProviderAccountAliases ?? {}, `${source}.artifactProviderAccountAliases`)
   validateCountObject(coverage.artifactCoverageInputSources ?? {}, `${source}.artifactCoverageInputSources`)
@@ -1141,17 +1142,17 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
-  validateCountObject(coverage.generatedMatrixArtifactIndexes ?? {}, `${source}.generatedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathCountObject(coverage.generatedMatrixArtifactIndexes ?? {}, `${source}.generatedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
-  validateCountObject(coverage.generatedValidationSuiteFailureRoots ?? {}, `${source}.generatedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathCountObject(coverage.generatedValidationSuiteFailureRoots ?? {}, `${source}.generatedValidationSuiteFailureRoots`)
   validateGeneratedEvidenceKindCountObject(coverage.requiredGeneratedEvidenceKinds ?? {}, `${source}.requiredGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.missingGeneratedEvidenceKinds ?? {}, `${source}.missingGeneratedEvidenceKinds`)
-  validateCountObject(coverage.requiredGeneratedMatrixArtifactIndexes ?? {}, `${source}.requiredGeneratedMatrixArtifactIndexes`)
-  validateCountObject(coverage.missingGeneratedMatrixArtifactIndexes ?? {}, `${source}.missingGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathCountObject(coverage.requiredGeneratedMatrixArtifactIndexes ?? {}, `${source}.requiredGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathCountObject(coverage.missingGeneratedMatrixArtifactIndexes ?? {}, `${source}.missingGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.requiredGeneratedMatrixLimitations ?? {}, `${source}.requiredGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationCountObject(coverage.missingGeneratedMatrixLimitations ?? {}, `${source}.missingGeneratedMatrixLimitations`)
-  validateCountObject(coverage.requiredGeneratedValidationSuiteFailureRoots ?? {}, `${source}.requiredGeneratedValidationSuiteFailureRoots`)
-  validateCountObject(coverage.missingGeneratedValidationSuiteFailureRoots ?? {}, `${source}.missingGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathCountObject(coverage.requiredGeneratedValidationSuiteFailureRoots ?? {}, `${source}.requiredGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathCountObject(coverage.missingGeneratedValidationSuiteFailureRoots ?? {}, `${source}.missingGeneratedValidationSuiteFailureRoots`)
 }
 
 function validateValidationGateMatrixCoverage(coverage, source) {
@@ -1663,15 +1664,15 @@ function validateGeneratedValidationSuitesSummary(validationSuites, source) {
   if (typeof validationSuites.enabled !== "boolean") {
     throw new Error(`${source} has invalid enabled`)
   }
-  validateStringArray(validationSuites.artifactIndexes ?? [], `${source}.artifactIndexes`)
-  validateStringArray(validationSuites.failureRoots ?? [], `${source}.failureRoots`)
+  validateGeneratedEvidencePathArray(validationSuites.artifactIndexes ?? [], `${source}.artifactIndexes`)
+  validateGeneratedEvidencePathArray(validationSuites.failureRoots ?? [], `${source}.failureRoots`)
   if (!Array.isArray(validationSuites.commands)) {
     throw new Error(`${source}.commands is not an array`)
   }
   for (const [index, command] of validationSuites.commands.entries()) {
     validateGeneratedValidationSuiteCommandSummary(command, `${source}.commands[${index}]`)
   }
-  validateStringArray(validationSuites.outputRoots ?? [], `${source}.outputRoots`)
+  validateGeneratedEvidencePathArray(validationSuites.outputRoots ?? [], `${source}.outputRoots`)
   if (validationSuites.enabled && ((validationSuites.artifactIndexes ?? []).length === 0 || (validationSuites.failureRoots ?? []).length === 0 || validationSuites.commands.length === 0 || (validationSuites.outputRoots ?? []).length === 0)) {
     throw new Error(`${source} enabled evidence is missing paths`)
   }
@@ -1688,8 +1689,9 @@ function validateGeneratedValidationSuiteCommandSummary(command, source) {
     if (!nonEmptyString(command[key])) {
       throw new Error(`${source} has invalid ${key}`)
     }
+    validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
-  validateStringArray(command.args ?? [], `${source}.args`)
+  validateGeneratedEvidencePathArray(command.args ?? [], `${source}.args`)
 }
 
 function validateGeneratedMatrixReportsSummary(matrixReports, source) {
@@ -1706,8 +1708,8 @@ function validateGeneratedMatrixReportsSummary(matrixReports, source) {
     throw new Error(`${source} has invalid continueOnFailure`)
   }
   validateGeneratedMatrixLimitations(matrixReports.limitations ?? [], `${source}.limitations`)
-  validateStringArray(matrixReports.artifactIndexes ?? [], `${source}.artifactIndexes`)
-  validateStringArray(matrixReports.roots ?? [], `${source}.roots`)
+  validateGeneratedEvidencePathArray(matrixReports.artifactIndexes ?? [], `${source}.artifactIndexes`)
+  validateGeneratedEvidencePathArray(matrixReports.roots ?? [], `${source}.roots`)
   if (!Array.isArray(matrixReports.commands)) {
     throw new Error(`${source}.commands is not an array`)
   }
@@ -1753,8 +1755,9 @@ function validateGeneratedMatrixCommandSummary(command, source) {
     if (!nonEmptyString(command[key])) {
       throw new Error(`${source} has invalid ${key}`)
     }
+    validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
-  validateStringArray(command.args ?? [], `${source}.args`)
+  validateGeneratedEvidencePathArray(command.args ?? [], `${source}.args`)
 }
 
 function validateValidationGateArtifactCoverage(coverage, source) {
@@ -1769,8 +1772,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateArtifactKindArray(coverage.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(coverage.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(coverage.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
-  validateStringArray(coverage.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
-  validateStringArray(coverage.missingArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathArray(coverage.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathArray(coverage.missingArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationArray(coverage.requiredArtifactGeneratedMatrixLimitations ?? [], `${source}.requiredArtifactGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationArray(coverage.missingArtifactGeneratedMatrixLimitations ?? [], `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoArray(coverage.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
@@ -1799,9 +1802,9 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateExitCriterionStatusCountObject(coverage.incompleteExitCriterionStatuses ?? {}, `${source}.incompleteExitCriterionStatuses`)
   validateArtifactKindCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
-  validateCountObject(coverage.generatedMatrixArtifactIndexes ?? {}, `${source}.generatedMatrixArtifactIndexes`)
+  validateGeneratedEvidencePathCountObject(coverage.generatedMatrixArtifactIndexes ?? {}, `${source}.generatedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
-  validateCountObject(coverage.generatedValidationSuiteFailureRoots ?? {}, `${source}.generatedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathCountObject(coverage.generatedValidationSuiteFailureRoots ?? {}, `${source}.generatedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoCountObject(coverage.evidenceRepos ?? {}, `${source}.evidenceRepos`)
   validateProviderAccountAliasCountObject(coverage.providerAccountAliases ?? {}, `${source}.providerAccountAliases`)
   validateCountObject(coverage.artifactCoverageInputSources ?? {}, `${source}.artifactCoverageInputSources`)
@@ -2021,6 +2024,19 @@ function validateStringArray(value, source) {
   }
 }
 
+function validateGeneratedEvidencePathArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, entry] of value.entries()) {
+    validateGeneratedEvidencePathText(entry, `${source}[${index}]`)
+  }
+}
+
+function validateGeneratedEvidencePathText(value, source) {
+  if (redactDrillSecretText(value) !== value) {
+    throw new Error(`${source} includes secret-looking generated evidence path`)
+  }
+}
+
 function validateRuntimeSignalCountObject(value, source) {
   validateCountObject(value, source)
   for (const signal of Object.keys(value)) {
@@ -2127,6 +2143,13 @@ function validateGeneratedMatrixLimitationCountObject(value, source) {
     if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
       throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
     }
+  }
+}
+
+function validateGeneratedEvidencePathCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const key of Object.keys(value)) {
+    validateGeneratedEvidencePathText(key, `${source}.${key}`)
   }
 }
 
