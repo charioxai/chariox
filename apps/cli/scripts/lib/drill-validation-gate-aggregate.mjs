@@ -22,9 +22,9 @@ import {
   validateDrillValidationGatePreset,
 } from "./drill-validation-gate-presets.mjs"
 import {
-  DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnerCounts,
   validateDrillRuntimeSignal,
+  validateDrillRuntimeSignalOwner,
 } from "./drill-runtime-signals.mjs"
 
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
@@ -2190,9 +2190,7 @@ function validateRuntimeSignalArray(value, source) {
 function validateRuntimeSignalOwnerArray(value, source) {
   validateStringArray(value, source)
   for (const [index, owner] of value.entries()) {
-    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
-      throw new Error(`${source}[${index}] has unknown runtime signal owner ${JSON.stringify(owner)}`)
-    }
+    validateDrillRuntimeSignalOwner(owner, `${source}[${index}]`)
   }
 }
 
@@ -2314,9 +2312,7 @@ function validateRuntimeSignalCountObject(value, source) {
 function validateRuntimeSignalOwnerCountObject(value, source) {
   validateCountObject(value, source)
   for (const owner of Object.keys(value)) {
-    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
-      throw new Error(`${source} has unknown runtime signal owner ${JSON.stringify(owner)}`)
-    }
+    validateDrillRuntimeSignalOwner(owner, source)
   }
 }
 

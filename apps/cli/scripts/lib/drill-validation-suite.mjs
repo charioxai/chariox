@@ -1,10 +1,10 @@
 import { access, readdir } from "node:fs/promises"
 import path from "node:path"
 import {
-  DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
   validateDrillRuntimeSignal,
+  validateDrillRuntimeSignalOwner,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
@@ -498,9 +498,7 @@ function sortedProviderAccountAliasArray(value, source) {
 function sortedRuntimeSignalOwnerArray(value, source) {
   const owners = sortedStringArray(value, source)
   for (const [index, owner] of owners.entries()) {
-    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown runtime signal owner ${JSON.stringify(owner)}`)
-    }
+    validateDrillRuntimeSignalOwner(owner, `validation suite preset ${source}[${index}]`)
   }
   return owners
 }

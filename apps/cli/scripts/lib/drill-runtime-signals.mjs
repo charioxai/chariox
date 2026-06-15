@@ -70,6 +70,19 @@ export function validateDrillRuntimeSignal(signal, source, { label = "runtime si
   }
 }
 
+export function isKnownDrillRuntimeSignalOwner(owner) {
+  return DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)
+}
+
+export function validateDrillRuntimeSignalOwner(owner, source, { message } = {}) {
+  if (!isKnownDrillRuntimeSignalOwner(owner)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(owner) : message)
+    }
+    throw new Error(`${source} has unknown runtime signal owner ${JSON.stringify(owner)}`)
+  }
+}
+
 export function drillRuntimeSignalOwner(signal) {
   validateDrillRuntimeSignal(signal, "drill runtime signal", {
     message: () => `unknown drill runtime signal ${JSON.stringify(signal)}`,

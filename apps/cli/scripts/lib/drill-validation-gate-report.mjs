@@ -22,8 +22,8 @@ import {
   validateDrillValidationGatePreset,
 } from "./drill-validation-gate-presets.mjs"
 import {
-  DRILL_RUNTIME_SIGNAL_OWNERS,
   validateDrillRuntimeSignal,
+  validateDrillRuntimeSignalOwner,
   validateDrillRuntimeSignals,
 } from "./drill-runtime-signals.mjs"
 
@@ -690,9 +690,7 @@ function validateRuntimeSignalArray(value, source) {
 function validateRuntimeSignalOwnerArray(value, source) {
   validateStringArray(value, source)
   for (const [index, owner] of value.entries()) {
-    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
-      throw new Error(`${source}[${index}] has unknown runtime signal owner ${JSON.stringify(owner)}`)
-    }
+    validateDrillRuntimeSignalOwner(owner, `${source}[${index}]`)
   }
 }
 

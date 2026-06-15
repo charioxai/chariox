@@ -9,8 +9,10 @@ import {
   drillRuntimeSignalOwner,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
+  isKnownDrillRuntimeSignalOwner,
   isKnownDrillRuntimeSignal,
   validateDrillRuntimeSignal,
+  validateDrillRuntimeSignalOwner,
   validateDrillRuntimeSignals,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
@@ -67,10 +69,17 @@ test("writes and validates runtime signal manifest", () => {
   })
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-sync-state"), true)
   assert.equal(isKnownDrillRuntimeSignal("workspace-live-synch-state"), false)
+  assert.equal(isKnownDrillRuntimeSignalOwner("kernel-authority"), true)
+  assert.equal(isKnownDrillRuntimeSignalOwner("kernel-authoritiy"), false)
   assert.doesNotThrow(() => validateDrillRuntimeSignal("workspace-live-sync-state", "report.runtimeSignals[0]"))
+  assert.doesNotThrow(() => validateDrillRuntimeSignalOwner("kernel-authority", "report.runtimeSignalOwners[0]"))
   assert.throws(
     () => validateDrillRuntimeSignal("workspace-live-synch-state", "report.runtimeSignals[0]"),
     /report\.runtimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillRuntimeSignalOwner("kernel-authoritiy", "report.runtimeSignalOwners[0]"),
+    /report\.runtimeSignalOwners\[0\] has unknown runtime signal owner "kernel-authoritiy"/,
   )
   assert.throws(
     () => validateDrillRuntimeSignal("workspace-live-synch-state", "manifest.signals[0]", { label: "id" }),
@@ -81,6 +90,12 @@ test("writes and validates runtime signal manifest", () => {
       message: (signal) => `--require-runtime-signal has unknown runtime signal: ${signal}`,
     }),
     /--require-runtime-signal has unknown runtime signal: workspace-live-synch-state/,
+  )
+  assert.throws(
+    () => validateDrillRuntimeSignalOwner("kernel-authoritiy", "--require-runtime-signal-owner", {
+      message: (owner) => `--require-runtime-signal-owner has unknown runtime signal owner: ${owner}`,
+    }),
+    /--require-runtime-signal-owner has unknown runtime signal owner: kernel-authoritiy/,
   )
   assert.doesNotThrow(() => validateDrillRuntimeSignalsManifest(manifest))
 })
