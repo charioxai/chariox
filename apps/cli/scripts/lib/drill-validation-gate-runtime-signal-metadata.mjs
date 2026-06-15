@@ -43,6 +43,7 @@ export function diagnosticMetadataForValidationGateReport(report) {
     ...(report.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
   ])
   const generatedEvidenceKinds = new Set(generatedEvidenceKindsFor(report.generatedEvidence))
+  const generatedMatrixArtifactIndexes = new Set(generatedMatrixArtifactIndexesFor(report.generatedEvidence))
   const generatedMatrixLimitations = new Set(generatedMatrixLimitationsFor(report.generatedEvidence))
   const generatedValidationSuiteFailureRoots = new Set(generatedValidationSuiteFailureRootsFor(report.generatedEvidence))
   const exitCriterionStatuses = new Set(Object.keys(report.checks?.artifacts?.aggregate?.exitCriterionStatuses ?? {}))
@@ -57,6 +58,7 @@ export function diagnosticMetadataForValidationGateReport(report) {
     ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
     ...(providerAccountAliases.size > 0 ? { providerAccountAliases: [...providerAccountAliases].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
+    ...(generatedMatrixArtifactIndexes.size > 0 ? { generatedMatrixArtifactIndexes: [...generatedMatrixArtifactIndexes].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
     ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),
   }
@@ -121,6 +123,11 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const generatedEvidenceKinds = new Set([
     ...Object.keys(aggregate.coverage?.artifactGeneratedEvidenceKinds ?? {}),
     ...Object.keys(aggregate.coverage?.generatedEvidenceKinds ?? {}),
+  ])
+  const generatedMatrixArtifactIndexes = new Set([
+    ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixArtifactIndexes ?? {}),
+    ...(aggregate.reports ?? [])
+      .flatMap((report) => generatedMatrixArtifactIndexesFor(report?.generatedEvidence)),
   ])
   const generatedMatrixLimitations = new Set([
     ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixLimitations ?? {}),
@@ -190,6 +197,7 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(requiredProviderAccountAliases.size > 0 ? { requiredProviderAccountAliases: [...requiredProviderAccountAliases].sort().join(",") } : {}),
     ...(missingProviderAccountAliases.size > 0 ? { missingProviderAccountAliases: [...missingProviderAccountAliases].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
+    ...(generatedMatrixArtifactIndexes.size > 0 ? { generatedMatrixArtifactIndexes: [...generatedMatrixArtifactIndexes].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
     ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),
     ...(requiredGeneratedEvidenceKinds.size > 0 ? { requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds].sort().join(",") } : {}),
@@ -215,6 +223,12 @@ function generatedEvidenceKindsFor(generatedEvidence) {
   if (generatedEvidence.validationSuites?.enabled) kinds.add("validation-suite-run")
   if (generatedEvidence.matrixReports?.enabled) kinds.add("matrix-report")
   return [...kinds].sort()
+}
+
+function generatedMatrixArtifactIndexesFor(generatedEvidence) {
+  const matrixReports = generatedEvidence?.matrixReports
+  if (!matrixReports || typeof matrixReports !== "object") return []
+  return sortedUnique((matrixReports.artifactIndexes ?? []).filter(nonEmptyString))
 }
 
 function generatedMatrixLimitationsFor(generatedEvidence) {

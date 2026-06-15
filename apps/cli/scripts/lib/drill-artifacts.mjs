@@ -34,6 +34,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "incompleteExitCriterionStatuses",
   "artifactKinds",
   "generatedEvidenceKinds",
+  "generatedMatrixArtifactIndexes",
   "generatedMatrixLimitations",
   "generatedValidationSuiteFailureRoots",
   "requiredGeneratedEvidenceKinds",
@@ -59,6 +60,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   incompleteExitCriterionStatuses: "incomplete_exit_criterion_statuses",
   artifactKinds: "artifact_kinds",
   generatedEvidenceKinds: "generated_evidence_kinds",
+  generatedMatrixArtifactIndexes: "generated_matrix_artifact_indexes",
   generatedMatrixLimitations: "generated_matrix_limitations",
   generatedValidationSuiteFailureRoots: "generated_validation_suite_failure_roots",
   requiredGeneratedEvidenceKinds: "required_generated_evidence_kinds",
@@ -194,6 +196,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const incompleteExitCriterionStatuses = new Map()
   const artifactKinds = new Map()
   const generatedEvidenceKinds = new Map()
+  const generatedMatrixArtifactIndexes = new Map()
   const generatedMatrixLimitations = new Map()
   const generatedValidationSuiteFailureRoots = new Map()
   const requiredGeneratedEvidenceKinds = new Map()
@@ -219,6 +222,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexIncompleteExitCriterionStatuses = metadataListFromMetadata(index.metadata, "incompleteExitCriterionStatuses")
     const indexArtifactKinds = metadataListFromMetadata(index.metadata, "artifactKinds")
     const indexGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "generatedEvidenceKinds")
+    const indexGeneratedMatrixArtifactIndexes = metadataListFromMetadata(index.metadata, "generatedMatrixArtifactIndexes")
     const indexGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "generatedMatrixLimitations")
     const indexGeneratedValidationSuiteFailureRoots = metadataListFromMetadata(index.metadata, "generatedValidationSuiteFailureRoots")
     const indexRequiredGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "requiredGeneratedEvidenceKinds")
@@ -237,6 +241,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexIncompleteExitCriterionStatuses, incompleteExitCriterionStatuses)
     countValues(indexArtifactKinds, artifactKinds)
     countValues(indexGeneratedEvidenceKinds, generatedEvidenceKinds)
+    countValues(indexGeneratedMatrixArtifactIndexes, generatedMatrixArtifactIndexes)
     countValues(indexGeneratedMatrixLimitations, generatedMatrixLimitations)
     countValues(indexGeneratedValidationSuiteFailureRoots, generatedValidationSuiteFailureRoots)
     countValues(indexRequiredGeneratedEvidenceKinds, requiredGeneratedEvidenceKinds)
@@ -269,6 +274,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       incompleteExitCriterionStatuses: countValues(indexIncompleteExitCriterionStatuses),
       artifactKinds: countValues(indexArtifactKinds),
       generatedEvidenceKinds: countValues(indexGeneratedEvidenceKinds),
+      generatedMatrixArtifactIndexes: countValues(indexGeneratedMatrixArtifactIndexes),
       generatedMatrixLimitations: countValues(indexGeneratedMatrixLimitations),
       generatedValidationSuiteFailureRoots: countValues(indexGeneratedValidationSuiteFailureRoots),
       requiredGeneratedEvidenceKinds: countValues(indexRequiredGeneratedEvidenceKinds),
@@ -293,6 +299,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     incompleteExitCriterionStatuses: sortedCountObject(incompleteExitCriterionStatuses),
     artifactKinds: sortedCountObject(artifactKinds),
     generatedEvidenceKinds: sortedCountObject(generatedEvidenceKinds),
+    generatedMatrixArtifactIndexes: sortedCountObject(generatedMatrixArtifactIndexes),
     generatedMatrixLimitations: sortedCountObject(generatedMatrixLimitations),
     generatedValidationSuiteFailureRoots: sortedCountObject(generatedValidationSuiteFailureRoots),
     requiredGeneratedEvidenceKinds: sortedCountObject(requiredGeneratedEvidenceKinds),

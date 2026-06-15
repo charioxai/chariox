@@ -727,6 +727,7 @@ test("summarizes drill artifact indexes", async () => {
       "incompleteExitCriterionStatuses",
       "artifactKinds",
       "generatedEvidenceKinds",
+      "generatedMatrixArtifactIndexes",
       "generatedMatrixLimitations",
       "generatedValidationSuiteFailureRoots",
       "requiredGeneratedEvidenceKinds",

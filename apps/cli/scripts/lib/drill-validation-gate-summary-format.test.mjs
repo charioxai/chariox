@@ -320,6 +320,7 @@ function artifactAggregateFixture() {
       "matrix-report": 1,
       "validation-suite-run": 1,
     },
+    generatedMatrixArtifactIndexes: {},
     generatedMatrixLimitations: {
       "dry-run-classification-coverage": 1,
     },
@@ -387,6 +388,7 @@ function artifactAggregateFixture() {
         "matrix-report": 1,
         "validation-suite-run": 1,
       },
+      generatedMatrixArtifactIndexes: {},
       generatedMatrixLimitations: {
         "dry-run-classification-coverage": 1,
       },
