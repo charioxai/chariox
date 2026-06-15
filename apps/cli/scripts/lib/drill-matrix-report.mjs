@@ -698,6 +698,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   assertRuntimeSignalCountsMatchReports(aggregate)
   assertRuntimeSignalOwnerCountsMatchSignals(aggregate)
   assertRuntimeSignalScenariosMatchReports(aggregate)
+  assertRuntimeSignalScenarioStatusesMatchDiagnostics(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
 }
 
@@ -841,6 +842,38 @@ function assertRuntimeSignalScenariosMatchReports(aggregate) {
   if (JSON.stringify(aggregate.runtimeSignalScenarios ?? {}) !== JSON.stringify(expectedEvidence)) {
     throw new Error("aggregate runtimeSignalScenarios do not match reports")
   }
+}
+
+function assertRuntimeSignalScenarioStatusesMatchDiagnostics(aggregate) {
+  if (aggregate.runtimeSignalScenarios === undefined) return
+  const expectedStatuses = new Map()
+  for (const scenario of aggregate.failedScenarios ?? []) {
+    setExpectedRuntimeSignalScenarioStatus(expectedStatuses, scenario, "failed")
+  }
+  for (const scenario of aggregate.incompleteScenarios ?? []) {
+    setExpectedRuntimeSignalScenarioStatus(expectedStatuses, scenario, scenario.status)
+  }
+  for (const scenarios of Object.values(aggregate.runtimeSignalScenarios ?? {})) {
+    for (const scenario of scenarios) {
+      const expectedStatus = expectedStatuses.get(runtimeSignalScenarioStatusKey(scenario)) ?? "passed"
+      if (scenario.status !== expectedStatus) {
+        throw new Error(`aggregate runtimeSignalScenarios status does not match scenario diagnostics for ${scenario.matrix}/${scenario.id}`)
+      }
+    }
+  }
+}
+
+function setExpectedRuntimeSignalScenarioStatus(expectedStatuses, scenario, status) {
+  const key = runtimeSignalScenarioStatusKey(scenario)
+  const existing = expectedStatuses.get(key)
+  if (existing !== undefined && existing !== status) {
+    throw new Error(`aggregate scenario diagnostics have conflicting status for ${scenario.matrix}/${scenario.id}`)
+  }
+  expectedStatuses.set(key, status)
+}
+
+function runtimeSignalScenarioStatusKey(scenario) {
+  return JSON.stringify([scenario.matrix, scenario.source ?? null, scenario.id])
 }
 
 function validateMatrixAggregateReport(report, source) {

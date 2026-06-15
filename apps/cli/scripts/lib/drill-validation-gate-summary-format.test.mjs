@@ -145,8 +145,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /matrix_incomplete_exit_criteria:/)
   assert.match(text, /workspace-live-sync-matrix\/managed\/managed:exit-02\(dry-run\) reason=scenario command was selected but not executed source=\/tmp\/matrix\.json: remote worker acknowledged projection/)
   assert.match(text, /matrix_runtime_signal_sources:/)
-  assert.match(text, /- session-authority: workspace-live-sync-matrix\/permission\(passed\) source=\/tmp\/matrix\.json/)
-  assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/matrix\.json/)
+  assert.match(text, /- session-authority: workspace-live-sync-matrix\/permission\(dry-run\) source=\/tmp\/matrix\.json/)
+  assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(dry-run\) source=\/tmp\/matrix\.json/)
   assert.match(text, /failure_total=1/)
   assert.match(text, /failure_runtime_signals=lease-health:1,relay-target-freshness:1/)
   assert.match(text, /failure_runtime_signal_owners=kernel-authority:1,runtime-network:1/)
@@ -412,8 +412,8 @@ function matrixAggregateFixture() {
       "runtime-state": 1,
     },
     runtimeSignalScenarios: {
-      "session-authority": [matrixScenarioFixture("permission", "passed")],
-      "workspace-live-sync-state": [matrixScenarioFixture("managed", "passed")],
+      "session-authority": [matrixScenarioFixture("permission", "dry-run")],
+      "workspace-live-sync-state": [matrixScenarioFixture("managed", "dry-run")],
     },
     nextActions: [],
     reports: [{
@@ -430,8 +430,8 @@ function matrixAggregateFixture() {
         "workspace-live-sync-state": 1,
       },
       runtimeSignalScenarios: {
-        "session-authority": [matrixScenarioFixture("permission", "passed")],
-        "workspace-live-sync-state": [matrixScenarioFixture("managed", "passed")],
+        "session-authority": [matrixScenarioFixture("permission", "dry-run")],
+        "workspace-live-sync-state": [matrixScenarioFixture("managed", "dry-run")],
       },
       scenarioCount: 3,
       counts: { passed: 0, failed: 0, skipped: 1, dryRun: 2 },

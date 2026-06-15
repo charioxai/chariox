@@ -532,6 +532,26 @@ test("rejects inconsistent matrix aggregates", () => {
   }), /runtimeSignalScenarios do not match reports/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
     ...aggregate,
+    runtimeSignalScenarios: {
+      "provider-run-lifecycle": [{
+        matrix: "remote",
+        source: null,
+        id: "remote",
+        status: "passed",
+      }],
+    },
+    reports: [{
+      ...aggregate.reports[0],
+      runtimeSignalScenarios: {
+        "provider-run-lifecycle": [{
+          id: "remote",
+          status: "passed",
+        }],
+      },
+    }],
+  }), /runtimeSignalScenarios status does not match scenario diagnostics for remote\/remote/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
     runtimeSignalOwners: { "kernel-authority": 1 },
   }), /runtimeSignalOwners do not match runtimeSignals/)
   assert.throws(() => formatDrillMatrixAggregateSummary({
