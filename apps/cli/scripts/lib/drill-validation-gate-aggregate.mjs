@@ -18,8 +18,8 @@ import {
   validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import {
-  isKnownDrillArtifactValidationPreset,
-  isKnownDrillValidationGatePreset,
+  validateDrillArtifactValidationPreset,
+  validateDrillValidationGatePreset,
 } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -2239,18 +2239,16 @@ function validateProviderAccountAliasArray(value, source) {
 function validateArtifactValidationPresetArray(value, source) {
   validateStringArray(value, source)
   for (const [index, preset] of value.entries()) {
-    if (!isKnownDrillArtifactValidationPreset(preset)) {
-      throw new Error(`${source}[${index}] has unknown artifact validation preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillArtifactValidationPreset(preset, `${source}[${index}]`, {
+      label: "artifact validation preset",
+    })
   }
 }
 
 function validatePresetArray(value, source) {
   validateStringArray(value, source)
   for (const [index, preset] of value.entries()) {
-    if (!isKnownDrillValidationGatePreset(preset)) {
-      throw new Error(`${source}[${index}] has unknown validation gate preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillValidationGatePreset(preset, `${source}[${index}]`)
   }
 }
 
@@ -2374,18 +2372,16 @@ function validateProviderAccountAliasCountObject(value, source) {
 function validateArtifactValidationPresetCountObject(value, source) {
   validateCountObject(value, source)
   for (const preset of Object.keys(value)) {
-    if (!isKnownDrillArtifactValidationPreset(preset)) {
-      throw new Error(`${source} has unknown artifact validation preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillArtifactValidationPreset(preset, source, {
+      label: "artifact validation preset",
+    })
   }
 }
 
 function validatePresetCountObject(value, source) {
   validateCountObject(value, source)
   for (const preset of Object.keys(value)) {
-    if (!isKnownDrillValidationGatePreset(preset)) {
-      throw new Error(`${source} has unknown validation gate preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillValidationGatePreset(preset, source)
   }
 }
 

@@ -33,7 +33,7 @@ import {
   drillRuntimeSignalNextAction,
   validateDrillRuntimeSignal,
 } from "./lib/drill-runtime-signals.mjs"
-import { isKnownDrillArtifactValidationPreset } from "./lib/drill-validation-gate-presets.mjs"
+import { validateDrillArtifactValidationPreset } from "./lib/drill-validation-gate-presets.mjs"
 
 function printHelp() {
   console.log([
@@ -424,9 +424,9 @@ function parseGeneratedMatrixRepoRequirement(value, flag) {
 }
 
 function parseValidationPresetRequirement(value, flag) {
-  if (!isKnownDrillArtifactValidationPreset(value)) {
-    throw new Error(`${flag} has unknown validation preset: ${value}`)
-  }
+  validateDrillArtifactValidationPreset(value, flag, {
+    message: () => `${flag} has unknown validation preset: ${value}`,
+  })
   return value
 }
 

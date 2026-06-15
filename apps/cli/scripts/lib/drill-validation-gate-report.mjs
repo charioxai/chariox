@@ -18,8 +18,8 @@ import {
 } from "./drill-provider-profiles.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
 import {
-  isKnownDrillArtifactValidationPreset,
-  isKnownDrillValidationGatePreset,
+  validateDrillArtifactValidationPreset,
+  validateDrillValidationGatePreset,
 } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -664,18 +664,14 @@ function validateProviderAccountAliasArray(value, source) {
 function validateArtifactValidationPresetArray(value, source) {
   validateStringArray(value, source)
   for (const [index, preset] of value.entries()) {
-    if (!isKnownDrillArtifactValidationPreset(preset)) {
-      throw new Error(`${source}[${index}] has unknown validation preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillArtifactValidationPreset(preset, `${source}[${index}]`)
   }
 }
 
 function validatePresetArray(value, source) {
   validateStringArray(value, source)
   for (const [index, preset] of value.entries()) {
-    if (!isKnownDrillValidationGatePreset(preset)) {
-      throw new Error(`${source}[${index}] has unknown validation gate preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillValidationGatePreset(preset, `${source}[${index}]`)
   }
 }
 

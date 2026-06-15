@@ -8,6 +8,8 @@ import {
   expandValidationGatePresetRequirements,
   isKnownDrillArtifactValidationPreset,
   isKnownDrillValidationGatePreset,
+  validateDrillArtifactValidationPreset,
+  validateDrillValidationGatePreset,
   normalizeRequiredDeploymentPresets,
   normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactClassifications,
@@ -68,6 +70,17 @@ test("describes stable validation gate presets", () => {
   assert.equal(isKnownDrillValidationGatePreset("cloud-distributed-runtime"), false)
   assert.equal(isKnownDrillArtifactValidationPreset("cloud-distributed-runtime"), true)
   assert.equal(isKnownDrillArtifactValidationPreset("cloud-distributed-runtmie"), false)
+  assert.doesNotThrow(() => validateDrillArtifactValidationPreset("cloud-distributed-runtime", "artifact.validationPresets[0]"))
+  assert.throws(
+    () => validateDrillArtifactValidationPreset("cloud-distributed-runtmie", "artifact.validationPresets[0]"),
+    /artifact\.validationPresets\[0\] has unknown validation preset "cloud-distributed-runtmie"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactValidationPreset("cloud-distributed-runtmie", "artifactCoverage.validationPresets", {
+      label: "artifact validation preset",
+    }),
+    /artifactCoverage\.validationPresets has unknown artifact validation preset "cloud-distributed-runtmie"/,
+  )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["distributed-runtime"] })[0],
     {
@@ -152,6 +165,17 @@ test("describes stable validation gate presets", () => {
   )
   assert.equal(isKnownDrillValidationGatePreset("workspace-live-sync"), true)
   assert.equal(isKnownDrillValidationGatePreset("workspace-live-synch"), false)
+  assert.doesNotThrow(() => validateDrillValidationGatePreset("workspace-live-sync", "presets[0]"))
+  assert.throws(
+    () => validateDrillValidationGatePreset("workspace-live-synch", "presets[0]"),
+    /presets\[0\] has unknown validation gate preset "workspace-live-synch"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGatePreset("workspace-live-synch", "required presets", {
+      message: (preset) => `unknown validation gate preset: ${preset}`,
+    }),
+    /unknown validation gate preset: workspace-live-synch/,
+  )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["slice-runtime"] })[0],
     {

@@ -598,9 +598,9 @@ export function normalizeRequiredArtifactValidationPresets(requiredArtifactValid
     itemName: "preset",
   })
   for (const preset of presets) {
-    if (!isKnownDrillArtifactValidationPreset(preset)) {
-      throw new Error(`unknown required artifact validation preset: ${preset}`)
-    }
+    validateDrillArtifactValidationPreset(preset, "required artifact validation presets", {
+      message: () => `unknown required artifact validation preset: ${preset}`,
+    })
   }
   return presets
 }
@@ -746,9 +746,9 @@ export function normalizeRequiredPresets(presets) {
   }
   const normalizedNames = [...new Set(names)].sort()
   for (const preset of normalizedNames) {
-    if (!Object.prototype.hasOwnProperty.call(DRILL_VALIDATION_GATE_PRESETS, preset)) {
-      throw new Error(`unknown validation gate preset: ${preset}`)
-    }
+    validateDrillValidationGatePreset(preset, "validation gate presets", {
+      message: () => `unknown validation gate preset: ${preset}`,
+    })
   }
   return normalizedNames
 }
@@ -758,9 +758,30 @@ export function isKnownDrillValidationGatePreset(preset) {
     && Object.prototype.hasOwnProperty.call(DRILL_VALIDATION_GATE_PRESETS, preset)
 }
 
+export function validateDrillValidationGatePreset(preset, source, { message } = {}) {
+  if (!isKnownDrillValidationGatePreset(preset)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(preset) : message)
+    }
+    throw new Error(`${source} has unknown validation gate preset ${JSON.stringify(preset)}`)
+  }
+}
+
 export function isKnownDrillArtifactValidationPreset(preset) {
   return typeof preset === "string"
     && DRILL_ARTIFACT_VALIDATION_PRESETS.includes(preset)
+}
+
+export function validateDrillArtifactValidationPreset(preset, source, {
+  label = "validation preset",
+  message,
+} = {}) {
+  if (!isKnownDrillArtifactValidationPreset(preset)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(preset) : message)
+    }
+    throw new Error(`${source} has unknown ${label} ${JSON.stringify(preset)}`)
+  }
 }
 
 export function normalizeRequiredFailureClassifications(requiredFailureClassifications) {
