@@ -1006,6 +1006,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
     },
     matrixReports: {
       enabled: true,
+      artifactIndexes: ["/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       dryRun: false,
       continueOnFailure: true,
@@ -1220,6 +1221,7 @@ function generatedEvidenceFixture() {
     },
     matrixReports: {
       enabled: true,
+      artifactIndexes: ["/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       dryRun: false,
       continueOnFailure: true,

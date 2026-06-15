@@ -294,10 +294,12 @@ function appendGeneratedEvidenceSummary(lines, generatedEvidence) {
   const matrixReports = generatedEvidence.matrixReports
   if (matrixReports && typeof matrixReports === "object" && !Array.isArray(matrixReports)) {
     const roots = stringArrayForSummary(matrixReports.roots)
+    const artifactIndexes = stringArrayForSummary(matrixReports.artifactIndexes)
     const commands = Array.isArray(matrixReports.commands) ? matrixReports.commands.length : 0
     lines.push([
       `generated_matrices=${matrixReports.enabled === true ? "enabled" : "disabled"}`,
       `roots=${roots.join(",") || "none"}`,
+      `artifact_indexes=${artifactIndexes.join(",") || "none"}`,
       `commands=${commands}`,
       `dry_run=${matrixReports.dryRun === true}`,
       `continue_on_failure=${matrixReports.continueOnFailure === true}`,

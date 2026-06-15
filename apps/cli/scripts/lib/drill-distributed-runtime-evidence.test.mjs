@@ -213,6 +213,14 @@ test("builds distributed runtime generated evidence summary", () => {
     nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before treating required matrix classifications as release evidence",
   }])
   assert.deepEqual(summary.matrixReports.roots, ["/tmp/matrices/cloud", "/tmp/matrices/oss"])
+  assert.deepEqual(summary.matrixReports.artifactIndexes, [
+    "/tmp/matrices/cloud/cloud-slice-runtime-matrix-artifacts.json",
+    "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
+    "/tmp/matrices/oss/remote-agent-runtime-matrix-artifacts.json",
+    "/tmp/matrices/oss/remote-home-extension-matrix-artifacts.json",
+    "/tmp/matrices/oss/slice-runtime-matrix-artifacts.json",
+    "/tmp/matrices/oss/workspace-live-sync-matrix-artifacts.json",
+  ])
   assert.equal(summary.matrixReports.commands.length, 6)
   assert.deepEqual(summary.matrixReports.commands[0], {
     artifactIndexPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix-artifacts.json"),
@@ -284,6 +292,7 @@ test("builds empty generated evidence summary when generation is disabled", () =
 
   assert.deepEqual(summary, {
     matrixReports: {
+      artifactIndexes: [],
       commands: [],
       continueOnFailure: false,
       dryRun: false,

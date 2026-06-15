@@ -1545,6 +1545,11 @@ function validationGateReportGeneratedEvidence(report) {
     },
     matrixReports: {
       enabled: matrixReports.enabled === true,
+      artifactIndexes: stringArray(matrixReports.artifactIndexes).length > 0
+        ? stringArray(matrixReports.artifactIndexes)
+        : (Array.isArray(matrixReports.commands) ? matrixReports.commands : [])
+          .map((command) => command?.artifactIndexPath)
+          .filter((artifactIndexPath) => typeof artifactIndexPath === "string" && artifactIndexPath.length > 0),
       roots: stringArray(matrixReports.roots),
       dryRun: matrixReports.dryRun === true,
       continueOnFailure: matrixReports.continueOnFailure === true,
@@ -1629,6 +1634,7 @@ function validateGeneratedMatrixReportsSummary(matrixReports, source) {
     throw new Error(`${source} has invalid continueOnFailure`)
   }
   validateGeneratedMatrixLimitations(matrixReports.limitations ?? [], `${source}.limitations`)
+  validateStringArray(matrixReports.artifactIndexes ?? [], `${source}.artifactIndexes`)
   validateStringArray(matrixReports.roots ?? [], `${source}.roots`)
   if (!Array.isArray(matrixReports.commands)) {
     throw new Error(`${source}.commands is not an array`)
@@ -1636,13 +1642,13 @@ function validateGeneratedMatrixReportsSummary(matrixReports, source) {
   for (const [index, command] of matrixReports.commands.entries()) {
     validateGeneratedMatrixCommandSummary(command, `${source}.commands[${index}]`)
   }
-  if (matrixReports.enabled && ((matrixReports.roots ?? []).length === 0 || matrixReports.commands.length === 0)) {
+  if (matrixReports.enabled && ((matrixReports.artifactIndexes ?? []).length === 0 || (matrixReports.roots ?? []).length === 0 || matrixReports.commands.length === 0)) {
     throw new Error(`${source} enabled evidence is missing paths`)
   }
   if (matrixReports.enabled && matrixReports.dryRun && (matrixReports.limitations ?? []).length === 0) {
     throw new Error(`${source} dry-run evidence is missing limitations`)
   }
-  if (!matrixReports.enabled && ((matrixReports.roots ?? []).length > 0 || matrixReports.commands.length > 0 || (matrixReports.limitations ?? []).length > 0)) {
+  if (!matrixReports.enabled && ((matrixReports.artifactIndexes ?? []).length > 0 || (matrixReports.roots ?? []).length > 0 || matrixReports.commands.length > 0 || (matrixReports.limitations ?? []).length > 0)) {
     throw new Error(`${source} disabled evidence has generated data`)
   }
 }

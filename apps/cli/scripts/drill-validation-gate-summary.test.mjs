@@ -584,6 +584,7 @@ function generatedEvidence() {
     },
     matrixReports: {
       enabled: true,
+      artifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
       roots: ["/tmp/generated-matrix"],
       dryRun: false,
       continueOnFailure: true,

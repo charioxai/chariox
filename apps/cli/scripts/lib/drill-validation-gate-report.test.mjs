@@ -104,6 +104,7 @@ test("validates optional generated evidence provenance", () => {
         ...generatedEvidence(),
         matrixReports: {
           enabled: true,
+          artifactIndexes: [],
           roots: [],
           commands: [],
           dryRun: false,
@@ -119,6 +120,7 @@ test("validates optional generated evidence provenance", () => {
         ...generatedEvidence(),
         matrixReports: {
           enabled: false,
+          artifactIndexes: [],
           roots: ["/tmp/matrices"],
           commands: [],
           dryRun: false,
@@ -602,6 +604,7 @@ function generatedEvidence() {
     },
     matrixReports: {
       enabled: true,
+      artifactIndexes: ["/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       commands: [{
         args: ["--include-hetzner"],

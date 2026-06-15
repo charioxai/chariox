@@ -190,6 +190,10 @@ test("formats generated evidence provenance when present", () => {
       matrixReports: {
         enabled: true,
         roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
+        artifactIndexes: [
+          "/tmp/matrices/cloud/b-artifacts.json",
+          "/tmp/matrices/oss/a-artifacts.json",
+        ],
         commands: [
           {
             args: ["--include-hetzner"],
@@ -218,7 +222,7 @@ test("formats generated evidence provenance when present", () => {
   }))
 
   assert.match(text, /generated_validation_suites=enabled output_roots=\/tmp\/suites\/cloud,\/tmp\/suites\/oss artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json commands=2 failure_roots=\/tmp\/suites\/oss\/failed-run,\/tmp\/suites\/cloud\/failed-run/)
-  assert.match(text, /generated_matrices=enabled roots=\/tmp\/matrices\/cloud,\/tmp\/matrices\/oss commands=2 dry_run=false continue_on_failure=true/)
+  assert.match(text, /generated_matrices=enabled roots=\/tmp\/matrices\/cloud,\/tmp\/matrices\/oss artifact_indexes=\/tmp\/matrices\/cloud\/b-artifacts\.json,\/tmp\/matrices\/oss\/a-artifacts\.json commands=2 dry_run=false continue_on_failure=true/)
   assert.match(text, /generated_matrix_limitations:/)
   assert.match(text, /- kind=dry-run-classification-coverage owner=validation-harness: rerun distributed runtime matrix reports without --matrix-dry-run before release/)
 })

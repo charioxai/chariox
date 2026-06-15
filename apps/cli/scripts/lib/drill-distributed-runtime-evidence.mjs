@@ -33,6 +33,7 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
   return {
     matrixReports: {
       enabled: options.runMatrixReports === true,
+      artifactIndexes: distributedRuntimeMatrixArtifactIndexPathsFor(options),
       roots: [...generatedMatrixRoots].map((item) => path.resolve(item)).sort(),
       dryRun: options.matrixDryRun === true,
       continueOnFailure: options.matrixContinueOnFailure === true,
