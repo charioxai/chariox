@@ -31,6 +31,8 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "generatedMatrixLimitations",
   "requiredGeneratedEvidenceKinds",
   "missingGeneratedEvidenceKinds",
+  "requiredGeneratedMatrixLimitations",
+  "missingGeneratedMatrixLimitations",
   "evidenceRepos",
 ])
 export const DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS = Object.freeze([
@@ -49,6 +51,8 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   generatedMatrixLimitations: "generated_matrix_limitations",
   requiredGeneratedEvidenceKinds: "required_generated_evidence_kinds",
   missingGeneratedEvidenceKinds: "missing_generated_evidence_kinds",
+  requiredGeneratedMatrixLimitations: "required_generated_matrix_limitations",
+  missingGeneratedMatrixLimitations: "missing_generated_matrix_limitations",
   evidenceRepos: "evidence_repos",
 })
 
@@ -177,6 +181,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const generatedMatrixLimitations = new Map()
   const requiredGeneratedEvidenceKinds = new Map()
   const missingGeneratedEvidenceKinds = new Map()
+  const requiredGeneratedMatrixLimitations = new Map()
+  const missingGeneratedMatrixLimitations = new Map()
   const evidenceRepos = new Map()
   const summaries = indexes.map((index, indexPosition) => {
     validateDrillArtifactIndex(index, sources[indexPosition] ?? "drill artifact index")
@@ -195,6 +201,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "generatedMatrixLimitations")
     const indexRequiredGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "requiredGeneratedEvidenceKinds")
     const indexMissingGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "missingGeneratedEvidenceKinds")
+    const indexRequiredGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "requiredGeneratedMatrixLimitations")
+    const indexMissingGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixLimitations")
     const indexEvidenceRepos = metadataListFromMetadata(index.metadata, "evidenceRepos")
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
@@ -206,6 +214,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexGeneratedMatrixLimitations, generatedMatrixLimitations)
     countValues(indexRequiredGeneratedEvidenceKinds, requiredGeneratedEvidenceKinds)
     countValues(indexMissingGeneratedEvidenceKinds, missingGeneratedEvidenceKinds)
+    countValues(indexRequiredGeneratedMatrixLimitations, requiredGeneratedMatrixLimitations)
+    countValues(indexMissingGeneratedMatrixLimitations, missingGeneratedMatrixLimitations)
     countValues(indexEvidenceRepos, evidenceRepos)
     for (const artifact of index.artifacts) {
       totals.artifacts += 1
@@ -231,6 +241,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       generatedMatrixLimitations: countValues(indexGeneratedMatrixLimitations),
       requiredGeneratedEvidenceKinds: countValues(indexRequiredGeneratedEvidenceKinds),
       missingGeneratedEvidenceKinds: countValues(indexMissingGeneratedEvidenceKinds),
+      requiredGeneratedMatrixLimitations: countValues(indexRequiredGeneratedMatrixLimitations),
+      missingGeneratedMatrixLimitations: countValues(indexMissingGeneratedMatrixLimitations),
       evidenceRepos: countValues(indexEvidenceRepos),
     }
   })
@@ -248,6 +260,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     generatedMatrixLimitations: sortedCountObject(generatedMatrixLimitations),
     requiredGeneratedEvidenceKinds: sortedCountObject(requiredGeneratedEvidenceKinds),
     missingGeneratedEvidenceKinds: sortedCountObject(missingGeneratedEvidenceKinds),
+    requiredGeneratedMatrixLimitations: sortedCountObject(requiredGeneratedMatrixLimitations),
+    missingGeneratedMatrixLimitations: sortedCountObject(missingGeneratedMatrixLimitations),
     evidenceRepos: sortedCountObject(evidenceRepos),
     indexes: summaries,
   }
@@ -485,7 +499,11 @@ function validateDiagnosticCountObject(value, source, key) {
       }
     }
   }
-  if (key === "generatedMatrixLimitations") {
+  if ([
+    "generatedMatrixLimitations",
+    "requiredGeneratedMatrixLimitations",
+    "missingGeneratedMatrixLimitations",
+  ].includes(key)) {
     for (const limitation of Object.keys(value)) {
       if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
         throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
@@ -758,6 +776,13 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
   for (const limitation of metadataListFromMetadata(metadata, "generatedMatrixLimitations")) {
     if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
       throw new Error(`${source}.generatedMatrixLimitations has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
+    }
+  }
+  for (const key of ["requiredGeneratedMatrixLimitations", "missingGeneratedMatrixLimitations"]) {
+    for (const limitation of metadataListFromMetadata(metadata, key)) {
+      if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+        throw new Error(`${source}.${key} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
+      }
     }
   }
 }

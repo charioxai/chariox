@@ -570,6 +570,8 @@ test("summarizes drill artifact indexes", async () => {
         generatedEvidenceKinds: "matrix-report",
         generatedMatrixLimitations: "dry-run-classification-coverage",
         requiredGeneratedEvidenceKinds: "matrix-report",
+        requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
+        missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
         evidenceRepos: "cloud,oss",
       },
     })
@@ -623,6 +625,12 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, {
       "matrix-report": 1,
     })
+    assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, {
+      "dry-run-classification-coverage": 1,
+    })
+    assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, {
+      "dry-run-classification-coverage": 1,
+    })
     assert.deepEqual(aggregate.evidenceRepos, {
       cloud: 1,
       oss: 2,
@@ -666,8 +674,10 @@ test("summarizes drill artifact indexes", async () => {
       generatedEvidenceKinds: "matrix-report,validation-suite-run",
       generatedMatrixLimitations: "dry-run-classification-coverage",
       missingGeneratedEvidenceKinds: "matrix-report",
+      missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
       owners: "runtime-network,validation-harness",
       requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
+      requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
     })
@@ -682,6 +692,8 @@ test("summarizes drill artifact indexes", async () => {
       "generatedMatrixLimitations",
       "requiredGeneratedEvidenceKinds",
       "missingGeneratedEvidenceKinds",
+      "requiredGeneratedMatrixLimitations",
+      "missingGeneratedMatrixLimitations",
       "evidenceRepos",
     ])
     assert.deepEqual(DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS, [
@@ -799,6 +811,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedMatrixLimitations: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
       evidenceRepos: { oss: -1 },
     }),
     /evidenceRepos has invalid count/,
@@ -815,6 +829,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedMatrixLimitations: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
     }),
     /drill artifact diagnostics\.runtimeSignalOwners must match runtimeSignals/,
@@ -831,6 +847,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedMatrixLimitations: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
     }),
     /runtimeSignals has unknown runtime signal "workspace-live-synch-state"/,
@@ -847,6 +865,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedMatrixLimitations: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
       evidenceRepos: { cluod: 1 },
     }),
     /evidenceRepos has unknown evidence repo "cluod"/,
@@ -863,6 +883,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedMatrixLimitations: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
     }),
     /generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
@@ -879,9 +901,47 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedMatrixLimitations: { "dry-run-classification-covergae": 1 },
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
     }),
     /generatedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: {},
+      generatedMatrixLimitations: {},
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: { "dry-run-classification-covergae": 1 },
+      missingGeneratedMatrixLimitations: {},
+      evidenceRepos: {},
+    }),
+    /requiredGeneratedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: {},
+      generatedMatrixLimitations: {},
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: { "dry-run-classification-covergae": 1 },
+      evidenceRepos: {},
+    }),
+    /missingGeneratedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions({
@@ -895,6 +955,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedMatrixLimitations: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
     }),
     /artifactKinds has unknown artifact kind "validation-sutie"/,

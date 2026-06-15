@@ -297,6 +297,12 @@ function artifactAggregateFixture() {
     missingGeneratedEvidenceKinds: {
       "matrix-report": 1,
     },
+    requiredGeneratedMatrixLimitations: {
+      "dry-run-classification-coverage": 1,
+    },
+    missingGeneratedMatrixLimitations: {
+      "dry-run-classification-coverage": 1,
+    },
     evidenceRepos: {
       cloud: 1,
       oss: 1,
@@ -345,6 +351,12 @@ function artifactAggregateFixture() {
       },
       missingGeneratedEvidenceKinds: {
         "matrix-report": 1,
+      },
+      requiredGeneratedMatrixLimitations: {
+        "dry-run-classification-coverage": 1,
+      },
+      missingGeneratedMatrixLimitations: {
+        "dry-run-classification-coverage": 1,
       },
       evidenceRepos: {
         cloud: 1,
