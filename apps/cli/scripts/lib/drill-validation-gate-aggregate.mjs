@@ -24,6 +24,10 @@ import {
   validateDrillValidationGatePreset,
 } from "./drill-validation-gate-presets.mjs"
 import {
+  validateDrillValidationCheckStatus,
+  validateDrillValidationResultStatus,
+} from "./drill-validation-statuses.mjs"
+import {
   drillRuntimeSignalOwnerCounts,
   validateDrillRuntimeSignal,
   validateDrillRuntimeSignalOwner,
@@ -460,9 +464,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   if (aggregate.schema !== DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA) {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(aggregate.schema)}`)
   }
-  if (!["passed", "failed"].includes(aggregate.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(aggregate.status)}`)
-  }
+  validateDrillValidationResultStatus(aggregate.status, source)
   if (!aggregate.totals || typeof aggregate.totals !== "object" || Array.isArray(aggregate.totals)) {
     throw new Error(`${source} has invalid totals`)
   }
@@ -1795,17 +1797,15 @@ function validateGateAggregateReportSummary(report, source) {
   if (report.source !== null && typeof report.source !== "string") {
     throw new Error(`${source} has invalid source`)
   }
-  if (!["passed", "failed"].includes(report.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
-  }
+  validateDrillValidationResultStatus(report.status, source)
   validatePresetArray(report.presets ?? [], `${source}.presets`)
   if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
     throw new Error(`${source} has invalid checks`)
   }
   for (const name of ["configuration", "platformBundle", "artifacts", "matrices", "failures"]) {
-    if (!["passed", "failed", "skipped"].includes(report.checks[name])) {
-      throw new Error(`${source}.checks has invalid ${name}`)
-    }
+    validateDrillValidationCheckStatus(report.checks[name], `${source}.checks.${name}`, {
+      message: () => `${source}.checks has invalid ${name}`,
+    })
   }
   if (report.matrixCoverage !== undefined) {
     validateValidationGateMatrixCoverage(report.matrixCoverage, `${source}.matrixCoverage`)
@@ -1831,16 +1831,14 @@ function validateGateAggregateArtifactCoverageInput(input, source) {
   if (input.source !== null && typeof input.source !== "string") {
     throw new Error(`${source} has invalid source`)
   }
-  if (!["passed", "failed"].includes(input.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(input.status)}`)
-  }
+  validateDrillValidationResultStatus(input.status, source)
   if (!input.checks || typeof input.checks !== "object" || Array.isArray(input.checks)) {
     throw new Error(`${source} has invalid checks`)
   }
   for (const name of ["configuration", "platformBundle", "artifacts", "matrices", "failures"]) {
-    if (!["passed", "failed", "skipped"].includes(input.checks[name])) {
-      throw new Error(`${source}.checks has invalid ${name}`)
-    }
+    validateDrillValidationCheckStatus(input.checks[name], `${source}.checks.${name}`, {
+      message: () => `${source}.checks has invalid ${name}`,
+    })
   }
   validateValidationGateArtifactCoverage(input.artifactCoverage, `${source}.artifactCoverage`)
 }

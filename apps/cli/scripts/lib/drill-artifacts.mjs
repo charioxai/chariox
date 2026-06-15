@@ -25,6 +25,7 @@ import {
   parseProviderAccountAlias,
   validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
+import { validateDrillValidationResultStatus } from "./drill-validation-statuses.mjs"
 import { validateDrillArtifactValidationPreset } from "./drill-validation-gate-presets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
@@ -982,9 +983,9 @@ function validateValidationSuiteArtifactMetadata({
 }
 
 function validateValidationSuiteRunArtifact(run, source) {
-  if (!["passed", "failed"].includes(run.status)) {
-    throw new Error(`drill artifact ${source} has invalid status`)
-  }
+  validateDrillValidationResultStatus(run.status, `drill artifact ${source}`, {
+    message: () => `drill artifact ${source} has invalid status`,
+  })
   if (typeof run.ok !== "boolean") {
     throw new Error(`drill artifact ${source} is missing ok`)
   }

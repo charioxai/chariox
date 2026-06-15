@@ -24,6 +24,10 @@ import {
   validateDrillValidationGatePreset,
 } from "./drill-validation-gate-presets.mjs"
 import {
+  validateDrillValidationCheckStatus,
+  validateDrillValidationResultStatus,
+} from "./drill-validation-statuses.mjs"
+import {
   validateDrillRuntimeSignal,
   validateDrillRuntimeSignalOwner,
   validateDrillRuntimeSignals,
@@ -38,9 +42,7 @@ export function validateDrillValidationGateReport(report, source = "validation g
   if (report.schema !== DRILL_VALIDATION_GATE_SCHEMA) {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(report.schema)}`)
   }
-  if (!["passed", "failed"].includes(report.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
-  }
+  validateDrillValidationResultStatus(report.status, source)
   validatePresetArray(report.presets ?? [], `${source}.presets`)
   if (!report.checks || typeof report.checks !== "object" || Array.isArray(report.checks)) {
     throw new Error(`${source} is missing checks`)
@@ -387,9 +389,7 @@ function validateCheckObject(check, source) {
   if (!check || typeof check !== "object" || Array.isArray(check)) {
     throw new Error(`${source} is not an object`)
   }
-  if (!["passed", "failed", "skipped"].includes(check.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(check.status)}`)
-  }
+  validateDrillValidationCheckStatus(check.status, source)
 }
 
 function validatePlatformBundleArtifact(artifact, source) {
