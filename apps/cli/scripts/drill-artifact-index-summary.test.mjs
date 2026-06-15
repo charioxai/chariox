@@ -577,6 +577,19 @@ test("drill artifact index summary gates generated matrix names and repos", asyn
         scriptPath,
         "--artifact-index",
         matrixIndexPath,
+        "--require-generated-matrix-name=workspace-live-synch-matrix",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-matrix-name has unknown generated matrix name: workspace-live-synch-matrix/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        matrixIndexPath,
         "--require-generated-matrix-repo",
         "osz",
       ]),

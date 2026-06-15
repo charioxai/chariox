@@ -23,6 +23,7 @@ import {
 } from "./lib/drill-provider-profiles.mjs"
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixName } from "./lib/drill-generated-matrix-names.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./lib/drill-evidence-repos.mjs"
 import { drillFailureOwnerForClassification } from "./lib/drill-failure-taxonomy.mjs"
@@ -244,10 +245,10 @@ function parseArgs(argv) {
         "--require-generated-matrix-limitation",
       ))
     } else if (arg === "--require-generated-matrix-name") {
-      options.requiredGeneratedMatrixNames.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
+      options.requiredGeneratedMatrixNames.push(parseGeneratedMatrixNameRequirement(readValue(argv, index, arg), arg))
       index += 1
     } else if (arg.startsWith("--require-generated-matrix-name=")) {
-      options.requiredGeneratedMatrixNames.push(parseDiagnosticRequirementText(
+      options.requiredGeneratedMatrixNames.push(parseGeneratedMatrixNameRequirement(
         arg.slice("--require-generated-matrix-name=".length),
         "--require-generated-matrix-name",
       ))
@@ -405,6 +406,14 @@ function parseGeneratedMatrixLimitationRequirement(value, flag) {
     throw new Error(`${flag} has unknown generated matrix limitation: ${value}`)
   }
   return value
+}
+
+function parseGeneratedMatrixNameRequirement(value, flag) {
+  const matrixName = parseDiagnosticRequirementText(value, flag)
+  if (!isKnownDrillGeneratedMatrixName(matrixName)) {
+    throw new Error(`${flag} has unknown generated matrix name: ${matrixName}`)
+  }
+  return matrixName
 }
 
 function parseGeneratedMatrixRepoRequirement(value, flag) {
