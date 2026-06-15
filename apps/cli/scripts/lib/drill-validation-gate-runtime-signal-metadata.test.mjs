@@ -89,6 +89,7 @@ test("builds owner and classification metadata for validation gate reports", () 
       validationSuites: {
         enabled: true,
         artifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
+        failureRoots: ["/tmp/generated-suite/failed-run"],
         outputRoots: ["/tmp/generated-suite"],
       },
       matrixReports: {
@@ -118,6 +119,7 @@ test("builds owner and classification metadata for validation gate reports", () 
     exitCriterionStatuses: "dry-run",
     generatedEvidenceKinds: "matrix-report,validation-suite-run",
     generatedMatrixLimitations: "dry-run-classification-coverage",
+    generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
     incompleteExitCriterionStatuses: "dry-run",
     owners: "kernel-authority,provider-account,runtime-network,ui-client,validation-harness,validation-platform",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
@@ -196,6 +198,16 @@ test("builds owner and classification metadata for validation gate aggregates", 
       { source: "z-artifacts.json" },
       { source: "a-artifacts.json" },
     ],
+    reports: [{
+      generatedEvidence: {
+        validationSuites: {
+          enabled: true,
+          commands: [{
+            failureRoot: "/tmp/generated-suite/failed-run",
+          }],
+        },
+      },
+    }],
     nextActions: [{
       owner: "validation-harness",
       classification: "matrix-coverage",
@@ -211,6 +223,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
     exitCriterionStatuses: "dry-run",
     generatedEvidenceKinds: "matrix-report,validation-suite-run",
     generatedMatrixLimitations: "dry-run-classification-coverage",
+    generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
     incompleteExitCriterionStatuses: "dry-run",
     missingGeneratedEvidenceKinds: "matrix-report",
     missingGeneratedMatrixLimitations: "dry-run-classification-coverage",

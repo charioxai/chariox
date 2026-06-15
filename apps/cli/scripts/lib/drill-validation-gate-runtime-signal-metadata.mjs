@@ -44,6 +44,7 @@ export function diagnosticMetadataForValidationGateReport(report) {
   ])
   const generatedEvidenceKinds = new Set(generatedEvidenceKindsFor(report.generatedEvidence))
   const generatedMatrixLimitations = new Set(generatedMatrixLimitationsFor(report.generatedEvidence))
+  const generatedValidationSuiteFailureRoots = new Set(generatedValidationSuiteFailureRootsFor(report.generatedEvidence))
   const exitCriterionStatuses = new Set(Object.keys(report.checks?.artifacts?.aggregate?.exitCriterionStatuses ?? {}))
   const incompleteExitCriterionStatuses = new Set(Object.keys(report.checks?.artifacts?.aggregate?.incompleteExitCriterionStatuses ?? {}))
   return {
@@ -55,6 +56,7 @@ export function diagnosticMetadataForValidationGateReport(report) {
     ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
+    ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),
   }
 }
 
@@ -122,6 +124,10 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixLimitations ?? {}),
     ...Object.keys(aggregate.coverage?.generatedMatrixLimitations ?? {}),
   ])
+  const generatedValidationSuiteFailureRoots = new Set(
+    (aggregate.reports ?? [])
+      .flatMap((report) => generatedValidationSuiteFailureRootsFor(report?.generatedEvidence)),
+  )
   const exitCriterionStatuses = new Set(Object.keys(aggregate.coverage?.artifactExitCriterionStatuses ?? {}))
   const incompleteExitCriterionStatuses = new Set(Object.keys(aggregate.coverage?.artifactIncompleteExitCriterionStatuses ?? {}))
   const requiredGeneratedEvidenceKinds = new Set([
@@ -157,6 +163,7 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
+    ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),
     ...(requiredGeneratedEvidenceKinds.size > 0 ? { requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds].sort().join(",") } : {}),
     ...(missingGeneratedEvidenceKinds.size > 0 ? { missingGeneratedEvidenceKinds: [...missingGeneratedEvidenceKinds].sort().join(",") } : {}),
     ...(requiredGeneratedMatrixLimitations.size > 0 ? { requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations].sort().join(",") } : {}),
@@ -186,6 +193,18 @@ function generatedMatrixLimitationsFor(generatedEvidence) {
     .map((limitation) => limitation?.kind)
     .filter(nonEmptyString)
     .sort()
+}
+
+function generatedValidationSuiteFailureRootsFor(generatedEvidence) {
+  const validationSuites = generatedEvidence?.validationSuites
+  if (!validationSuites || typeof validationSuites !== "object") return []
+  const explicitFailureRoots = Array.isArray(validationSuites.failureRoots)
+    ? validationSuites.failureRoots
+    : []
+  const commandFailureRoots = Array.isArray(validationSuites.commands)
+    ? validationSuites.commands.map((command) => command?.failureRoot)
+    : []
+  return sortedUnique([...explicitFailureRoots, ...commandFailureRoots].filter(nonEmptyString))
 }
 
 function platformCoverageAreas(report) {
