@@ -4,7 +4,7 @@ import {
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
 } from "./drill-distributed-runtime-evidence.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
-import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -558,9 +558,9 @@ export function normalizeRequiredArtifactGeneratedMatrixRepos(requiredArtifactGe
     itemName: "repo",
   })
   for (const repo of repos) {
-    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-      throw new Error(`unknown required artifact generated matrix repo: ${repo}`)
-    }
+    validateDrillArtifactEvidenceRepo(repo, "required artifact generated matrix repos", {
+      message: () => `unknown required artifact generated matrix repo: ${repo}`,
+    })
   }
   return repos
 }
@@ -571,9 +571,9 @@ export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceR
     itemName: "repo",
   })
   for (const repo of repos) {
-    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-      throw new Error(`unknown required artifact evidence repo: ${repo}`)
-    }
+    validateDrillArtifactEvidenceRepo(repo, "required artifact evidence repos", {
+      message: () => `unknown required artifact evidence repo: ${repo}`,
+    })
   }
   return repos
 }

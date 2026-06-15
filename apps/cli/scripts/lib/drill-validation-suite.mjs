@@ -9,7 +9,7 @@ import {
 } from "./drill-runtime-signals.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
-import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -40,6 +40,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-cli-args.test.mjs",
   "apps/cli/scripts/lib/drill-distributed-runtime-evidence.test.mjs",
   "apps/cli/scripts/lib/drill-environment-presets.test.mjs",
+  "apps/cli/scripts/lib/drill-evidence-repos.test.mjs",
   "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
   "apps/cli/scripts/lib/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
@@ -99,6 +100,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/drill-platform-bundle.test.mjs",
       "apps/cli/scripts/lib/drill-aggregate-actions.test.mjs",
       "apps/cli/scripts/lib/drill-artifacts.test.mjs",
+      "apps/cli/scripts/lib/drill-evidence-repos.test.mjs",
       "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
       "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
@@ -453,9 +455,9 @@ function sortedExitCriterionStatusArray(value, source) {
 function sortedArtifactEvidenceRepoArray(value, source) {
   const repos = sortedStringArray(value, source)
   for (const [index, repo] of repos.entries()) {
-    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown artifact evidence repo ${JSON.stringify(repo)}`)
-    }
+    validateDrillArtifactEvidenceRepo(repo, `validation suite preset ${source}[${index}]`, {
+      label: "artifact evidence repo",
+    })
   }
   return repos
 }

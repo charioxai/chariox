@@ -1,7 +1,7 @@
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
-import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
@@ -612,9 +612,7 @@ function validateStringArray(value, source) {
 function validateArtifactEvidenceRepoArray(value, source) {
   validateStringArray(value, source)
   for (const [index, repo] of value.entries()) {
-    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-      throw new Error(`${source}[${index}] has unknown evidence repo ${JSON.stringify(repo)}`)
-    }
+    validateDrillArtifactEvidenceRepo(repo, `${source}[${index}]`)
   }
 }
 

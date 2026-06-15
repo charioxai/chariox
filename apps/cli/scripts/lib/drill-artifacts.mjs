@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
-import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -771,9 +771,7 @@ function validateDiagnosticCountObject(value, source, key) {
   }
   if (["generatedMatrixRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"].includes(key)) {
     for (const repo of Object.keys(value)) {
-      if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-        throw new Error(`${source} has unknown evidence repo ${JSON.stringify(repo)}`)
-      }
+      validateDrillArtifactEvidenceRepo(repo, source)
     }
   }
   if (["generatedMatrixNames", "requiredGeneratedMatrixNames", "missingGeneratedMatrixNames"].includes(key)) {
@@ -800,9 +798,7 @@ function validateDiagnosticCountObject(value, source, key) {
   }
   if (key === "evidenceRepos") {
     for (const repo of Object.keys(value)) {
-      if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-        throw new Error(`${source} has unknown evidence repo ${JSON.stringify(repo)}`)
-      }
+      validateDrillArtifactEvidenceRepo(repo, source)
     }
   }
   if (key === "providerAccountAliases") {
@@ -1121,9 +1117,7 @@ function validateOptionalRuntimeSignalOwners(runtimeSignals, runtimeSignalOwners
 
 function validateDrillArtifactIndexEvidenceRepoMetadata(metadata, source) {
   for (const repo of metadataListFromMetadata(metadata, "evidenceRepos")) {
-    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-      throw new Error(`${source}.evidenceRepos has unknown evidence repo ${JSON.stringify(repo)}`)
-    }
+    validateDrillArtifactEvidenceRepo(repo, `${source}.evidenceRepos`)
   }
 }
 
@@ -1165,9 +1159,7 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
   }
   for (const key of ["generatedMatrixRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"]) {
     for (const repo of metadataListFromMetadata(metadata, key)) {
-      if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-        throw new Error(`${source}.${key} has unknown evidence repo ${JSON.stringify(repo)}`)
-      }
+      validateDrillArtifactEvidenceRepo(repo, `${source}.${key}`)
     }
   }
   for (const key of ["generatedMatrixNames", "requiredGeneratedMatrixNames", "missingGeneratedMatrixNames"]) {
