@@ -15,6 +15,7 @@ import {
   runDistributedRuntimeMatrixReportsFor,
   runDistributedRuntimeValidationSuitesFor,
 } from "./lib/drill-distributed-runtime-evidence.mjs"
+import { verifyDrillGeneratedMatrixRegistryParity } from "./lib/drill-generated-matrix-registry-parity.mjs"
 import {
   parseValidationGateRequirementArg,
   validationGateRequirementOptionDefaults,
@@ -55,6 +56,8 @@ function printHelp() {
     "                         Discover artifact indexes under each repo's .artifacts root",
     "  --include-default-failures",
     "                         Discover failure manifests under each repo's .artifacts root",
+    "  --require-generated-matrix-registry-parity",
+    "                         Fail when OSS and Cloud generated matrix registries drift",
     "  --failure-manifest PATH",
     "                         Read a specific failure manifest or preserved root; repeatable",
     "  --failure-root ROOT     Discover failure manifests below ROOT; repeatable",
@@ -116,6 +119,9 @@ async function main() {
   if (options.help) {
     printHelp()
     return
+  }
+  if (options.requireGeneratedMatrixRegistryParity) {
+    await verifyDrillGeneratedMatrixRegistryParity(options)
   }
   const generatedBundleDir = options.platformBundleDir ? null : await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-platform-"))
   try {
@@ -232,6 +238,7 @@ function parseArgs(argv) {
     platformBundleDir: null,
     providerAccounts: {},
     requireComplete: false,
+    requireGeneratedMatrixRegistryParity: false,
     requiredArtifactMaxAgeMs: null,
     requiredFailureMaxAgeMs: null,
     requiredMatrixMaxAgeMs: null,
@@ -249,6 +256,7 @@ function parseArgs(argv) {
     else if (arg === "--include-default-failures") options.includeDefaultFailures = true
     else if (arg === "--matrix-continue-on-failure") options.matrixContinueOnFailure = true
     else if (arg === "--matrix-dry-run") options.matrixDryRun = true
+    else if (arg === "--require-generated-matrix-registry-parity") options.requireGeneratedMatrixRegistryParity = true
     else if (arg === "--require-complete") options.requireComplete = true
     else if (arg === "--run-matrix-reports") options.runMatrixReports = true
     else if (arg === "--run-validation-suites") options.runValidationSuites = true
