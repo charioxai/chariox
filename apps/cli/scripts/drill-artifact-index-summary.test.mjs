@@ -288,6 +288,20 @@ test("drill artifact index summary gates generated validation-suite failure root
         return true
       },
     )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-validation-suite-failure-root",
+        "/tmp/generated-suite/Bearer abcdefghijklmnop",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-validation-suite-failure-root includes secret-looking diagnostic text/)
+        return true
+      },
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -452,6 +466,19 @@ test("drill artifact index summary gates generated matrix artifact indexes", asy
         assert.equal(error.code, 1)
         assert.match(error.stdout, /generated_matrix_artifact_indexes_required=\/tmp\/generated-matrix\/missing-artifacts\.json missing=\/tmp\/generated-matrix\/missing-artifacts\.json/)
         assert.match(error.stdout, /next: rerun generated matrix drills with artifact indexes .*\/tmp\/generated-matrix\/missing-artifacts\.json/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-matrix-artifact-index=/tmp/generated-matrix/Bearer abcdefghijklmnop.json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-matrix-artifact-index includes secret-looking diagnostic text/)
         return true
       },
     )

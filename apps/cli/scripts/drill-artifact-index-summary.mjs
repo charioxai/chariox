@@ -17,6 +17,7 @@ import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
 } from "./lib/drill-provider-profiles.mjs"
+import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 
@@ -185,15 +186,21 @@ function parseArgs(argv) {
         "--require-generated-matrix-limitation",
       ))
     } else if (arg === "--require-generated-validation-suite-failure-root") {
-      options.requiredGeneratedValidationSuiteFailureRoots.push(readValue(argv, index, arg))
+      options.requiredGeneratedValidationSuiteFailureRoots.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
       index += 1
     } else if (arg.startsWith("--require-generated-validation-suite-failure-root=")) {
-      options.requiredGeneratedValidationSuiteFailureRoots.push(arg.slice("--require-generated-validation-suite-failure-root=".length))
+      options.requiredGeneratedValidationSuiteFailureRoots.push(parseDiagnosticRequirementText(
+        arg.slice("--require-generated-validation-suite-failure-root=".length),
+        "--require-generated-validation-suite-failure-root",
+      ))
     } else if (arg === "--require-generated-matrix-artifact-index") {
-      options.requiredGeneratedMatrixArtifactIndexes.push(readValue(argv, index, arg))
+      options.requiredGeneratedMatrixArtifactIndexes.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
       index += 1
     } else if (arg.startsWith("--require-generated-matrix-artifact-index=")) {
-      options.requiredGeneratedMatrixArtifactIndexes.push(arg.slice("--require-generated-matrix-artifact-index=".length))
+      options.requiredGeneratedMatrixArtifactIndexes.push(parseDiagnosticRequirementText(
+        arg.slice("--require-generated-matrix-artifact-index=".length),
+        "--require-generated-matrix-artifact-index",
+      ))
     } else if (arg === "--require-provider-account-alias") {
       options.requiredProviderAccountAliases.push(parseProviderAccountAliasRequirement(readValue(argv, index, arg), arg))
       index += 1
@@ -274,6 +281,16 @@ function parseGeneratedEvidenceKindRequirement(value, flag) {
 function parseGeneratedMatrixLimitationRequirement(value, flag) {
   if (!isKnownDrillGeneratedMatrixLimitation(value)) {
     throw new Error(`${flag} has unknown generated matrix limitation: ${value}`)
+  }
+  return value
+}
+
+function parseDiagnosticRequirementText(value, flag) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${flag} requires a value`)
+  }
+  if (redactDrillSecretText(value) !== value) {
+    throw new Error(`${flag} includes secret-looking diagnostic text`)
   }
   return value
 }
