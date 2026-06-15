@@ -189,6 +189,12 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixLimitations ?? {}),
     ...Object.keys(aggregate.coverage?.generatedMatrixLimitations ?? {}),
   ])
+  const generatedMatrixNames = new Set([
+    ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixNames ?? {}),
+  ])
+  const generatedMatrixRepos = new Set([
+    ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixRepos ?? {}),
+  ])
   const generatedValidationSuiteArtifactIndexes = new Set(
     [
       ...Object.keys(aggregate.coverage?.generatedValidationSuiteArtifactIndexes ?? {}),
@@ -229,6 +235,22 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.missingGeneratedMatrixLimitations ?? {}),
     ...(aggregate.missingArtifactGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
     ...(aggregate.missingGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
+  ])
+  const requiredGeneratedMatrixNames = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedMatrixNames ?? {}),
+    ...(aggregate.requiredArtifactGeneratedMatrixNames ?? []).filter(nonEmptyString),
+  ])
+  const missingGeneratedMatrixNames = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactGeneratedMatrixNames ?? {}),
+    ...(aggregate.missingArtifactGeneratedMatrixNames ?? []).filter(nonEmptyString),
+  ])
+  const requiredGeneratedMatrixRepos = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedMatrixRepos ?? {}),
+    ...(aggregate.requiredArtifactGeneratedMatrixRepos ?? []).filter(nonEmptyString),
+  ])
+  const missingGeneratedMatrixRepos = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactGeneratedMatrixRepos ?? {}),
+    ...(aggregate.missingArtifactGeneratedMatrixRepos ?? []).filter(nonEmptyString),
   ])
   const requiredGeneratedMatrixArtifactIndexes = new Set([
     ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedMatrixArtifactIndexes ?? {}),
@@ -296,6 +318,8 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixArtifactIndexes.size > 0 ? { generatedMatrixArtifactIndexes: [...generatedMatrixArtifactIndexes].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
+    ...(generatedMatrixNames.size > 0 ? { generatedMatrixNames: [...generatedMatrixNames].sort().join(",") } : {}),
+    ...(generatedMatrixRepos.size > 0 ? { generatedMatrixRepos: [...generatedMatrixRepos].sort().join(",") } : {}),
     ...(generatedValidationSuiteArtifactIndexes.size > 0 ? { generatedValidationSuiteArtifactIndexes: [...generatedValidationSuiteArtifactIndexes].sort().join(",") } : {}),
     ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),
     ...(requiredGeneratedEvidenceKinds.size > 0 ? { requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds].sort().join(",") } : {}),
@@ -304,6 +328,10 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(missingGeneratedMatrixArtifactIndexes.size > 0 ? { missingGeneratedMatrixArtifactIndexes: [...missingGeneratedMatrixArtifactIndexes].sort().join(",") } : {}),
     ...(requiredGeneratedMatrixLimitations.size > 0 ? { requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations].sort().join(",") } : {}),
     ...(missingGeneratedMatrixLimitations.size > 0 ? { missingGeneratedMatrixLimitations: [...missingGeneratedMatrixLimitations].sort().join(",") } : {}),
+    ...(requiredGeneratedMatrixNames.size > 0 ? { requiredGeneratedMatrixNames: [...requiredGeneratedMatrixNames].sort().join(",") } : {}),
+    ...(missingGeneratedMatrixNames.size > 0 ? { missingGeneratedMatrixNames: [...missingGeneratedMatrixNames].sort().join(",") } : {}),
+    ...(requiredGeneratedMatrixRepos.size > 0 ? { requiredGeneratedMatrixRepos: [...requiredGeneratedMatrixRepos].sort().join(",") } : {}),
+    ...(missingGeneratedMatrixRepos.size > 0 ? { missingGeneratedMatrixRepos: [...missingGeneratedMatrixRepos].sort().join(",") } : {}),
     ...(requiredGeneratedValidationSuiteArtifactIndexes.size > 0 ? { requiredGeneratedValidationSuiteArtifactIndexes: [...requiredGeneratedValidationSuiteArtifactIndexes].sort().join(",") } : {}),
     ...(missingGeneratedValidationSuiteArtifactIndexes.size > 0 ? { missingGeneratedValidationSuiteArtifactIndexes: [...missingGeneratedValidationSuiteArtifactIndexes].sort().join(",") } : {}),
     ...(requiredGeneratedValidationSuiteFailureRoots.size > 0 ? { requiredGeneratedValidationSuiteFailureRoots: [...requiredGeneratedValidationSuiteFailureRoots].sort().join(",") } : {}),

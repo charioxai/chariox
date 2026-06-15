@@ -308,6 +308,8 @@ function gateOptionsFor(options) {
     requiredArtifactGeneratedEvidenceKinds: options.requiredArtifactGeneratedEvidenceKinds,
     requiredArtifactGeneratedMatrixArtifactIndexes: options.requiredArtifactGeneratedMatrixArtifactIndexes,
     requiredArtifactGeneratedMatrixLimitations: options.requiredArtifactGeneratedMatrixLimitations,
+    requiredArtifactGeneratedMatrixNames: options.requiredArtifactGeneratedMatrixNames,
+    requiredArtifactGeneratedMatrixRepos: options.requiredArtifactGeneratedMatrixRepos,
     requiredArtifactEvidenceRepos: options.requiredArtifactEvidenceRepos,
     requiredArtifactProviderAccountAliases: options.requiredArtifactProviderAccountAliases,
     requiredArtifactRuntimeSignals: options.requiredArtifactRuntimeSignals,

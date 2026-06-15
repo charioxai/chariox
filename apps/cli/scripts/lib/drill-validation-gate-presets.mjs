@@ -243,6 +243,8 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
       requiredArtifactGeneratedMatrixArtifactIndexes: [...(preset.requiredArtifactGeneratedMatrixArtifactIndexes ?? [])],
       requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
+      requiredArtifactGeneratedMatrixNames: [...(preset.requiredArtifactGeneratedMatrixNames ?? [])],
+      requiredArtifactGeneratedMatrixRepos: [...(preset.requiredArtifactGeneratedMatrixRepos ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredArtifactProviderAccountAliases: [...(preset.requiredArtifactProviderAccountAliases ?? [])],
       requiredArtifactValidationPresets: [...(preset.requiredArtifactValidationPresets ?? [])],
@@ -281,6 +283,8 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactGeneratedEvidenceKinds = [],
   requiredArtifactGeneratedMatrixArtifactIndexes = [],
   requiredArtifactGeneratedMatrixLimitations = [],
+  requiredArtifactGeneratedMatrixNames = [],
+  requiredArtifactGeneratedMatrixRepos = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
   requiredArtifactValidationPresets = [],
@@ -315,6 +319,8 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
     requiredArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
     requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
+    requiredArtifactGeneratedMatrixNames: [...requiredArtifactGeneratedMatrixNames],
+    requiredArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
     requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
     requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
@@ -350,6 +356,8 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactGeneratedEvidenceKinds.push(...(preset.requiredArtifactGeneratedEvidenceKinds ?? []))
     expanded.requiredArtifactGeneratedMatrixArtifactIndexes.push(...(preset.requiredArtifactGeneratedMatrixArtifactIndexes ?? []))
     expanded.requiredArtifactGeneratedMatrixLimitations.push(...(preset.requiredArtifactGeneratedMatrixLimitations ?? []))
+    expanded.requiredArtifactGeneratedMatrixNames.push(...(preset.requiredArtifactGeneratedMatrixNames ?? []))
+    expanded.requiredArtifactGeneratedMatrixRepos.push(...(preset.requiredArtifactGeneratedMatrixRepos ?? []))
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
     expanded.requiredArtifactProviderAccountAliases.push(...(preset.requiredArtifactProviderAccountAliases ?? []))
     expanded.requiredArtifactValidationPresets.push(...(preset.requiredArtifactValidationPresets ?? []))
@@ -511,6 +519,26 @@ export function normalizeRequiredArtifactGeneratedMatrixLimitations(requiredArti
     }
   }
   return limitations
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixNames(requiredArtifactGeneratedMatrixNames) {
+  return normalizeDiagnosticTextRequirements(requiredArtifactGeneratedMatrixNames, {
+    fieldName: "requiredArtifactGeneratedMatrixNames",
+    itemName: "matrix",
+  })
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixRepos(requiredArtifactGeneratedMatrixRepos) {
+  const repos = normalizeCommaSeparatedStrings(requiredArtifactGeneratedMatrixRepos, {
+    fieldName: "requiredArtifactGeneratedMatrixRepos",
+    itemName: "repo",
+  })
+  for (const repo of repos) {
+    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
+      throw new Error(`unknown required artifact generated matrix repo: ${repo}`)
+    }
+  }
+  return repos
 }
 
 export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceRepos) {

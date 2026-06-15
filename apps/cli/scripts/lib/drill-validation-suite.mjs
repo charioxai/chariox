@@ -332,6 +332,8 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
     requiredArtifactGeneratedMatrixArtifactIndexes: sortedGeneratedEvidencePathArray(preset.requiredArtifactGeneratedMatrixArtifactIndexes, `${preset.name}.requiredArtifactGeneratedMatrixArtifactIndexes`),
     requiredArtifactGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredArtifactGeneratedMatrixLimitations, `${preset.name}.requiredArtifactGeneratedMatrixLimitations`),
+    requiredArtifactGeneratedMatrixNames: sortedGeneratedMatrixNameArray(preset.requiredArtifactGeneratedMatrixNames, `${preset.name}.requiredArtifactGeneratedMatrixNames`),
+    requiredArtifactGeneratedMatrixRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactGeneratedMatrixRepos, `${preset.name}.requiredArtifactGeneratedMatrixRepos`),
     requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactProviderAccountAliases: sortedProviderAccountAliasArray(preset.requiredArtifactProviderAccountAliases, `${preset.name}.requiredArtifactProviderAccountAliases`),
     requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
@@ -418,6 +420,16 @@ function sortedGeneratedMatrixLimitationArray(value, source) {
     }
   }
   return limitations
+}
+
+function sortedGeneratedMatrixNameArray(value, source) {
+  const names = sortedStringArray(value, source)
+  for (const [index, name] of names.entries()) {
+    if (redactDrillSecretText(name) !== name) {
+      throw new Error(`validation suite preset ${source}[${index}] includes secret-looking generated matrix name`)
+    }
+  }
+  return names
 }
 
 function sortedExitCriterionStatusArray(value, source) {

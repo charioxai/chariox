@@ -24,6 +24,10 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-name", "workspace-live-sync-matrix"], 0, options)
+  assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-repo", "oss"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-evidence-repo", "oss"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-provider-account-alias", "codex=work"], 0, options)
@@ -76,6 +80,8 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactGeneratedEvidenceKinds: ["validation-suite-run"],
     requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
+    requiredArtifactGeneratedMatrixRepos: ["oss"],
     requiredArtifactEvidenceRepos: ["oss"],
     requiredArtifactProviderAccountAliases: ["codex=work"],
     requiredArtifactValidationPresets: ["distributed-runtime"],

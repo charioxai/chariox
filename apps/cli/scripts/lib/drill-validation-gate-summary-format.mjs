@@ -78,6 +78,16 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactGeneratedMatrixLimitations.length > 0) {
     lines.push(`artifact_required_generated_matrix_limitations=${requiredArtifactGeneratedMatrixLimitations.join(",")} missing=${missingArtifactGeneratedMatrixLimitations.join(",") || "none"}`)
   }
+  const requiredArtifactGeneratedMatrixNames = artifacts.requiredArtifactGeneratedMatrixNames ?? []
+  const missingArtifactGeneratedMatrixNames = artifacts.missingArtifactGeneratedMatrixNames ?? []
+  if (requiredArtifactGeneratedMatrixNames.length > 0) {
+    lines.push(`artifact_required_generated_matrix_names=${requiredArtifactGeneratedMatrixNames.join(",")} missing=${missingArtifactGeneratedMatrixNames.join(",") || "none"}`)
+  }
+  const requiredArtifactGeneratedMatrixRepos = artifacts.requiredArtifactGeneratedMatrixRepos ?? []
+  const missingArtifactGeneratedMatrixRepos = artifacts.missingArtifactGeneratedMatrixRepos ?? []
+  if (requiredArtifactGeneratedMatrixRepos.length > 0) {
+    lines.push(`artifact_required_generated_matrix_repos=${requiredArtifactGeneratedMatrixRepos.join(",")} missing=${missingArtifactGeneratedMatrixRepos.join(",") || "none"}`)
+  }
   const requiredArtifactEvidenceRepos = artifacts.requiredArtifactEvidenceRepos ?? []
   const missingArtifactEvidenceRepos = artifacts.missingArtifactEvidenceRepos ?? []
   if (requiredArtifactEvidenceRepos.length > 0) {
@@ -199,6 +209,14 @@ export function formatDrillValidationGateSummary(report) {
     const generatedMatrixLimitations = Object.entries(artifacts.aggregate.generatedMatrixLimitations ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (generatedMatrixLimitations.length > 0) {
       lines.push(`artifact_generated_matrix_limitations=${generatedMatrixLimitations.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
+    const generatedMatrixNames = Object.entries(artifacts.aggregate.generatedMatrixNames ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (generatedMatrixNames.length > 0) {
+      lines.push(`artifact_generated_matrix_names=${generatedMatrixNames.map(([name, count]) => `${name}:${count}`).join(",")}`)
+    }
+    const generatedMatrixRepos = Object.entries(artifacts.aggregate.generatedMatrixRepos ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (generatedMatrixRepos.length > 0) {
+      lines.push(`artifact_generated_matrix_repos=${generatedMatrixRepos.map(([repo, count]) => `${repo}:${count}`).join(",")}`)
     }
     const generatedValidationSuiteArtifactIndexes = Object.entries(artifacts.aggregate.generatedValidationSuiteArtifactIndexes ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (generatedValidationSuiteArtifactIndexes.length > 0) {
