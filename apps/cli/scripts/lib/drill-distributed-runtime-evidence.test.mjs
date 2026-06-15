@@ -119,6 +119,14 @@ test("builds distributed runtime matrix command contracts", () => {
     "--include-hosted-cloud",
     "--include-vault",
   ])
+  assert.deepEqual(commands.map((command) => `${command.repo}/${command.matrix}`), [
+    "oss/native-provider-tui-matrix",
+    "oss/remote-agent-runtime-matrix",
+    "oss/remote-home-extension-matrix",
+    "oss/slice-runtime-matrix",
+    "oss/workspace-live-sync-matrix",
+    "cloud/cloud-slice-runtime-matrix",
+  ])
 })
 
 test("builds distributed runtime generated evidence output directories", () => {
@@ -226,6 +234,8 @@ test("builds distributed runtime generated evidence summary", () => {
     artifactIndexPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix-artifacts.json"),
     args: ["--dry-run", "--continue-on-failure", "--provider-account", "codex=work_codex", "--include-hetzner"],
     cwd: "/repo/arroba",
+    matrix: "native-provider-tui-matrix",
+    repo: "oss",
     reportPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix.json"),
     scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
   })

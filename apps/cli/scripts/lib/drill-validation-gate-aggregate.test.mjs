@@ -1086,6 +1086,8 @@ test("aggregates generated evidence provenance from gate reports", () => {
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
         cwd: "/repo/arroba",
+        matrix: "native-provider-tui-matrix",
+        repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
         scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
       }],
@@ -1178,6 +1180,25 @@ test("rejects secret-looking generated evidence paths in validation gate aggrega
       }],
     }),
     /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.args\[1\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          matrixReports: {
+            ...aggregate.reports[0].generatedEvidence.matrixReports,
+            commands: [{
+              ...aggregate.reports[0].generatedEvidence.matrixReports.commands[0],
+              repo: "",
+            }],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\] has invalid repo/,
   )
   assert.throws(
     () => validateDrillValidationGateAggregate({
@@ -1411,6 +1432,8 @@ function generatedEvidenceFixture() {
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
         cwd: "/repo/arroba",
+        matrix: "native-provider-tui-matrix",
+        repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
         scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
       }],

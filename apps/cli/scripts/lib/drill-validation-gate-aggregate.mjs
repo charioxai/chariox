@@ -1828,6 +1828,8 @@ function validationGateReportGeneratedEvidence(report) {
           artifactIndexPath: commandRecord.artifactIndexPath,
           args: stringArray(commandRecord.args),
           cwd: commandRecord.cwd,
+          matrix: commandRecord.matrix,
+          repo: commandRecord.repo,
           reportPath: commandRecord.reportPath,
           scriptPath: commandRecord.scriptPath,
         }
@@ -1939,6 +1941,7 @@ function validateGeneratedMatrixCommandSummary(command, source) {
   if (!command || typeof command !== "object" || Array.isArray(command)) {
     throw new Error(`${source} is not an object`)
   }
+  validateOptionalGeneratedMatrixCommandMetadata(command, source)
   for (const key of ["artifactIndexPath", "cwd", "reportPath", "scriptPath"]) {
     if (!nonEmptyString(command[key])) {
       throw new Error(`${source} has invalid ${key}`)
@@ -1946,6 +1949,17 @@ function validateGeneratedMatrixCommandSummary(command, source) {
     validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
   validateGeneratedEvidencePathArray(command.args ?? [], `${source}.args`)
+}
+
+function validateOptionalGeneratedMatrixCommandMetadata(command, source) {
+  for (const key of ["matrix", "repo"]) {
+    if (command[key] !== undefined && !nonEmptyString(command[key])) {
+      throw new Error(`${source} has invalid ${key}`)
+    }
+    if (command[key] !== undefined && redactDrillSecretText(command[key]) !== command[key]) {
+      throw new Error(`${source}.${key} includes secret-looking generated matrix metadata`)
+    }
+  }
 }
 
 function validateValidationGateArtifactCoverage(coverage, source) {

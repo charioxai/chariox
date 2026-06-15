@@ -103,6 +103,21 @@ test("validates optional generated evidence provenance", () => {
       generatedEvidence: {
         ...generatedEvidence(),
         matrixReports: {
+          ...generatedEvidence().matrixReports,
+          commands: [{
+            ...generatedEvidence().matrixReports.commands[0],
+            matrix: "",
+          }],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.commands\[0\] has invalid matrix/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
           enabled: true,
           artifactIndexes: [],
           roots: [],
