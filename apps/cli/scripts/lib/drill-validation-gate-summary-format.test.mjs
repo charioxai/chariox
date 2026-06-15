@@ -303,6 +303,9 @@ function artifactAggregateFixture() {
     coverageAreas: {
       "distributed-observability": 1,
     },
+    validationPresets: {
+      "distributed-runtime": 1,
+    },
     owners: {
       "validation-platform": 1,
     },
@@ -372,6 +375,9 @@ function artifactAggregateFixture() {
       },
       coverageAreas: {
         "distributed-observability": 1,
+      },
+      validationPresets: {
+        "distributed-runtime": 1,
       },
       owners: {
         "validation-platform": 1,

@@ -28,6 +28,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "runtimeSignals",
   "runtimeSignalOwners",
   "coverageAreas",
+  "validationPresets",
   "owners",
   "classifications",
   "exitCriterionStatuses",
@@ -56,6 +57,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   runtimeSignals: "runtime_signals",
   runtimeSignalOwners: "runtime_signal_owners",
   coverageAreas: "coverage_areas",
+  validationPresets: "validation_presets",
   owners: "owners",
   classifications: "classifications",
   exitCriterionStatuses: "exit_criterion_statuses",
@@ -207,6 +209,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const runtimeSignals = new Map()
   const runtimeSignalOwners = new Map()
   const coverageAreas = new Map()
+  const validationPresets = new Map()
   const owners = new Map()
   const classifications = new Map()
   const exitCriterionStatuses = new Map()
@@ -235,6 +238,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexRuntimeSignals = runtimeSignalsFromMetadata(index.metadata)
     const indexRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRuntimeSignals)
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
+    const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
     const indexExitCriterionStatuses = metadataListFromMetadata(index.metadata, "exitCriterionStatuses")
@@ -256,6 +260,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
     countValues(indexCoverageAreas, coverageAreas)
+    countValues(indexValidationPresets, validationPresets)
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
     countValues(indexExitCriterionStatuses, exitCriterionStatuses)
@@ -291,6 +296,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       runtimeSignals: countValues(indexRuntimeSignals),
       runtimeSignalOwners: countValues(indexRuntimeSignalOwners),
       coverageAreas: countValues(indexCoverageAreas),
+      validationPresets: countValues(indexValidationPresets),
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
       exitCriterionStatuses: countValues(indexExitCriterionStatuses),
@@ -318,6 +324,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     runtimeSignals: sortedCountObject(runtimeSignals),
     runtimeSignalOwners: sortedCountObject(runtimeSignalOwners),
     coverageAreas: sortedCountObject(coverageAreas),
+    validationPresets: sortedCountObject(validationPresets),
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
     exitCriterionStatuses: sortedCountObject(exitCriterionStatuses),

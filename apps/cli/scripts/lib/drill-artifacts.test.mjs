@@ -616,6 +616,7 @@ test("summarizes drill artifact indexes", async () => {
         owners: "validation-harness",
         runtimeSignals: "session-authority,provider-run-lifecycle",
         runtimeSignalOwners: "kernel-authority,provider-runtime",
+        validationPresets: "distributed-runtime,workspace-live-sync",
         artifactKinds: "validation-gate,validation-suite-run",
         generatedEvidenceKinds: "validation-suite-run",
         generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
@@ -635,6 +636,7 @@ test("summarizes drill artifact indexes", async () => {
         incompleteExitCriterionStatuses: "dry-run",
         runtimeSignals: "session-authority,lease-health",
         runtimeSignalOwners: "kernel-authority",
+        validationPresets: "distributed-runtime,slice-runtime",
         artifactKinds: "matrix-report",
         generatedEvidenceKinds: "matrix-report",
         generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
@@ -670,6 +672,11 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.runtimeSignalOwners, {
       "kernel-authority": 2,
       "provider-runtime": 1,
+    })
+    assert.deepEqual(aggregate.validationPresets, {
+      "distributed-runtime": 2,
+      "slice-runtime": 1,
+      "workspace-live-sync": 1,
     })
     assert.deepEqual(aggregate.owners, {
       "runtime-network": 1,
@@ -789,11 +796,13 @@ test("summarizes drill artifact indexes", async () => {
       requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
+      validationPresets: "distributed-runtime,slice-runtime,workspace-live-sync",
     })
     assert.deepEqual(DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS, [
       "runtimeSignals",
       "runtimeSignalOwners",
       "coverageAreas",
+      "validationPresets",
       "owners",
       "classifications",
       "exitCriterionStatuses",
@@ -826,6 +835,7 @@ test("summarizes drill artifact indexes", async () => {
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /indexes=2 artifacts=3/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signal_owners: kernel-authority=2 provider-runtime=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /validation_presets: distributed-runtime=2 slice-runtime=1 workspace-live-sync=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /owners: runtime-network=1 validation-harness=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /exit_criterion_statuses: dry-run=1/)
@@ -928,6 +938,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       runtimeSignals: {},
       runtimeSignalOwners: {},
       coverageAreas: {},
+      validationPresets: {},
       owners: {},
       classifications: {},
       exitCriterionStatuses: {},
