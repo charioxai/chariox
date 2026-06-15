@@ -419,12 +419,72 @@ test("cross repo validation gate rejects output artifact index without output", 
   )
 })
 
+test("cross repo validation gate requires artifact generated matrix limitation metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const artifactIndexPath = await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
+      metadata: { generatedMatrixLimitations: "dry-run-classification-coverage" },
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--artifact-index",
+        artifactIndexPath,
+        "--require-artifact-generated-matrix-limitation",
+        "dry-run-classification-covergae",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /unknown required artifact generated matrix limitation: dry-run-classification-covergae/)
+        return true
+      },
+    )
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--no-default-roots",
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--artifact-index",
+      artifactIndexPath,
+      "--require-artifact-generated-matrix-limitation",
+      "dry-run-classification-coverage",
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.artifacts.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactGeneratedMatrixLimitations, [])
+    assert.equal(report.checks.artifacts.aggregate.generatedMatrixLimitations["dry-run-classification-coverage"], 1)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate rejects aggregate-only generated evidence requirements", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--require-generated-evidence-kind", "matrix-report", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /--require-generated-evidence-kind is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-matrix-limitation", "dry-run-classification-coverage", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-matrix-limitation is supported by drill-validation-gate-summary\.mjs/)
       return true
     },
   )
@@ -445,7 +505,7 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   }, null, 2)}\n`, "utf8")
 }
 
-async function writeValidationSuiteArtifact(rootDir) {
+async function writeValidationSuiteArtifact(rootDir, { metadata = {} } = {}) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
   await mkdir(rootDir, { recursive: true })
   await writeFile(artifactPath, `${JSON.stringify({
@@ -477,7 +537,12 @@ async function writeValidationSuiteArtifact(rootDir) {
   await writeDrillArtifactIndex({
     rootDir,
     artifacts: ["cloud-validation-suite.json"],
-    metadata: { drill: "cloud-validation-suite", tests: 1, coverageAreas: "distributed-observability,suite-contract" },
+    metadata: {
+      drill: "cloud-validation-suite",
+      tests: 1,
+      coverageAreas: "distributed-observability,suite-contract",
+      ...metadata,
+    },
   })
   return path.join(rootDir, "arroba-drill-artifacts.json")
 }

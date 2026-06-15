@@ -52,6 +52,7 @@ function printHelp() {
   "  --require-artifact-schema SCHEMA[,SCHEMA]",
   "  --require-artifact-kind KIND[,KIND]",
   "  --require-artifact-generated-evidence-kind KIND[,KIND]",
+  "  --require-artifact-generated-matrix-limitation KIND[,KIND]",
   "  --require-artifact-evidence-repo REPO[,REPO]",
   "  --require-artifact-runtime-signal ID[,ID]",
   "  --require-artifact-runtime-signal-owner OWNER[,OWNER]",
@@ -209,6 +210,9 @@ function parseArgs(argv) {
   if (options.requiredGeneratedEvidenceKinds.length > 0) {
     throw new Error("--require-generated-evidence-kind is supported by drill-validation-gate-summary.mjs after validation gate reports are written")
   }
+  if (options.requiredGeneratedMatrixLimitations.length > 0) {
+    throw new Error("--require-generated-matrix-limitation is supported by drill-validation-gate-summary.mjs after validation gate reports are written")
+  }
   return options
 }
 
@@ -255,6 +259,7 @@ function gateOptionsFor(options) {
     requiredArtifactSchemas: options.requiredArtifactSchemas,
     requiredArtifactKinds: options.requiredArtifactKinds,
     requiredArtifactGeneratedEvidenceKinds: options.requiredArtifactGeneratedEvidenceKinds,
+    requiredArtifactGeneratedMatrixLimitations: options.requiredArtifactGeneratedMatrixLimitations,
     requiredArtifactEvidenceRepos: options.requiredArtifactEvidenceRepos,
     requiredArtifactRuntimeSignals: options.requiredArtifactRuntimeSignals,
     requiredArtifactRuntimeSignalOwners: options.requiredArtifactRuntimeSignalOwners,
