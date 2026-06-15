@@ -985,6 +985,12 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      validationPresets: { "distributed-runtmie": 1 },
+    })),
+    /validationPresets has unknown validation preset "distributed-runtmie"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       generatedValidationSuiteFailureRoots: { "/tmp/Bearer abcdefghijklmnop": 1 },
     })),
     /generatedValidationSuiteFailureRoots\.\/tmp\/Bearer abcdefghijklmnop includes secret-looking generated evidence path/,
