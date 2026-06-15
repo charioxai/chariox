@@ -1521,6 +1521,225 @@ async fn metaagent_run_command_routes_core_workflow_commands() {
 }
 
 #[tokio::test]
+async fn metaagent_workflow_run_commands_expose_execution_visibility() {
+    let env = TestMetaRuntimeEnv::new("workflow-run-visibility");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("worker")
+                .with_owner_user_id(metaagent.owner_user_id()),
+        )
+        .expect("worker should spawn");
+    crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("reviewer")
+                .with_owner_user_id(metaagent.owner_user_id()),
+        )
+        .expect("reviewer should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let created = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "workflow new visible-flow" }),
+        )
+        .await
+        .expect("workflow create command should dispatch");
+    assert!(created.ok);
+
+    let worker_node = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "workflow node add visible-flow worker" }),
+        )
+        .await
+        .expect("worker node add command should dispatch");
+    assert!(worker_node.ok);
+    let worker_node_id = worker_node
+        .payload
+        .pointer("/response/node/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("worker node add response should include node id")
+        .to_string();
+
+    let reviewer_node = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "workflow node add visible-flow reviewer" }),
+        )
+        .await
+        .expect("reviewer node add command should dispatch");
+    assert!(reviewer_node.ok);
+    let reviewer_node_id = reviewer_node
+        .payload
+        .pointer("/response/node/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("reviewer node add response should include node id")
+        .to_string();
+
+    let edge_added = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": format!("workflow edge add visible-flow {worker_node_id} {reviewer_node_id}")
+            }),
+        )
+        .await
+        .expect("workflow edge add command should dispatch");
+    assert!(edge_added.ok);
+    assert_eq!(
+        edge_added
+            .payload
+            .pointer("/response/type")
+            .and_then(serde_json::Value::as_str),
+        Some("WorkflowEdgeAdded")
+    );
+    assert_eq!(
+        edge_added
+            .payload
+            .pointer("/response/workflow/edges/0/from_node_id")
+            .and_then(serde_json::Value::as_str),
+        Some(worker_node_id.as_str())
+    );
+
+    let endpoint = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": format!("workflow endpoint new visible-flow {worker_node_id} default")
+            }),
+        )
+        .await
+        .expect("workflow endpoint new command should dispatch");
+    assert!(endpoint.ok);
+
+    let invoked = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "workflow run visible-flow default implement the requested change"
+            }),
+        )
+        .await
+        .expect("workflow run command should dispatch");
+    assert!(invoked.ok);
+    assert_eq!(
+        invoked
+            .payload
+            .pointer("/response/type")
+            .and_then(serde_json::Value::as_str),
+        Some("WorkflowRunInvoked")
+    );
+    assert_eq!(
+        invoked
+            .payload
+            .pointer("/response/workflow_run/node_runs/0/node_id")
+            .and_then(serde_json::Value::as_str),
+        Some(worker_node_id.as_str())
+    );
+    assert_eq!(
+        invoked
+            .payload
+            .pointer("/response/workflow_run/active_node_run/node_id")
+            .and_then(serde_json::Value::as_str),
+        Some(worker_node_id.as_str())
+    );
+    assert_eq!(
+        invoked
+            .payload
+            .pointer("/response/workflow_run/active_node_run/turn/state")
+            .and_then(serde_json::Value::as_str),
+        Some("prepared")
+    );
+    assert_eq!(
+        invoked
+            .payload
+            .pointer("/response/workflow_run/message_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        invoked
+            .payload
+            .pointer("/response/workflow_run/unconsumed_message_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        invoked
+            .payload
+            .pointer("/response/workflow_run/final_output_present")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    let run_id = invoked
+        .payload
+        .pointer("/response/workflow_run/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("workflow run response should include id")
+        .to_string();
+    drop(invoked);
+
+    let run_status = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": format!("workflow get-run {run_id}") }),
+        )
+        .await
+        .expect("workflow get-run command should dispatch");
+    assert!(run_status.ok);
+    assert_eq!(
+        run_status
+            .payload
+            .pointer("/response/type")
+            .and_then(serde_json::Value::as_str),
+        Some("WorkflowRun")
+    );
+    assert!(run_status
+        .payload
+        .pointer("/response/workflow_run/node_run_counts_by_status")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|counts| !counts.is_empty()));
+}
+
+#[tokio::test]
 async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
     let env = TestMetaRuntimeEnv::new("run-command-agent-lifecycle");
     let workspace = env.root.join("workspace");
