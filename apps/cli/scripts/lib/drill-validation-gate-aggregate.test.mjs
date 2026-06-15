@@ -167,6 +167,51 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /- workspace-live-sync-state: workspace-live-sync-matrix\/managed\(passed\) source=\/tmp\/workspace-live-sync-matrix\.json report=workspace-live-sync\.json/)
 })
 
+test("summarizes stale matrix reports from gate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture({
+    status: "failed",
+    checks: {
+      ...reportFixture().checks,
+      matrices: {
+        ...reportFixture().checks.matrices,
+        status: "failed",
+        requiredMatrixMaxAgeMs: 100,
+        staleMatrixReports: [{
+          source: "/tmp/workspace-live-sync-matrix.json",
+          matrix: "workspace-live-sync-matrix",
+          completedAt: "2026-01-01T00:00:00.000Z",
+          ageMs: 1000,
+          maxAgeMs: 100,
+        }],
+      },
+    },
+    nextActions: [{
+      owner: "validation-harness",
+      classification: "matrix-staleness",
+      nextAction: "regenerate stale matrix reports, then rerun the validation gate",
+      count: 1,
+    }],
+  })], {
+    sources: ["distributed-runtime-gate.json"],
+    validateReport: () => {},
+  })
+  const text = formatDrillValidationGateAggregateSummary(aggregate)
+
+  assert.equal(aggregate.status, "failed")
+  assert.deepEqual(aggregate.coverage.matrixStaleReports, {
+    "/tmp/workspace-live-sync-matrix.json": 1,
+  })
+  assert.deepEqual(aggregate.reports[0].matrixCoverage.staleMatrixReports, [{
+    source: "/tmp/workspace-live-sync-matrix.json",
+    matrix: "workspace-live-sync-matrix",
+    completedAt: "2026-01-01T00:00:00.000Z",
+    ageMs: 1000,
+    maxAgeMs: 100,
+  }])
+  assert.match(text, /- matrix_stale_reports: \/tmp\/workspace-live-sync-matrix\.json=1/)
+  assert.match(text, /classification=matrix-staleness count=1/)
+})
+
 test("rejects unknown artifact evidence repo labels in aggregate reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
 

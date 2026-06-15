@@ -90,6 +90,7 @@ export function summarizeValidationGateReportAggregate(
     matrixRuntimeSignalOwners: new Map(),
     matrixOwners: new Map(),
     matrixClassifications: new Map(),
+    matrixStaleReports: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredMatrixClassifications: new Map(),
@@ -135,6 +136,7 @@ export function summarizeValidationGateReportAggregate(
     countObjectValues(coverage.matrixRuntimeSignalOwners, matrixCoverage.runtimeSignalOwners)
     countObjectValues(coverage.matrixOwners, matrixCoverage.owners)
     countObjectValues(coverage.matrixClassifications, matrixCoverage.classifications)
+    countStringValues(coverage.matrixStaleReports, staleMatrixReportSourceLabels(matrixCoverage.staleMatrixReports))
     countStringValues(coverage.requiredMatrices, matrixCoverage.requiredMatrices)
     countStringValues(coverage.missingMatrices, matrixCoverage.missingMatrices)
     countStringValues(coverage.requiredMatrixClassifications, matrixCoverage.requiredMatrixClassifications)
@@ -598,6 +600,7 @@ function validationGateReportMatrixCoverage(report) {
     runtimeSignalOwners: drillRuntimeSignalOwnerCounts(runtimeSignals),
     owners: { ...(matrices.aggregate?.owners ?? {}) },
     classifications: { ...(matrices.aggregate?.classifications ?? {}) },
+    staleMatrixReports: [...(matrices.staleMatrixReports ?? [])],
     requiredMatrices: [...(matrices.requiredMatrices ?? [])],
     missingMatrices: [...(matrices.missingMatrices ?? [])],
     requiredMatrixClassifications: [...(matrices.requiredMatrixClassifications ?? [])],
@@ -624,6 +627,10 @@ function countObjectValues(counts, values) {
   for (const [value, count] of Object.entries(values ?? {})) {
     counts.set(value, (counts.get(value) ?? 0) + count)
   }
+}
+
+function staleMatrixReportSourceLabels(staleMatrixReports) {
+  return (staleMatrixReports ?? []).map((report) => report.source ?? "unknown")
 }
 
 function missingValidationGateAggregateRequirements(coverage, requirements) {
@@ -803,6 +810,7 @@ function formatValidationGateCoverageCounts(coverage) {
     matrixRuntimeSignalOwners: countMapToObject(coverage.matrixRuntimeSignalOwners),
     matrixOwners: countMapToObject(coverage.matrixOwners),
     matrixClassifications: countMapToObject(coverage.matrixClassifications),
+    matrixStaleReports: countMapToObject(coverage.matrixStaleReports),
     requiredMatrices: countMapToObject(coverage.requiredMatrices),
     missingMatrices: countMapToObject(coverage.missingMatrices),
     requiredMatrixClassifications: countMapToObject(coverage.requiredMatrixClassifications),
@@ -882,6 +890,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "matrix_runtime_signal_owners", coverage.matrixRuntimeSignalOwners)
   appendCoverageLine(lines, "matrix_owners", coverage.matrixOwners)
   appendCoverageLine(lines, "matrix_classifications", coverage.matrixClassifications)
+  appendCoverageLine(lines, "matrix_stale_reports", coverage.matrixStaleReports)
   appendCoverageLine(lines, "required_matrices", coverage.requiredMatrices)
   appendCoverageLine(lines, "missing_matrices", coverage.missingMatrices)
   appendCoverageLine(lines, "required_matrix_classifications", coverage.requiredMatrixClassifications)
@@ -990,6 +999,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateRuntimeSignalOwnerCountsMatch(coverage.matrixRuntimeSignals ?? {}, coverage.matrixRuntimeSignalOwners ?? {}, `${source}.matrixRuntimeSignalOwners`)
   validateCountObject(coverage.matrixOwners ?? {}, `${source}.matrixOwners`)
   validateFailureClassificationCountObject(coverage.matrixClassifications ?? {}, `${source}.matrixClassifications`)
+  validateCountObject(coverage.matrixStaleReports ?? {}, `${source}.matrixStaleReports`)
   validateCountObject(coverage.requiredMatrices ?? {}, `${source}.requiredMatrices`)
   validateCountObject(coverage.missingMatrices ?? {}, `${source}.missingMatrices`)
   validateFailureClassificationCountObject(coverage.requiredMatrixClassifications ?? {}, `${source}.requiredMatrixClassifications`)
@@ -1018,6 +1028,7 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   validateRuntimeSignalOwnerCountsMatch(coverage.runtimeSignals ?? {}, coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(coverage.owners ?? {}, `${source}.owners`)
   validateCountObject(coverage.classifications ?? {}, `${source}.classifications`)
+  validateStaleMatrixReportSummaries(coverage.staleMatrixReports ?? [], `${source}.staleMatrixReports`)
   validateStringArray(coverage.requiredMatrices ?? [], `${source}.requiredMatrices`)
   validateStringArray(coverage.missingMatrices ?? [], `${source}.missingMatrices`)
   validateFailureClassificationArray(coverage.requiredMatrixClassifications ?? [], `${source}.requiredMatrixClassifications`)
@@ -1032,6 +1043,33 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   validateStringArray(coverage.missingScenarios ?? [], `${source}.missingScenarios`)
   if (coverage.runtimeSignalScenarios !== undefined) {
     validateRuntimeSignalScenarioMap(coverage.runtimeSignalScenarios, `${source}.runtimeSignalScenarios`, { reportSource: false })
+  }
+}
+
+function validateStaleMatrixReportSummaries(reports, source) {
+  if (!Array.isArray(reports)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, report] of reports.entries()) {
+    const entrySource = `${source}[${index}]`
+    if (!report || typeof report !== "object" || Array.isArray(report)) {
+      throw new Error(`${entrySource} is not an object`)
+    }
+    if (report.source !== null && typeof report.source !== "string") {
+      throw new Error(`${entrySource} has invalid source`)
+    }
+    if (typeof report.matrix !== "string" || report.matrix.length === 0) {
+      throw new Error(`${entrySource} has invalid matrix`)
+    }
+    if (typeof report.completedAt !== "string" || report.completedAt.length === 0) {
+      throw new Error(`${entrySource} has invalid completedAt`)
+    }
+    if (!Number.isSafeInteger(report.ageMs) || report.ageMs < 0) {
+      throw new Error(`${entrySource} has invalid ageMs`)
+    }
+    if (!Number.isSafeInteger(report.maxAgeMs) || report.maxAgeMs < 0) {
+      throw new Error(`${entrySource} has invalid maxAgeMs`)
+    }
   }
 }
 
@@ -1101,6 +1139,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     matrixRuntimeSignalOwners: new Map(),
     matrixOwners: new Map(),
     matrixClassifications: new Map(),
+    matrixStaleReports: new Map(),
     requiredMatrices: new Map(),
     missingMatrices: new Map(),
     requiredMatrixClassifications: new Map(),
@@ -1199,6 +1238,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.matrixRuntimeSignalOwners, coverage.runtimeSignalOwners)
     countObjectValues(expected.matrixOwners, coverage.owners)
     countObjectValues(expected.matrixClassifications, coverage.classifications)
+    countStringValues(expected.matrixStaleReports, staleMatrixReportSourceLabels(coverage.staleMatrixReports))
     countStringValues(expected.requiredMatrices, coverage.requiredMatrices ?? [])
     countStringValues(expected.missingMatrices, coverage.missingMatrices ?? [])
     countStringValues(expected.requiredMatrixClassifications, coverage.requiredMatrixClassifications ?? [])
