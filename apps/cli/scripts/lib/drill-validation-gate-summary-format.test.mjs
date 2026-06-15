@@ -180,12 +180,19 @@ test("formats generated evidence provenance when present", () => {
         ],
         dryRun: false,
         continueOnFailure: true,
+        limitations: [{
+          kind: "dry-run-classification-coverage",
+          owner: "validation-harness",
+          nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before release",
+        }],
       },
     },
   }))
 
   assert.match(text, /generated_validation_suites=enabled output_roots=\/tmp\/suites\/cloud,\/tmp\/suites\/oss artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json/)
   assert.match(text, /generated_matrices=enabled roots=\/tmp\/matrices\/cloud,\/tmp\/matrices\/oss commands=2 dry_run=false continue_on_failure=true/)
+  assert.match(text, /generated_matrix_limitations:/)
+  assert.match(text, /- kind=dry-run-classification-coverage owner=validation-harness: rerun distributed runtime matrix reports without --matrix-dry-run before release/)
 })
 
 test("validates reports before formatting", () => {

@@ -239,6 +239,20 @@ function appendGeneratedEvidenceSummary(lines, generatedEvidence) {
       `dry_run=${matrixReports.dryRun === true}`,
       `continue_on_failure=${matrixReports.continueOnFailure === true}`,
     ].join(" "))
+    const limitations = Array.isArray(matrixReports.limitations)
+      ? matrixReports.limitations.filter((limitation) => limitation && typeof limitation === "object" && !Array.isArray(limitation))
+      : []
+    if (limitations.length > 0) {
+      lines.push("generated_matrix_limitations:")
+      for (const limitation of limitations) {
+        const kind = typeof limitation.kind === "string" && limitation.kind ? limitation.kind : "unknown"
+        const owner = typeof limitation.owner === "string" && limitation.owner ? limitation.owner : "unknown"
+        const nextAction = typeof limitation.nextAction === "string" && limitation.nextAction
+          ? limitation.nextAction
+          : "inspect generated matrix evidence and rerun the required live drills"
+        lines.push(`- kind=${kind} owner=${owner}: ${nextAction}`)
+      }
+    }
   }
 }
 
