@@ -61,6 +61,9 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       cloud: 1,
       oss: 2,
     })
+    assert.deepEqual(stdoutAggregate.artifactCoverageInputSources, {
+      "artifact metadata inputs": 1,
+    })
     assert.deepEqual(stdoutAggregate.generatedEvidenceKinds, {
       "matrix-report": 1,
       "validation-suite-run": 1,
@@ -99,6 +102,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
+    assert.equal(artifactIndex.metadata.artifactCoverageInputSources, "artifact metadata inputs")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
@@ -217,6 +221,9 @@ async function writeIndexedReport(rootDir, name, schema) {
       evidenceRepos: name === "one"
         ? "oss"
         : "oss,cloud",
+      artifactCoverageInputSources: name === "one"
+        ? ""
+        : "artifact metadata inputs",
     },
   })
   return path.join(drillRoot, "arroba-drill-artifacts.json")

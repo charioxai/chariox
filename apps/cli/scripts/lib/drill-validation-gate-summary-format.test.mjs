@@ -137,6 +137,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_required_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_missing_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_evidence_repos=cloud:1,oss:1/)
+  assert.match(text, /artifact_coverage_input_sources=artifact metadata inputs:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
   assert.match(text, /matrix_runtime_signals=session-authority:1,workspace-live-sync-state:1/)
   assert.match(text, /matrix_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
@@ -309,6 +310,9 @@ function artifactAggregateFixture() {
       cloud: 1,
       oss: 1,
     },
+    artifactCoverageInputSources: {
+      "artifact metadata inputs": 1,
+    },
     indexes: [{
       source: "/tmp/artifacts.json",
       rootDir: "/tmp/artifacts",
@@ -363,6 +367,9 @@ function artifactAggregateFixture() {
       evidenceRepos: {
         cloud: 1,
         oss: 1,
+      },
+      artifactCoverageInputSources: {
+        "artifact metadata inputs": 1,
       },
     }],
   }

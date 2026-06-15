@@ -573,6 +573,7 @@ test("summarizes drill artifact indexes", async () => {
         requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
         missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
         evidenceRepos: "cloud,oss",
+        artifactCoverageInputSources: "artifact metadata inputs",
       },
     })
 
@@ -635,6 +636,9 @@ test("summarizes drill artifact indexes", async () => {
       cloud: 1,
       oss: 2,
     })
+    assert.deepEqual(aggregate.artifactCoverageInputSources, {
+      "artifact metadata inputs": 1,
+    })
     assert.deepEqual(aggregate.indexes.map((index) => index.source), [
       "one/arroba-drill-artifacts.json",
       "two/arroba-drill-artifacts.json",
@@ -669,6 +673,7 @@ test("summarizes drill artifact indexes", async () => {
     ])
     assert.deepEqual(diagnosticMetadataForDrillArtifactIndexAggregate(aggregate), {
       artifactKinds: "matrix-report,validation-gate,validation-suite-run",
+      artifactCoverageInputSources: "artifact metadata inputs",
       classifications: "artifact-coverage,matrix-coverage,validation-gate",
       evidenceRepos: "cloud,oss",
       generatedEvidenceKinds: "matrix-report,validation-suite-run",
@@ -695,6 +700,7 @@ test("summarizes drill artifact indexes", async () => {
       "requiredGeneratedMatrixLimitations",
       "missingGeneratedMatrixLimitations",
       "evidenceRepos",
+      "artifactCoverageInputSources",
     ])
     assert.deepEqual(DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS, [
       "schemas",
@@ -814,6 +820,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: { oss: -1 },
+      artifactCoverageInputSources: {},
     }),
     /evidenceRepos has invalid count/,
   )
@@ -832,6 +839,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
+      artifactCoverageInputSources: {},
     }),
     /drill artifact diagnostics\.runtimeSignalOwners must match runtimeSignals/,
   )
@@ -850,6 +858,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
+      artifactCoverageInputSources: {},
     }),
     /runtimeSignals has unknown runtime signal "workspace-live-synch-state"/,
   )
@@ -868,6 +877,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: { cluod: 1 },
+      artifactCoverageInputSources: {},
     }),
     /evidenceRepos has unknown evidence repo "cluod"/,
   )
@@ -886,6 +896,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
+      artifactCoverageInputSources: {},
     }),
     /generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
   )
@@ -904,6 +915,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
+      artifactCoverageInputSources: {},
     }),
     /generatedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
@@ -922,6 +934,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: { "dry-run-classification-covergae": 1 },
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
+      artifactCoverageInputSources: {},
     }),
     /requiredGeneratedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
@@ -940,6 +953,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: { "dry-run-classification-covergae": 1 },
       evidenceRepos: {},
+      artifactCoverageInputSources: {},
     }),
     /missingGeneratedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
@@ -958,6 +972,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
       evidenceRepos: {},
+      artifactCoverageInputSources: {},
     }),
     /artifactKinds has unknown artifact kind "validation-sutie"/,
   )

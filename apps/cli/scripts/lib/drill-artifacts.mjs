@@ -34,6 +34,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "requiredGeneratedMatrixLimitations",
   "missingGeneratedMatrixLimitations",
   "evidenceRepos",
+  "artifactCoverageInputSources",
 ])
 export const DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS = Object.freeze([
   "schemas",
@@ -54,6 +55,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   requiredGeneratedMatrixLimitations: "required_generated_matrix_limitations",
   missingGeneratedMatrixLimitations: "missing_generated_matrix_limitations",
   evidenceRepos: "evidence_repos",
+  artifactCoverageInputSources: "artifact_coverage_input_sources",
 })
 
 export async function prepareDrillArtifacts(rootDir) {
@@ -184,6 +186,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const requiredGeneratedMatrixLimitations = new Map()
   const missingGeneratedMatrixLimitations = new Map()
   const evidenceRepos = new Map()
+  const artifactCoverageInputSources = new Map()
   const summaries = indexes.map((index, indexPosition) => {
     validateDrillArtifactIndex(index, sources[indexPosition] ?? "drill artifact index")
     const indexTotals = {
@@ -204,6 +207,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexRequiredGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "requiredGeneratedMatrixLimitations")
     const indexMissingGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixLimitations")
     const indexEvidenceRepos = metadataListFromMetadata(index.metadata, "evidenceRepos")
+    const indexArtifactCoverageInputSources = metadataListFromMetadata(index.metadata, "artifactCoverageInputSources")
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
     countValues(indexCoverageAreas, coverageAreas)
@@ -217,6 +221,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexRequiredGeneratedMatrixLimitations, requiredGeneratedMatrixLimitations)
     countValues(indexMissingGeneratedMatrixLimitations, missingGeneratedMatrixLimitations)
     countValues(indexEvidenceRepos, evidenceRepos)
+    countValues(indexArtifactCoverageInputSources, artifactCoverageInputSources)
     for (const artifact of index.artifacts) {
       totals.artifacts += 1
       totals.sizeBytes += artifact.sizeBytes
@@ -244,6 +249,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       requiredGeneratedMatrixLimitations: countValues(indexRequiredGeneratedMatrixLimitations),
       missingGeneratedMatrixLimitations: countValues(indexMissingGeneratedMatrixLimitations),
       evidenceRepos: countValues(indexEvidenceRepos),
+      artifactCoverageInputSources: countValues(indexArtifactCoverageInputSources),
     }
   })
   const aggregate = {
@@ -263,6 +269,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     requiredGeneratedMatrixLimitations: sortedCountObject(requiredGeneratedMatrixLimitations),
     missingGeneratedMatrixLimitations: sortedCountObject(missingGeneratedMatrixLimitations),
     evidenceRepos: sortedCountObject(evidenceRepos),
+    artifactCoverageInputSources: sortedCountObject(artifactCoverageInputSources),
     indexes: summaries,
   }
   validateDrillArtifactIndexAggregate(aggregate)

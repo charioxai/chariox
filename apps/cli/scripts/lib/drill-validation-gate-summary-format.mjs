@@ -152,6 +152,10 @@ export function formatDrillValidationGateSummary(report) {
     if (evidenceRepos.length > 0) {
       lines.push(`artifact_evidence_repos=${evidenceRepos.map(([repo, count]) => `${repo}:${count}`).join(",")}`)
     }
+    const artifactCoverageInputSources = Object.entries(artifacts.aggregate.artifactCoverageInputSources ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (artifactCoverageInputSources.length > 0) {
+      lines.push(`artifact_coverage_input_sources=${artifactCoverageInputSources.map(([source, count]) => `${source}:${count}`).join(",")}`)
+    }
   }
 
   const matrices = report.checks.matrices
