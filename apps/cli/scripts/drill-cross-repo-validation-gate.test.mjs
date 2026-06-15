@@ -572,6 +572,14 @@ test("cross repo validation gate rejects aggregate-only generated evidence requi
     },
   )
   await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-validation-suite-artifact-index", "/tmp/generated-suite/arroba-drill-artifacts.json", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-validation-suite-artifact-index is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+  await assert.rejects(
     execFile(process.execPath, [scriptPath, "--require-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
