@@ -40,6 +40,7 @@ export async function findDrillFailureManifestPaths(rootPaths, { maxDepth = 8 } 
   return await findDrillJsonArtifactPaths(rootPaths, {
     fileName: FAILURE_MANIFEST_FILE,
     maxDepth,
+    schema: FAILURE_MANIFEST_SCHEMA,
   })
 }
 

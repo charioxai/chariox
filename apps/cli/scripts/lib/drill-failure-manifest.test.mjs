@@ -88,12 +88,18 @@ test("discovers preserved failure manifests below artifact roots", async () => {
   const first = path.join(root, "target", "run-one")
   const second = path.join(root, ".artifacts", "run-two")
   const ignored = path.join(root, "node_modules", "run-three")
+  const wrongSchema = path.join(root, "target", "wrong-schema")
+  const malformed = path.join(root, "target", "malformed")
   await prepareDrillArtifacts(first)
   await prepareDrillArtifacts(second)
   await prepareDrillArtifacts(ignored)
+  await prepareDrillArtifacts(wrongSchema)
+  await prepareDrillArtifacts(malformed)
   await finalizeDrillArtifacts({ rootDir: first, passed: false, failure: new Error("first"), metadata: { drill: "first" } })
   await finalizeDrillArtifacts({ rootDir: second, passed: false, failure: new Error("second"), metadata: { drill: "second" } })
   await finalizeDrillArtifacts({ rootDir: ignored, passed: false, failure: new Error("ignored"), metadata: { drill: "ignored" } })
+  await writeFile(path.join(wrongSchema, "arroba-drill-failure.json"), "{\"schema\":\"other.failure.v1\"}\n", "utf8")
+  await writeFile(path.join(malformed, "arroba-drill-failure.json"), "{not-json\n", "utf8")
 
   const manifests = await findDrillFailureManifestPaths(root)
 
