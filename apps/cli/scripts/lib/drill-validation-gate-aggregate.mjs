@@ -323,6 +323,13 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
     "drill validation gate aggregate:",
     `status=${aggregate.status} reports=${aggregate.totals.reports} passed=${aggregate.totals.passed} failed=${aggregate.totals.failed}`,
   ]
+  const artifactCoverageInputs = aggregate.artifactCoverageInputs ?? []
+  if (artifactCoverageInputs.length > 0) {
+    const sources = artifactCoverageInputs
+      .map((input) => input.source)
+      .filter((source) => typeof source === "string" && source.length > 0)
+    lines.push(`artifact_coverage_inputs=${artifactCoverageInputs.length}${sources.length > 0 ? ` sources=${sources.join(",")}` : ""}`)
+  }
   if (aggregate.nextActions.length > 0) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {

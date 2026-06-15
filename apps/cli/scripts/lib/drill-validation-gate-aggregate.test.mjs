@@ -805,6 +805,26 @@ test("aggregates generated evidence provenance from gate reports", () => {
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
 })
 
+test("formats supplemental artifact coverage inputs without inflating report totals", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
+    sources: ["distributed-runtime-gate.json"],
+    supplementalArtifactReports: [reportFixture()],
+    supplementalArtifactSources: ["distributed-runtime-gate-artifacts.json"],
+    normalizedAggregateRequirements: {
+      requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    },
+    validateReport: () => {},
+  })
+  const text = formatDrillValidationGateAggregateSummary(aggregate)
+
+  assert.deepEqual(aggregate.totals, { reports: 1, passed: 1, failed: 0 })
+  assert.equal(aggregate.artifactCoverageInputs.length, 1)
+  assert.deepEqual(aggregate.artifactCoverageInputs.map((input) => input.source), ["distributed-runtime-gate-artifacts.json"])
+  assert.match(text, /status=passed reports=1 passed=1 failed=0/)
+  assert.match(text, /artifact_coverage_inputs=1 sources=distributed-runtime-gate-artifacts\.json/)
+  assert.match(text, /required_artifact_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
+})
+
 test("rejects inconsistent aggregate status and coverage", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedRequiredPresets: ["workspace-live-sync"],
