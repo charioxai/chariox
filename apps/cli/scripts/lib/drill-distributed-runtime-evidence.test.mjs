@@ -127,6 +127,11 @@ test("builds distributed runtime generated evidence summary", () => {
   assert.equal(summary.matrixReports.enabled, true)
   assert.equal(summary.matrixReports.dryRun, true)
   assert.equal(summary.matrixReports.continueOnFailure, true)
+  assert.deepEqual(summary.matrixReports.limitations, [{
+    kind: "dry-run-classification-coverage",
+    owner: "validation-harness",
+    nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before treating required matrix classifications as release evidence",
+  }])
   assert.deepEqual(summary.matrixReports.roots, ["/tmp/matrices/cloud", "/tmp/matrices/oss"])
   assert.equal(summary.matrixReports.commands.length, 6)
   assert.deepEqual(summary.matrixReports.commands[0], {
@@ -162,6 +167,7 @@ test("builds empty generated evidence summary when generation is disabled", () =
       continueOnFailure: false,
       dryRun: false,
       enabled: false,
+      limitations: [],
       roots: [],
     },
     validationSuites: {

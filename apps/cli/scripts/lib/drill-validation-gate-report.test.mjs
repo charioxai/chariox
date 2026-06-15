@@ -122,7 +122,32 @@ test("validates optional generated evidence provenance", () => {
         },
       },
     })),
-    /generatedEvidence\.matrixReports disabled evidence has paths/,
+    /generatedEvidence\.matrixReports disabled evidence has generated data/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          ...generatedEvidence().matrixReports,
+          dryRun: true,
+          limitations: [],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports dry-run evidence is missing limitations/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          ...generatedEvidence().matrixReports,
+          limitations: [{ kind: "dry-run-classification-coverage", owner: "", nextAction: "rerun live matrix reports" }],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.limitations\[0\] has invalid owner/,
   )
 })
 
@@ -501,6 +526,7 @@ function generatedEvidence() {
       }],
       dryRun: false,
       continueOnFailure: true,
+      limitations: [],
     },
   }
 }

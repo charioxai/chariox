@@ -693,6 +693,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       dryRun: false,
       continueOnFailure: true,
+      limitations: [],
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
@@ -810,6 +811,7 @@ function generatedEvidenceFixture() {
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       dryRun: false,
       continueOnFailure: true,
+      limitations: [],
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],

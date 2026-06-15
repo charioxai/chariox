@@ -1106,6 +1106,14 @@ function validationGateReportGeneratedEvidence(report) {
       roots: stringArray(matrixReports.roots),
       dryRun: matrixReports.dryRun === true,
       continueOnFailure: matrixReports.continueOnFailure === true,
+      limitations: (Array.isArray(matrixReports.limitations) ? matrixReports.limitations : []).map((limitation) => {
+        const record = limitation && typeof limitation === "object" && !Array.isArray(limitation) ? limitation : {}
+        return {
+          kind: record.kind,
+          owner: record.owner,
+          nextAction: record.nextAction,
+        }
+      }),
       commands: (Array.isArray(matrixReports.commands) ? matrixReports.commands : []).map((command) => {
         const commandRecord = command && typeof command === "object" && !Array.isArray(command) ? command : {}
         return {
@@ -1159,6 +1167,7 @@ function validateGeneratedMatrixReportsSummary(matrixReports, source) {
   if (typeof matrixReports.continueOnFailure !== "boolean") {
     throw new Error(`${source} has invalid continueOnFailure`)
   }
+  validateGeneratedMatrixLimitations(matrixReports.limitations ?? [], `${source}.limitations`)
   validateStringArray(matrixReports.roots ?? [], `${source}.roots`)
   if (!Array.isArray(matrixReports.commands)) {
     throw new Error(`${source}.commands is not an array`)
@@ -1169,8 +1178,28 @@ function validateGeneratedMatrixReportsSummary(matrixReports, source) {
   if (matrixReports.enabled && ((matrixReports.roots ?? []).length === 0 || matrixReports.commands.length === 0)) {
     throw new Error(`${source} enabled evidence is missing paths`)
   }
-  if (!matrixReports.enabled && ((matrixReports.roots ?? []).length > 0 || matrixReports.commands.length > 0)) {
-    throw new Error(`${source} disabled evidence has paths`)
+  if (matrixReports.enabled && matrixReports.dryRun && (matrixReports.limitations ?? []).length === 0) {
+    throw new Error(`${source} dry-run evidence is missing limitations`)
+  }
+  if (!matrixReports.enabled && ((matrixReports.roots ?? []).length > 0 || matrixReports.commands.length > 0 || (matrixReports.limitations ?? []).length > 0)) {
+    throw new Error(`${source} disabled evidence has generated data`)
+  }
+}
+
+function validateGeneratedMatrixLimitations(limitations, source) {
+  if (!Array.isArray(limitations)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, limitation] of limitations.entries()) {
+    const limitationSource = `${source}[${index}]`
+    if (!limitation || typeof limitation !== "object" || Array.isArray(limitation)) {
+      throw new Error(`${limitationSource} is not an object`)
+    }
+    for (const key of ["kind", "owner", "nextAction"]) {
+      if (!nonEmptyString(limitation[key])) {
+        throw new Error(`${limitationSource} has invalid ${key}`)
+      }
+    }
   }
 }
 

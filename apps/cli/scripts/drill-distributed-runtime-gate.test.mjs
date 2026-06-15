@@ -54,6 +54,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
         continueOnFailure: false,
         dryRun: false,
         enabled: false,
+        limitations: [],
         roots: [],
       },
       validationSuites: {
@@ -319,6 +320,7 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     assert.equal(report.checks.matrices.aggregate.matrixNames["cloud-slice-runtime-matrix"], 1)
     assert.equal(report.checks.matrices.aggregate.matrixNames["workspace-live-sync-matrix"], 1)
     assert.equal(report.generatedEvidence.matrixReports.enabled, true)
+    assert.deepEqual(report.generatedEvidence.matrixReports.limitations, [])
     assert.deepEqual(report.generatedEvidence.matrixReports.roots, [
       path.join(matrixOutputRoot, "cloud"),
       path.join(matrixOutputRoot, "oss"),
@@ -338,6 +340,63 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       path.join(validationSuiteOutputRoot, "cloud"),
       path.join(validationSuiteOutputRoot, "oss"),
     ].sort().join(","))
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate labels dry-run generated matrix limitations", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const matrixOutputRoot = path.join(rootDir, "generated-matrices")
+    const validationSuiteOutputRoot = path.join(rootDir, "generated-validation-suites")
+    const outputPath = path.join(rootDir, "distributed-runtime-gate.json")
+    const artifactIndexPath = path.join(rootDir, "distributed-runtime-gate-artifacts.json")
+    await writeFakeValidationSuiteScript({
+      classification: "validation-suite",
+      evidenceRepo: "oss",
+      file: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+    })
+    await writeFakeValidationSuiteScript({
+      classification: "cloud-validation-suite",
+      evidenceRepo: "cloud",
+      file: path.join(cloudRoot, "scripts", "cloud-validation-suite.mjs"),
+    })
+    await writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossRoot })
+
+    const report = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--run-validation-suites",
+      "--validation-suite-output-root",
+      validationSuiteOutputRoot,
+      "--run-matrix-reports",
+      "--matrix-dry-run",
+      "--matrix-output-root",
+      matrixOutputRoot,
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+      "--json",
+    ])).stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.equal(report.status, "passed")
+    assert.equal(report.generatedEvidence.matrixReports.dryRun, true)
+    assert.deepEqual(report.generatedEvidence.matrixReports.limitations, [{
+      kind: "dry-run-classification-coverage",
+      owner: "validation-harness",
+      nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before treating required matrix classifications as release evidence",
+    }])
+    assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
+    assert(report.generatedEvidence.matrixReports.commands.every((command) => command.args.includes("--dry-run")))
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

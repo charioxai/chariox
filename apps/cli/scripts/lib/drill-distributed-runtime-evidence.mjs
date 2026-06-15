@@ -35,6 +35,7 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
       roots: [...generatedMatrixRoots].map((item) => path.resolve(item)).sort(),
       dryRun: options.matrixDryRun === true,
       continueOnFailure: options.matrixContinueOnFailure === true,
+      limitations: distributedRuntimeGeneratedMatrixLimitationsFor(options),
       commands: options.runMatrixReports === true
         ? distributedRuntimeMatrixCommandsFor({
           cloudOutputDir: distributedRuntimeMatrixOutputDirFor(options, "cloud"),
@@ -59,6 +60,15 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
         : [],
     },
   }
+}
+
+export function distributedRuntimeGeneratedMatrixLimitationsFor(options) {
+  if (options.runMatrixReports !== true || options.matrixDryRun !== true) return []
+  return [{
+    kind: "dry-run-classification-coverage",
+    owner: "validation-harness",
+    nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before treating required matrix classifications as release evidence",
+  }]
 }
 
 export function distributedRuntimeMatrixCommandsFor({

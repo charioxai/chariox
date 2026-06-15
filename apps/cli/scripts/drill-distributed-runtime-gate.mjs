@@ -346,8 +346,13 @@ function generatedEvidenceKindsFor(generatedEvidence) {
 
 function generatedEvidenceMetadataFor(generatedEvidence) {
   const kinds = generatedEvidenceKindsFor(generatedEvidence)
+  const matrixLimitations = (generatedEvidence.matrixReports.limitations ?? [])
+    .map((limitation) => limitation.kind)
+    .filter((kind) => typeof kind === "string" && kind.length > 0)
+    .sort()
   return {
     ...(kinds.length > 0 ? { generatedEvidenceKinds: kinds.join(",") } : {}),
+    ...(matrixLimitations.length > 0 ? { generatedMatrixLimitations: matrixLimitations.join(",") } : {}),
     ...(generatedEvidence.matrixReports.roots.length > 0
       ? { generatedMatrixRoots: generatedEvidence.matrixReports.roots.join(",") }
       : {}),
