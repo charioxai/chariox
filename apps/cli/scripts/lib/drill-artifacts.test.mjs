@@ -103,7 +103,42 @@ test("drill artifacts are removed after a passing run", async () => {
   const result = await finalizeDrillArtifacts({ rootDir: root, passed: true })
 
   assert.equal(result.preserved, false)
+  assert.equal(result.rootDir, root)
   await assert.rejects(stat(root), /ENOENT/)
+})
+
+test("normalizes drill artifact lifecycle roots to absolute paths", async () => {
+  const targetRoot = path.join(process.cwd(), "target")
+  await mkdir(targetRoot, { recursive: true })
+  const absoluteRoot = await mkdtemp(path.join(targetRoot, "arroba-drill-artifacts-lifecycle-"))
+  const relativeRoot = path.relative(process.cwd(), absoluteRoot)
+  const events = []
+
+  await prepareDrillArtifacts(relativeRoot)
+  const result = await finalizeDrillArtifacts({
+    rootDir: relativeRoot,
+    passed: false,
+    failure: new Error("relative failure"),
+    log: (name, details) => events.push({ name, details }),
+  })
+
+  assert.equal(result.rootDir, absoluteRoot)
+  assert.equal(result.manifestPath, path.join(absoluteRoot, "arroba-drill-failure.json"))
+  assert.deepEqual(events, [{
+    name: "preserved-failed-run",
+    details: {
+      rootDir: absoluteRoot,
+      manifestPath: path.join(absoluteRoot, "arroba-drill-failure.json"),
+    },
+  }])
+  const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"))
+  assert.equal(manifest.rootDir, absoluteRoot)
+
+  await assert.rejects(
+    prepareDrillArtifacts(""),
+    /rootDir is required/,
+  )
+  await finalizeDrillArtifacts({ rootDir: absoluteRoot, passed: true })
 })
 
 test("drill artifacts are preserved with a failure manifest after a failed run", async () => {

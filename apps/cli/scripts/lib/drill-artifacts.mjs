@@ -77,9 +77,10 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
 })
 
 export async function prepareDrillArtifacts(rootDir) {
-  await rm(rootDir, { recursive: true, force: true }).catch(() => {})
-  await mkdir(rootDir, { recursive: true })
-  return rootDir
+  const resolvedRootDir = resolvedDrillRootDir(rootDir)
+  await rm(resolvedRootDir, { recursive: true, force: true }).catch(() => {})
+  await mkdir(resolvedRootDir, { recursive: true })
+  return resolvedRootDir
 }
 
 export async function finalizeDrillArtifacts({
@@ -90,22 +91,23 @@ export async function finalizeDrillArtifacts({
   failure = null,
   metadata = {},
 }) {
+  const resolvedRootDir = resolvedDrillRootDir(rootDir)
   if (passed || !preserveOnFailure) {
-    await rm(rootDir, { recursive: true, force: true }).catch(() => {})
+    await rm(resolvedRootDir, { recursive: true, force: true }).catch(() => {})
     if (!passed && log) {
-      log("discarded-failed-run", { rootDir })
+      log("discarded-failed-run", { rootDir: resolvedRootDir })
     }
-    return { preserved: false, rootDir }
+    return { preserved: false, rootDir: resolvedRootDir }
   }
 
-  await mkdir(rootDir, { recursive: true }).catch(() => {})
-  const manifest = failureManifest({ rootDir, failure, metadata })
-  const manifestPath = path.join(rootDir, "arroba-drill-failure.json")
+  await mkdir(resolvedRootDir, { recursive: true }).catch(() => {})
+  const manifest = failureManifest({ rootDir: resolvedRootDir, failure, metadata })
+  const manifestPath = path.join(resolvedRootDir, "arroba-drill-failure.json")
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8").catch(() => {})
   if (log) {
-    log("preserved-failed-run", { rootDir, manifestPath })
+    log("preserved-failed-run", { rootDir: resolvedRootDir, manifestPath })
   }
-  return { preserved: true, rootDir, manifestPath }
+  return { preserved: true, rootDir: resolvedRootDir, manifestPath }
 }
 
 export async function writeDrillArtifactIndex({
@@ -488,6 +490,11 @@ function failureManifest({ rootDir, failure, metadata }) {
   }
 }
 
+function resolvedDrillRootDir(rootDir) {
+  if (!nonEmptyString(rootDir)) throw new Error("drill artifact rootDir is required")
+  return path.resolve(rootDir)
+}
+
 async function artifactRecord(rootDir, artifact) {
   const input = typeof artifact === "string" ? { path: artifact } : artifact
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -635,9 +642,8 @@ function validateRuntimeSignalOwnerKeysMatch(runtimeSignals, runtimeSignalOwners
 }
 
 function relativeArtifactPath(rootDir, artifactPath) {
-  if (!nonEmptyString(rootDir)) throw new Error("drill artifact rootDir is required")
   if (!nonEmptyString(artifactPath)) throw new Error("drill artifact path is required")
-  const absoluteRoot = path.resolve(rootDir)
+  const absoluteRoot = resolvedDrillRootDir(rootDir)
   const absoluteArtifact = path.resolve(absoluteRoot, artifactPath)
   const relativePath = path.relative(absoluteRoot, absoluteArtifact)
   if (!safeRelativePath(relativePath)) {
