@@ -132,11 +132,14 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_kinds=artifact-index:1,matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_evidence_kinds=matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_matrix_limitations=dry-run-classification-coverage:1/)
+  assert.match(text, /artifact_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/arroba-drill-artifacts\.json:1/)
   assert.match(text, /artifact_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/failed-run:1/)
   assert.match(text, /artifact_required_generated_evidence_kinds=matrix-report:2,validation-suite-run:1/)
   assert.match(text, /artifact_missing_generated_evidence_kinds=matrix-report:1/)
   assert.match(text, /artifact_required_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_missing_generated_matrix_limitations=dry-run-classification-coverage:1/)
+  assert.match(text, /artifact_required_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/arroba-drill-artifacts\.json:1/)
+  assert.match(text, /artifact_missing_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/missing-artifacts\.json:1/)
   assert.match(text, /artifact_provider_account_aliases=codex=work:1,opencode=zen:1/)
   assert.match(text, /artifact_evidence_repos=cloud:1,oss:1/)
   assert.match(text, /artifact_coverage_input_sources=artifact metadata inputs:1/)
@@ -327,6 +330,9 @@ function artifactAggregateFixture() {
     generatedMatrixLimitations: {
       "dry-run-classification-coverage": 1,
     },
+    generatedValidationSuiteArtifactIndexes: {
+      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+    },
     generatedValidationSuiteFailureRoots: {
       "/tmp/generated-suite/failed-run": 1,
     },
@@ -344,6 +350,12 @@ function artifactAggregateFixture() {
     },
     missingGeneratedMatrixLimitations: {
       "dry-run-classification-coverage": 1,
+    },
+    requiredGeneratedValidationSuiteArtifactIndexes: {
+      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+    },
+    missingGeneratedValidationSuiteArtifactIndexes: {
+      "/tmp/generated-suite/missing-artifacts.json": 1,
     },
     providerAccountAliases: {
       "codex=work": 1,
@@ -400,6 +412,9 @@ function artifactAggregateFixture() {
       generatedMatrixLimitations: {
         "dry-run-classification-coverage": 1,
       },
+      generatedValidationSuiteArtifactIndexes: {
+        "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      },
       generatedValidationSuiteFailureRoots: {
         "/tmp/generated-suite/failed-run": 1,
       },
@@ -417,6 +432,12 @@ function artifactAggregateFixture() {
       },
       missingGeneratedMatrixLimitations: {
         "dry-run-classification-coverage": 1,
+      },
+      requiredGeneratedValidationSuiteArtifactIndexes: {
+        "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      },
+      missingGeneratedValidationSuiteArtifactIndexes: {
+        "/tmp/generated-suite/missing-artifacts.json": 1,
       },
       providerAccountAliases: {
         "codex=work": 1,

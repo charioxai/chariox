@@ -143,6 +143,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.reports[0].artifactCoverage.generatedValidationSuiteFailureRoots, {
     "/tmp/generated-suite/failed-run": 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.generatedValidationSuiteArtifactIndexes, {
+    "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+  })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.evidenceRepos, {
     oss: 1,
   })
@@ -982,6 +985,10 @@ test("aggregates generated evidence provenance from gate reports", () => {
     normalizedAggregateRequirements: {
       requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
       requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+      requiredGeneratedValidationSuiteArtifactIndexes: [
+        "/tmp/suites/cloud/arroba-drill-artifacts.json",
+        "/tmp/suites/oss/arroba-drill-artifacts.json",
+      ],
       requiredGeneratedValidationSuiteFailureRoots: ["/tmp/suites/cloud/failed-run", "/tmp/suites/oss/failed-run"],
     },
     validateReport: () => {},
@@ -994,6 +1001,10 @@ test("aggregates generated evidence provenance from gate reports", () => {
   assert.deepEqual(aggregate.coverage.generatedMatrixLimitations, {
     "dry-run-classification-coverage": 1,
   })
+  assert.deepEqual(aggregate.coverage.generatedValidationSuiteArtifactIndexes, {
+    "/tmp/suites/cloud/arroba-drill-artifacts.json": 1,
+    "/tmp/suites/oss/arroba-drill-artifacts.json": 1,
+  })
   assert.deepEqual(aggregate.coverage.generatedValidationSuiteFailureRoots, {
     "/tmp/suites/cloud/failed-run": 1,
     "/tmp/suites/oss/failed-run": 1,
@@ -1002,6 +1013,11 @@ test("aggregates generated evidence provenance from gate reports", () => {
   assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
   assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
   assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, [])
+  assert.deepEqual(aggregate.requiredGeneratedValidationSuiteArtifactIndexes, [
+    "/tmp/suites/cloud/arroba-drill-artifacts.json",
+    "/tmp/suites/oss/arroba-drill-artifacts.json",
+  ])
+  assert.deepEqual(aggregate.missingGeneratedValidationSuiteArtifactIndexes, [])
   assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, ["/tmp/suites/cloud/failed-run", "/tmp/suites/oss/failed-run"])
   assert.deepEqual(aggregate.missingGeneratedValidationSuiteFailureRoots, [])
   assert.deepEqual(aggregate.coverage.requiredGeneratedEvidenceKinds, {
@@ -1013,6 +1029,11 @@ test("aggregates generated evidence provenance from gate reports", () => {
     "dry-run-classification-coverage": 1,
   })
   assert.deepEqual(aggregate.coverage.missingGeneratedMatrixLimitations, {})
+  assert.deepEqual(aggregate.coverage.requiredGeneratedValidationSuiteArtifactIndexes, {
+    "/tmp/suites/cloud/arroba-drill-artifacts.json": 1,
+    "/tmp/suites/oss/arroba-drill-artifacts.json": 1,
+  })
+  assert.deepEqual(aggregate.coverage.missingGeneratedValidationSuiteArtifactIndexes, {})
   assert.deepEqual(aggregate.coverage.requiredGeneratedValidationSuiteFailureRoots, {
     "/tmp/suites/cloud/failed-run": 1,
     "/tmp/suites/oss/failed-run": 1,
@@ -1072,8 +1093,10 @@ test("aggregates generated evidence provenance from gate reports", () => {
   })
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_evidence_kinds: matrix-report=1 validation-suite-run=1/)
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_matrix_limitations: dry-run-classification-coverage=1/)
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_validation_suite_artifact_indexes: \/tmp\/suites\/cloud\/arroba-drill-artifacts\.json=1 \/tmp\/suites\/oss\/arroba-drill-artifacts\.json=1/)
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_evidence_kinds=matrix-report,validation-suite-run missing=none/)
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_validation_suite_artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json missing=none/)
 })
 
 test("rejects secret-looking generated evidence paths in validation gate aggregates", () => {
@@ -1090,9 +1113,26 @@ test("rejects secret-looking generated evidence paths in validation gate aggrega
   assert.throws(
     () => validateDrillValidationGateAggregate({
       ...aggregate,
+      requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
+    }),
+    /requiredGeneratedValidationSuiteArtifactIndexes\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
       requiredGeneratedValidationSuiteFailureRoots: ["/tmp/Bearer abcdefghijklmnop"],
     }),
     /requiredGeneratedValidationSuiteFailureRoots\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        generatedValidationSuiteArtifactIndexes: { "/tmp/Bearer abcdefghijklmnop.json": 1 },
+      },
+    }),
+    /coverage\.generatedValidationSuiteArtifactIndexes\.\/tmp\/Bearer abcdefghijklmnop\.json includes secret-looking generated evidence path/,
   )
   assert.throws(
     () => validateDrillValidationGateAggregate({
@@ -1138,6 +1178,19 @@ test("rejects secret-looking generated evidence paths in validation gate aggrega
       }],
     }),
     /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.args\[1\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          generatedValidationSuiteArtifactIndexes: { "/tmp/Bearer abcdefghijklmnop.json": 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.generatedValidationSuiteArtifactIndexes\.\/tmp\/Bearer abcdefghijklmnop\.json includes secret-looking generated evidence path/,
   )
   assert.throws(
     () => validateDrillValidationGateAggregate({
@@ -1422,6 +1475,9 @@ function reportFixture(overrides = {}) {
           },
           generatedMatrixLimitations: {
             "dry-run-classification-coverage": 1,
+          },
+          generatedValidationSuiteArtifactIndexes: {
+            "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
           },
           generatedValidationSuiteFailureRoots: {
             "/tmp/generated-suite/failed-run": 1,

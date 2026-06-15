@@ -161,6 +161,10 @@ export function formatDrillValidationGateSummary(report) {
     if (generatedMatrixLimitations.length > 0) {
       lines.push(`artifact_generated_matrix_limitations=${generatedMatrixLimitations.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
     }
+    const generatedValidationSuiteArtifactIndexes = Object.entries(artifacts.aggregate.generatedValidationSuiteArtifactIndexes ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (generatedValidationSuiteArtifactIndexes.length > 0) {
+      lines.push(`artifact_generated_validation_suite_artifact_indexes=${generatedValidationSuiteArtifactIndexes.map(([indexPath, count]) => `${indexPath}:${count}`).join(",")}`)
+    }
     const generatedValidationSuiteFailureRoots = Object.entries(artifacts.aggregate.generatedValidationSuiteFailureRoots ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (generatedValidationSuiteFailureRoots.length > 0) {
       lines.push(`artifact_generated_validation_suite_failure_roots=${generatedValidationSuiteFailureRoots.map(([root, count]) => `${root}:${count}`).join(",")}`)
@@ -180,6 +184,14 @@ export function formatDrillValidationGateSummary(report) {
     const missingGeneratedMatrixLimitations = Object.entries(artifacts.aggregate.missingGeneratedMatrixLimitations ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (missingGeneratedMatrixLimitations.length > 0) {
       lines.push(`artifact_missing_generated_matrix_limitations=${missingGeneratedMatrixLimitations.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
+    const requiredGeneratedValidationSuiteArtifactIndexes = Object.entries(artifacts.aggregate.requiredGeneratedValidationSuiteArtifactIndexes ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (requiredGeneratedValidationSuiteArtifactIndexes.length > 0) {
+      lines.push(`artifact_required_generated_validation_suite_artifact_indexes=${requiredGeneratedValidationSuiteArtifactIndexes.map(([indexPath, count]) => `${indexPath}:${count}`).join(",")}`)
+    }
+    const missingGeneratedValidationSuiteArtifactIndexes = Object.entries(artifacts.aggregate.missingGeneratedValidationSuiteArtifactIndexes ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (missingGeneratedValidationSuiteArtifactIndexes.length > 0) {
+      lines.push(`artifact_missing_generated_validation_suite_artifact_indexes=${missingGeneratedValidationSuiteArtifactIndexes.map(([indexPath, count]) => `${indexPath}:${count}`).join(",")}`)
     }
     const providerAccountAliases = Object.entries(artifacts.aggregate.providerAccountAliases ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (providerAccountAliases.length > 0) {

@@ -139,6 +139,7 @@ test("builds shared drill validation suite manifest", () => {
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixArtifactIndexes: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteArtifactIndexes: [],
       requiredGeneratedValidationSuiteFailureRoots: [],
     }],
     testPaths: ["one.test.mjs", "two words.test.mjs"],
@@ -213,6 +214,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run", "matrix-report"],
     requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage", "dry-run-classification-coverage"],
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json", "/tmp/generated-suite/arroba-drill-artifacts.json"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run", "/tmp/generated-suite/failed-run"],
   }]), [{
     name: "workspace-live-sync",
@@ -243,6 +245,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
     requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   }])
   assert.throws(() => normalizeValidationSuitePresetContracts([{
@@ -310,6 +313,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad generated artifact index",
     requiredGeneratedMatrixArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
   }]), /requiredGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-generated-validation-suite-artifact-index",
+    description: "bad generated validation suite artifact index",
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
+  }]), /requiredGeneratedValidationSuiteArtifactIndexes\[0\] includes secret-looking generated evidence path/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-generated-failure-root",
     description: "bad generated failure root",

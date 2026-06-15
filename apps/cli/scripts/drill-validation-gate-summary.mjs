@@ -85,6 +85,8 @@ function printHelp() {
     "                         Require generated matrix artifact-index evidence",
     "  --require-generated-matrix-limitation KIND",
     "                         Require aggregate evidence for generated matrix limitations",
+    "  --require-generated-validation-suite-artifact-index PATH",
+    "                         Require generated validation-suite artifact-index evidence",
     "  --require-generated-validation-suite-failure-root PATH",
     "                         Require generated validation-suite failure-root evidence",
     "  --json                 Print aggregate JSON",
@@ -141,6 +143,7 @@ async function main() {
     requiredGeneratedEvidenceKinds: options.requiredGeneratedEvidenceKinds,
     requiredGeneratedMatrixArtifactIndexes: options.requiredGeneratedMatrixArtifactIndexes,
     requiredGeneratedMatrixLimitations: options.requiredGeneratedMatrixLimitations,
+    requiredGeneratedValidationSuiteArtifactIndexes: options.requiredGeneratedValidationSuiteArtifactIndexes,
     requiredGeneratedValidationSuiteFailureRoots: options.requiredGeneratedValidationSuiteFailureRoots,
   })
   if (options.outputPath) {

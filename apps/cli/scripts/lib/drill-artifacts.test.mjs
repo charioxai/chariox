@@ -619,9 +619,12 @@ test("summarizes drill artifact indexes", async () => {
         validationPresets: "distributed-runtime,workspace-live-sync",
         artifactKinds: "validation-gate,validation-suite-run",
         generatedEvidenceKinds: "validation-suite-run",
+        generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
         generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
         requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
         missingGeneratedEvidenceKinds: "matrix-report",
+        requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+        missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
         providerAccountAliases: "codex=work,opencode=zen",
         evidenceRepos: "oss",
       },
@@ -708,6 +711,9 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.generatedMatrixArtifactIndexes, {
       "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json": 1,
     })
+    assert.deepEqual(aggregate.generatedValidationSuiteArtifactIndexes, {
+      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+    })
     assert.deepEqual(aggregate.generatedValidationSuiteFailureRoots, {
       "/tmp/generated-suite/failed-run": 1,
     })
@@ -729,6 +735,12 @@ test("summarizes drill artifact indexes", async () => {
     })
     assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
+    })
+    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteArtifactIndexes, {
+      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+    })
+    assert.deepEqual(aggregate.missingGeneratedValidationSuiteArtifactIndexes, {
+      "/tmp/generated-suite/missing-artifacts.json": 1,
     })
     assert.deepEqual(aggregate.providerAccountAliases, {
       "claude=team": 1,
@@ -785,15 +797,18 @@ test("summarizes drill artifact indexes", async () => {
       generatedEvidenceKinds: "matrix-report,validation-suite-run",
       generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       generatedMatrixLimitations: "dry-run-classification-coverage",
+      generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
       generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       missingGeneratedEvidenceKinds: "matrix-report",
       missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
       missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
+      missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
       owners: "runtime-network,validation-harness",
       providerAccountAliases: "claude=team,codex=work,opencode=zen",
       requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
       requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
+      requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
       validationPresets: "distributed-runtime,slice-runtime,workspace-live-sync",
@@ -811,6 +826,7 @@ test("summarizes drill artifact indexes", async () => {
       "generatedEvidenceKinds",
       "generatedMatrixArtifactIndexes",
       "generatedMatrixLimitations",
+      "generatedValidationSuiteArtifactIndexes",
       "generatedValidationSuiteFailureRoots",
       "requiredGeneratedEvidenceKinds",
       "missingGeneratedEvidenceKinds",
@@ -818,6 +834,8 @@ test("summarizes drill artifact indexes", async () => {
       "missingGeneratedMatrixArtifactIndexes",
       "requiredGeneratedMatrixLimitations",
       "missingGeneratedMatrixLimitations",
+      "requiredGeneratedValidationSuiteArtifactIndexes",
+      "missingGeneratedValidationSuiteArtifactIndexes",
       "providerAccountAliases",
       "evidenceRepos",
       "artifactCoverageInputSources",

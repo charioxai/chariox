@@ -54,6 +54,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-generated-validation-suite-artifact-index", "/tmp/generated-suite/arroba-drill-artifacts.json"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--unknown"], 0, options)
@@ -88,6 +90,7 @@ test("parses validation gate requirement arguments", () => {
     requiredGeneratedEvidenceKinds: ["matrix-report"],
     requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   })
 })
@@ -113,6 +116,7 @@ test("rejects secret-looking generated path requirements", () => {
   for (const flag of [
     "--require-artifact-generated-matrix-artifact-index",
     "--require-generated-matrix-artifact-index",
+    "--require-generated-validation-suite-artifact-index",
     "--require-generated-validation-suite-failure-root",
   ]) {
     const options = validationGateRequirementOptionDefaults()

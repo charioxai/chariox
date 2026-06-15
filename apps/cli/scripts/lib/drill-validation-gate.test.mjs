@@ -1276,6 +1276,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       artifactGeneratedEvidenceKinds: {},
       artifactGeneratedMatrixArtifactIndexes: {},
       artifactGeneratedMatrixLimitations: {},
+      artifactGeneratedValidationSuiteArtifactIndexes: {},
       artifactGeneratedValidationSuiteFailureRoots: {},
       artifactEvidenceRepos: {},
       artifactProviderAccountAliases: {},
@@ -1306,6 +1307,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       generatedEvidenceKinds: {},
       generatedMatrixArtifactIndexes: {},
       generatedMatrixLimitations: {},
+      generatedValidationSuiteArtifactIndexes: {},
       generatedValidationSuiteFailureRoots: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
@@ -1313,6 +1315,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingGeneratedMatrixArtifactIndexes: {},
       requiredGeneratedMatrixLimitations: {},
       missingGeneratedMatrixLimitations: {},
+      requiredGeneratedValidationSuiteArtifactIndexes: {},
+      missingGeneratedValidationSuiteArtifactIndexes: {},
       requiredGeneratedValidationSuiteFailureRoots: {},
       missingGeneratedValidationSuiteFailureRoots: {},
     })
@@ -1521,6 +1525,7 @@ function platformValidationPresetSummaries() {
     requiredGeneratedEvidenceKinds: preset.requiredGeneratedEvidenceKinds,
     requiredGeneratedMatrixArtifactIndexes: preset.requiredGeneratedMatrixArtifactIndexes,
     requiredGeneratedMatrixLimitations: preset.requiredGeneratedMatrixLimitations,
+    requiredGeneratedValidationSuiteArtifactIndexes: preset.requiredGeneratedValidationSuiteArtifactIndexes,
     requiredGeneratedValidationSuiteFailureRoots: preset.requiredGeneratedValidationSuiteFailureRoots,
   }))
 }
@@ -1569,6 +1574,7 @@ function emptyArtifactCoverageSummary() {
     generatedEvidenceKinds: {},
     generatedMatrixArtifactIndexes: {},
     generatedMatrixLimitations: {},
+    generatedValidationSuiteArtifactIndexes: {},
     generatedValidationSuiteFailureRoots: {},
     evidenceRepos: {},
     providerAccountAliases: {},

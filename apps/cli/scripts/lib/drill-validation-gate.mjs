@@ -41,6 +41,7 @@ import {
   normalizeRequiredGeneratedEvidenceKinds,
   normalizeRequiredGeneratedMatrixArtifactIndexes,
   normalizeRequiredGeneratedMatrixLimitations,
+  normalizeRequiredGeneratedValidationSuiteArtifactIndexes,
   normalizeRequiredGeneratedValidationSuiteFailureRoots,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
@@ -324,6 +325,7 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredGeneratedEvidenceKinds: normalizeRequiredGeneratedEvidenceKinds(options.requiredGeneratedEvidenceKinds ?? []),
     requiredGeneratedMatrixArtifactIndexes: normalizeRequiredGeneratedMatrixArtifactIndexes(options.requiredGeneratedMatrixArtifactIndexes ?? []),
     requiredGeneratedMatrixLimitations: normalizeRequiredGeneratedMatrixLimitations(options.requiredGeneratedMatrixLimitations ?? []),
+    requiredGeneratedValidationSuiteArtifactIndexes: normalizeRequiredGeneratedValidationSuiteArtifactIndexes(options.requiredGeneratedValidationSuiteArtifactIndexes ?? []),
     requiredGeneratedValidationSuiteFailureRoots: normalizeRequiredGeneratedValidationSuiteFailureRoots(options.requiredGeneratedValidationSuiteFailureRoots ?? []),
   }
 }

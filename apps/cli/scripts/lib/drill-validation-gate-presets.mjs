@@ -246,6 +246,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredGeneratedEvidenceKinds: [...(preset.requiredGeneratedEvidenceKinds ?? [])],
       requiredGeneratedMatrixArtifactIndexes: [...(preset.requiredGeneratedMatrixArtifactIndexes ?? [])],
       requiredGeneratedMatrixLimitations: [...(preset.requiredGeneratedMatrixLimitations ?? [])],
+      requiredGeneratedValidationSuiteArtifactIndexes: [...(preset.requiredGeneratedValidationSuiteArtifactIndexes ?? [])],
       requiredGeneratedValidationSuiteFailureRoots: [...(preset.requiredGeneratedValidationSuiteFailureRoots ?? [])],
     }
   })
@@ -280,6 +281,7 @@ export function expandValidationGatePresetRequirements({
   requiredGeneratedEvidenceKinds = [],
   requiredGeneratedMatrixArtifactIndexes = [],
   requiredGeneratedMatrixLimitations = [],
+  requiredGeneratedValidationSuiteArtifactIndexes = [],
   requiredGeneratedValidationSuiteFailureRoots = [],
 }) {
   const expanded = {
@@ -310,6 +312,7 @@ export function expandValidationGatePresetRequirements({
     requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds],
     requiredGeneratedMatrixArtifactIndexes: [...requiredGeneratedMatrixArtifactIndexes],
     requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations],
+    requiredGeneratedValidationSuiteArtifactIndexes: [...requiredGeneratedValidationSuiteArtifactIndexes],
     requiredGeneratedValidationSuiteFailureRoots: [...requiredGeneratedValidationSuiteFailureRoots],
   }
   for (const presetName of presets) {
@@ -341,6 +344,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredGeneratedEvidenceKinds.push(...(preset.requiredGeneratedEvidenceKinds ?? []))
     expanded.requiredGeneratedMatrixArtifactIndexes.push(...(preset.requiredGeneratedMatrixArtifactIndexes ?? []))
     expanded.requiredGeneratedMatrixLimitations.push(...(preset.requiredGeneratedMatrixLimitations ?? []))
+    expanded.requiredGeneratedValidationSuiteArtifactIndexes.push(...(preset.requiredGeneratedValidationSuiteArtifactIndexes ?? []))
     expanded.requiredGeneratedValidationSuiteFailureRoots.push(...(preset.requiredGeneratedValidationSuiteFailureRoots ?? []))
   }
   return expanded
@@ -430,6 +434,13 @@ export function normalizeRequiredGeneratedValidationSuiteFailureRoots(requiredGe
   return normalizeGeneratedEvidencePathRequirements(requiredGeneratedValidationSuiteFailureRoots, {
     fieldName: "requiredGeneratedValidationSuiteFailureRoots",
     itemName: "root",
+  })
+}
+
+export function normalizeRequiredGeneratedValidationSuiteArtifactIndexes(requiredGeneratedValidationSuiteArtifactIndexes) {
+  return normalizeGeneratedEvidencePathRequirements(requiredGeneratedValidationSuiteArtifactIndexes, {
+    fieldName: "requiredGeneratedValidationSuiteArtifactIndexes",
+    itemName: "path",
   })
 }
 

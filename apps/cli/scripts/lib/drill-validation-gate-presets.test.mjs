@@ -99,6 +99,7 @@ test("describes stable validation gate presets", () => {
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixArtifactIndexes: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteArtifactIndexes: [],
       requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
@@ -134,6 +135,7 @@ test("describes stable validation gate presets", () => {
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixArtifactIndexes: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteArtifactIndexes: [],
       requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
@@ -171,6 +173,7 @@ test("describes stable validation gate presets", () => {
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixArtifactIndexes: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteArtifactIndexes: [],
       requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
@@ -206,6 +209,7 @@ test("describes stable validation gate presets", () => {
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixArtifactIndexes: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteArtifactIndexes: [],
       requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
@@ -241,6 +245,7 @@ test("describes stable validation gate presets", () => {
       requiredGeneratedEvidenceKinds: [],
       requiredGeneratedMatrixArtifactIndexes: [],
       requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteArtifactIndexes: [],
       requiredGeneratedValidationSuiteFailureRoots: [],
     },
   )
@@ -287,6 +292,7 @@ test("expands validation gate preset requirements", () => {
     requiredGeneratedEvidenceKinds: [],
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredGeneratedMatrixLimitations: [],
+    requiredGeneratedValidationSuiteArtifactIndexes: [],
     requiredGeneratedValidationSuiteFailureRoots: [],
   })
   assert.deepEqual(expandValidationGatePresetRequirements({

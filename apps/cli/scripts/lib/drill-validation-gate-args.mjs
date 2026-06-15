@@ -3,6 +3,7 @@ import { redactDrillSecretText } from "./drill-secrets.mjs"
 const SECRET_SENSITIVE_REQUIREMENT_KEYS = new Set([
   "requiredArtifactGeneratedMatrixArtifactIndexes",
   "requiredGeneratedMatrixArtifactIndexes",
+  "requiredGeneratedValidationSuiteArtifactIndexes",
   "requiredGeneratedValidationSuiteFailureRoots",
 ])
 
@@ -34,6 +35,7 @@ const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-generated-evidence-kind", "requiredGeneratedEvidenceKinds"],
   ["--require-generated-matrix-artifact-index", "requiredGeneratedMatrixArtifactIndexes"],
   ["--require-generated-matrix-limitation", "requiredGeneratedMatrixLimitations"],
+  ["--require-generated-validation-suite-artifact-index", "requiredGeneratedValidationSuiteArtifactIndexes"],
   ["--require-generated-validation-suite-failure-root", "requiredGeneratedValidationSuiteFailureRoots"],
 ])
 
@@ -67,6 +69,7 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
     requiredGeneratedEvidenceKinds: [],
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredGeneratedMatrixLimitations: [],
+    requiredGeneratedValidationSuiteArtifactIndexes: [],
     requiredGeneratedValidationSuiteFailureRoots: [],
   }
 }

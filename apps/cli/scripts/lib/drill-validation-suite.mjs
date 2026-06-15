@@ -342,6 +342,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredGeneratedEvidenceKinds, `${preset.name}.requiredGeneratedEvidenceKinds`),
     requiredGeneratedMatrixArtifactIndexes: sortedGeneratedEvidencePathArray(preset.requiredGeneratedMatrixArtifactIndexes, `${preset.name}.requiredGeneratedMatrixArtifactIndexes`),
     requiredGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredGeneratedMatrixLimitations, `${preset.name}.requiredGeneratedMatrixLimitations`),
+    requiredGeneratedValidationSuiteArtifactIndexes: sortedGeneratedEvidencePathArray(preset.requiredGeneratedValidationSuiteArtifactIndexes, `${preset.name}.requiredGeneratedValidationSuiteArtifactIndexes`),
     requiredGeneratedValidationSuiteFailureRoots: sortedGeneratedEvidencePathArray(preset.requiredGeneratedValidationSuiteFailureRoots, `${preset.name}.requiredGeneratedValidationSuiteFailureRoots`),
   }
 }
