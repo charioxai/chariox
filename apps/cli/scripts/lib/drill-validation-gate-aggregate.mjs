@@ -8,6 +8,10 @@ import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import {
+  drillGeneratedMatrixRepoForName,
+  isKnownDrillGeneratedMatrixName,
+} from "./drill-generated-matrix-names.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
@@ -2024,12 +2028,32 @@ function validateGeneratedMatrixCommandSummary(command, source) {
 }
 
 function validateOptionalGeneratedMatrixCommandMetadata(command, source) {
-  for (const key of ["matrix", "repo"]) {
-    if (command[key] !== undefined && !nonEmptyString(command[key])) {
-      throw new Error(`${source} has invalid ${key}`)
+  if (command.matrix !== undefined) {
+    if (!nonEmptyString(command.matrix)) {
+      throw new Error(`${source} has invalid matrix`)
     }
-    if (command[key] !== undefined && redactDrillSecretText(command[key]) !== command[key]) {
-      throw new Error(`${source}.${key} includes secret-looking generated matrix metadata`)
+    if (redactDrillSecretText(command.matrix) !== command.matrix) {
+      throw new Error(`${source}.matrix includes secret-looking generated matrix metadata`)
+    }
+    if (!isKnownDrillGeneratedMatrixName(command.matrix)) {
+      throw new Error(`${source}.matrix has unknown generated matrix name ${JSON.stringify(command.matrix)}`)
+    }
+  }
+  if (command.repo !== undefined) {
+    if (!nonEmptyString(command.repo)) {
+      throw new Error(`${source} has invalid repo`)
+    }
+    if (redactDrillSecretText(command.repo) !== command.repo) {
+      throw new Error(`${source}.repo includes secret-looking generated matrix metadata`)
+    }
+    if (!isKnownDrillArtifactEvidenceRepo(command.repo)) {
+      throw new Error(`${source}.repo has unknown evidence repo ${JSON.stringify(command.repo)}`)
+    }
+  }
+  if (command.matrix !== undefined && command.repo !== undefined) {
+    const expectedRepo = drillGeneratedMatrixRepoForName(command.matrix)
+    if (command.repo !== expectedRepo) {
+      throw new Error(`${source}.repo does not match generated matrix ${JSON.stringify(command.matrix)}`)
     }
   }
 }

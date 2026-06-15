@@ -1205,6 +1205,64 @@ test("rejects secret-looking generated evidence paths in validation gate aggrega
       ...aggregate,
       reports: [{
         ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          matrixReports: {
+            ...aggregate.reports[0].generatedEvidence.matrixReports,
+            commands: [{
+              ...aggregate.reports[0].generatedEvidence.matrixReports.commands[0],
+              matrix: "workspace-live-synch-matrix",
+            }],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.matrix has unknown generated matrix name "workspace-live-synch-matrix"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          matrixReports: {
+            ...aggregate.reports[0].generatedEvidence.matrixReports,
+            commands: [{
+              ...aggregate.reports[0].generatedEvidence.matrixReports.commands[0],
+              repo: "osz",
+            }],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.repo has unknown evidence repo "osz"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          matrixReports: {
+            ...aggregate.reports[0].generatedEvidence.matrixReports,
+            commands: [{
+              ...aggregate.reports[0].generatedEvidence.matrixReports.commands[0],
+              matrix: "cloud-slice-runtime-matrix",
+              repo: "oss",
+            }],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.repo does not match generated matrix "cloud-slice-runtime-matrix"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
         artifactCoverage: {
           ...aggregate.reports[0].artifactCoverage,
           generatedValidationSuiteArtifactIndexes: { "/tmp/Bearer abcdefghijklmnop.json": 1 },
