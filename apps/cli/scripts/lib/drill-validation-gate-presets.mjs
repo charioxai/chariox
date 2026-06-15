@@ -10,6 +10,7 @@ import {
 } from "./drill-provider-profiles.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
+  drillRuntimeSignalOwnersFor,
   isKnownDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
@@ -252,6 +253,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactExitCriterionStatuses: [...(preset.requiredArtifactExitCriterionStatuses ?? [])],
       requiredArtifactIncompleteExitCriterionStatuses: [...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
+      requiredRuntimeSignalOwners: presetRuntimeSignalOwners(preset),
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
       requiredMatrixClassifications: [...(preset.requiredMatrixClassifications ?? [])],
@@ -352,7 +354,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactExitCriterionStatuses.push(...(preset.requiredArtifactExitCriterionStatuses ?? []))
     expanded.requiredArtifactIncompleteExitCriterionStatuses.push(...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
-    expanded.requiredRuntimeSignalOwners.push(...(preset.requiredRuntimeSignalOwners ?? []))
+    expanded.requiredRuntimeSignalOwners.push(...presetRuntimeSignalOwners(preset))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
     expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
     expanded.requiredMatrixClassifications.push(...(preset.requiredMatrixClassifications ?? []))
@@ -367,6 +369,13 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredGeneratedValidationSuiteFailureRoots.push(...(preset.requiredGeneratedValidationSuiteFailureRoots ?? []))
   }
   return expanded
+}
+
+function presetRuntimeSignalOwners(preset) {
+  if (preset.requiredRuntimeSignalOwners !== undefined) {
+    return [...preset.requiredRuntimeSignalOwners]
+  }
+  return drillRuntimeSignalOwnersFor(preset.requiredRuntimeSignals ?? [])
 }
 
 export function normalizeRequiredArtifactCoverageAreas(requiredArtifactCoverageAreas) {
