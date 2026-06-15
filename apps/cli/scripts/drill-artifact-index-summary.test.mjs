@@ -154,6 +154,78 @@ test("drill artifact index summary prints artifact coverage input count", async 
   }
 })
 
+test("drill artifact index summary gates stale indexes", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    await rewriteDrillArtifactIndexCreatedAt(indexPath, new Date(Date.now() - 500).toISOString())
+
+    const fresh = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-artifact-max-age-ms",
+      "3600000",
+      "--json",
+    ])).stdout)
+    assert.equal(fresh.requiredArtifactMaxAgeMs, 3_600_000)
+    assert.deepEqual(fresh.staleArtifactIndexes, [])
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-artifact-max-age-ms=100",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /artifact_required_max_age_ms=100 stale_indexes=1/)
+        assert.match(error.stdout, /next: regenerate stale drill artifact indexes/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill artifact index summary gates stale matrix reports", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+    await rewriteDrillMatrixReportCompletedAt(indexPath, new Date(Date.now() - 500).toISOString())
+
+    const fresh = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-matrix-max-age-ms",
+      "3600000",
+      "--json",
+    ])).stdout)
+    assert.equal(fresh.requiredMatrixMaxAgeMs, 3_600_000)
+    assert.deepEqual(fresh.staleMatrixReports, [])
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-matrix-max-age-ms=100",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /matrix_required_max_age_ms=100 stale_reports=1/)
+        assert.match(error.stdout, /next: regenerate stale drill matrix reports/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary accepts explicit index paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   try {
@@ -261,6 +333,29 @@ async function writeIndexedReport(rootDir, name, schema) {
     },
   })
   return path.join(drillRoot, "arroba-drill-artifacts.json")
+}
+
+async function rewriteDrillArtifactIndexCreatedAt(indexPath, createdAt) {
+  const index = JSON.parse(await readFile(indexPath, "utf8"))
+  index.createdAt = createdAt
+  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8")
+}
+
+async function rewriteDrillMatrixReportCompletedAt(indexPath, completedAt) {
+  const index = JSON.parse(await readFile(indexPath, "utf8"))
+  const artifact = index.artifacts.find((entry) => entry.schema === "arroba.drill.matrix.v1")
+  const artifactPath = path.join(index.rootDir, artifact.path)
+  const report = JSON.parse(await readFile(artifactPath, "utf8"))
+  report.completedAt = completedAt
+  report.startedAt = new Date(Date.parse(completedAt) - 1000).toISOString()
+  report.durationMs = 1000
+  await writeFile(artifactPath, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+  await writeDrillArtifactIndex({
+    rootDir: index.rootDir,
+    artifacts: index.artifacts.map((entry) => entry.path),
+    indexPath,
+    metadata: index.metadata,
+  })
 }
 
 function matrixReportArtifact() {
