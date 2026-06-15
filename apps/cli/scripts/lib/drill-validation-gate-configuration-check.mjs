@@ -17,6 +17,8 @@ export function configurationValidationGateCheck({
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactExitCriterionStatuses = [],
+  requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -42,6 +44,8 @@ export function configurationValidationGateCheck({
     || requiredArtifactRuntimeSignalOwners.length > 0
     || requiredArtifactOwners.length > 0
     || requiredArtifactClassifications.length > 0
+    || requiredArtifactExitCriterionStatuses.length > 0
+    || requiredArtifactIncompleteExitCriterionStatuses.length > 0
     || requiredRuntimeSignals.length > 0
     || requiredFailureClassifications.length > 0
     || failureRoots.length > 0

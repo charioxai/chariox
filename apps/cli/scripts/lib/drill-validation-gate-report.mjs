@@ -137,6 +137,10 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
   validateStringArray(check.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
   validateStringArray(check.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
+  validateExitCriterionStatusArray(check.requiredArtifactExitCriterionStatuses ?? [], `${source}.requiredArtifactExitCriterionStatuses`)
+  validateExitCriterionStatusArray(check.missingArtifactExitCriterionStatuses ?? [], `${source}.missingArtifactExitCriterionStatuses`)
+  validateExitCriterionStatusArray(check.requiredArtifactIncompleteExitCriterionStatuses ?? [], `${source}.requiredArtifactIncompleteExitCriterionStatuses`)
+  validateExitCriterionStatusArray(check.missingArtifactIncompleteExitCriterionStatuses ?? [], `${source}.missingArtifactIncompleteExitCriterionStatuses`)
   if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
     throw new Error(`${source} is missing error`)
   }
@@ -420,6 +424,15 @@ function validateGeneratedMatrixLimitationArray(value, source) {
   for (const [index, limitation] of value.entries()) {
     if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
       throw new Error(`${source}[${index}] has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
+    }
+  }
+}
+
+function validateExitCriterionStatusArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, status] of value.entries()) {
+    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
+      throw new Error(`${source}[${index}] has unknown exit criterion status ${JSON.stringify(status)}`)
     }
   }
 }

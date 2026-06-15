@@ -215,11 +215,13 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
       requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
-      requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
-      requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
-      requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
-      requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
-      requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
+    requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
+    requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
+    requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
+    requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
+    requiredArtifactExitCriterionStatuses: [...(preset.requiredArtifactExitCriterionStatuses ?? [])],
+    requiredArtifactIncompleteExitCriterionStatuses: [...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? [])],
+    requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
       requiredMatrixClassifications: [...(preset.requiredMatrixClassifications ?? [])],
@@ -246,6 +248,8 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactExitCriterionStatuses = [],
+  requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredRuntimeSignals = [],
   requiredFailureClassifications,
   requiredMatrices,
@@ -269,6 +273,8 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
     requiredArtifactOwners: [...requiredArtifactOwners],
     requiredArtifactClassifications: [...requiredArtifactClassifications],
+    requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
+    requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
     requiredRuntimeSignals: [...requiredRuntimeSignals],
     requiredFailureClassifications: [...requiredFailureClassifications],
     requiredMatrices: [...requiredMatrices],
@@ -293,6 +299,8 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
     expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
     expanded.requiredArtifactClassifications.push(...(preset.requiredArtifactClassifications ?? []))
+    expanded.requiredArtifactExitCriterionStatuses.push(...(preset.requiredArtifactExitCriterionStatuses ?? []))
+    expanded.requiredArtifactIncompleteExitCriterionStatuses.push(...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
     expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
@@ -457,6 +465,24 @@ export function normalizeRequiredArtifactClassifications(requiredArtifactClassif
     fieldName: "requiredArtifactClassifications",
     itemName: "classification",
   })
+}
+
+export function normalizeRequiredArtifactExitCriterionStatuses(requiredArtifactExitCriterionStatuses) {
+  const statuses = normalizeCommaSeparatedStrings(requiredArtifactExitCriterionStatuses, {
+    fieldName: "requiredArtifactExitCriterionStatuses",
+    itemName: "status",
+  })
+  validateExitCriterionStatuses(statuses, "requiredArtifactExitCriterionStatuses")
+  return statuses
+}
+
+export function normalizeRequiredArtifactIncompleteExitCriterionStatuses(requiredArtifactIncompleteExitCriterionStatuses) {
+  const statuses = normalizeCommaSeparatedStrings(requiredArtifactIncompleteExitCriterionStatuses, {
+    fieldName: "requiredArtifactIncompleteExitCriterionStatuses",
+    itemName: "status",
+  })
+  validateExitCriterionStatuses(statuses, "requiredArtifactIncompleteExitCriterionStatuses")
+  return statuses
 }
 
 export function normalizeRequiredRuntimeSignals(requiredRuntimeSignals) {
@@ -685,4 +711,12 @@ function normalizeCommaSeparatedStrings(values, { fieldName, itemName }) {
     }
   }
   return [...new Set(normalizedValues)].sort()
+}
+
+function validateExitCriterionStatuses(statuses, fieldName) {
+  for (const status of statuses) {
+    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
+      throw new Error(`unknown required artifact exit criterion status in ${fieldName}: ${status}`)
+    }
+  }
 }

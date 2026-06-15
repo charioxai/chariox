@@ -38,6 +38,10 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactOwners: [],
     requiredArtifactClassifications: [],
     missingArtifactClassifications: [],
+    requiredArtifactExitCriterionStatuses: [],
+    missingArtifactExitCriterionStatuses: [],
+    requiredArtifactIncompleteExitCriterionStatuses: [],
+    missingArtifactIncompleteExitCriterionStatuses: [],
   })
 })
 
@@ -211,6 +215,50 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
     assert.match(fail.error, /missing required artifact runtime signal owners: worker-kernel/)
     assert.match(fail.error, /missing required artifact owners: runtime-network/)
     assert.match(fail.error, /missing required artifact classifications: relay-runtime/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("gates required artifact exit criterion statuses from artifact index metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  try {
+    await writeReportArtifact(rootDir, "reports/gate.json")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+      metadata: {
+        exitCriterionStatuses: "satisfied,failed",
+        incompleteExitCriterionStatuses: "dry-run,skipped",
+      },
+    })
+    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+
+    const pass = await artifactValidationGateCheck({
+      artifactIndexes: [indexPath],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactExitCriterionStatuses: ["satisfied"],
+      requiredArtifactIncompleteExitCriterionStatuses: ["dry-run"],
+    })
+    assert.equal(pass.status, "passed")
+    assert.deepEqual(pass.missingArtifactExitCriterionStatuses, [])
+    assert.deepEqual(pass.missingArtifactIncompleteExitCriterionStatuses, [])
+
+    const fail = await artifactValidationGateCheck({
+      artifactIndexes: [indexPath],
+      artifactRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredArtifactExitCriterionStatuses: ["skipped"],
+      requiredArtifactIncompleteExitCriterionStatuses: ["satisfied"],
+    })
+    assert.equal(fail.status, "failed")
+    assert.deepEqual(fail.missingArtifactExitCriterionStatuses, ["skipped"])
+    assert.deepEqual(fail.missingArtifactIncompleteExitCriterionStatuses, ["satisfied"])
+    assert.match(fail.error, /missing required artifact exit criterion statuses: skipped/)
+    assert.match(fail.error, /missing required artifact incomplete exit criterion statuses: satisfied/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

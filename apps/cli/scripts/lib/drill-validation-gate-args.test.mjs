@@ -32,6 +32,10 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-classification=validation-gate"], 0, options)
   assert.equal(index, 0)
+  index = parseValidationGateRequirementArg(["--require-artifact-exit-criterion-status=satisfied"], 0, options)
+  assert.equal(index, 0)
+  index = parseValidationGateRequirementArg(["--require-artifact-incomplete-exit-criterion-status", "dry-run"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-provider", "codex"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-runtime-signal", "lease-health"], 0, options)
@@ -58,6 +62,8 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactRuntimeSignalOwners: ["kernel-authority"],
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-gate"],
+    requiredArtifactExitCriterionStatuses: ["satisfied"],
+    requiredArtifactIncompleteExitCriterionStatuses: ["dry-run"],
     requiredRuntimeSignals: ["lease-health"],
     requiredFailureClassifications: [],
     requiredMatrices: [],
