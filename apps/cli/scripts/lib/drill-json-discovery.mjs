@@ -17,7 +17,7 @@ export async function findDrillJsonArtifactPaths(roots, {
 } = {}) {
   const discovered = new Set()
   for (const root of Array.isArray(roots) ? roots : [roots]) {
-    await collectDrillJsonArtifactPaths(discovered, root, {
+    await collectDrillJsonArtifactPaths(discovered, path.resolve(root), {
       depth: 0,
       extension,
       fileName,

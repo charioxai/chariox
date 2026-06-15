@@ -18,9 +18,13 @@ test("discovers JSON artifacts by schema and prunes broad roots", async () => {
     await writeJson(path.join(root, "reports", "other.json"), { schema: "other.schema.v1" })
     await writeFileWithDir(path.join(root, "reports", "broken.json"), "{not json}\n")
     await writeFileWithDir(path.join(root, "reports", "text.txt"), JSON.stringify({ schema: "example.schema.v1" }))
+    const relativeRoot = path.relative(process.cwd(), root)
+    const relativeFile = path.relative(process.cwd(), first)
 
     assert.deepEqual(await findDrillJsonArtifactPaths(root, { schema: "example.schema.v1" }), [second, first].sort())
     assert.deepEqual(await findDrillJsonArtifactPaths(first, { schema: "example.schema.v1" }), [first])
+    assert.deepEqual(await findDrillJsonArtifactPaths(relativeRoot, { schema: "example.schema.v1" }), [second, first].sort())
+    assert.deepEqual(await findDrillJsonArtifactPaths(relativeFile, { schema: "example.schema.v1" }), [first])
   } finally {
     await rm(root, { recursive: true, force: true })
   }
