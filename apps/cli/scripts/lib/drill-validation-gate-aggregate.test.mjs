@@ -63,6 +63,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactEvidenceRepos, {
     oss: 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactCoverageInputSources, {
+    "artifact metadata inputs": 1,
+  })
   assert.deepEqual(aggregate.coverage.matrixRuntimeSignals, {
     "workspace-live-sync-state": 1,
   })
@@ -113,6 +116,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.reports[0].artifactCoverage.evidenceRepos, {
     oss: 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.artifactCoverageInputSources, {
+    "artifact metadata inputs": 1,
+  })
   assert.deepEqual(aggregate.reports[0].matrixCoverage.runtimeSignals, {
     "workspace-live-sync-state": 1,
   })
@@ -128,6 +134,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.doesNotThrow(() => validateDrillValidationGateAggregate(aggregate))
   const text = formatDrillValidationGateAggregateSummary(aggregate)
   assert.match(text, /required_providers=codex missing=none/)
+  assert.match(text, /- artifact_coverage_input_sources: artifact metadata inputs=1/)
   assert.match(text, /required_artifact_schemas=arroba\.drill\.validation_suite_run\.v1 missing=none/)
   assert.match(text, /required_artifact_kinds=validation-suite-run missing=none/)
   assert.match(text, /required_artifact_evidence_repos=oss missing=none/)
@@ -820,8 +827,12 @@ test("formats supplemental artifact coverage inputs without inflating report tot
   assert.deepEqual(aggregate.totals, { reports: 1, passed: 1, failed: 0 })
   assert.equal(aggregate.artifactCoverageInputs.length, 1)
   assert.deepEqual(aggregate.artifactCoverageInputs.map((input) => input.source), ["distributed-runtime-gate-artifacts.json"])
+  assert.deepEqual(aggregate.coverage.artifactCoverageInputSources, {
+    "artifact metadata inputs": 2,
+  })
   assert.match(text, /status=passed reports=1 passed=1 failed=0/)
   assert.match(text, /artifact_coverage_inputs=1 sources=distributed-runtime-gate-artifacts\.json/)
+  assert.match(text, /- artifact_coverage_input_sources: artifact metadata inputs=2/)
   assert.match(text, /required_artifact_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
 })
 
@@ -995,6 +1006,9 @@ function reportFixture(overrides = {}) {
           },
           evidenceRepos: {
             oss: 1,
+          },
+          artifactCoverageInputSources: {
+            "artifact metadata inputs": 1,
           },
         },
       },

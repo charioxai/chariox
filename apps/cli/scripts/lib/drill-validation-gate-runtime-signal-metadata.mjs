@@ -82,6 +82,8 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const artifactCoverageInputSources = artifactCoverageInputs
     .map((input) => input?.source)
     .filter(nonEmptyString)
+  const artifactCoverageCoverageSources = Object.keys(aggregate.coverage?.artifactCoverageInputSources ?? {})
+    .filter(nonEmptyString)
   const coverageAreas = new Set([
     ...Object.keys(aggregate.coverage?.artifactCoverageAreas ?? {}),
   ])
@@ -152,7 +154,9 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(requiredGeneratedMatrixLimitations.size > 0 ? { requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations].sort().join(",") } : {}),
     ...(missingGeneratedMatrixLimitations.size > 0 ? { missingGeneratedMatrixLimitations: [...missingGeneratedMatrixLimitations].sort().join(",") } : {}),
     ...(artifactCoverageInputs.length > 0 ? { artifactCoverageInputCount: String(artifactCoverageInputs.length) } : {}),
-    ...(artifactCoverageInputSources.length > 0 ? { artifactCoverageInputSources: artifactCoverageInputSources.sort().join(",") } : {}),
+    ...(artifactCoverageInputSources.length > 0 || artifactCoverageCoverageSources.length > 0
+      ? { artifactCoverageInputSources: sortedUnique([...artifactCoverageInputSources, ...artifactCoverageCoverageSources]).join(",") }
+      : {}),
   }
 }
 

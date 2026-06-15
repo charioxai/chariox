@@ -169,6 +169,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
       missingGeneratedEvidenceKinds: { "matrix-report": 1 },
       requiredGeneratedMatrixLimitations: { "dry-run-classification-coverage": 1 },
       missingGeneratedMatrixLimitations: { "dry-run-classification-coverage": 1 },
+      artifactCoverageInputSources: { "artifact metadata inputs": 1 },
     },
     matrixRuntimeSignalSources: {
       "provider-run-lifecycle": [],
@@ -194,7 +195,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
 
   assert.deepEqual(metadata, {
     artifactCoverageInputCount: "2",
-    artifactCoverageInputSources: "a-artifacts.json,z-artifacts.json",
+    artifactCoverageInputSources: "a-artifacts.json,artifact metadata inputs,z-artifacts.json",
     classifications: "cloud-validation-suite,kernel-authority,matrix-coverage,provider-auth,relay-runtime,remote-extension-sync,workspace-live-sync-conflict",
     coverageAreas: "distributed-observability",
     generatedEvidenceKinds: "matrix-report,validation-suite-run",

@@ -75,6 +75,7 @@ export function summarizeValidationGateReportAggregate(
     artifactGeneratedEvidenceKinds: new Map(),
     artifactGeneratedMatrixLimitations: new Map(),
     artifactEvidenceRepos: new Map(),
+    artifactCoverageInputSources: new Map(),
     failureRuntimeSignals: new Map(),
     failureRuntimeSignalOwners: new Map(),
     failureOwners: new Map(),
@@ -147,6 +148,7 @@ export function summarizeValidationGateReportAggregate(
     countObjectValues(coverage.artifactGeneratedEvidenceKinds, artifactCoverage.generatedEvidenceKinds)
     countObjectValues(coverage.artifactGeneratedMatrixLimitations, artifactCoverage.generatedMatrixLimitations)
     countObjectValues(coverage.artifactEvidenceRepos, artifactCoverage.evidenceRepos)
+    countObjectValues(coverage.artifactCoverageInputSources, artifactCoverage.artifactCoverageInputSources)
     const failureCoverage = validationGateReportFailureCoverage(report)
     countObjectValues(coverage.failureRuntimeSignals, failureCoverage.runtimeSignals)
     countObjectValues(coverage.failureRuntimeSignalOwners, failureCoverage.runtimeSignalOwners)
@@ -224,6 +226,7 @@ export function summarizeValidationGateReportAggregate(
     countObjectValues(coverage.artifactGeneratedEvidenceKinds, artifactCoverage.generatedEvidenceKinds)
     countObjectValues(coverage.artifactGeneratedMatrixLimitations, artifactCoverage.generatedMatrixLimitations)
     countObjectValues(coverage.artifactEvidenceRepos, artifactCoverage.evidenceRepos)
+    countObjectValues(coverage.artifactCoverageInputSources, artifactCoverage.artifactCoverageInputSources)
     return {
       source: supplementalArtifactSources[index] ?? null,
       artifactCoverage,
@@ -557,6 +560,7 @@ function validationGateReportArtifactCoverage(report) {
     generatedEvidenceKinds: { ...(report.checks.artifacts.aggregate?.generatedEvidenceKinds ?? {}) },
     generatedMatrixLimitations: { ...(report.checks.artifacts.aggregate?.generatedMatrixLimitations ?? {}) },
     evidenceRepos: { ...(report.checks.artifacts.aggregate?.evidenceRepos ?? {}) },
+    artifactCoverageInputSources: { ...(report.checks.artifacts.aggregate?.artifactCoverageInputSources ?? {}) },
   }
 }
 
@@ -763,6 +767,7 @@ function formatValidationGateCoverageCounts(coverage) {
     artifactGeneratedEvidenceKinds: countMapToObject(coverage.artifactGeneratedEvidenceKinds),
     artifactGeneratedMatrixLimitations: countMapToObject(coverage.artifactGeneratedMatrixLimitations),
     artifactEvidenceRepos: countMapToObject(coverage.artifactEvidenceRepos),
+    artifactCoverageInputSources: countMapToObject(coverage.artifactCoverageInputSources),
     failureRuntimeSignals: countMapToObject(coverage.failureRuntimeSignals),
     failureRuntimeSignalOwners: countMapToObject(coverage.failureRuntimeSignalOwners),
     failureOwners: countMapToObject(coverage.failureOwners),
@@ -835,6 +840,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "artifact_generated_evidence_kinds", coverage.artifactGeneratedEvidenceKinds)
   appendCoverageLine(lines, "artifact_generated_matrix_limitations", coverage.artifactGeneratedMatrixLimitations)
   appendCoverageLine(lines, "artifact_evidence_repos", coverage.artifactEvidenceRepos)
+  appendCoverageLine(lines, "artifact_coverage_input_sources", coverage.artifactCoverageInputSources)
   appendCoverageLine(lines, "failure_runtime_signals", coverage.failureRuntimeSignals)
   appendCoverageLine(lines, "failure_runtime_signal_owners", coverage.failureRuntimeSignalOwners)
   appendCoverageLine(lines, "failure_owners", coverage.failureOwners)
@@ -936,6 +942,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateGeneratedEvidenceKindCountObject(coverage.artifactGeneratedEvidenceKinds ?? {}, `${source}.artifactGeneratedEvidenceKinds`)
   validateGeneratedMatrixLimitationCountObject(coverage.artifactGeneratedMatrixLimitations ?? {}, `${source}.artifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoCountObject(coverage.artifactEvidenceRepos ?? {}, `${source}.artifactEvidenceRepos`)
+  validateCountObject(coverage.artifactCoverageInputSources ?? {}, `${source}.artifactCoverageInputSources`)
   validateRuntimeSignalCountObject(coverage.failureRuntimeSignals ?? {}, `${source}.failureRuntimeSignals`)
   validateRuntimeSignalOwnerCountsMatch(coverage.failureRuntimeSignals ?? {}, coverage.failureRuntimeSignalOwners ?? {}, `${source}.failureRuntimeSignalOwners`)
   validateCountObject(coverage.failureOwners ?? {}, `${source}.failureOwners`)
@@ -1040,6 +1047,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     artifactGeneratedEvidenceKinds: new Map(),
     artifactGeneratedMatrixLimitations: new Map(),
     artifactEvidenceRepos: new Map(),
+    artifactCoverageInputSources: new Map(),
     failureRuntimeSignals: new Map(),
     failureRuntimeSignalOwners: new Map(),
     failureOwners: new Map(),
@@ -1113,6 +1121,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactGeneratedEvidenceKinds, report.artifactCoverage?.generatedEvidenceKinds)
     countObjectValues(expected.artifactGeneratedMatrixLimitations, report.artifactCoverage?.generatedMatrixLimitations)
     countObjectValues(expected.artifactEvidenceRepos, report.artifactCoverage?.evidenceRepos)
+    countObjectValues(expected.artifactCoverageInputSources, report.artifactCoverage?.artifactCoverageInputSources)
     countObjectValues(expected.failureRuntimeSignals, report.failureCoverage?.runtimeSignals)
     countObjectValues(expected.failureRuntimeSignalOwners, report.failureCoverage?.runtimeSignalOwners)
     countObjectValues(expected.failureOwners, report.failureCoverage?.owners)
@@ -1188,6 +1197,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactGeneratedEvidenceKinds, input.artifactCoverage?.generatedEvidenceKinds)
     countObjectValues(expected.artifactGeneratedMatrixLimitations, input.artifactCoverage?.generatedMatrixLimitations)
     countObjectValues(expected.artifactEvidenceRepos, input.artifactCoverage?.evidenceRepos)
+    countObjectValues(expected.artifactCoverageInputSources, input.artifactCoverage?.artifactCoverageInputSources)
   }
   countStringValues(expected.requiredGeneratedEvidenceKinds, aggregate.requiredGeneratedEvidenceKinds ?? [])
   countStringValues(expected.missingGeneratedEvidenceKinds, aggregate.missingGeneratedEvidenceKinds ?? [])
@@ -1426,6 +1436,7 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
   validateGeneratedMatrixLimitationCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
   validateArtifactEvidenceRepoCountObject(coverage.evidenceRepos ?? {}, `${source}.evidenceRepos`)
+  validateCountObject(coverage.artifactCoverageInputSources ?? {}, `${source}.artifactCoverageInputSources`)
 }
 
 function cloneRuntimeSignalScenarios(runtimeSignalScenarios) {
