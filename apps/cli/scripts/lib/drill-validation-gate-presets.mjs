@@ -6,7 +6,10 @@ import {
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
-import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import {
+  validateDrillGeneratedEvidenceKind,
+  validateDrillGeneratedEvidencePath,
+} from "./drill-generated-evidence-metadata.mjs"
 import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
@@ -454,7 +457,9 @@ export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenc
     itemName: "kind",
   })
   for (const kind of kinds) {
-    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+    try {
+      validateDrillGeneratedEvidenceKind(kind, "requiredGeneratedEvidenceKinds")
+    } catch {
       throw new Error(`unknown required generated evidence kind: ${kind}`)
     }
   }
@@ -508,7 +513,9 @@ export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifact
     itemName: "kind",
   })
   for (const kind of kinds) {
-    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
+    try {
+      validateDrillGeneratedEvidenceKind(kind, "requiredArtifactGeneratedEvidenceKinds")
+    } catch {
       throw new Error(`unknown required artifact generated evidence kind: ${kind}`)
     }
   }
@@ -915,9 +922,7 @@ function normalizeCommaSeparatedStrings(values, { fieldName, itemName }) {
 function normalizeGeneratedEvidencePathRequirements(values, { fieldName, itemName }) {
   const paths = normalizeCommaSeparatedStrings(values, { fieldName, itemName })
   for (const [index, valuePath] of paths.entries()) {
-    if (redactDrillSecretText(valuePath) !== valuePath) {
-      throw new Error(`${fieldName}[${index}] includes secret-looking generated evidence path`)
-    }
+    validateDrillGeneratedEvidencePath(valuePath, `${fieldName}[${index}]`)
   }
   return paths
 }

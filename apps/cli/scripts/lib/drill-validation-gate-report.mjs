@@ -5,7 +5,10 @@ import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
-import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import {
+  validateDrillGeneratedEvidenceKind,
+  validateDrillGeneratedEvidencePath,
+} from "./drill-generated-evidence-metadata.mjs"
 import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-matrix-command-metadata.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
@@ -594,9 +597,7 @@ function validateGeneratedEvidencePathArray(value, source) {
 }
 
 function validateGeneratedEvidencePathText(value, source) {
-  if (redactDrillSecretText(value) !== value) {
-    throw new Error(`${source} includes secret-looking generated evidence path`)
-  }
+  validateDrillGeneratedEvidencePath(value, source)
 }
 
 function validateStringArray(value, source) {
@@ -631,9 +632,7 @@ function validateArtifactKindArray(value, source) {
 function validateGeneratedEvidenceKindArray(value, source) {
   validateStringArray(value, source)
   for (const [index, kind] of value.entries()) {
-    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
-      throw new Error(`${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillGeneratedEvidenceKind(kind, `${source}[${index}]`)
   }
 }
 

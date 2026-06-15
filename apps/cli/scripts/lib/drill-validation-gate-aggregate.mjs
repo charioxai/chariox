@@ -7,7 +7,10 @@ import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
-import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import {
+  validateDrillGeneratedEvidenceKind,
+  validateDrillGeneratedEvidencePath,
+} from "./drill-generated-evidence-metadata.mjs"
 import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-matrix-command-metadata.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
@@ -23,7 +26,6 @@ import {
   drillRuntimeSignalOwnerCounts,
   isKnownDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
-import { redactDrillSecretText } from "./drill-secrets.mjs"
 
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
 
@@ -2276,9 +2278,7 @@ function validateDeploymentPresetArray(value, source) {
 function validateGeneratedEvidenceKindArray(value, source) {
   validateStringArray(value, source)
   for (const [index, kind] of value.entries()) {
-    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
-      throw new Error(`${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillGeneratedEvidenceKind(kind, `${source}[${index}]`)
   }
 }
 
@@ -2319,9 +2319,7 @@ function validateGeneratedEvidencePathArray(value, source) {
 }
 
 function validateGeneratedEvidencePathText(value, source) {
-  if (redactDrillSecretText(value) !== value) {
-    throw new Error(`${source} includes secret-looking generated evidence path`)
-  }
+  validateDrillGeneratedEvidencePath(value, source)
 }
 
 function validateRuntimeSignalCountObject(value, source) {
@@ -2427,9 +2425,7 @@ function validateDeploymentPresetCountObject(value, source) {
 function validateGeneratedEvidenceKindCountObject(value, source) {
   validateCountObject(value, source)
   for (const kind of Object.keys(value)) {
-    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
-      throw new Error(`${source} has unknown generated evidence kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillGeneratedEvidenceKind(kind, source)
   }
 }
 

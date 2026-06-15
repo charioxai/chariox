@@ -4,7 +4,10 @@ import path from "node:path"
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
-import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import {
+  validateDrillGeneratedEvidenceKind,
+  validateDrillGeneratedEvidencePath,
+} from "./drill-generated-evidence-metadata.mjs"
 import {
   validateDrillGeneratedMatrixName,
   validateDrillGeneratedMatrixNameRepoCounts,
@@ -754,9 +757,7 @@ function validateDiagnosticCountObject(value, source, key) {
     "missingGeneratedEvidenceKinds",
   ].includes(key)) {
     for (const kind of Object.keys(value)) {
-      if (!isKnownDrillGeneratedEvidenceKind(kind)) {
-        throw new Error(`${source} has unknown generated evidence kind ${JSON.stringify(kind)}`)
-      }
+      validateDrillGeneratedEvidenceKind(kind, source)
     }
   }
   if ([
@@ -1148,9 +1149,7 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
     "missingGeneratedEvidenceKinds",
   ]) {
     for (const kind of metadataListFromMetadata(metadata, key)) {
-      if (!isKnownDrillGeneratedEvidenceKind(kind)) {
-        throw new Error(`${source}.${key} has unknown generated evidence kind ${JSON.stringify(kind)}`)
-      }
+      validateDrillGeneratedEvidenceKind(kind, `${source}.${key}`)
     }
   }
   for (const limitation of metadataListFromMetadata(metadata, "generatedMatrixLimitations")) {
@@ -1195,9 +1194,7 @@ function validateGeneratedMatrixNameRepoMetadata(metadata, source) {
 }
 
 function validateGeneratedEvidencePathText(value, source) {
-  if (redactDrillSecretText(value) !== value) {
-    throw new Error(`${source} includes secret-looking generated evidence path`)
-  }
+  validateDrillGeneratedEvidencePath(value, source)
 }
 
 function validateDrillArtifactIndexKindMetadata(metadata, source) {

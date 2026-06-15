@@ -11,14 +11,16 @@ import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
-import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import {
+  validateDrillGeneratedEvidenceKind,
+  validateDrillGeneratedEvidencePath,
+} from "./drill-generated-evidence-metadata.mjs"
 import { validateDrillGeneratedMatrixName } from "./drill-generated-matrix-metadata.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
 } from "./drill-provider-profiles.mjs"
-import { redactDrillSecretText } from "./drill-secrets.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -40,6 +42,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-environment-presets.test.mjs",
   "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
   "apps/cli/scripts/lib/drill-failure-taxonomy.test.mjs",
+  "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-metadata.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-names.test.mjs",
@@ -96,6 +99,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-aggregate-actions.test.mjs",
       "apps/cli/scripts/lib/drill-artifacts.test.mjs",
       "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
+      "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-names.test.mjs",
@@ -402,9 +406,7 @@ function sortedArtifactKindArray(value, source) {
 function sortedGeneratedEvidenceKindArray(value, source) {
   const kinds = sortedStringArray(value, source)
   for (const [index, kind] of kinds.entries()) {
-    if (!isKnownDrillGeneratedEvidenceKind(kind)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillGeneratedEvidenceKind(kind, `validation suite preset ${source}[${index}]`)
   }
   return kinds
 }
@@ -412,9 +414,7 @@ function sortedGeneratedEvidenceKindArray(value, source) {
 function sortedGeneratedEvidencePathArray(value, source) {
   const paths = sortedStringArray(value, source)
   for (const [index, valuePath] of paths.entries()) {
-    if (redactDrillSecretText(valuePath) !== valuePath) {
-      throw new Error(`validation suite preset ${source}[${index}] includes secret-looking generated evidence path`)
-    }
+    validateDrillGeneratedEvidencePath(valuePath, `validation suite preset ${source}[${index}]`)
   }
   return paths
 }
