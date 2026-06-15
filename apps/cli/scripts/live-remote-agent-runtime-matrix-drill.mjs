@@ -340,6 +340,8 @@ function metadataFor(selected, options) {
   return {
     includeHetzner: options.includeHetzner,
     includeHostedCloud: options.includeHostedCloud,
+    generatedMatrixNames: "remote-agent-runtime-matrix",
+    generatedMatrixRepos: "oss",
     ...drillDeploymentPresetMetadata([
       "same-host-remote",
       "self-hosted-relay",

@@ -42,10 +42,14 @@ test("remote home extension matrix dry-run covers local and Hetzner authority sc
     assert.equal(report.metadata.deploymentPresets, "hetzner,local,self-hosted-relay")
     assert.equal(report.metadata.includesHetzner, true)
     assert.equal(report.metadata.includesSelfHostedRelay, true)
+    assert.equal(report.metadata.generatedMatrixNames, "remote-home-extension-matrix")
+    assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.match(stdout, /dry-run local-single classification=remote-extension-sync/)
     assert.match(stdout, /dry-run hetzner-collab classification=kernel-authority/)
     assert.equal(artifactIndex.metadata.matrix, "remote-home-extension-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
+    assert.equal(artifactIndex.metadata.generatedMatrixNames, "remote-home-extension-matrix")
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -61,4 +65,3 @@ test("remote home extension matrix rejects Hetzner scenarios without opt-in", as
     },
   )
 })
-

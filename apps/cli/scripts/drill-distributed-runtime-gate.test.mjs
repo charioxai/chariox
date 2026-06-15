@@ -1003,12 +1003,27 @@ async function writeValidationSuiteArtifact(rootDir, {
       classifications: evidenceRepo === "cloud" ? "cloud-validation-suite" : "validation-suite",
       artifactKinds: "validation-suite-run",
       evidenceRepos: evidenceRepo,
+      generatedMatrixNames: generatedMatrixNamesForEvidenceRepo(evidenceRepo).join(","),
+      generatedMatrixRepos: evidenceRepo,
       validationPresets,
       ...(providerAccountAliases ? { providerAccountAliases } : {}),
       exitCriterionStatuses: "satisfied",
     },
   })
   return path.join(rootDir, "arroba-drill-artifacts.json")
+}
+
+function generatedMatrixNamesForEvidenceRepo(evidenceRepo) {
+  if (evidenceRepo === "oss") {
+    return [
+      "native-provider-tui-matrix",
+      "remote-agent-runtime-matrix",
+      "remote-home-extension-matrix",
+      "slice-runtime-matrix",
+      "workspace-live-sync-matrix",
+    ]
+  }
+  return ["cloud-slice-runtime-matrix"]
 }
 
 const DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS = Object.freeze([
@@ -1222,6 +1237,8 @@ if (artifactIndexPath) {
       drill: report.matrix,
       matrix: report.matrix,
       artifactKinds: "matrix-report",
+      generatedMatrixNames: report.matrix,
+      generatedMatrixRepos: report.matrix.startsWith("cloud-") ? "cloud" : "oss",
       ...(providerAccountAliases.length > 0 ? { providerAccountAliases: providerAccountAliases.join(",") } : {}),
     },
     artifacts: [{
@@ -1341,6 +1358,8 @@ const index = {
     classifications: ${JSON.stringify(classification)},
     artifactKinds: "validation-suite-run",
     evidenceRepos: ${JSON.stringify(evidenceRepo)},
+    generatedMatrixNames: ${JSON.stringify(generatedMatrixNamesForEvidenceRepo(evidenceRepo).join(","))},
+    generatedMatrixRepos: ${JSON.stringify(evidenceRepo)},
     validationPresets: ${JSON.stringify(validationPresets)},
     exitCriterionStatuses: "satisfied",
   },

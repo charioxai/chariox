@@ -208,6 +208,8 @@ function metadataFor(selected, options) {
   return {
     includeBrowserState: options.includeBrowserState,
     includeSelfHostedRelay: options.includeSelfHostedRelay,
+    generatedMatrixNames: "slice-runtime-matrix",
+    generatedMatrixRepos: "oss",
     ...providerProfileMetadata({ providers, defaultModel: "provider-default", providerAccounts: options.providerAccounts }),
     ...drillDeploymentPresetMetadata([
       "local",

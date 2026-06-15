@@ -23,6 +23,15 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredArtifactCoverageAreas: Object.freeze(["distributed-observability"]),
     requiredArtifactSchemas: Object.freeze(["arroba.drill.validation_suite_run.v1"]),
     requiredArtifactKinds: Object.freeze(["validation-suite-run"]),
+    requiredArtifactGeneratedMatrixNames: Object.freeze([
+      "cloud-slice-runtime-matrix",
+      "native-provider-tui-matrix",
+      "remote-agent-runtime-matrix",
+      "remote-home-extension-matrix",
+      "slice-runtime-matrix",
+      "workspace-live-sync-matrix",
+    ]),
+    requiredArtifactGeneratedMatrixRepos: Object.freeze(["cloud", "oss"]),
     requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),
     requiredArtifactValidationPresets: Object.freeze(["distributed-runtime"]),
     requiredArtifactRuntimeSignals: Object.freeze([

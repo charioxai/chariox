@@ -88,10 +88,14 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
     assert.equal(report.metadata.includesHetzner, true)
     assert.equal(report.metadata.includesHostedCloud, true)
     assert.equal(report.metadata.includesSelfHostedRelay, true)
+    assert.equal(report.metadata.generatedMatrixNames, "remote-agent-runtime-matrix")
+    assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.match(stdout, /dry-run provider-run-binding classification=provider-error/)
     assert.match(stdout, /dry-run hosted-collab-remote-agent classification=kernel-authority/)
     assert.equal(artifactIndex.metadata.matrix, "remote-agent-runtime-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
+    assert.equal(artifactIndex.metadata.generatedMatrixNames, "remote-agent-runtime-matrix")
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,

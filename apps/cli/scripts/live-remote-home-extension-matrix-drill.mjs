@@ -169,6 +169,8 @@ async function main() {
     artifactIndexPath,
     metadata: {
       includeHetzner: options.includeHetzner,
+      generatedMatrixNames: 'remote-home-extension-matrix',
+      generatedMatrixRepos: 'oss',
       ...drillDeploymentPresetMetadata([
         'local',
         'self-hosted-relay',

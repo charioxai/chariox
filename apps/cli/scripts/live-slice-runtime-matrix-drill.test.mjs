@@ -54,6 +54,8 @@ test("slice runtime matrix dry-run covers lifecycle auth session agent UI and re
     assert.equal(report.metadata.providerAccountAliases, "opencode=zen")
     assert.equal(report.metadata.includeBrowserState, true)
     assert.equal(report.metadata.includeSelfHostedRelay, true)
+    assert.equal(report.metadata.generatedMatrixNames, "slice-runtime-matrix")
+    assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.match(stdout, /dry-run slice-lifecycle classification=slice-runtime/)
     assert.match(stdout, /dry-run provider-auth classification=slice-auth/)
     assert.match(stdout, /dry-run session-start classification=kernel-authority/)
@@ -61,6 +63,8 @@ test("slice runtime matrix dry-run covers lifecycle auth session agent UI and re
     assert.match(stdout, /dry-run self-hosted-relay-claude-headless classification=worker-execution/)
     assert.equal(artifactIndex.metadata.matrix, "slice-runtime-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
+    assert.equal(artifactIndex.metadata.generatedMatrixNames, "slice-runtime-matrix")
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

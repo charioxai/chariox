@@ -51,12 +51,16 @@ test("native provider TUI matrix dry-run covers authority placement and provider
     assert.equal(report.metadata.providerModelOverrides, "")
     assert.equal(report.metadata.providerAccountAliases, "codex=work_codex")
     assert.equal(report.metadata.includeHetzner, true)
+    assert.equal(report.metadata.generatedMatrixNames, "native-provider-tui-matrix")
+    assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.match(stdout, /dry-run local-native-tui classification=provider-error/)
     assert.match(stdout, /dry-run permission-visibility classification=kernel-authority/)
     assert.match(stdout, /dry-run provider-auth-health classification=provider-auth/)
     assert.match(stdout, /dry-run transcript-parity classification=ui-client-projection/)
     assert.equal(artifactIndex.metadata.matrix, "native-provider-tui-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
+    assert.equal(artifactIndex.metadata.generatedMatrixNames, "native-provider-tui-matrix")
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

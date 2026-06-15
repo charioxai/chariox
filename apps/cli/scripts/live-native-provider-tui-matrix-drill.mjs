@@ -236,6 +236,8 @@ function metadataFor(selected, options) {
   ]
   return {
     includeHetzner: options.includeHetzner,
+    generatedMatrixNames: "native-provider-tui-matrix",
+    generatedMatrixRepos: "oss",
     ...providerProfileMetadata({ providers, defaultModel: "provider-default", providerAccounts: options.providerAccounts }),
     ...drillDeploymentPresetMetadata(deploymentPresets, { hetznerPassthrough: options.passthrough }),
   }
