@@ -72,8 +72,18 @@ test("summarizes provider profile metadata without account secrets", () => {
     providerModels: { cdoex: "gpt-5.5" },
   }), /provider model override provider has unknown provider "cdoex"/)
   assert.throws(() => providerProfileMetadata({
+    providers: ["codex"],
+    defaultModel: "gpt-5.2",
+    providerModels: { opencode: "opencode/gpt-5.5" },
+  }), /provider model override references unselected provider: opencode/)
+  assert.throws(() => providerProfileMetadata({
     providers: ["codex", "opencode"],
     defaultModel: "gpt-5.2",
     providerAccounts: { cdoex: "work" },
   }), /provider account alias provider has unknown provider "cdoex"/)
+  assert.throws(() => providerProfileMetadata({
+    providers: ["codex"],
+    defaultModel: "gpt-5.2",
+    providerAccounts: { opencode: "zen" },
+  }), /provider account alias references unselected provider: opencode/)
 })

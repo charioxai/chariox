@@ -68,13 +68,20 @@ export function codexCliModel(model) {
 
 export function providerProfileMetadata({ providers, defaultModel, providerModels = {}, providerAccounts = {} }) {
   validateDrillProviders(providers, "provider profile providers")
+  const providerSet = new Set(providers)
   const accountProviders = Object.keys(providerAccounts).sort()
   for (const provider of accountProviders) {
     validateKnownDrillProvider(provider, "provider account alias provider")
+    if (!providerSet.has(provider)) {
+      throw new Error(`provider account alias references unselected provider: ${provider}`)
+    }
     validateProviderAccountAlias(providerAccounts[provider])
   }
   for (const provider of Object.keys(providerModels)) {
     validateKnownDrillProvider(provider, "provider model override provider")
+    if (!providerSet.has(provider)) {
+      throw new Error(`provider model override references unselected provider: ${provider}`)
+    }
   }
   return {
     providerCount: providers.length,
