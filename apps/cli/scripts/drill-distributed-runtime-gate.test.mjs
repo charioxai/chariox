@@ -711,6 +711,14 @@ test("distributed runtime gate rejects aggregate-only generated evidence require
       return true
     },
   )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-validation-suite-failure-root is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
 })
 
 async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud }) {

@@ -341,6 +341,9 @@ function parseArgs(argv) {
   if (options.requiredGeneratedMatrixLimitations.length > 0) {
     throw new Error("--require-generated-matrix-limitation is supported by drill-validation-gate-summary.mjs after a distributed gate report is written")
   }
+  if (options.requiredGeneratedValidationSuiteFailureRoots.length > 0) {
+    throw new Error("--require-generated-validation-suite-failure-root is supported by drill-validation-gate-summary.mjs after a distributed gate report is written")
+  }
   return options
 }
 
