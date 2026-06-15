@@ -125,8 +125,11 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.generatedMatrixLimitations ?? {}),
   ])
   const generatedValidationSuiteFailureRoots = new Set(
-    (aggregate.reports ?? [])
+    [
+      ...Object.keys(aggregate.coverage?.artifactGeneratedValidationSuiteFailureRoots ?? {}),
+      ...(aggregate.reports ?? [])
       .flatMap((report) => generatedValidationSuiteFailureRootsFor(report?.generatedEvidence)),
+    ].filter(nonEmptyString),
   )
   const exitCriterionStatuses = new Set(Object.keys(aggregate.coverage?.artifactExitCriterionStatuses ?? {}))
   const incompleteExitCriterionStatuses = new Set(Object.keys(aggregate.coverage?.artifactIncompleteExitCriterionStatuses ?? {}))

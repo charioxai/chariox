@@ -42,6 +42,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactGeneratedMatrixLimitations, {
     "dry-run-classification-coverage": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactGeneratedValidationSuiteFailureRoots, {
+    "/tmp/generated-suite/failed-run": 1,
+  })
   assert.deepEqual(aggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
   assert.deepEqual(aggregate.missingArtifactGeneratedMatrixLimitations, [])
   assert.deepEqual(aggregate.coverage.artifactRuntimeSignalOwners, {
@@ -125,6 +128,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.reports[0].artifactCoverage.artifactKinds, {
     "validation-suite-run": 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.generatedValidationSuiteFailureRoots, {
+    "/tmp/generated-suite/failed-run": 1,
+  })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.evidenceRepos, {
     oss: 1,
   })
@@ -158,6 +164,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /- artifact_exit_criterion_statuses: dry-run=1/)
   assert.match(text, /- artifact_incomplete_exit_criterion_statuses: dry-run=1/)
   assert.match(text, /- artifact_kinds: validation-suite-run=1/)
+  assert.match(text, /- artifact_generated_validation_suite_failure_roots: \/tmp\/generated-suite\/failed-run=1/)
   assert.match(text, /- artifact_evidence_repos: oss=1/)
   assert.match(text, /- matrix_runtime_signals: workspace-live-sync-state=1/)
   assert.match(text, /- matrix_runtime_signal_owners: runtime-state=1/)
@@ -985,9 +992,13 @@ test("formats supplemental artifact coverage inputs without inflating report tot
   assert.deepEqual(aggregate.coverage.artifactCoverageInputSources, {
     "artifact metadata inputs": 2,
   })
+  assert.deepEqual(aggregate.coverage.artifactGeneratedValidationSuiteFailureRoots, {
+    "/tmp/generated-suite/failed-run": 2,
+  })
   assert.match(text, /status=passed reports=1 passed=1 failed=0/)
   assert.match(text, /artifact_coverage_inputs=1 failed=0 sources=distributed-runtime-gate-artifacts\.json/)
   assert.match(text, /- artifact_coverage_input_sources: artifact metadata inputs=2/)
+  assert.match(text, /- artifact_generated_validation_suite_failure_roots: \/tmp\/generated-suite\/failed-run=2/)
   assert.match(text, /required_artifact_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
 })
 
@@ -1225,6 +1236,9 @@ function reportFixture(overrides = {}) {
           },
           generatedMatrixLimitations: {
             "dry-run-classification-coverage": 1,
+          },
+          generatedValidationSuiteFailureRoots: {
+            "/tmp/generated-suite/failed-run": 1,
           },
           evidenceRepos: {
             oss: 1,
