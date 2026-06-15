@@ -245,6 +245,18 @@ test("runs a passing matrix scenario", async () => {
     reason: null,
   }])
   assert.deepEqual(report.scenarios[0].runtimeSignals, ["provider-run-lifecycle", "session-authority"])
+  assert.deepEqual(report.runtimeSignals, {
+    "provider-run-lifecycle": 1,
+    "session-authority": 1,
+  })
+  assert.deepEqual(report.runtimeSignalOwners, {
+    "kernel-authority": 1,
+    "provider-runtime": 1,
+  })
+  assert.deepEqual(report.runtimeSignalScenarios, {
+    "provider-run-lifecycle": [{ id: "pass", status: "passed" }],
+    "session-authority": [{ id: "pass", status: "passed" }],
+  })
   assert.equal(report.metadata.runtimeSignals, "provider-run-lifecycle,session-authority")
   assert.equal(report.metadata.runtimeSignalOwners, "kernel-authority,provider-runtime")
   assert.equal(report.scenarios[0].command, process.execPath)
@@ -338,6 +350,18 @@ test("writes artifact index for matrix reports", async () => {
   assert.equal(index.metadata.scenarios, 1)
   assert.equal(index.metadata.runtimeSignals, "lease-health,session-authority")
   assert.equal(index.metadata.runtimeSignalOwners, "kernel-authority")
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.deepEqual(report.runtimeSignals, {
+    "lease-health": 1,
+    "session-authority": 1,
+  })
+  assert.deepEqual(report.runtimeSignalOwners, {
+    "kernel-authority": 2,
+  })
+  assert.deepEqual(report.runtimeSignalScenarios, {
+    "lease-health": [{ id: "pass", status: "passed" }],
+    "session-authority": [{ id: "pass", status: "passed" }],
+  })
   assert.deepEqual(index.artifacts.map((artifact) => ({
     path: artifact.path,
     schema: artifact.schema,

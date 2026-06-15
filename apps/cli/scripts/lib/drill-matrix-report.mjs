@@ -86,6 +86,32 @@ function validateDrillMatrixReportConsistency(report, source) {
   if (report.dryRun !== (expectedStatus === "dry-run")) {
     throw new Error(`${source} dryRun does not match scenario statuses`)
   }
+  if (report.runtimeSignals !== undefined) {
+    validateRuntimeSignalCountObject(report.runtimeSignals, `${source}.runtimeSignals`)
+    if (JSON.stringify(report.runtimeSignals) !== JSON.stringify(runtimeSignalCountsForScenarios(report.scenarios))) {
+      throw new Error(`${source}.runtimeSignals do not match scenario runtimeSignals`)
+    }
+  }
+  if (report.runtimeSignalOwners !== undefined) {
+    validateCountObject(report.runtimeSignalOwners, `${source}.runtimeSignalOwners`)
+    if (report.runtimeSignals === undefined) {
+      throw new Error(`${source}.runtimeSignalOwners requires runtimeSignals`)
+    }
+    if (JSON.stringify(report.runtimeSignalOwners) !== JSON.stringify(drillRuntimeSignalOwnerCounts(report.runtimeSignals))) {
+      throw new Error(`${source}.runtimeSignalOwners do not match runtimeSignals`)
+    }
+  }
+  if (report.runtimeSignalScenarios !== undefined) {
+    validateRuntimeSignalEvidenceObject(report.runtimeSignalScenarios, `${source}.runtimeSignalScenarios`, { aggregate: false })
+    if (report.runtimeSignals === undefined) {
+      throw new Error(`${source}.runtimeSignalScenarios requires runtimeSignals`)
+    }
+    assertRuntimeSignalEvidenceCounts(`${source}.runtimeSignals`, report.runtimeSignals, report.runtimeSignalScenarios)
+    const expectedEvidence = runtimeSignalScenariosForReport(report)
+    if (JSON.stringify(report.runtimeSignalScenarios) !== JSON.stringify(expectedEvidence)) {
+      throw new Error(`${source}.runtimeSignalScenarios do not match scenario runtimeSignals`)
+    }
+  }
 }
 
 export function summarizeDrillMatrixReport(report, { source = null } = {}) {
@@ -1209,6 +1235,29 @@ function assertRuntimeSignalEvidenceScenarioIds(label, scenarioIds, evidence) {
       }
     }
   }
+}
+
+function runtimeSignalCountsForScenarios(scenarios) {
+  const counts = new Map()
+  for (const scenario of scenarios) {
+    for (const signal of runtimeSignalsForScenario(scenario)) {
+      counts.set(signal, (counts.get(signal) ?? 0) + 1)
+    }
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function runtimeSignalScenariosForReport(report) {
+  const evidence = new Map()
+  for (const scenario of report.scenarios) {
+    for (const signal of runtimeSignalsForScenario(scenario)) {
+      appendRuntimeSignalEvidence(evidence, signal, {
+        id: scenario.id,
+        status: scenario.status,
+      })
+    }
+  }
+  return formatRuntimeSignalEvidence(evidence)
 }
 
 function deploymentPresetsForReport(report) {

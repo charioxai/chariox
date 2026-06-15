@@ -115,7 +115,7 @@ Required top-level fields:
 - `metadata`: feature-specific non-secret context such as enabled scenario groups or provider model ids.
 - `scenarios`: selected scenario results; reports with no selected scenarios are invalid.
 
-Distributed-runtime matrices must also include `runtimeSignals`, an aggregate count object for scenario runtime-signal ids, and `runtimeSignalScenarios`, a map from signal id to the scenario rows that provide that evidence. Validators reconcile `runtimeSignalScenarios` with signal counts, known scenario ids, and failed/skipped/dry-run scenario diagnostics so stale or hand-edited evidence cannot point at nonexistent coverage or misreport scenario status.
+Distributed-runtime matrices must also include `runtimeSignals`, an aggregate count object for scenario runtime-signal ids, and `runtimeSignalScenarios`, a map from signal id to the scenario rows that provide that evidence. OSS matrix runners emit those top-level summaries whenever selected scenarios declare runtime signals. Validators reconcile `runtimeSignalScenarios` with signal counts, known scenario ids, and failed/skipped/dry-run scenario diagnostics so stale or hand-edited evidence cannot point at nonexistent coverage or misreport scenario status.
 
 Top-level `durationMs` must equal `completedAt - startedAt` exactly. This keeps generated reports comparable across local, remote, hosted, and collab matrices and catches hand-authored report drift.
 

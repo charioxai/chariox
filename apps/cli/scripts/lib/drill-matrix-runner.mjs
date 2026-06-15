@@ -336,6 +336,7 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
   const runtimeSignals = runtimeSignalCountsForResults(results)
   const runtimeSignalIds = Object.keys(runtimeSignals)
   const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignalIds)
+  const runtimeSignalScenarios = runtimeSignalScenariosForResults(results)
   const report = {
     schema: "arroba.drill.matrix.v1",
     matrix: matrixName,
@@ -371,6 +372,13 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
       args: result.args,
       artifactHints: Array.isArray(result.artifactHints) ? result.artifactHints : [],
     })),
+    ...(runtimeSignalIds.length > 0
+      ? {
+        runtimeSignals,
+        runtimeSignalOwners: drillRuntimeSignalOwnerCounts(runtimeSignals),
+        runtimeSignalScenarios,
+      }
+      : {}),
   }
   validateDrillMatrixReport(report, reportPath)
   await writeDrillJsonArtifactOutput({
@@ -441,6 +449,28 @@ function runtimeSignalCountsForResults(results) {
     }
   }
   return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function runtimeSignalScenariosForResults(results) {
+  const evidence = new Map()
+  for (const result of results) {
+    const status = result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed"
+    for (const signal of runtimeSignalsForScenario(result.scenario)) {
+      const entries = evidence.get(signal) ?? []
+      entries.push({
+        id: result.scenario.id,
+        status,
+      })
+      evidence.set(signal, entries)
+    }
+  }
+  return Object.fromEntries([...evidence.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([signal, entries]) => [signal, entries.sort(compareRuntimeSignalScenarioEvidence)]))
+}
+
+function compareRuntimeSignalScenarioEvidence(left, right) {
+  return left.id.localeCompare(right.id) || left.status.localeCompare(right.status)
 }
 
 function formatRuntimeSignalCounts(runtimeSignals) {

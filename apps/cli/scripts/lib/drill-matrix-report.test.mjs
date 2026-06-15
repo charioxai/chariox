@@ -713,6 +713,38 @@ test("rejects malformed matrix reports", () => {
   }), /dryRun does not match scenario statuses/)
 
   assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", { runtimeSignals: ["session-authority"] })],
+      runtimeSignals: { "lease-health": 1 },
+    }),
+  }), /runtimeSignals do not match scenario runtimeSignals/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", { runtimeSignals: ["session-authority"] })],
+      runtimeSignalOwners: { "kernel-authority": 1 },
+    }),
+  }), /runtimeSignalOwners requires runtimeSignals/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", { runtimeSignals: ["session-authority"] })],
+      runtimeSignals: { "session-authority": 1 },
+      runtimeSignalOwners: { "runtime-network": 1 },
+    }),
+  }), /runtimeSignalOwners do not match runtimeSignals/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", { runtimeSignals: ["session-authority"] })],
+      runtimeSignals: { "session-authority": 1 },
+      runtimeSignalScenarios: {
+        "session-authority": [{ id: "remote", status: "failed" }],
+      },
+    }),
+  }), /runtimeSignalScenarios do not match scenario runtimeSignals/)
+
+  assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
     durationMs: -1,
   }), /invalid durationMs/)
