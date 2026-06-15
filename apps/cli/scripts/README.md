@@ -77,7 +77,7 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
   --require-complete
 ```
 
-Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, validation-suite failure roots, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
+Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, validation-suite failure roots, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. The distributed-runtime preset also derives required runtime-signal owner coverage from its required runtime signals, so generated evidence must prove subsystem owners such as `kernel-authority`, `runtime-network`, and `worker-kernel` rather than only raw signal ids. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
 
 To reject stale or discovered-only bundles, summarize the generated gate report and require both generated evidence kinds:
 
@@ -89,7 +89,7 @@ node apps/cli/scripts/drill-validation-gate-summary.mjs \
   --require-generated-validation-suite-artifact-index .artifacts/validation-suite/distributed-runtime-gate/arroba-drill-artifacts.json
 ```
 
-When the evidence is consumed through artifact indexes instead of validation-gate reports, gate the same provenance at the artifact layer with `--require-artifact-generated-evidence-kind validation-suite-run --require-artifact-generated-evidence-kind matrix-report`. Use `drill-artifact-index-summary.mjs --require-generated-validation-suite-artifact-index PATH` when the artifact-index bundle must also prove which generated validation-suite artifact index was preserved.
+When the evidence is consumed through artifact indexes instead of validation-gate reports, gate the same provenance at the artifact layer with `--require-artifact-generated-evidence-kind validation-suite-run --require-artifact-generated-evidence-kind matrix-report` and require owner coverage with `--require-artifact-runtime-signal-owner OWNER` or `drill-artifact-index-summary.mjs --require-runtime-signal-owner OWNER`. Use `drill-artifact-index-summary.mjs --require-generated-validation-suite-artifact-index PATH` when the artifact-index bundle must also prove which generated validation-suite artifact index was preserved.
 
 Provider-account profile evidence is non-secret metadata. When a matrix or staging run is expected to use a specific account profile, pass `--provider-account PROVIDER=ALIAS` to the matrix/staging command and require the resulting artifact metadata with `--require-artifact-provider-account-alias PROVIDER=ALIAS` on validation gates, or `--require-provider-account-alias PROVIDER=ALIAS` on `drill-artifact-index-summary.mjs`. Missing aliases fail with a next action that points operators to the artifact indexes that need to be regenerated or included.
 
