@@ -323,6 +323,11 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
   }]), /requiredArtifactGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-generated-matrix-name",
+    description: "bad artifact generated matrix name",
+    requiredArtifactGeneratedMatrixNames: ["workspace-live-synch-matrix"],
+  }]), /requiredArtifactGeneratedMatrixNames\[0\] has unknown generated matrix name "workspace-live-synch-matrix"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-generated-evidence-kind",
     description: "bad generated evidence kind",
     requiredGeneratedEvidenceKinds: ["matrix-reprot"],

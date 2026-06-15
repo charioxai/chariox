@@ -5,6 +5,7 @@ import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import {
@@ -774,6 +775,9 @@ function validateDiagnosticCountObject(value, source, key) {
       if (redactDrillSecretText(matrixName) !== matrixName) {
         throw new Error(`${source}.${matrixName} includes secret-looking generated matrix name`)
       }
+      if (!isKnownDrillGeneratedMatrixName(matrixName)) {
+        throw new Error(`${source} has unknown generated matrix name ${JSON.stringify(matrixName)}`)
+      }
     }
   }
   if (["runtimeSignals", "requiredRuntimeSignals", "missingRuntimeSignals"].includes(key)) {
@@ -1172,6 +1176,9 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
     for (const [index, matrixName] of metadataListFromMetadata(metadata, key).entries()) {
       if (redactDrillSecretText(matrixName) !== matrixName) {
         throw new Error(`${source}.${key}[${index}] includes secret-looking generated matrix name`)
+      }
+      if (!isKnownDrillGeneratedMatrixName(matrixName)) {
+        throw new Error(`${source}.${key} has unknown generated matrix name ${JSON.stringify(matrixName)}`)
       }
     }
   }

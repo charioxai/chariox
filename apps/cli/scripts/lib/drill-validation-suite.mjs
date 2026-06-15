@@ -12,6 +12,7 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
@@ -427,6 +428,9 @@ function sortedGeneratedMatrixNameArray(value, source) {
   for (const [index, name] of names.entries()) {
     if (redactDrillSecretText(name) !== name) {
       throw new Error(`validation suite preset ${source}[${index}] includes secret-looking generated matrix name`)
+    }
+    if (!isKnownDrillGeneratedMatrixName(name)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown generated matrix name ${JSON.stringify(name)}`)
     }
   }
   return names

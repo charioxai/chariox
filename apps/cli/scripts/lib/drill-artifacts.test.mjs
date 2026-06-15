@@ -708,7 +708,7 @@ test("summarizes drill artifact indexes", async () => {
         requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
         missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
         requiredGeneratedMatrixNames: "workspace-live-sync-matrix",
-        missingGeneratedMatrixNames: "missing-workspace-live-sync-matrix",
+        missingGeneratedMatrixNames: "remote-agent-runtime-matrix",
         requiredGeneratedMatrixRepos: "oss",
         missingGeneratedMatrixRepos: "cloud",
         providerAccountAliases: "codex=work,claude=team",
@@ -829,7 +829,7 @@ test("summarizes drill artifact indexes", async () => {
       "workspace-live-sync-matrix": 1,
     })
     assert.deepEqual(aggregate.missingGeneratedMatrixNames, {
-      "missing-workspace-live-sync-matrix": 1,
+      "remote-agent-runtime-matrix": 1,
     })
     assert.deepEqual(aggregate.requiredGeneratedMatrixRepos, {
       oss: 1,
@@ -905,7 +905,7 @@ test("summarizes drill artifact indexes", async () => {
       missingGeneratedEvidenceKinds: "matrix-report",
       missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
       missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
-      missingGeneratedMatrixNames: "missing-workspace-live-sync-matrix",
+      missingGeneratedMatrixNames: "remote-agent-runtime-matrix",
       missingGeneratedMatrixRepos: "cloud",
       missingRuntimeSignalOwners: "runtime-network",
       missingRuntimeSignals: "relay-target-freshness",
@@ -1233,6 +1233,12 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      generatedMatrixNames: { "workspace-live-synch-matrix": 1 },
+    })),
+    /generatedMatrixNames has unknown generated matrix name "workspace-live-synch-matrix"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       requiredGeneratedMatrixRepos: { osz: 1 },
     })),
     /requiredGeneratedMatrixRepos has unknown evidence repo "osz"/,
@@ -1460,6 +1466,21 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.missingGeneratedMatrixNames\[0\] includes secret-looking generated matrix name/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { generatedMatrixNames: "workspace-live-synch-matrix" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedMatrixNames has unknown generated matrix name "workspace-live-synch-matrix"/,
     )
     assert.throws(
       () => validateDrillArtifactIndex({

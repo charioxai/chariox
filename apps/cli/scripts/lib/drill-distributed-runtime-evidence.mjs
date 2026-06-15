@@ -1,30 +1,18 @@
 import { execFile as execFileWithCallback } from "node:child_process"
 import path from "node:path"
 import { promisify } from "node:util"
+import {
+  DRILL_GENERATED_MATRIX_NAMES,
+  DRILL_GENERATED_MATRIX_NAMES_BY_REPO,
+} from "./drill-generated-matrix-names.mjs"
 
 const execFile = promisify(execFileWithCallback)
 
-export const DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES = Object.freeze([
-  "cloud-slice-runtime-matrix",
-  "native-provider-tui-matrix",
-  "remote-agent-runtime-matrix",
-  "remote-home-extension-matrix",
-  "slice-runtime-matrix",
-  "workspace-live-sync-matrix",
-])
+export const DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES = DRILL_GENERATED_MATRIX_NAMES
 
 export const DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS = Object.freeze(["cloud", "oss"])
 
-export const DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO = Object.freeze({
-  cloud: Object.freeze(["cloud-slice-runtime-matrix"]),
-  oss: Object.freeze([
-    "native-provider-tui-matrix",
-    "remote-agent-runtime-matrix",
-    "remote-home-extension-matrix",
-    "slice-runtime-matrix",
-    "workspace-live-sync-matrix",
-  ]),
-})
+export const DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO = DRILL_GENERATED_MATRIX_NAMES_BY_REPO
 
 export async function runDistributedRuntimeMatrixReportsFor(options) {
   if (!options.runMatrixReports) return []
