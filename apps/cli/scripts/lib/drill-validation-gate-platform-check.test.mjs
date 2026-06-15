@@ -72,6 +72,10 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
       ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
     )
     assert.deepEqual(
+      check.validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactExitCriterionStatuses,
+      ["satisfied"],
+    )
+    assert.deepEqual(
       check.validationSuite.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,
       ["workspace-live-sync-matrix"],
     )

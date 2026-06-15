@@ -217,6 +217,9 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
   return {
     drill: "validation-suite",
     ...(suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1" ? { status: suiteArtifact.status } : {}),
+    ...(suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1"
+      ? validationSuiteRunExitCriterionMetadata(suiteArtifact.status)
+      : {}),
     tests: manifest.testCount,
     owners: "validation-platform",
     classifications: "validation-suite",
@@ -246,6 +249,12 @@ export function validationSuiteCoverage({
     testCount: area.testPaths.length,
     testPaths: [...area.testPaths],
   }))
+}
+
+function validationSuiteRunExitCriterionMetadata(status) {
+  if (status === "passed") return { exitCriterionStatuses: "satisfied" }
+  if (status === "failed") return { exitCriterionStatuses: "failed" }
+  return {}
 }
 
 export function validateValidationSuiteCoverage({
@@ -314,6 +323,8 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
     requiredArtifactClassifications: sortedStringArray(preset.requiredArtifactClassifications, `${preset.name}.requiredArtifactClassifications`),
+    requiredArtifactExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactExitCriterionStatuses, `${preset.name}.requiredArtifactExitCriterionStatuses`),
+    requiredArtifactIncompleteExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactIncompleteExitCriterionStatuses, `${preset.name}.requiredArtifactIncompleteExitCriterionStatuses`),
     requiredRuntimeSignals: sortedRuntimeSignalArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
     requiredFailureClassifications: sortedFailureClassificationArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
@@ -376,6 +387,16 @@ function sortedGeneratedMatrixLimitationArray(value, source) {
     }
   }
   return limitations
+}
+
+function sortedExitCriterionStatusArray(value, source) {
+  const statuses = sortedStringArray(value, source)
+  for (const [index, status] of statuses.entries()) {
+    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown exit criterion status ${JSON.stringify(status)}`)
+    }
+  }
+  return statuses
 }
 
 function sortedArtifactEvidenceRepoArray(value, source) {

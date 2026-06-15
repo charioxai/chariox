@@ -91,6 +91,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       ["cloud-validation-suite", "validation-suite"],
     )
     assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactExitCriterionStatuses,
+      ["satisfied"],
+    )
+    assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "remote-home-extension").requiredMatrices,
       ["remote-home-extension-matrix"],
     )
@@ -315,6 +319,18 @@ test("rejects validation suite preset artifact provenance drift", async () => {
     await assert.rejects(
       verifyDrillPlatformBundle(rootDir),
       /requiredArtifactGeneratedEvidenceKinds\[0\] has unknown generated evidence kind "matrix-reprot"/,
+    )
+
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
+        ? { ...preset, requiredArtifactExitCriterionStatuses: ["satisifed"] }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredArtifactExitCriterionStatuses\[0\] has unknown exit criterion status "satisifed"/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })

@@ -76,6 +76,10 @@ test("drill validation suite prints coverage manifest", async () => {
     ["distributed-observability"],
   )
   assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactExitCriterionStatuses,
+    ["satisfied"],
+  )
+  assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,
     ["workspace-live-sync-matrix"],
   )
@@ -174,6 +178,7 @@ test("drill validation suite writes passing run report artifact output", async (
     assert.deepEqual(fileReport.manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.status, "passed")
+    assert.equal(artifactIndex.metadata.exitCriterionStatuses, "satisfied")
     assert.equal(artifactIndex.metadata.tests, 1)
     assert.equal(artifactIndex.metadata.owners, "validation-platform")
     assert.equal(artifactIndex.metadata.classifications, "validation-suite")
@@ -225,6 +230,7 @@ test("drill validation suite writes failing run report before exiting nonzero", 
     assert.equal(fileReport.ok, false)
     assert.equal(fileReport.exitCode, 1)
     assert.equal(artifactIndex.metadata.status, "failed")
+    assert.equal(artifactIndex.metadata.exitCriterionStatuses, "failed")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

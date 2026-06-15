@@ -44,6 +44,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     ]),
     requiredArtifactOwners: Object.freeze(["validation-platform"]),
     requiredArtifactClassifications: Object.freeze(["cloud-validation-suite", "validation-suite"]),
+    requiredArtifactExitCriterionStatuses: Object.freeze(["satisfied"]),
     requiredRuntimeSignals: Object.freeze([
       "agent-lifecycle",
       "client-projection-health",

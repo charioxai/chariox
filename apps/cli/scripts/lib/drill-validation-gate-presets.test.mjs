@@ -10,6 +10,8 @@ import {
   normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactClassifications,
   normalizeRequiredArtifactEvidenceRepos,
+  normalizeRequiredArtifactExitCriterionStatuses,
+  normalizeRequiredArtifactIncompleteExitCriterionStatuses,
   normalizeRequiredArtifactKinds,
   normalizeRequiredArtifactOwners,
   normalizeRequiredArtifactRuntimeSignalOwners,
@@ -62,7 +64,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactRuntimeSignalOwners: ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
       requiredArtifactOwners: ["validation-platform"],
       requiredArtifactClassifications: ["cloud-validation-suite", "validation-suite"],
-      requiredArtifactExitCriterionStatuses: [],
+      requiredArtifactExitCriterionStatuses: ["satisfied"],
       requiredArtifactIncompleteExitCriterionStatuses: [],
       requiredRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredFailureClassifications: ["cloud-runtime", "docker-runtime", "kernel-authority", "provider-auth", "provider-error", "projection-staleness", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
@@ -298,6 +300,23 @@ test("expands validation gate preset requirements", () => {
     requiredProviders: [],
     requiredScenarios: [],
   }).requiredArtifactEvidenceRepos, ["cloud", "oss"])
+  assert.deepEqual(expandValidationGatePresetRequirements({
+    presets: ["distributed-runtime"],
+    requiredPlatformCoverageAreas: [],
+    requiredArtifactCoverageAreas: [],
+    requiredArtifactSchemas: [],
+    requiredArtifactKinds: [],
+    requiredArtifactEvidenceRepos: [],
+    requiredArtifactExitCriterionStatuses: [],
+    requiredRuntimeSignals: [],
+    requiredFailureClassifications: [],
+    requiredMatrices: [],
+    requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    requiredDeploymentPresets: [],
+    requiredProviders: [],
+    requiredScenarios: [],
+  }).requiredArtifactExitCriterionStatuses, ["satisfied"])
 })
 
 test("normalizes validation gate requirements", () => {
@@ -333,6 +352,14 @@ test("normalizes validation gate requirements", () => {
   assert.deepEqual(normalizeRequiredArtifactEvidenceRepos(["oss,cloud", "cloud"]), [
     "cloud",
     "oss",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactExitCriterionStatuses(["satisfied,failed", "satisfied"]), [
+    "failed",
+    "satisfied",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactIncompleteExitCriterionStatuses(["dry-run,skipped"]), [
+    "dry-run",
+    "skipped",
   ])
   assert.deepEqual(normalizeRequiredArtifactRuntimeSignals(["workspace-live-sync-state,session-authority"]), [
     "session-authority",

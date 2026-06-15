@@ -820,6 +820,7 @@ async function writeValidationSuiteArtifact(rootDir, {
       classifications: evidenceRepo === "cloud" ? "cloud-validation-suite" : "validation-suite",
       artifactKinds: "validation-suite-run",
       evidenceRepos: evidenceRepo,
+      exitCriterionStatuses: "satisfied",
     },
   })
   return path.join(rootDir, "arroba-drill-artifacts.json")
@@ -1107,6 +1108,7 @@ const index = {
     classifications: ${JSON.stringify(classification)},
     artifactKinds: "validation-suite-run",
     evidenceRepos: ${JSON.stringify(evidenceRepo)},
+    exitCriterionStatuses: "satisfied",
   },
   artifacts: [{
     path: path.basename(outputPath),

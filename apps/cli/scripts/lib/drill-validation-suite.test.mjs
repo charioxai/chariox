@@ -124,6 +124,8 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
       requiredArtifactClassifications: [],
+      requiredArtifactExitCriterionStatuses: [],
+      requiredArtifactIncompleteExitCriterionStatuses: [],
       requiredRuntimeSignals: [],
       requiredFailureClassifications: [],
       requiredMatrices: ["sample-matrix"],
@@ -165,6 +167,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     classifications: "validation-suite",
     artifactKinds: "validation-suite-run",
     evidenceRepos: "oss",
+    exitCriterionStatuses: "satisfied",
     coverageAreas: "artifact-contracts,distributed-observability,failure-diagnostics,matrix-validation,runtime-fixtures,suite-contract",
     validationPresets: "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync",
     runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
@@ -213,6 +216,8 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-suite"],
+    requiredArtifactExitCriterionStatuses: [],
+    requiredArtifactIncompleteExitCriterionStatuses: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
     requiredMatrices: ["workspace-live-sync-matrix"],
@@ -242,6 +247,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad matrix runtime signal",
     requiredMatrixRuntimeSignals: ["workspace-live-synch-state"],
   }]), /requiredMatrixRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-exit-status",
+    description: "bad exit status",
+    requiredArtifactExitCriterionStatuses: ["satisifed"],
+  }]), /requiredArtifactExitCriterionStatuses\[0\] has unknown exit criterion status "satisifed"/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-runtime-signal-owner",
     description: "bad runtime signal owner",
