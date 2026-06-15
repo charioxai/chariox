@@ -28,6 +28,7 @@ pub(crate) mod metaagent_command_registry;
 pub(crate) mod metaagent_event;
 pub(crate) mod metaagent_event_control;
 pub(crate) mod metaagent_guides;
+pub(crate) mod metaagent_trace;
 pub(crate) mod native_interaction_bridge;
 pub(crate) mod pairing_invite_executor;
 pub mod process_health;

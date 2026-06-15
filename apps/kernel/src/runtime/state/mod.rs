@@ -78,6 +78,7 @@ struct KernelRuntimeOwnedState {
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
+    metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
@@ -259,6 +260,7 @@ impl KernelRuntimeState {
             terminal_stream,
             workflow_design_events,
             metaagent_events,
+            crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
             workspace_coordinator,
         )
     }
@@ -287,6 +289,8 @@ impl KernelRuntimeState {
         terminal_stream: crate::terminal::TerminalStreamStore,
         workflow_design_events: WorkflowDesignEventStore,
         metaagent_events: MetaagentEventStore,
+        metaagent_trace_subscriptions:
+            crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
         let workspace_live_sync_journal =
@@ -340,6 +344,7 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 metaagent_events,
+                metaagent_trace_subscriptions,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),

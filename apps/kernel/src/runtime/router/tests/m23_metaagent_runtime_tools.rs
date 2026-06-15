@@ -147,6 +147,207 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
 }
 
 #[tokio::test]
+async fn metaagent_trace_subscription_drains_live_worker_output() {
+    let env = TestMetaRuntimeEnv::new("trace-subscription");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, worker) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let subscribed = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_SUBSCRIBE_TRACE_TOOL,
+            serde_json::json!({ "agent_ref": worker.id() }),
+        )
+        .await
+        .expect("subscribe_trace should dispatch");
+    assert!(subscribed.ok, "{:?}", subscribed.payload);
+    let subscription_id = subscribed
+        .payload
+        .pointer("/subscription/subscription_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("subscribe_trace should return subscription id")
+        .to_string();
+
+    {
+        let mut app = app.lock().await;
+        app.fan_out_output(
+            session.id(),
+            worker_run.id(),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            None,
+            Vec::new(),
+            serde_json::json!({
+                "tool": "bash",
+                "status": "running",
+                "input": {"command": "printf trace-visible"}
+            })
+            .to_string()
+            .as_bytes(),
+        );
+    }
+
+    let polled = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_POLL_TRACE_TOOL,
+            serde_json::json!({ "subscription_id": subscription_id, "limit": 10 }),
+        )
+        .await
+        .expect("poll_trace should dispatch");
+    assert!(polled.ok, "{:?}", polled.payload);
+    assert_eq!(
+        polled
+            .payload
+            .pointer("/items/0/title")
+            .and_then(serde_json::Value::as_str),
+        Some("bash · RUNNING"),
+        "{:?}",
+        polled.payload
+    );
+    assert!(
+        polled
+            .payload
+            .pointer("/items/0/summary")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|summary| summary.contains("printf trace-visible")),
+        "{:?}",
+        polled.payload
+    );
+
+    let drained = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_POLL_TRACE_TOOL,
+            serde_json::json!({ "agent_ref": worker.id() }),
+        )
+        .await
+        .expect("second poll_trace should dispatch");
+    assert!(drained.ok, "{:?}", drained.payload);
+    assert_eq!(
+        drained
+            .payload
+            .get("empty")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "{:?}",
+        drained.payload
+    );
+
+    {
+        let mut app = app.lock().await;
+        for _ in 0..2 {
+            app.fan_out_output(
+                session.id(),
+                worker_run.id(),
+                crate::terminal::TerminalOutputKind::PromptEcho,
+                None,
+                Vec::new(),
+                b"worker prompt echo",
+            );
+        }
+        app.fan_out_output(
+            session.id(),
+            worker_run.id(),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            b"worker output trace-visible",
+        );
+    }
+
+    let waited = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_WAIT_TRACE_TOOL,
+            serde_json::json!({
+                "subscription_id": subscription_id,
+                "until": "worker_output",
+                "wait_ms": 1000,
+                "limit": 10
+            }),
+        )
+        .await
+        .expect("wait_trace should dispatch");
+    assert!(waited.ok, "{:?}", waited.payload);
+    assert_eq!(
+        waited
+            .payload
+            .get("matched")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "{:?}",
+        waited.payload
+    );
+    let items = waited
+        .payload
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("wait_trace should return items");
+    assert_eq!(
+        items
+            .iter()
+            .filter(
+                |item| item.get("kind").and_then(serde_json::Value::as_str) == Some("prompt_echo")
+            )
+            .count(),
+        1,
+        "{:?}",
+        waited.payload
+    );
+    assert!(
+        items.iter().any(|item| {
+            item.get("kind").and_then(serde_json::Value::as_str) == Some("provider_output")
+                && item
+                    .get("summary")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|summary| summary.contains("worker output trace-visible"))
+        }),
+        "{:?}",
+        waited.payload
+    );
+}
+
+#[tokio::test]
 async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
     let env = TestMetaRuntimeEnv::new("task-artifacts");
     let workspace = env.root.join("workspace");
@@ -1516,6 +1717,94 @@ async fn metaagent_prompt_command_does_not_steer_active_workflow_turns() {
 }
 
 #[tokio::test]
+async fn metaagent_prompt_command_does_not_queue_over_workflow_turns() {
+    let env = TestMetaRuntimeEnv::new("run-command-queued-workflow-prompt-guard");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let workflow_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id("workflow-run-queued"),
+        worker.id(),
+        "workflow node prompt".to_string(),
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context("workflow-run-queued", "workflow-node-run-queued");
+    app.prompt_owner_submit_prepared_prompt(session.id(), workflow_prompt, true)
+        .expect("workflow prompt should remain queued");
+
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let result = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "prompt worker \"start this instead\""
+            }),
+        )
+        .await
+        .expect("meta run_command should return a structured failure");
+
+    assert!(!result.ok, "{:?}", result.payload);
+    assert!(
+        result
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| {
+                message.contains("already has queued workflow run")
+                    && message.contains("normal metaagent prompts cannot be queued")
+            }),
+        "{:?}",
+        result.payload
+    );
+    let session_state = app
+        .lock()
+        .await
+        .sessions()
+        .get_session(session.id())
+        .expect("session should load");
+    let queued_prompts = session_state
+        .queued_prompts_for_agent(worker.id())
+        .expect("workflow prompt should remain queued");
+    assert_eq!(queued_prompts.len(), 1);
+    assert_eq!(
+        queued_prompts[0].workflow_run_id(),
+        Some("workflow-run-queued")
+    );
+}
+
+#[tokio::test]
 async fn metaagent_run_command_routes_core_workflow_commands() {
     let env = TestMetaRuntimeEnv::new("run-command-workflow");
     let workspace = env.root.join("workspace");
@@ -2056,8 +2345,28 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         .all(|agent| agent.id() != worker.id()));
 }
 
-#[tokio::test]
-async fn metaagent_run_command_denies_slice_placement_and_slice_management_policy() {
+#[test]
+fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy() {
+    std::thread::Builder::new()
+        .name("metaagent-slice-placement-policy".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("test runtime should build")
+                .block_on(
+                    metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(),
+                );
+        })
+        .expect("test thread should spawn")
+        .join()
+        .expect("test thread should not panic");
+}
+
+async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(
+) {
     let env = TestMetaRuntimeEnv::new("run-command-slice-policy");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -2087,6 +2396,28 @@ async fn metaagent_run_command_denies_slice_placement_and_slice_management_polic
         .runtime_mcp_auth_token()
         .expect("meta run should expose runtime MCP auth token")
         .to_string();
+    let daemon_id = app.config().daemon_id.clone();
+    let host_machine_id = app.config().host_machine_id.clone();
+    app.slices()
+        .create(
+            &daemon_id,
+            &host_machine_id,
+            crate::slice::CreateSliceInput {
+                name: "linux-dev".to_string(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: crate::slice::SliceDisplayMode::Headless,
+                workspace_id: Some(session.workspace_id().to_string()),
+                worktree_id: Some(session.worktree_id().to_string()),
+                workspace_mount: Some(session.worktree_id().to_string()),
+                worker_kernel_ref: Some(daemon_id.clone()),
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: crate::session::unix_epoch_ms(),
+            },
+        )
+        .expect("test slice should be seeded");
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
@@ -2099,17 +2430,8 @@ async fn metaagent_run_command_denies_slice_placement_and_slice_management_polic
             }),
         )
         .await
-        .expect("slice-backed helper spawn should return a structured denial");
-    assert!(!slice_placement.ok);
-    assert!(
-        slice_placement
-            .payload
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("does not enable slice placement")),
-        "{:?}",
-        slice_placement.payload
-    );
+        .expect("slice-backed helper spawn should dispatch");
+    assert!(slice_placement.ok, "{:?}", slice_placement.payload);
 
     let slice_list = router
         .dispatch_authenticated_runtime_tool_call(

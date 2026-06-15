@@ -3,18 +3,24 @@ use super::*;
 use crate::transport::runtime_tools::{
     MetaAckEventArgs, MetaCommandListArgs, MetaCommandSearchArgs, MetaCompleteTaskArgs,
     MetaGuideListArgs, MetaGuideSearchArgs, MetaListEventsArgs, MetaMarkBlockedArgs,
-    MetaReadEventArgs, MetaReadGuideArgs, MetaReadPlanArgs, MetaReadTaskArgs,
+    MetaPollTraceArgs, MetaReadEventArgs, MetaReadGuideArgs, MetaReadPlanArgs, MetaReadTaskArgs,
     MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
-    MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, MetaUpdatePlanArgs,
-    MetaUpdateTaskArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
-    META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
-    META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
+    MetaSubscribeTraceArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
+    MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, RuntimeToolResult,
+    META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_COMPLETE_TASK_TOOL, META_EVENT_KINDS,
+    META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_GUIDES_TOOL,
+    META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_POLL_TRACE_TOOL,
     META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL, META_READ_TASK_TOOL,
     META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
     META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
-    META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
-    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL,
+    META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
+    META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL,
+    META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
 };
+
+const META_TRACE_WAIT_POLL_INTERVAL_MS: u64 = 250;
+const META_TRACE_WAIT_DEFAULT_MS: u64 = 30_000;
+const META_TRACE_WAIT_MAX_MS: u64 = 60_000;
 
 impl KernelRuntimeState {
     pub(crate) fn metaagent_context_for_auth_token(
@@ -273,6 +279,26 @@ impl KernelRuntimeState {
                 let args = serde_json::from_value::<MetaTurnBlobArgs>(arguments)
                     .map_err(invalid_meta_args)?;
                 self.meta_turn_blob(session, agent, args).await
+            }
+            META_SUBSCRIBE_TRACE_TOOL => {
+                let args = serde_json::from_value::<MetaSubscribeTraceArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_subscribe_trace(session, agent, args)
+            }
+            META_POLL_TRACE_TOOL => {
+                let args = serde_json::from_value::<MetaPollTraceArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_poll_trace(session, agent, args, false)
+            }
+            META_WAIT_TRACE_TOOL => {
+                let args = serde_json::from_value::<MetaPollTraceArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_poll_trace(session, agent, args, true)
+            }
+            META_UNSUBSCRIBE_TRACE_TOOL => {
+                let args = serde_json::from_value::<MetaUnsubscribeTraceArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_unsubscribe_trace(session, agent, args)
             }
             META_SUBSCRIBE_EVENTS_TOOL => {
                 let args = serde_json::from_value::<MetaSubscribeEventsArgs>(arguments)
@@ -744,6 +770,259 @@ impl KernelRuntimeState {
         })
     }
 
+    fn meta_subscribe_trace(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        args: MetaSubscribeTraceArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let Some(mode) =
+            crate::runtime::metaagent_trace::MetaagentTraceMode::parse(args.mode.as_deref())
+        else {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "trace mode must be `compact` or `verbose`",
+                    "mode": args.mode,
+                }),
+            });
+        };
+        let target = match self.meta_owned_regular_agent(session.id(), metaagent, &args.agent_ref) {
+            Ok(agent) => agent,
+            Err(error) => {
+                return Ok(RuntimeToolResult {
+                    ok: false,
+                    payload: serde_json::json!({ "error": error.to_string() }),
+                });
+            }
+        };
+        let subscription = self.owned.metaagent_trace_subscriptions.subscribe(
+            session.id(),
+            metaagent.id(),
+            target.id(),
+            mode,
+        );
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "subscription": subscription,
+                "agent": meta_agent_ref_json(&target),
+                "message": "subscribed to live worker trace; prompt the worker after subscribing, then call wait_trace for normal supervision or poll_trace for a nonblocking snapshot",
+            }),
+        })
+    }
+
+    fn meta_poll_trace(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        args: MetaPollTraceArgs,
+        wait: bool,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let subscription = if let Some(subscription_id) = args.subscription_id.as_deref() {
+            self.owned
+                .metaagent_trace_subscriptions
+                .get_for_metaagent(metaagent.id(), subscription_id)
+        } else if let Some(agent_ref) = args.agent_ref.as_deref() {
+            let target = match self.meta_owned_regular_agent(session.id(), metaagent, agent_ref) {
+                Ok(agent) => agent,
+                Err(error) => {
+                    return Ok(RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({ "error": error.to_string() }),
+                    });
+                }
+            };
+            self.owned.metaagent_trace_subscriptions.get_for_target(
+                metaagent.id(),
+                session.id(),
+                target.id(),
+            )
+        } else {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "poll_trace requires subscription_id or agent_ref",
+                }),
+            });
+        };
+        let Some(subscription) = subscription else {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "no live trace subscription matched; call subscribe_trace before prompting the worker",
+                }),
+            });
+        };
+        if subscription.session_id != session.id() {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "trace subscription belongs to a different session",
+                    "subscription_id": subscription.subscription_id,
+                }),
+            });
+        }
+        let Some(mode) =
+            crate::runtime::metaagent_trace::MetaagentTraceMode::parse(args.mode.as_deref())
+        else {
+            return Ok(RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "trace mode must be `compact` or `verbose`",
+                    "mode": args.mode,
+                }),
+            });
+        };
+        let mode = if args.mode.is_some() {
+            mode
+        } else {
+            subscription.mode
+        };
+        let limit = args.limit.unwrap_or(50).clamp(1, 100);
+        let until = MetaTraceWaitUntil::parse(args.until.as_deref());
+        let wait_ms = if wait {
+            args.wait_ms
+                .unwrap_or(META_TRACE_WAIT_DEFAULT_MS)
+                .clamp(1, META_TRACE_WAIT_MAX_MS)
+        } else {
+            0
+        };
+        let started_at = std::time::Instant::now();
+        let mut items = Vec::new();
+        let mut drained_count = 0usize;
+        let mut matched = false;
+        loop {
+            let batch = self.meta_drain_trace_batch(session.id(), &subscription, mode, limit);
+            drained_count += batch.drained_count;
+            matched = matched || batch.matches_until(until);
+            extend_meta_trace_items(&mut items, batch.items, limit);
+            if !wait || matched || started_at.elapsed().as_millis() >= wait_ms as u128 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(
+                META_TRACE_WAIT_POLL_INTERVAL_MS,
+            ));
+        }
+        let agent_activity = self.agent_activity_for_session(session);
+        let worker_activity = agent_activity.get(&subscription.target_agent_id).cloned();
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "subscription": subscription,
+                "mode": mode,
+                "until": until.as_str(),
+                "wait_ms": wait_ms,
+                "timed_out": wait && !matched,
+                "matched": matched,
+                "drained_count": drained_count,
+                "items": items,
+                "empty": items.is_empty(),
+                "worker_activity": worker_activity,
+            }),
+        })
+    }
+
+    fn meta_drain_trace_batch(
+        &self,
+        session_id: &str,
+        subscription: &crate::runtime::metaagent_trace::MetaagentTraceSubscription,
+        mode: crate::runtime::metaagent_trace::MetaagentTraceMode,
+        limit: usize,
+    ) -> MetaTraceBatch {
+        let records = self
+            .owned
+            .terminal_stream
+            .drain_output_records(session_id, &subscription.recipient_attachment_id);
+        let completions = self
+            .owned
+            .terminal_stream
+            .drain_completion_records(session_id, &subscription.recipient_attachment_id);
+        let notices = self
+            .owned
+            .terminal_stream
+            .drain_notice_records(session_id, &subscription.recipient_attachment_id);
+        let mut items = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut drained_count = 0usize;
+        for record in records {
+            drained_count += 1;
+            let item = meta_trace_output_item(record, mode);
+            if seen.insert(meta_trace_item_key(&item)) {
+                extend_meta_trace_items(&mut items, vec![item], limit);
+            }
+        }
+        for completion in completions {
+            drained_count += 1;
+            let item = serde_json::json!({
+                "kind": "assistant_message_completed",
+                "provider_run_id": completion.provider_run_id,
+                "agent_id": completion.agent_id,
+                "message_id": completion.message_id,
+                "completed_at_ms": completion.completed_at_ms,
+                "worker_generated": true,
+            });
+            if seen.insert(meta_trace_item_key(&item)) {
+                extend_meta_trace_items(&mut items, vec![item], limit);
+            }
+        }
+        for notice in notices {
+            drained_count += 1;
+            let item = serde_json::json!({
+                "kind": "runtime_notice",
+                "provider_run_id": notice.provider_run_id,
+                "agent_id": notice.agent_id,
+                "summary": truncate_single_line(&notice.message, 240),
+                "text": if mode == crate::runtime::metaagent_trace::MetaagentTraceMode::Verbose {
+                    Some(truncate_text(&notice.message, 8_000))
+                } else {
+                    None
+                },
+                "worker_generated": false,
+            });
+            if seen.insert(meta_trace_item_key(&item)) {
+                extend_meta_trace_items(&mut items, vec![item], limit);
+            }
+        }
+        MetaTraceBatch {
+            items,
+            drained_count,
+        }
+    }
+
+    fn meta_unsubscribe_trace(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        args: MetaUnsubscribeTraceArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let removed = self
+            .owned
+            .metaagent_trace_subscriptions
+            .unsubscribe(metaagent.id(), &args.subscription_id);
+        if let Some(subscription) = removed.as_ref() {
+            let _ = self
+                .owned
+                .terminal_stream
+                .drain_output_records(session.id(), &subscription.recipient_attachment_id);
+            let _ = self
+                .owned
+                .terminal_stream
+                .drain_completion_records(session.id(), &subscription.recipient_attachment_id);
+            let _ = self
+                .owned
+                .terminal_stream
+                .drain_notice_records(session.id(), &subscription.recipient_attachment_id);
+        }
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "subscription_id": args.subscription_id,
+                "status": if removed.is_some() { "removed" } else { "not_found" },
+            }),
+        })
+    }
+
     async fn meta_turn_blob(
         &self,
         session: &crate::session::RuntimeSession,
@@ -1020,6 +1299,190 @@ fn required_metaagent_subscriptions(metaagent_id: &str) -> Vec<serde_json::Value
             "scope": "owned_regular_agents",
         }),
     ]
+}
+
+fn meta_trace_output_item(
+    record: crate::terminal::TerminalOutputRecord,
+    mode: crate::runtime::metaagent_trace::MetaagentTraceMode,
+) -> serde_json::Value {
+    let text = String::from_utf8_lossy(&record.bytes).into_owned();
+    let worker_generated = record.kind != crate::terminal::TerminalOutputKind::PromptEcho;
+    let (title, summary) = match record.kind {
+        crate::terminal::TerminalOutputKind::ProviderTool => {
+            let (title, summary) = summarize_tool_trace(&text);
+            (title, summary)
+        }
+        crate::terminal::TerminalOutputKind::ProviderOutput => {
+            ("assistant".to_string(), truncate_single_line(&text, 240))
+        }
+        crate::terminal::TerminalOutputKind::ProviderReasoning => {
+            ("thinking".to_string(), truncate_single_line(&text, 240))
+        }
+        crate::terminal::TerminalOutputKind::ProviderError => {
+            ("error".to_string(), truncate_single_line(&text, 240))
+        }
+        crate::terminal::TerminalOutputKind::ProviderStatus => {
+            ("status".to_string(), truncate_single_line(&text, 240))
+        }
+        crate::terminal::TerminalOutputKind::PromptEcho => {
+            ("prompt".to_string(), truncate_single_line(&text, 240))
+        }
+    };
+    let mut item = serde_json::json!({
+        "kind": &record.kind,
+        "provider_run_id": record.provider_run_id,
+        "agent_id": record.agent_id,
+        "merge_key": record.merge_key,
+        "title": title,
+        "summary": summary,
+        "byte_len": record.bytes.len(),
+        "worker_generated": worker_generated,
+    });
+    if mode == crate::runtime::metaagent_trace::MetaagentTraceMode::Verbose {
+        item["text"] = serde_json::json!(truncate_text(&text, 8_000));
+    } else if record.kind != crate::terminal::TerminalOutputKind::ProviderTool {
+        item["excerpt"] = serde_json::json!(truncate_text(&text, 1_000));
+    }
+    item
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetaTraceWaitUntil {
+    Any,
+    Activity,
+    WorkerOutput,
+    Completion,
+    Error,
+}
+
+impl MetaTraceWaitUntil {
+    fn parse(value: Option<&str>) -> Self {
+        match value.unwrap_or("any") {
+            "activity" => Self::Activity,
+            "worker_output" => Self::WorkerOutput,
+            "completion" => Self::Completion,
+            "error" => Self::Error,
+            _ => Self::Any,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Activity => "activity",
+            Self::WorkerOutput => "worker_output",
+            Self::Completion => "completion",
+            Self::Error => "error",
+        }
+    }
+}
+
+struct MetaTraceBatch {
+    items: Vec<serde_json::Value>,
+    drained_count: usize,
+}
+
+impl MetaTraceBatch {
+    fn matches_until(&self, until: MetaTraceWaitUntil) -> bool {
+        self.items.iter().any(|item| match until {
+            MetaTraceWaitUntil::Any => true,
+            MetaTraceWaitUntil::Activity => item
+                .get("worker_generated")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            MetaTraceWaitUntil::WorkerOutput => item_kind(item) == Some("provider_output"),
+            MetaTraceWaitUntil::Completion => {
+                item_kind(item) == Some("assistant_message_completed")
+                    || item_kind(item) == Some("provider_output")
+            }
+            MetaTraceWaitUntil::Error => {
+                item_kind(item) == Some("runtime_notice")
+                    || item_kind(item) == Some("provider_error")
+            }
+        })
+    }
+}
+
+fn item_kind(item: &serde_json::Value) -> Option<&str> {
+    item.get("kind").and_then(serde_json::Value::as_str)
+}
+
+fn meta_trace_item_key(item: &serde_json::Value) -> String {
+    serde_json::json!({
+        "kind": item.get("kind"),
+        "provider_run_id": item.get("provider_run_id"),
+        "agent_id": item.get("agent_id"),
+        "merge_key": item.get("merge_key"),
+        "title": item.get("title"),
+        "summary": item.get("summary"),
+    })
+    .to_string()
+}
+
+fn extend_meta_trace_items(
+    items: &mut Vec<serde_json::Value>,
+    new_items: Vec<serde_json::Value>,
+    limit: usize,
+) {
+    for item in new_items {
+        if items.len() >= limit {
+            break;
+        }
+        items.push(item);
+    }
+}
+
+fn summarize_tool_trace(text: &str) -> (String, String) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return ("tool".to_string(), truncate_single_line(text, 240));
+    };
+    let tool = value
+        .get("tool")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("tool");
+    let status = value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let title = match status {
+        Some(status) => format!("{tool} · {}", status.to_ascii_uppercase()),
+        None => tool.to_string(),
+    };
+    let summary = value
+        .pointer("/input/command")
+        .and_then(serde_json::Value::as_str)
+        .map(|command| format!("$ {command}"))
+        .or_else(|| {
+            value
+                .get("description")
+                .or_else(|| value.get("title"))
+                .or_else(|| value.get("output"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| truncate_single_line(text, 240));
+    (title, truncate_single_line(&summary, 240))
+}
+
+fn truncate_single_line(text: &str, max_chars: usize) -> String {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let line = normalized
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    truncate_text(line, max_chars)
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn suggest_metaagent_event_kinds(input: &str) -> Vec<&'static str> {

@@ -24,6 +24,7 @@ pub(crate) struct ProviderOutputFanout {
     archive_enabled: bool,
     history_projection: SessionHistoryProjectionStore,
     terminal: TerminalStreamStore,
+    metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
 }
 
 impl ProviderOutputFanout {
@@ -39,6 +40,7 @@ impl ProviderOutputFanout {
             archive_enabled: app.history_archive_enabled(),
             history_projection: app.session_history_projection_store(),
             terminal: app.terminal.clone(),
+            metaagent_trace_subscriptions: app.metaagent_trace_subscription_store(),
         }
     }
 
@@ -57,6 +59,11 @@ impl ProviderOutputFanout {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         let record = self.terminal.fan_out_output(
             session_id,
             provider_run_id,
@@ -150,6 +157,11 @@ impl ProviderOutputFanout {
         });
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         let record = self.terminal.record_notice(
             session_id,
             provider_run_id,
@@ -202,6 +214,29 @@ impl ProviderOutputFanout {
         };
         self.attachment_store
             .filter_attachment_ids_for_user(recipient_attachment_ids, agent.owner_user_id())
+    }
+
+    fn with_metaagent_trace_recipient_ids(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        mut recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        for recipient in self
+            .metaagent_trace_subscriptions
+            .recipient_attachment_ids_for_target(session_id, agent_id)
+        {
+            if !recipient_attachment_ids
+                .iter()
+                .any(|existing| existing == &recipient)
+            {
+                recipient_attachment_ids.push(recipient);
+            }
+        }
+        recipient_attachment_ids
     }
 
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {

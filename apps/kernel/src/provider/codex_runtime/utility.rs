@@ -44,6 +44,7 @@ pub fn run_codex_utility_prompt(
         run.write_access_mode(),
         run.execution_mode(),
         run.permission_level(),
+        hidden_context_for_provider(hidden_system_context),
     )?;
     let mut state = CodexRuntimeState::new(endpoint, thread.thread.id, socket, next_request_id);
     let input = codex_input(prompt, &[]);

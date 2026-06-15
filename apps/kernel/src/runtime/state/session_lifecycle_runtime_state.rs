@@ -20,6 +20,9 @@ impl KernelRuntimeState {
             });
         }
         let mut request = request;
+        if slice_ref.is_none() && kernel_ref.is_none() {
+            request = prepare_local_session_worktree_placement(request)?;
+        }
         if let Some(slice_ref) = slice_ref.as_deref() {
             let slice = self.resolve_slice(slice_ref)?;
             request = codex_linux_slice_live_sync_request(request, &slice)?;
@@ -99,10 +102,12 @@ impl KernelRuntimeState {
             }),
         );
         let metaagent = request.metaagent;
+        let worktree_placement = request.worktree_placement.clone();
         request.kernel_ref = None;
+        request.worktree_placement = None;
         let mut session =
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
-        let agent_request =
+        let mut agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
                 .with_role(if metaagent {
                     crate::agent::AgentRole::Meta
@@ -111,6 +116,9 @@ impl KernelRuntimeState {
                 })
                 .with_worktree(session.worktree_id())
                 .with_kernel(worker_kernel_ref);
+        if let Some(placement) = worktree_placement {
+            agent_request = agent_request.with_worktree_placement(placement);
+        }
         let agent = self.spawn_agent(agent_request).await?;
         self.owned
             .session_store
@@ -189,11 +197,13 @@ impl KernelRuntimeState {
             }),
         );
         let metaagent = request.metaagent;
+        let worktree_placement = request.worktree_placement.clone();
         request.slice_ref = None;
         request.kernel_ref = None;
+        request.worktree_placement = None;
         let mut session =
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
-        let agent_request =
+        let mut agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
                 .with_role(if metaagent {
                     crate::agent::AgentRole::Meta
@@ -202,6 +212,9 @@ impl KernelRuntimeState {
                 })
                 .with_worktree(session.worktree_id())
                 .with_kernel(worker_kernel_ref);
+        if let Some(placement) = worktree_placement {
+            agent_request = agent_request.with_worktree_placement(placement);
+        }
         let agent = self.spawn_agent(agent_request).await?;
         self.owned
             .session_store
@@ -272,15 +285,38 @@ impl KernelRuntimeState {
 
     pub(crate) async fn spawn_agent(
         &self,
-        request: crate::agent::CreateAgentRequest,
+        mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         if request.kernel_ref.is_none() {
+            request = self.prepare_local_agent_worktree_placement(request)?;
             return self.owned.spawn_agent(request);
         }
         self.with_app_side_effect(|app| {
             crate::app::KernelSessionService::new(app).spawn_agent(request)
         })
         .await
+    }
+
+    fn prepare_local_agent_worktree_placement(
+        &self,
+        mut request: crate::agent::CreateAgentRequest,
+    ) -> Result<crate::agent::CreateAgentRequest, DaemonError> {
+        let Some(placement) = request.worktree_placement.take() else {
+            return Ok(request);
+        };
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let base_worktree = request
+            .worktree_id
+            .as_deref()
+            .unwrap_or_else(|| session.worktree_id());
+        let resolved = crate::git_worktree_placement::prepare_git_worktree(
+            &placement,
+            std::path::Path::new(base_worktree),
+            request.worktree_id.as_deref(),
+            "agent.spawn",
+        )?;
+        request.worktree_id = Some(resolved);
+        Ok(request)
     }
 
     pub(crate) async fn resolve_slice_worker_kernel_ref(
@@ -552,6 +588,22 @@ impl KernelRuntimeState {
     }
 }
 
+fn prepare_local_session_worktree_placement(
+    mut request: crate::session::CreateSessionRequest,
+) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+    let Some(placement) = request.worktree_placement.take() else {
+        return Ok(request);
+    };
+    let resolved = crate::git_worktree_placement::prepare_git_worktree(
+        &placement,
+        std::path::Path::new(&request.worktree_id),
+        None,
+        "session.create",
+    )?;
+    request.worktree_id = resolved;
+    Ok(request)
+}
+
 fn codex_linux_slice_live_sync_request(
     request: crate::session::CreateSessionRequest,
     slice: &crate::slice::SliceRecord,
@@ -605,6 +657,34 @@ fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_session_worktree_placement_creates_git_worktree_before_storing_session() {
+        let repo = temp_git_repo("session-placement");
+        let target = repo.with_file_name(format!(
+            "{}-feature",
+            repo.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        let request =
+            crate::session::CreateSessionRequest::new("workspace", repo.display().to_string())
+                .with_worktree_placement(crate::agent::GitWorktreePlacement {
+                    target_directory: Some(target.display().to_string()),
+                    branch: Some("feature/session-placement".to_string()),
+                    from_ref: Some("HEAD".to_string()),
+                });
+
+        let adjusted = prepare_local_session_worktree_placement(request)
+            .expect("session placement should create git worktree");
+
+        assert_eq!(adjusted.worktree_id, target.display().to_string());
+        assert!(target.is_dir());
+        assert_eq!(
+            git_output(&target, &["branch", "--show-current"]),
+            "feature/session-placement"
+        );
+        let _ = std::fs::remove_dir_all(&target);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 
     #[test]
     fn codex_linux_slice_sessions_keep_live_sync_off_by_default() {
@@ -708,5 +788,51 @@ mod tests {
             created_at_ms: 1,
             updated_at_ms: 1,
         }
+    }
+
+    fn temp_git_repo(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-{label}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("temp repo should be created");
+        run_git(&root, &["init"]);
+        run_git(&root, &["config", "user.email", "tests@example.invalid"]);
+        run_git(&root, &["config", "user.name", "Arroba Tests"]);
+        std::fs::write(root.join("README.md"), "worktree placement\n")
+            .expect("fixture file should be written");
+        run_git(&root, &["add", "README.md"]);
+        run_git(&root, &["commit", "-m", "initial"]);
+        root
+    }
+
+    fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn run_git(cwd: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

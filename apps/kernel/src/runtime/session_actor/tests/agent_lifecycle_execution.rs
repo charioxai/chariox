@@ -67,6 +67,76 @@ async fn local_spawn_agent_uses_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn local_spawn_agent_creates_requested_git_worktree_in_kernel() {
+    let repo = temp_git_repo("agent-placement");
+    let target = repo.with_file_name(format!(
+        "{}-feature",
+        repo.file_name().and_then(|name| name.to_str()).unwrap()
+    ));
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new(
+                "workspace",
+                repo.display().to_string(),
+            ))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        session_id: session_id.clone(),
+        alias: Some("feature-worker".to_string()),
+        provider: Some("dev-stub".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: None,
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: Some(crate::agent::GitWorktreePlacement {
+            target_directory: Some(target.display().to_string()),
+            branch: Some("feature/agent-placement".to_string()),
+            from_ref: Some("HEAD".to_string()),
+        }),
+        metaagent: false,
+    });
+    let command = KernelCommand::from_local_request("local-agent-worktree", None, None, &request);
+    let response = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect("agent spawn should succeed");
+
+    let LocalDaemonResponse::AgentSpawned { agent } = response else {
+        panic!("unexpected response");
+    };
+    assert_eq!(agent.session_id(), session_id);
+    assert_eq!(
+        agent.worktree_id(),
+        Some(target.display().to_string().as_str())
+    );
+    assert!(target.is_dir());
+    assert_eq!(
+        git_output(&target, &["branch", "--show-current"]),
+        "feature/agent-placement"
+    );
+    let _ = std::fs::remove_dir_all(&target);
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[tokio::test]
 async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
@@ -639,5 +709,51 @@ async fn local_destroy_agent_repairs_canonical_stale_focus() {
         projected.focused_agent_id(),
         Some(remaining_agent_id.as_str()),
         "destroying the canonical focused agent should focus the first remaining agent"
+    );
+}
+
+fn temp_git_repo(label: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-{label}-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).expect("temp repo should be created");
+    run_git(&root, &["init"]);
+    run_git(&root, &["config", "user.email", "tests@example.invalid"]);
+    run_git(&root, &["config", "user.name", "Arroba Tests"]);
+    std::fs::write(root.join("README.md"), "worktree placement\n")
+        .expect("fixture file should be written");
+    run_git(&root, &["add", "README.md"]);
+    run_git(&root, &["commit", "-m", "initial"]);
+    root
+}
+
+fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn run_git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

@@ -1,17 +1,3 @@
-import { execFile } from "node:child_process"
-import { stat } from "node:fs/promises"
-import { basename, dirname, resolve as resolvePath } from "node:path"
-import { promisify } from "node:util"
-
-const execFileAsync = promisify(execFile)
-
-export type LocalGitWorktreeOptions = {
-  baseDirectory: string
-  targetDirectory?: string | undefined
-  branch?: string | undefined
-  fromRef?: string | undefined
-}
-
 export type PlacementOptions = {
   positional: string[]
   directory?: string | undefined
@@ -25,8 +11,12 @@ export type PlacementOptions = {
 }
 
 export type ShellPlacementDeps = {
-  prepareLocalGitWorktree?: ((options: LocalGitWorktreeOptions) => Promise<string>) | undefined
-  resolveExistingDirectory?: ((directory: string, baseDirectory: string, label: string) => Promise<string>) | undefined
+}
+
+export type GitWorktreePlacementInput = {
+  target_directory?: string | null
+  branch?: string | null
+  from_ref?: string | null
 }
 
 export function parsePlacementOptions(args: string[], allowMachine: boolean): { options: PlacementOptions; error?: string } {
@@ -89,80 +79,52 @@ export function parsePlacementOptions(args: string[], allowMachine: boolean): { 
 
 export async function resolveShellPlacement(
   options: PlacementOptions,
-  baseDirectory: string,
-  label: string,
-  deps: ShellPlacementDeps,
+  _baseDirectory: string,
+  _label: string,
+  _deps: ShellPlacementDeps,
+  allowPositionalDirectory = true,
 ): Promise<string | undefined> {
-  if (options.kernelRef || options.machineRef) {
-    return undefined
-  }
-  const positionalDirectory = options.positional.length === 1 && !options.directory && !options.gitWorktree
+  const positionalDirectory = allowPositionalDirectory && options.positional.length === 1 && !options.directory && !options.gitWorktree
     ? options.positional[0]
     : undefined
   if (positionalDirectory || options.directory) {
-    const directory = positionalDirectory ?? options.directory!
-    const resolver = deps.resolveExistingDirectory ?? defaultResolveExistingDirectory
-    return resolver(directory, baseDirectory, label)
-  }
-  if (options.gitWorktree) {
-    const prepare = deps.prepareLocalGitWorktree ?? defaultPrepareLocalGitWorktree
-    return prepare({
-      baseDirectory,
-      targetDirectory: options.gitWorktree,
-      branch: options.branch,
-      fromRef: options.fromRef,
-    })
+    return resolvePlacementPath(_baseDirectory, positionalDirectory ?? options.directory!)
   }
   return undefined
 }
 
-async function defaultResolveExistingDirectory(directory: string, baseDirectory: string, label: string): Promise<string> {
-  const resolved = resolvePath(baseDirectory, directory)
-  const details = await stat(resolved)
-  if (!details.isDirectory()) {
-    throw new Error(`${label} is not a directory: ${resolved}`)
+export function shellGitWorktreePlacement(options: PlacementOptions): GitWorktreePlacementInput | undefined {
+  if (!options.gitWorktree && !options.branch && !options.fromRef) {
+    return undefined
   }
-  return resolved
-}
-
-async function defaultPrepareLocalGitWorktree(options: LocalGitWorktreeOptions): Promise<string> {
-  const baseDirectory = resolvePath(options.baseDirectory)
-  const repoRoot = (await runGit(baseDirectory, ["rev-parse", "--show-toplevel"])).trim()
-  if (!repoRoot) {
-    throw new Error(`git did not report a repository root for ${baseDirectory}`)
-  }
-  const fromRef = options.fromRef ?? "HEAD"
-  const targetDirectory = options.targetDirectory
-    ? resolvePath(baseDirectory, options.targetDirectory)
-    : resolvePath(dirname(repoRoot), `${basename(repoRoot)}-${slugifyGitBranch(options.branch ?? fromRef)}`)
-  const args = options.branch
-    ? ["worktree", "add", "-b", options.branch, targetDirectory, fromRef]
-    : ["worktree", "add", targetDirectory, fromRef]
-  await runGit(repoRoot, args)
-  const details = await stat(targetDirectory)
-  if (!details.isDirectory()) {
-    throw new Error(`created git worktree is not a directory: ${targetDirectory}`)
-  }
-  return targetDirectory
-}
-
-async function runGit(cwd: string, args: string[]): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync("git", args, { cwd })
-    return stdout
-  } catch (error) {
-    const detail = error && typeof error === "object" && "stderr" in error
-      ? String((error as { stderr?: unknown }).stderr ?? "").trim()
-      : ""
-    const message = detail || (error instanceof Error ? error.message : String(error))
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${message}`)
+  return {
+    target_directory: options.gitWorktree ?? null,
+    branch: options.branch ?? null,
+    from_ref: options.fromRef ?? null,
   }
 }
 
-function slugifyGitBranch(value: string): string {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    || "worktree"
+function resolvePlacementPath(baseDirectory: string, directory: string): string {
+  if (directory.startsWith("/")) {
+    return normalizePath(directory)
+  }
+  return normalizePath(`${baseDirectory.replace(/\/+$/, "")}/${directory}`)
+}
+
+function normalizePath(path: string): string {
+  const absolute = path.startsWith("/")
+  const parts: string[] = []
+  for (const part of path.split("/")) {
+    if (!part || part === ".") {
+      continue
+    }
+    if (part === "..") {
+      if (parts.length > 0) {
+        parts.pop()
+      }
+      continue
+    }
+    parts.push(part)
+  }
+  return `${absolute ? "/" : ""}${parts.join("/")}` || (absolute ? "/" : ".")
 }

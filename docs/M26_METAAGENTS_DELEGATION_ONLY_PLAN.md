@@ -6,9 +6,11 @@ Make metaagents delegation-only for implementation work while preserving their
 authority to provision capabilities for owned workers.
 
 Metaagents should spend their budget planning, delegating, supervising, and
-equipping regular agents. They must not directly implement by reading or editing
-workspace files, running shell/script/connector tools, using user MCP tools
-themselves, or receiving raw credential payloads.
+equipping regular agents. They must not directly implement by editing workspace
+files, running shell/script/connector tools, using user MCP tools themselves, or
+receiving raw credential payloads. Reading workspace context, recall, artifacts,
+and slice/browser state is planning work and remains allowed when the
+corresponding environment is available.
 
 They may still:
 
@@ -38,7 +40,7 @@ The repo already has most primitives needed:
 
 Important current gaps:
 
-- Metaagent provider runs can still inherit build/yolo execution settings.
+- Metaagent provider runs can still inherit build execution settings.
 - Metaagent runtime MCP specs currently include normal runtime tools before
   adding meta tools.
 - Dispatch does not deny all guessed non-meta calls from a metaagent token.
@@ -66,7 +68,7 @@ preparation path that has the target agent:
 For metaagents, the helper must:
 
 - Force `execution_mode = AgentExecutionMode::Plan`.
-- Force `permission_level = AgentPermissionLevel::Required`.
+- Preserve normal permission-level selection from user/session/agent config.
 - Clear user-granted MCP servers from the metaagent provider run.
 - Clear worker/home remote extension manifests from the metaagent provider run.
 - Preserve only the Arroba runtime MCP binding needed for `arroba.meta.*`.
@@ -95,7 +97,9 @@ metaagent.
 The template must say, in concrete terms:
 
 - You are delegation-only.
-- Do not inspect or edit workspace files directly.
+- Read workspace context, recall, artifacts, and available slice/browser state
+  when useful for planning.
+- Do not edit workspace files directly.
 - Do not run shell commands, scripts, connectors, user MCPs, or external tools
   yourself.
 - Use `arroba.meta.*` to inspect the session, create workflows, spawn/prompt
@@ -110,10 +114,13 @@ the authority.
 ### Runtime MCP Policy
 
 For runtime MCP auth tokens bound to metaagent provider runs, expose only
-metaagent supervision/provisioning tools.
+metaagent supervision/provisioning tools plus read-only planning tools.
 
 Allowed:
 
+- `arroba.read_artifact`
+- `arroba.search_recall`
+- `arroba.query_recall`
 - `arroba.meta.session_overview`
 - `arroba.meta.search_commands`
 - `arroba.meta.list_commands`
@@ -128,6 +135,8 @@ Allowed:
 - `arroba.meta.turn_overview`
 - `arroba.meta.turn_blob`
 - `arroba.meta.resolve_runtime_interaction`
+- slice/browser observation/control tools when the metaagent itself is deployed
+  in a slice
 - new meta capability/vault provisioning wrappers, if direct command routing is
   not enough
 
@@ -136,12 +145,11 @@ Denied for metaagent auth tokens, including guessed/manual calls:
 - workspace live sync artifact tools
 - workflow node runtime tools
 - extension request/register execution tools outside the meta provisioning path
-- recall tools
-- slice tools
+- third-party/user MCP tools by default
+- slice tools when the metaagent is not deployed in that slice
 - raw credential runtime tools
 - script tools
 - connector tools
-- user MCP tools
 - home-proxy extension execution tools
 
 This denial must happen in dispatch, not only in `tools/list`.
@@ -250,7 +258,8 @@ metaagent:capabilities:drill
 ```
 
 The drill should use a real local kernel, dev-stub providers, and an isolated
-temporary workspace.
+temporary workspace. This drill is a deterministic capability-contract check,
+not evidence of independent metaagent behavior.
 
 ### Drill Flow
 
@@ -258,10 +267,12 @@ temporary workspace.
 2. Create a metaagent session.
 3. Launch the metaagent provider run.
 4. Launch at least one owned regular worker.
-5. Assert the metaagent run is plan mode and permission-required.
-6. Assert metaagent `tools/list` contains only allowed `arroba.meta.*` tools.
-7. Attempt guessed denied calls for workspace artifact, script, connector, raw
-   credential, slice, recall, workflow-node, and user MCP tools.
+5. Assert the metaagent run is plan mode and permission level is inherited.
+6. Assert metaagent `tools/list` contains the allowed `arroba.meta.*` tools plus
+   read-only planning tools such as artifact and recall reads.
+7. Attempt guessed denied calls for mutation/execution surfaces: workspace live
+   sync writes, script, connector, raw credential use, unavailable slice tools,
+   workflow-node runtime tools, and user MCP tools.
 8. Use `arroba.meta.run_command` to spawn/prompt/focus/alias/delete owned
    regular agents.
 9. Create a workflow with regular agents and verify the metaagent cannot be a
@@ -296,69 +307,66 @@ On every run, write a manifest with:
 
 Preserve artifacts on failure using the existing drill artifact helpers.
 
-## Grocery Delegation Drill
+## Real-Provider Code-Fix Behavior Drill
 
-After the isolated capability drill passes, add:
+After the isolated capability drill passes, add a real-provider behavior drill:
 
 ```text
-apps/cli/scripts/live-metaagent-grocery-drill.mjs
+apps/cli/scripts/live-metaagent-code-fix-drill.mjs
 ```
 
 Add a package script, for example:
 
 ```text
-metaagent:grocery:drill
+metaagent:code-fix:drill
 ```
 
 The drill creates a brand-new git repo under:
 
 ```text
-target/live-metaagent-grocery-drill/<run-id>/workspace
+target/live-metaagent-code-fix-drill/<run-id>/workspace
 ```
 
 ### Drill Flow
 
-1. Start a real kernel and create a metaagent session in the new repo.
-2. Launch the metaagent and assert plan mode plus restricted tool exposure.
-3. Submit a visible prompt asking the metaagent to create and supervise a
-   workflow that builds a local grocery web app from scratch.
-4. Validate delegation evidence:
-   - owned regular worker agents exist;
-   - a workflow exists;
-   - no workflow node is the metaagent;
-   - app files appear in the repo after worker/workflow turns;
-   - denied direct metaagent tool calls remain denied.
-5. Start the generated app locally using the command documented by the workers.
-6. Run browser smoke tests:
-   - registration;
-   - login;
-   - product categories/cards/details;
-   - cart quantity changes;
-   - checkout;
-   - fake purchase confirmation.
+1. Create a tiny JavaScript project with one real source bug and one failing
+   test, then commit that baseline in the temporary repo.
+2. Start a real kernel and create a metaagent session in the repo.
+3. Launch an actual provider-backed metaagent, never `dev-stub`, and assert the
+   provider run is plan mode.
+4. Submit exactly one high-level prompt to the metaagent:
 
-Expected app scope:
+   ```text
+   The repo has a small failing JavaScript project. Delegate the investigation, fix, and verification to regular agent(s), get the project to a passing state, then mark this task complete with a concise report of what changed and how it was verified.
+   ```
 
-- local only;
-- no external services;
-- no payment provider;
-- deterministic demo data;
-- visible prices and stock;
-- categories such as produce, bakery, pantry, dairy, and frozen.
+5. After that prompt, the harness only observes session state, metaagent events,
+   workspace diffs, and test results. It must not call runtime MCP tools, append
+   synthetic provider output, prompt workers directly, or write files.
+6. Validate the behavior only when:
+   - the metaagent task is active and later completed;
+   - the plan document is non-empty;
+   - at least one regular worker agent is spawned after the prompt;
+   - at least one worker event or worker history/tool evidence record is
+     observed;
+   - `src/todo.mjs` changes while the test file remains unchanged;
+   - `npm test` passes;
+   - the final summary reports zero harness runtime MCP calls and zero harness
+     workspace writes after the prompt.
 
 ### Drill Artifacts
 
 Preserve:
 
 - manifest
-- screenshots
-- session/agent/workflow ids
+- session/agent ids
 - generated repo path on failure
-- local app URL
-- server logs
-- metaagent event counts
-- denial evidence
-- browser smoke-test results
+- provider/model/effort
+- metaagent task status and plan length
+- worker ids and worker event count
+- changed files
+- test command output
+- live event observation log
 
 ## Test Plan
 
@@ -382,7 +390,7 @@ Drill gate order:
 1. Existing focused unit/integration tests.
 2. Updated `live-metaagent-drill.mjs`.
 3. New isolated meta capability drill.
-4. New grocery delegation drill.
+4. New real-provider code-fix behavior drill.
 
 ## Acceptance Criteria
 
@@ -395,4 +403,5 @@ Drill gate order:
 - Metaagents can approve owned worker runtime interactions.
 - Metaagent runtime MCP exposure and dispatch enforcement match.
 - The isolated capability drill proves every meta authority in isolation.
-- The grocery drill proves the intended end-to-end behavior in a fresh repo.
+- The real-provider code-fix drill proves the intended end-to-end behavior in a
+  fresh repo without harness-driven metaagent actions.

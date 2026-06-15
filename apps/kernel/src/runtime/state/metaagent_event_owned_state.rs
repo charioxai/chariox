@@ -166,6 +166,8 @@ impl KernelRuntimeState {
             prompt_text,
             crate::session::PromptStatus::Queued,
         );
+        self.owned
+            .ensure_metaagent_prompt_target_not_workflow_busy(session_id, target_agent_id)?;
         if let Some(dispatches) = self
             .owned
             .steer_active_metaagent_prompt(session_id, &prompt)?
@@ -696,19 +698,12 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        let Some(active_prompt) = self
+        if self
             .prompt_state_owner
             .active_prompt_for_agent(&session, &target_agent_id)
-        else {
+            .is_none()
+        {
             return Ok(None);
-        };
-        if let Some(workflow_run_id) = active_prompt.workflow_run_id() {
-            return Err(DaemonError::LocalTransport {
-                operation: "metaagent prompt active worker",
-                message: format!(
-                    "agent `{target_agent_id}` is currently executing workflow run `{workflow_run_id}`; normal metaagent prompts cannot steer an active workflow turn. Use `workflow get-run {workflow_run_id}`, wait for workflow events, or cancel/resume the workflow instead."
-                ),
-            });
         }
         let Some(provider_run) = self
             .provider_store
@@ -741,5 +736,41 @@ impl KernelRuntimeOwnedState {
             attachments: prompt.attachments().to_vec(),
         });
         Ok(Some(dispatches))
+    }
+
+    fn ensure_metaagent_prompt_target_not_workflow_busy(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let (active_prompt, queued_prompts) = self
+            .prompt_state_owner
+            .state_parts(&session, target_agent_id);
+        if let Some(active_prompt) = active_prompt {
+            if let Some(workflow_run_id) = active_prompt.workflow_run_id() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "metaagent prompt workflow worker",
+                    message: format!(
+                        "agent `{target_agent_id}` is currently executing workflow run `{workflow_run_id}`; normal metaagent prompts cannot steer an active workflow turn. Use `workflow get-run {workflow_run_id}` and wait for the workflow turn to finish, or cancel the workflow only if the task is intentionally being aborted."
+                    ),
+                });
+            }
+        }
+        if let Some(queued_workflow_prompt) = queued_prompts
+            .iter()
+            .find(|queued| queued.workflow_run_id().is_some())
+        {
+            let workflow_run_id = queued_workflow_prompt
+                .workflow_run_id()
+                .expect("queued prompt was filtered by workflow_run_id");
+            return Err(DaemonError::LocalTransport {
+                operation: "metaagent prompt workflow worker",
+                message: format!(
+                    "agent `{target_agent_id}` already has queued workflow run `{workflow_run_id}`; normal metaagent prompts cannot be queued behind or ahead of workflow work. Use `workflow get-run {workflow_run_id}` and wait for workflow progress instead."
+                ),
+            });
+        }
+        Ok(())
     }
 }

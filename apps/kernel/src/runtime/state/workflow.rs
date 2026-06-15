@@ -77,14 +77,6 @@ impl KernelRuntimeOwnedState {
         .with_agent_id(agent.id().to_string())
         .with_owner_user_id(agent.owner_user_id().to_string())
         .with_variant(agent.effort().map(str::to_string));
-        let config = self.config_projection.snapshot();
-        request = request.with_workspace_live_sync_mode(
-            crate::provider::provider_workspace_live_sync_mode_for_session(
-                provider,
-                &config,
-                self.session_store.get_session(session_id).ok().as_ref(),
-            ),
-        );
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(std::path::PathBuf::from(worktree_id));
         }

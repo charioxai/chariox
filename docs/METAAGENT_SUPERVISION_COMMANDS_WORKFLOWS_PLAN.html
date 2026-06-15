@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metaagent Supervision, Commands, Events, and Workflow Guide Plan</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --ink: #17202f;
+        --muted: #596579;
+        --line: #d8deea;
+        --panel: #ffffff;
+        --accent: #0f766e;
+        --accent-soft: #e7f4f2;
+        --warn: #8a4b09;
+        --warn-soft: #fff3df;
+        --code: #f0f3f8;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 22px;
+        margin-top: 34px;
+        padding-top: 28px;
+        border-top: 1px solid var(--line);
+      }
+
+      h3 {
+        font-size: 17px;
+        margin-top: 22px;
+      }
+
+      p {
+        margin: 10px 0;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0 22px;
+        padding: 0;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: var(--code);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.93em;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #eef2f8;
+        font-weight: 700;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .hero {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 28px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .summary {
+        margin-top: 14px;
+        color: var(--muted);
+        max-width: 850px;
+      }
+
+      .callout {
+        margin-top: 18px;
+        border: 1px solid #b7d8d3;
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        border-radius: 8px;
+        padding: 14px 16px;
+      }
+
+      .warning {
+        border-color: #f0c98a;
+        border-left-color: var(--warn);
+        background: var(--warn-soft);
+      }
+
+      .phase {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 18px;
+        margin-top: 14px;
+      }
+
+      .phase h3 {
+        margin-top: 0;
+      }
+
+      .status {
+        display: inline-block;
+        margin-left: 8px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .mono-list li {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.94em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Metaagent implementation plan</p>
+        <h1>Supervision, Command Discovery, Events, and Workflow Guides</h1>
+        <p class="summary">
+          This plan brings metaagents closer to the intended model: they plan,
+          delegate, supervise, and complete through Arroba primitives. They should
+          not guess command syntax, silently subscribe to invalid events, or lose
+          visibility into worker activity.
+        </p>
+        <div class="callout">
+          <strong>Current conclusion:</strong> the recent workflow drill did not
+          prove that <code>can_complete_run</code> should default to true. Directed
+          workflows without loops can complete naturally when terminal node work is
+          complete. The stronger hypothesis is that the metaagent did not build and
+          run a complete workflow shape, and the runtime did not give it enough
+          command guidance or supervision visibility to recover.
+        </div>
+      </section>
+
+      <h2>Observed Problems</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Problem</th>
+            <th>Impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>turn_overview</code></td>
+            <td>
+              Worker activity can be visible in session history while
+              <code>turn_overview</code> returns empty turns.
+            </td>
+            <td>
+              The metaagent believes workers have not executed, then may over-spawn
+              workers or mark the task blocked incorrectly.
+            </td>
+          </tr>
+          <tr>
+            <td>Meta prompt flags</td>
+            <td>
+              <code>--wait</code> and <code>--show-reply</code> are advertised by
+              docs, but in the meta command path they are not useful primitives and
+              can be passed as prompt text.
+            </td>
+            <td>
+              Blocking wastes metaagent turns, and full replies can flood context.
+              Metaagents should wake on events and inspect traces selectively.
+            </td>
+          </tr>
+          <tr>
+            <td>Command discovery</td>
+            <td>
+              The meta command registry is partial and hand-maintained. Some
+              workflow commands exist in CLI/kernel but are not discoverable or
+              routed for metaagents.
+            </td>
+            <td>
+              Metaagents invent syntax or miss required workflow components such
+              as edges, endpoints, node settings, and run controls.
+            </td>
+          </tr>
+          <tr>
+            <td>Event subscriptions</td>
+            <td>
+              <code>subscribe_events</code> accepts arbitrary event strings.
+              Invalid names such as <code>workflow_output</code> succeed but match
+              nothing.
+            </td>
+            <td>
+              The metaagent waits for events that can never arrive.
+            </td>
+          </tr>
+          <tr>
+            <td>Workflow guidance</td>
+            <td>
+              Metaagents lack compact tutorials explaining the required workflow
+              parts: nodes, edges, endpoints, run triggers, partial outputs, and
+              final output behavior.
+            </td>
+            <td>
+              The metaagent may create a workflow object without creating a usable
+              workflow execution path.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Clarification: <code>can_complete_run</code></h2>
+      <p>
+        <code>can_complete_run</code> is not the right primary fix for the observed
+        drill failure.
+      </p>
+      <ul>
+        <li>
+          A directed acyclic workflow can complete naturally after the last node
+          completes and no unconsumed messages or pending node runs remain.
+        </li>
+        <li>
+          <code>can_complete_run</code> matters when a node submits explicit final
+          workflow output or should terminate the run early.
+        </li>
+        <li>
+          The drill evidence points instead to incomplete workflow construction,
+          queued or overlapping worker turns, missing workflow-output mechanics,
+          and weak metaagent visibility.
+        </li>
+      </ul>
+      <div class="callout warning">
+        <strong>Decision:</strong> do not change the default for
+        <code>can_complete_run</code> based on this drill. First fix command
+        exposure, event validation, workflow guides, and supervision visibility.
+      </div>
+
+      <h2>Implementation Plan</h2>
+
+      <section class="phase">
+        <h3>1. Fix <code>turn_overview</code> <span class="status">required</span></h3>
+        <p>
+          Make <code>turn_overview</code> a reliable supervision surface for
+          metaagents.
+        </p>
+        <ul>
+          <li>
+            Include active, queued, completed, and failed worker prompts from
+            runtime session state, not only reconstructed operational history.
+          </li>
+          <li>
+            Read from operational history first, then fall back to session history
+            projection or file-backed session history when operational history has
+            no prompt turns for the target worker.
+          </li>
+          <li>
+            Include latest tool-call summaries, latest assistant output summary,
+            prompt status, provider run id, and whether the worker is busy.
+          </li>
+          <li>
+            Keep <code>turn_blob</code> as the pull-based detailed trace reader so
+            large worker outputs do not flood the metaagent.
+          </li>
+          <li>
+            Add tests that use the real prompt submission path and assert a
+            metaagent can see worker prompt and tool history through
+            <code>turn_overview</code>.
+          </li>
+        </ul>
+      </section>
+
+      <section class="phase">
+        <h3>2. Remove Blocking Meta Prompt Flags <span class="status">required</span></h3>
+        <p>
+          Metaagents should not use <code>--wait</code> or
+          <code>--show-reply</code>. They should delegate, stop their turn, wake on
+          events, and inspect traces.
+        </p>
+        <ul>
+          <li>
+            Remove these flags from metaagent command docs and examples.
+          </li>
+          <li>
+            Return a clear meta command error if the flags are used:
+            <code>metaagent prompt does not support blocking reply flags; use events and turn_overview</code>.
+          </li>
+          <li>
+            Keep human CLI behavior separate if humans still need these flags.
+          </li>
+        </ul>
+      </section>
+
+      <section class="phase">
+        <h3>3. Build a Complete Arroba Command Catalog <span class="status">required</span></h3>
+        <p>
+          Replace partial meta command documentation with one complete catalog that
+          covers every Arroba command and subcommand.
+        </p>
+        <ul>
+          <li>
+            Catalog fields: command name, aliases, usage, examples, description,
+            tags, natural-language intents, scope, mutation level, metaagent policy,
+            route status, and denial or unavailable reason.
+          </li>
+          <li>
+            Wire <code>search_commands</code>, <code>list_commands</code>,
+            <code>command_docs</code>, and <code>run_command</code> to the same
+            catalog.
+          </li>
+          <li>
+            All commands are discoverable. Not all commands are executable by
+            metaagents.
+          </li>
+          <li>
+            Denied and CLI-only commands must be documented with the reason and
+            recommended alternative.
+          </li>
+          <li>
+            Add parity tests against the CLI command tree and workflow command
+            handlers so command families cannot silently diverge.
+          </li>
+        </ul>
+        <h3>Workflow commands that must be fully represented</h3>
+        <ul class="mono-list">
+          <li>workflow list</li>
+          <li>workflow show</li>
+          <li>workflow new</li>
+          <li>workflow node add/remove</li>
+          <li>workflow node instructions</li>
+          <li>workflow node can-complete-run</li>
+          <li>workflow node can-emit-intermediate-output</li>
+          <li>workflow node intermediate-output-schema</li>
+          <li>workflow node max-turns</li>
+          <li>workflow node extensions and extension grant/revoke</li>
+          <li>workflow edge add/remove</li>
+          <li>workflow endpoint new/alias/bind/remove where supported</li>
+          <li>workflow run/start</li>
+          <li>workflow runs</li>
+          <li>workflow cancel</li>
+          <li>workflow resume</li>
+          <li>workflow run-output-schema</li>
+          <li>workflow intermediate-output-schema</li>
+          <li>workflow max-turns</li>
+          <li>workflow pane/log/trace/edit commands as discoverable, even if denied</li>
+        </ul>
+      </section>
+
+      <section class="phase">
+        <h3>4. Validate Event Kinds <span class="status">required</span></h3>
+        <p>
+          Invalid event subscriptions should fail immediately with suggestions.
+        </p>
+        <ul>
+          <li>Create a central event-kind registry.</li>
+          <li>Reject unknown <code>subscribe_events.kind</code> values.</li>
+          <li>Return nearest suggestions for invalid names.</li>
+          <li>List valid event kinds in the tool schema and command docs.</li>
+          <li>Update the metaagent system prompt to name exact required events.</li>
+        </ul>
+        <h3>Initial event kinds</h3>
+        <ul class="mono-list">
+          <li>agent.turn.completed</li>
+          <li>agent.turn.failed</li>
+          <li>runtime.interaction</li>
+          <li>workflow.run.started</li>
+          <li>workflow.run.updated</li>
+          <li>workflow.run.completed</li>
+          <li>workflow.run.failed</li>
+          <li>workflow.run.cancelled</li>
+          <li>workflow.output.final</li>
+          <li>workflow.output.intermediate</li>
+        </ul>
+      </section>
+
+      <section class="phase">
+        <h3>5. Improve Workflow Run Visibility <span class="status">required</span></h3>
+        <p>
+          A metaagent should be able to understand whether a workflow is runnable,
+          running, waiting, blocked, completed, or misconfigured.
+        </p>
+        <ul>
+          <li>
+            Expand <code>workflow runs</code> output with active node, node agent,
+            queued or running prompt id, prompt delivery state, blocked reason,
+            missing inputs, failure events, and final-output state.
+          </li>
+          <li>
+            Emit workflow lifecycle metaagent events consistently for run started,
+            run updated, run completed, run failed, and output submitted.
+          </li>
+          <li>
+            Make workflow prompt queue state visible, especially when a workflow
+            prompt is queued behind an active worker turn.
+          </li>
+          <li>
+            Add tests that subscribe a metaagent to workflow events and prove the
+            event wakes or steers the metaagent on real workflow transitions.
+          </li>
+        </ul>
+      </section>
+
+      <section class="phase">
+        <h3>6. Add Searchable Guides and Tutorials <span class="status">required</span></h3>
+        <p>
+          Guides should be runtime-readable documents, not long system-prompt
+          payloads. The metaagent system prompt should instruct the agent to
+          search and read guides before using workflows or building agent apps.
+        </p>
+        <ul>
+          <li>Add runtime tools: <code>list_guides</code>, <code>search_guides</code>, and <code>read_guide</code>.</li>
+          <li>Load guide Markdown files from a kernel-owned guide directory.</li>
+          <li>Expose guide title, tags, summary, examples, and command references.</li>
+          <li>Seed guides from successful and failed drills, rewritten as concise operational recipes.</li>
+        </ul>
+        <h3>Initial guides</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Guide</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>workflows/basic-components.md</code></td>
+              <td>
+                Explains workflow definitions, nodes, edges, endpoints, and how to
+                trigger a run.
+              </td>
+            </tr>
+            <tr>
+              <td><code>workflows/basic-dag.md</code></td>
+              <td>
+                Shows a minimal directed workflow that flows from implementation
+                to review and completes naturally.
+              </td>
+            </tr>
+            <tr>
+              <td><code>workflows/edges-and-handoffs.md</code></td>
+              <td>
+                Shows how to connect nodes and pass downstream handoff messages.
+              </td>
+            </tr>
+            <tr>
+              <td><code>workflows/partial-and-final-outputs.md</code></td>
+              <td>
+                Explains intermediate outputs, final workflow outputs, and when
+                output tools are required.
+              </td>
+            </tr>
+            <tr>
+              <td><code>workflows/events-and-supervision.md</code></td>
+              <td>
+                Lists valid event kinds and shows how a metaagent waits by ending
+                its turn and waking on events.
+              </td>
+            </tr>
+            <tr>
+              <td><code>workflows/common-failures.md</code></td>
+              <td>
+                Covers queued workflow prompts, missing endpoints, missing edges,
+                invalid event names, and workers that do not emit workflow output
+                when required.
+              </td>
+            </tr>
+            <tr>
+              <td><code>agent-apps/building-agent-apps.md</code></td>
+              <td>
+                Shows how to plan, delegate, review, test, and complete an agent
+                app through regular agents or a workflow.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="phase">
+        <h3>7. Keep Structured Handover Out of Scope <span class="status">defer</span></h3>
+        <p>
+          Do not add a standardized worker reply or workflow handoff envelope in
+          this pass. First fix the primitives: command discovery, event
+          validation, workflow guidance, and supervision visibility. If the flow
+          is still noisy after those fixes, revisit structured worker/subtask
+          handovers with evidence.
+        </p>
+      </section>
+
+      <h2>Drill Plan</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Drill</th>
+            <th>Prompt Shape</th>
+            <th>Validation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Command Catalog Drill</td>
+            <td>
+              Ask a real metaagent to figure out how to build and run a two-agent
+              workflow without giving command syntax.
+            </td>
+            <td>
+              It must use search/docs and discover nodes, edges, endpoints, run,
+              runs, event subscriptions, and denied/unavailable commands.
+            </td>
+          </tr>
+          <tr>
+            <td>Event Validation Drill</td>
+            <td>
+              Ask the metaagent to subscribe to workflow progress and output
+              events.
+            </td>
+            <td>
+              Invalid event names must be rejected with suggestions. Valid names
+              must subscribe and later produce visible events.
+            </td>
+          </tr>
+          <tr>
+            <td>Turn Overview Regression Drill</td>
+            <td>
+              Metaagent delegates to a worker, stops, wakes on completion, and
+              inspects the worker.
+            </td>
+            <td>
+              <code>turn_overview</code> must show prompt state, tool calls, and
+              worker output. The metaagent must not mark blocked when worker
+              activity exists.
+            </td>
+          </tr>
+          <tr>
+            <td>Direct Agent App Drill</td>
+            <td>
+              Ask a real metaagent to build a small agent app without requiring a
+              workflow.
+            </td>
+            <td>
+              It must delegate, wake on events, inspect evidence, verify via
+              workers, and complete.
+            </td>
+          </tr>
+          <tr>
+            <td>Workflow Agent App Drill</td>
+            <td>
+              Ask a real metaagent to build a small agent app by creating and
+              running a suitable workflow. Do not specify the workflow structure.
+            </td>
+            <td>
+              It must read workflow guides, create a complete workflow with nodes,
+              edges where useful, endpoint, run trigger, event subscriptions,
+              supervision, and completion.
+            </td>
+          </tr>
+          <tr>
+            <td>Workflow Failure Recovery Drill</td>
+            <td>
+              Give the metaagent a workflow that starts misconfigured or blocked.
+            </td>
+            <td>
+              It must use <code>workflow runs</code>, events, command docs, and
+              guides to diagnose and repair the workflow without direct execution.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Acceptance Criteria</h2>
+      <ul>
+        <li>Metaagents can discover every Arroba command and subcommand.</li>
+        <li>Denied or unavailable commands are documented with precise reasons.</li>
+        <li>Invalid event subscriptions fail with useful suggestions.</li>
+        <li><code>turn_overview</code> reliably exposes delegated worker activity.</li>
+        <li>Workflow guides are searchable/readable from metaagent runtime tools.</li>
+        <li>Workflow drills show metaagents building complete runnable workflows.</li>
+        <li>Direct drills show metaagents completing tasks without over-spawning or false blocking.</li>
+      </ul>
+
+      <h2>Implementation Order</h2>
+      <ol>
+        <li>Fix <code>turn_overview</code> and remove meta prompt blocking flags.</li>
+        <li>Add event-kind registry and subscription validation.</li>
+        <li>Build and wire the complete command catalog.</li>
+        <li>Add guide tools and seed workflow plus agent-app guides.</li>
+        <li>Improve <code>workflow runs</code> and workflow lifecycle visibility.</li>
+        <li>Run the command, event, and turn overview drills.</li>
+        <li>Run direct agent app drill.</li>
+        <li>Run workflow agent app drill.</li>
+      </ol>
+    </main>
+  </body>
+</html>

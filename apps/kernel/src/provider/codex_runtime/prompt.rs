@@ -1,6 +1,10 @@
 //! Codex prompt turn start, interruption, and turn-id extraction.
 
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
@@ -10,6 +14,9 @@ use super::input::codex_input;
 use super::run_config::{codex_client_for_run, normalize_codex_model, normalize_variant};
 use super::turn::CodexTurnTracker;
 use super::CodexRuntimeState;
+
+const CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT: Duration = Duration::from_secs(150);
+const CODEX_MCP_THREAD_INIT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 pub fn submit_codex_prompt(
     run: &RuntimeProviderRun,
@@ -22,6 +29,19 @@ pub fn submit_codex_prompt(
         .map(|path| path.to_string_lossy().to_string());
     let model = normalize_codex_model(run.model());
     let effort = normalize_variant(run.variant());
+    if let Err(error) = ensure_codex_thread_ready(
+        &client,
+        run,
+        state,
+        cwd.as_deref(),
+        model.as_deref(),
+        hidden_context_for_provider(&envelope.hidden_system_context),
+    ) {
+        state.buffered_notifications.push(CodexNotification::Error {
+            message: error.to_string(),
+        });
+        return Ok(());
+    }
     let input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
     let thread_id = state.thread_id().to_string();
     let response = match client.turn_start(
@@ -62,9 +82,123 @@ pub fn submit_codex_prompt(
     Ok(())
 }
 
+fn ensure_codex_thread_ready(
+    client: &CodexClient,
+    run: &RuntimeProviderRun,
+    state: &mut CodexRuntimeState,
+    cwd: Option<&str>,
+    model: Option<&str>,
+    developer_instructions: Option<&str>,
+) -> Result<(), DaemonError> {
+    let desired_fingerprint = developer_instructions_fingerprint(developer_instructions);
+    if state.thread_ready()
+        && state.developer_instructions_fingerprint() == Some(desired_fingerprint.as_str())
+    {
+        return Ok(());
+    }
+    if state.thread_ready() && !state.context_hot_reload_enabled() {
+        return Ok(());
+    }
+    if state.thread_ready() {
+        if state.active_turn_id.is_some() {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "thread/hot-reload",
+                message: "cannot hot reload Codex hidden context while a turn is active"
+                    .to_string(),
+            });
+        }
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "hot reloading codex thread for changed hidden context",
+            serde_json::json!({
+                "provider_run_id": run.id(),
+                "previous_thread_id": state.thread_id(),
+            }),
+        );
+    }
+    let deadline = Instant::now() + CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT;
+    loop {
+        let result = if state.thread_ready() {
+            client.thread_start(
+                &mut state.socket,
+                &mut state.next_request_id,
+                cwd,
+                model,
+                run.write_access_mode(),
+                run.execution_mode(),
+                run.permission_level(),
+                developer_instructions,
+            )
+        } else if let Some(thread_id) = state.pending_thread_id().map(str::to_string) {
+            client.thread_resume(
+                &mut state.socket,
+                &mut state.next_request_id,
+                &thread_id,
+                cwd,
+                model,
+                run.write_access_mode(),
+                run.execution_mode(),
+                run.permission_level(),
+                developer_instructions,
+            )
+        } else {
+            client.thread_start(
+                &mut state.socket,
+                &mut state.next_request_id,
+                cwd,
+                model,
+                run.write_access_mode(),
+                run.execution_mode(),
+                run.permission_level(),
+                developer_instructions,
+            )
+        };
+        match result {
+            Ok(thread) => {
+                if state.thread_ready() {
+                    state.replace_thread(thread.thread.id, Some(desired_fingerprint));
+                } else {
+                    state.mark_thread_ready(thread.thread.id, Some(desired_fingerprint));
+                }
+                return Ok(());
+            }
+            Err(error) if is_codex_mcp_handshake_timeout(&error) && Instant::now() < deadline => {
+                crate::logging::warn_with_fields(
+                    "daemon.provider.codex",
+                    "retrying codex thread init after MCP handshake timeout",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                sleep(CODEX_MCP_THREAD_INIT_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn developer_instructions_fingerprint(value: Option<&str>) -> String {
+    format!("{:x}", Sha256::digest(value.unwrap_or_default().as_bytes()))
+}
+
 fn hidden_context_for_provider(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
+}
+
+fn is_codex_mcp_handshake_timeout(error: &DaemonError) -> bool {
+    let DaemonError::ProviderProtocol {
+        operation, message, ..
+    } = error
+    else {
+        return false;
+    };
+
+    matches!(*operation, "thread/start" | "thread/resume")
+        && message.contains("required MCP servers failed to initialize")
+        && message.contains("timed out handshaking with MCP server")
 }
 
 pub fn abort_codex_turn(

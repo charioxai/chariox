@@ -34,6 +34,9 @@ pub struct CodexAssistantCompletion {
 pub struct CodexRuntimeState {
     endpoint: String,
     thread_id: String,
+    thread_ready: bool,
+    developer_instructions_fingerprint: Option<String>,
+    context_hot_reload_enabled: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
@@ -48,6 +51,15 @@ impl std::fmt::Debug for CodexRuntimeState {
         f.debug_struct("CodexRuntimeState")
             .field("endpoint", &self.endpoint)
             .field("thread_id", &self.thread_id)
+            .field("thread_ready", &self.thread_ready)
+            .field(
+                "developer_instructions_fingerprint",
+                &self.developer_instructions_fingerprint,
+            )
+            .field(
+                "context_hot_reload_enabled",
+                &self.context_hot_reload_enabled,
+            )
             .field("next_request_id", &self.next_request_id)
             .field("buffered_notifications", &self.buffered_notifications)
             .field("active_turn_id", &self.active_turn_id)
@@ -68,6 +80,31 @@ impl CodexRuntimeState {
         Self {
             endpoint,
             thread_id,
+            thread_ready: true,
+            developer_instructions_fingerprint: None,
+            context_hot_reload_enabled: false,
+            socket,
+            next_request_id,
+            buffered_notifications: Vec::new(),
+            active_turn_id: None,
+            turn_tracker: CodexTurnTracker::default(),
+            text_items: BTreeMap::new(),
+            tool_items: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn pending(
+        endpoint: String,
+        thread_id: Option<String>,
+        socket: CodexSocket,
+        next_request_id: u64,
+    ) -> Self {
+        Self {
+            endpoint,
+            thread_id: thread_id.unwrap_or_default(),
+            thread_ready: false,
+            developer_instructions_fingerprint: None,
+            context_hot_reload_enabled: true,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -84,6 +121,47 @@ impl CodexRuntimeState {
 
     pub fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    pub(super) fn pending_thread_id(&self) -> Option<&str> {
+        (!self.thread_id.trim().is_empty()).then_some(self.thread_id.as_str())
+    }
+
+    pub(super) fn thread_ready(&self) -> bool {
+        self.thread_ready
+    }
+
+    pub(super) fn developer_instructions_fingerprint(&self) -> Option<&str> {
+        self.developer_instructions_fingerprint.as_deref()
+    }
+
+    pub(super) fn context_hot_reload_enabled(&self) -> bool {
+        self.context_hot_reload_enabled
+    }
+
+    pub(super) fn mark_thread_ready(
+        &mut self,
+        thread_id: impl Into<String>,
+        developer_instructions_fingerprint: Option<String>,
+    ) {
+        self.thread_id = thread_id.into();
+        self.thread_ready = true;
+        self.developer_instructions_fingerprint = developer_instructions_fingerprint;
+    }
+
+    pub(super) fn replace_thread(
+        &mut self,
+        thread_id: impl Into<String>,
+        developer_instructions_fingerprint: Option<String>,
+    ) {
+        self.thread_id = thread_id.into();
+        self.thread_ready = true;
+        self.developer_instructions_fingerprint = developer_instructions_fingerprint;
+        self.buffered_notifications.clear();
+        self.active_turn_id = None;
+        self.turn_tracker = CodexTurnTracker::default();
+        self.text_items.clear();
+        self.tool_items.clear();
     }
 }
 

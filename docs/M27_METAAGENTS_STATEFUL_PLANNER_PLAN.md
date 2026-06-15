@@ -126,15 +126,22 @@ Update the capabilities drill:
 - Assert capability provisioning paths remain available: MCP install/setup,
   vault secret creation, grants to workers, and worker confirmation flows.
 
-Add an autonomous one-prompt drill:
+Add a real-provider observe-only code-fix drill:
 
 - Fixture: tiny JavaScript todo project with one failing test.
-- Prompt: `The repo has a small failing JavaScript project. Figure out what is wrong, organize the work with regular agents, and get the project to a passing state. Report back with what changed and how you verified it.`
+- Prompt: `The repo has a small failing JavaScript project. Delegate the investigation, fix, and verification to regular agent(s), get the project to a passing state, then mark this task complete with a concise report of what changed and how it was verified.`
+- The drill must use an actual provider-backed metaagent, never `dev-stub`.
+- The harness may create the fixture, start the kernel/session, launch the
+  metaagent, and submit that single prompt.
+- After the prompt, the harness may only observe session state, metaagent
+  events, workspace diffs, and test results. It must not call runtime MCP tools,
+  append synthetic provider output, prompt workers directly, or write files.
 - Assert the metaagent reads context, creates or updates its plan, delegates to
   workers, does not require a second user prompt, and marks the task completed.
 - Assert source changes are produced by regular workers, not by metaagent task
-  artifact tools.
-- Assert tests pass.
+  artifact tools or harness writes.
+- Assert `src/todo.mjs` changes, the test file remains unchanged, and
+  `npm test` passes.
 
 ## Assumptions
 

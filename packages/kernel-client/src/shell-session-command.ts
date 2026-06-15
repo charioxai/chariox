@@ -23,6 +23,7 @@ import {
 import {
   parsePlacementOptions,
   resolveShellPlacement,
+  shellGitWorktreePlacement,
   type ShellPlacementDeps,
 } from "./shell-placement.js"
 import { resolveShellSliceRef } from "./shell-slice-placement.js"
@@ -81,11 +82,12 @@ export async function executeSessionCommand(
       }
       const worktree = (await resolveShellPlacement(placement.options, context.worktree, "session working directory", deps))
         ?? context.worktree
+      const worktreePlacement = shellGitWorktreePlacement(placement.options)
       if (metaagent && placement.options.sliceRef && placement.options.sliceRef !== "off") {
         return { ok: false, message: "metaagents cannot be launched in a slice" }
       }
       const sliceRef = await resolveShellSliceRef(placement.options.sliceRef, context, worktree, deps, placement.options.sliceDisplayMode)
-      const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null, undefined, undefined, metaagent))
+      const response = await deps.client.send(createSessionRequest(context.workspace, worktree, undefined, undefined, sliceRef ?? null, undefined, undefined, metaagent, worktreePlacement))
       const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
       const session = payload.session
       const attachmentId = await attachShellSession(session.id, deps)

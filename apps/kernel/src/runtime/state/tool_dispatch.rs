@@ -273,6 +273,10 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_ACK_EVENT_TOOL
                     | crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL
                     | crate::transport::runtime_tools::META_TURN_BLOB_TOOL
+                    | crate::transport::runtime_tools::META_SUBSCRIBE_TRACE_TOOL
+                    | crate::transport::runtime_tools::META_POLL_TRACE_TOOL
+                    | crate::transport::runtime_tools::META_WAIT_TRACE_TOOL
+                    | crate::transport::runtime_tools::META_UNSUBSCRIBE_TRACE_TOOL
                     | crate::transport::runtime_tools::META_SUBSCRIBE_EVENTS_TOOL
                     | crate::transport::runtime_tools::META_UNSUBSCRIBE_EVENTS_TOOL
                     | crate::transport::runtime_tools::META_LIST_SUBSCRIPTIONS_TOOL

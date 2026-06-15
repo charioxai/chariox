@@ -1,13 +1,12 @@
 import assert from "node:assert/strict"
-import { execFileSync } from "node:child_process"
-import { mkdtemp, writeFile } from "node:fs/promises"
+import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
-import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
+import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 test("session new can attach a new session in an existing directory", async () => {
   const sessionDir = await mkdtemp(join(tmpdir(), "arroba-session-dir-"))
@@ -38,18 +37,12 @@ test("session new can attach a new session in an existing directory", async () =
   assert.equal(flashedMessage, `attached to session session-dir in ${sessionDir}`)
 })
 
-test("session new can create a local git worktree before attaching", async () => {
-  const preparedWorktree = "/tmp/arroba-session-feature"
-  const prepareCalls: Array<{ targetDirectory?: string; branch?: string; fromRef?: string }> = []
-  const createCalls: Array<{ worktree: string; alias: string | undefined }> = []
+test("session new forwards local git worktree placement to the kernel", async () => {
+  const createCalls: Array<{ worktree: string; alias: string | undefined; placement: unknown }> = []
   let flashedMessage = ""
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    prepareLocalGitWorktree: async (options: { targetDirectory?: string; branch?: string; fromRef?: string }) => {
-      prepareCalls.push(options)
-      return preparedWorktree
-    },
-    createSession: async (_workspace: string, worktree: string, alias?: string) => {
-      createCalls.push({ worktree, alias })
+    createSession: async (_workspace: string, worktree: string, alias?: string, _agentDefaults?: RuntimeSession["agent_defaults"], placement?: unknown) => {
+      createCalls.push({ worktree, alias, placement })
       return { id: "session-worktree", alias: null }
     },
     flashFooter: (message: string) => { flashedMessage = message },
@@ -63,45 +56,16 @@ test("session new can create a local git worktree before attaching", async () =>
     value: "--worktree ../feature --branch feature/session --from main",
   })
 
-  assert.equal(prepareCalls.length, 1)
-  assert.equal(prepareCalls[0]?.targetDirectory, "../feature")
-  assert.equal(prepareCalls[0]?.branch, "feature/session")
-  assert.equal(prepareCalls[0]?.fromRef, "main")
-  assert.deepEqual(createCalls, [{ worktree: preparedWorktree, alias: undefined }])
-  assert.equal(flashedMessage, `attached to session session-worktree in ${preparedWorktree}`)
-})
-
-test("session new materializes a real local git worktree", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "arroba-local-worktree-repo-"))
-  const target = await mkdtemp(join(tmpdir(), "arroba-local-worktree-parent-"))
-  const targetWorktree = join(target, "feature-local")
-  runGit(repo, ["init", "-b", "main"])
-  runGit(repo, ["config", "user.email", "arroba@example.test"])
-  runGit(repo, ["config", "user.name", "Arroba Test"])
-  await writeFile(join(repo, "README.md"), "local worktree\n", "utf8")
-  runGit(repo, ["add", "README.md"])
-  runGit(repo, ["commit", "-m", "init"])
-
-  const createCalls: Array<{ worktree: string }> = []
-  const handlers = createCommandActionHandlers(makeCommandDeps({
-    workspace: repo,
-    worktree: repo,
-    createSession: async (_workspace: string, worktree: string) => {
-      createCalls.push({ worktree })
-      return { id: "session-worktree", alias: null }
+  assert.deepEqual(createCalls, [{
+    worktree: process.cwd(),
+    alias: undefined,
+    placement: {
+      target_directory: "../feature",
+      branch: "feature/session",
+      from_ref: "main",
     },
-  }))
-
-  await handlers.handleSessionCommand({
-    kind: "session",
-    raw: `/session new --worktree ${targetWorktree} --branch feature/local-drill --from main`,
-    action: "new",
-    args: ["--worktree", targetWorktree, "--branch", "feature/local-drill", "--from", "main"],
-    value: `--worktree ${targetWorktree} --branch feature/local-drill --from main`,
-  })
-
-  assert.deepEqual(createCalls, [{ worktree: targetWorktree }])
-  assert.equal(execFileSync("git", ["branch", "--show-current"], { cwd: targetWorktree, encoding: "utf8" }).trim(), "feature/local-drill")
+  }])
+  assert.equal(flashedMessage, "attached to session session-worktree")
 })
 
   test("session command aliases the current session", async () => {

@@ -161,12 +161,12 @@ Provider hidden-context injection contract:
 
 Provider adapter hidden-context channels:
 
-- Codex adapters MUST send turn-scoped hidden context through `turn/start.collaborationMode.settings.developer_instructions`.
+- Codex adapters MUST send hidden context through `thread/start.developerInstructions` or `thread/resume.developerInstructions` when a Codex thread is created or resumed. Codex does not accept this context through `turn/start`; for kernel-managed Codex runs, the kernel MUST hot-reload the Codex thread before a turn when the assembled hidden context fingerprint changes.
 - OpenCode adapters MUST send turn-scoped hidden context through the provider session prompt request `system` field, currently `POST /session/{id}/prompt_async` body `system`.
 - Claude Code adapters MUST send turn-scoped hidden context through the `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`.
 - If a provider channel is unavailable, the adapter may run without hidden context for that turn or restart the provider process with an initialization-scoped system prompt only when the caller explicitly accepts that behavior; it must not silently fall back to visible prompt injection.
-- Live provider drills for Codex, OpenCode, and Claude Code validate that these channels are per-turn in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @arroba/cli run provider-context-injection:drill`.
-- End-to-end prompt assembly changes must also keep `pnpm --filter @arroba/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.arroba/prompts/runtime/base.md`, runs real Arroba provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel, and verifies Arroba user-prompt history does not contain the hidden token.
+- Live provider drills validate direct provider hidden-context channels in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @arroba/cli run provider-context-injection:drill`.
+- End-to-end prompt assembly changes must also keep `pnpm --filter @arroba/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.arroba/prompts/runtime/base.md`, runs real Arroba provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel on successive turns, and verifies Arroba user-prompt history does not contain the hidden token.
 
 Prompt template storage:
 

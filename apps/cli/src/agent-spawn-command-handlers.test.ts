@@ -231,10 +231,6 @@ test("agent spawn command can create and start a new slice", async () => {
     currentProviderId: () => "codex",
     flashFooter: (message) => { flashedMessage = message },
     formatError: (error) => error instanceof Error ? error.message : String(error),
-    prepareLocalGitWorktree: async (options) => {
-      calls.push(`prepare:${options.targetDirectory}:${options.branch}`)
-      return options.targetDirectory ?? "/workspace-feature"
-    },
     createSlice: async (options) => {
       calls.push(`create:${options.displayMode}:${options.worktreeId}`)
       return slice({ id: "slice-created", display_mode: options.displayMode, worktree_id: options.worktreeId })
@@ -251,8 +247,9 @@ test("agent spawn command can create and start a new slice", async () => {
     },
     setProviderRunState: (run) => { calls.push(`run:${run ? run.id : "null"}`) },
     refreshSessionState: async () => currentSession,
-    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, _machineRef, _worktreePlacement, sliceRef) => {
-      calls.push(`spawn:${alias}:${worktreeId}:${sliceRef}`)
+    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, _machineRef, worktreePlacement, sliceRef) => {
+      const target = (worktreePlacement as { target_directory?: string | null } | undefined)?.target_directory ?? "none"
+      calls.push(`spawn:${alias}:${worktreeId ?? "none"}:${target}:${sliceRef}`)
       const nextAgent = agent({
         id: "agent-slice",
         agent_ref: "agent-slice",
@@ -271,15 +268,14 @@ test("agent spawn command can create and start a new slice", async () => {
   }, ["builder", "codex/gpt-5.4", "--slice", "new", "--worktree", "/workspace-feature", "--branch", "feature/login"])
 
   assert.deepEqual(calls, [
-    "prepare:/workspace-feature:feature/login",
-    "create:headless:/workspace-feature",
+    "create:headless:/workspace",
     "start:slice-created",
-    "spawn:builder:/workspace-feature:slice-created",
+    "spawn:builder:none:/workspace-feature:slice-created",
     "run:null",
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-created · worktree /workspace-feature · worker machine-slice")
+  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-created · worktree worktree-1 · worker machine-slice")
 })
 
 test("agent spawn command creates a new slice on an exact kernel without also spawning on the kernel", async () => {
@@ -562,10 +558,6 @@ test("agent spawn command treats --slice off as normal local placement", async (
     currentProviderId: () => "codex",
     flashFooter: (message) => { flashedMessage = message },
     formatError: (error) => error instanceof Error ? error.message : String(error),
-    prepareLocalGitWorktree: async (options) => {
-      calls.push(`prepare:${options.targetDirectory}:${options.branch}`)
-      return options.targetDirectory ?? "/workspace-feature"
-    },
     createSlice: async () => {
       throw new Error("slice off should not create a slice")
     },
@@ -581,8 +573,9 @@ test("agent spawn command treats --slice off as normal local placement", async (
     },
     setProviderRunState: (run) => { calls.push(`run:${run ? run.id : "null"}`) },
     refreshSessionState: async () => currentSession,
-    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, _machineRef, _worktreePlacement, sliceRef) => {
-      calls.push(`spawn:${alias}:${worktreeId}:${sliceRef ?? "none"}`)
+    spawnAgent: async (_provider, alias, _model, _effort, worktreeId, _machineRef, worktreePlacement, sliceRef) => {
+      const target = (worktreePlacement as { target_directory?: string | null } | undefined)?.target_directory ?? "none"
+      calls.push(`spawn:${alias}:${worktreeId ?? "none"}:${target}:${sliceRef ?? "none"}`)
       const nextAgent = agent({
         id: "agent-local",
         agent_ref: "agent-local",
@@ -595,14 +588,13 @@ test("agent spawn command treats --slice off as normal local placement", async (
   }, ["builder", "codex/gpt-5.4", "--slice", "off", "--worktree", "/workspace-feature", "--branch", "feature/login"])
 
   assert.deepEqual(calls, [
-    "prepare:/workspace-feature:feature/login",
-    "spawn:builder:/workspace-feature:none",
+    "spawn:builder:none:/workspace-feature:none",
     "launch:agent-local",
     "run:run-1",
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-local (builder) · local · worktree /workspace-feature")
+  assert.equal(flashedMessage, "spawned agent agent-local (builder) · local · worktree worktree-1")
 })
 
 test("agent spawn command targets an exact kernel without machine resolution", async () => {

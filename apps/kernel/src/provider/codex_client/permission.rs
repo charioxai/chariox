@@ -19,6 +19,13 @@ pub(super) fn codex_permission_policy(
     execution_mode: AgentExecutionMode,
     permission_level: AgentPermissionLevel,
 ) -> CodexPermissionPolicy {
+    let plan_config_overrides = || {
+        let mut config_overrides = BTreeMap::new();
+        config_overrides.insert("include_apply_patch_tool".to_string(), json!(false));
+        config_overrides.insert("features.apply_patch_freeform".to_string(), json!(false));
+        config_overrides.insert("tui.mode".to_string(), json!("plan"));
+        config_overrides
+    };
     match write_access_mode {
         ProviderWriteAccessMode::Unrestricted => {
             let yolo_build = execution_mode == AgentExecutionMode::Build
@@ -38,7 +45,10 @@ pub(super) fn codex_permission_policy(
                     (AgentExecutionMode::Build, false) => json!({ "type": "workspaceWrite" }),
                     (AgentExecutionMode::Plan, _) => json!({ "type": "readOnly" }),
                 },
-                config_overrides: BTreeMap::new(),
+                config_overrides: match execution_mode {
+                    AgentExecutionMode::Build => BTreeMap::new(),
+                    AgentExecutionMode::Plan => plan_config_overrides(),
+                },
             }
         }
         ProviderWriteAccessMode::WorkspaceLiveSyncTracked => CodexPermissionPolicy {
@@ -54,7 +64,10 @@ pub(super) fn codex_permission_policy(
                 AgentExecutionMode::Build => json!({ "type": "dangerFullAccess" }),
                 AgentExecutionMode::Plan => json!({ "type": "readOnly" }),
             },
-            config_overrides: BTreeMap::new(),
+            config_overrides: match execution_mode {
+                AgentExecutionMode::Build => BTreeMap::new(),
+                AgentExecutionMode::Plan => plan_config_overrides(),
+            },
         },
         ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
             #[cfg(target_os = "macos")]
@@ -80,40 +93,6 @@ pub(super) fn codex_permission_policy(
             }
         }
     }
-}
-
-pub(super) fn codex_collaboration_mode(
-    execution_mode: AgentExecutionMode,
-    model: Option<&str>,
-    effort: Option<&str>,
-    developer_instructions: Option<&str>,
-) -> Option<Value> {
-    let model = model?.trim();
-    if model.is_empty() {
-        return None;
-    }
-    let effort = effort
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(Value::from)
-        .unwrap_or(Value::Null);
-    let mode = match execution_mode {
-        AgentExecutionMode::Build => "default",
-        AgentExecutionMode::Plan => "plan",
-    };
-    let developer_instructions = developer_instructions
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(Value::from)
-        .unwrap_or(Value::Null);
-    Some(json!({
-        "mode": mode,
-        "settings": {
-            "model": model,
-            "reasoning_effort": effort,
-            "developer_instructions": developer_instructions,
-        }
-    }))
 }
 
 pub(super) fn workspace_live_sync_codex_permission_grant(

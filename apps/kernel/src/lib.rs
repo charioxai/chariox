@@ -14,6 +14,7 @@ pub mod error;
 pub mod execution_lease;
 pub mod extension;
 pub(crate) mod git_observer;
+pub(crate) mod git_worktree_placement;
 pub mod history;
 pub mod history_archive;
 pub mod io;

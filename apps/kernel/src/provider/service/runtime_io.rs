@@ -8,9 +8,9 @@ use crate::provider::{
 use crate::session::PromptAttachment;
 
 use super::super::{
-    claude_runtime::{ClaudeRunSelection, ClaudeRuntimeBinding, initialize_claude_runtime},
-    codex_runtime::{CodexRuntimeBinding, initialize_codex_runtime},
-    opencode_binding::{OpenCodeRunSelection, OpenCodeRuntimeBinding, initialize_opencode_runtime},
+    claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
+    codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
+    opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
 };
 use super::ProviderProcessService;
 
@@ -482,6 +482,10 @@ impl ProviderProcessService {
     ) -> Result<(), DaemonError> {
         let run = self.get_run_mut(provider_run_id)?;
         if let Some(model) = selection.model {
+            let model = model
+                .strip_prefix("codex/")
+                .unwrap_or(model.as_str())
+                .to_string();
             if run.model() != model {
                 run.set_model(model);
             }
@@ -519,7 +523,37 @@ fn normalize_claude_selection_model(model: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_claude_selection_model;
+    use crate::provider::{LaunchProviderRequest, ProviderProcessService};
+
+    use super::{normalize_claude_selection_model, CodexRunSelection};
+
+    #[test]
+    fn codex_run_selection_strips_provider_prefix_before_updating_run_model() {
+        let mut providers = ProviderProcessService::new();
+        let outcome = providers
+            .start_run_provider_only(LaunchProviderRequest::new(
+                "session-1",
+                "codex",
+                "codex",
+                "default",
+                "gpt-5.5",
+            ))
+            .expect("provider run should start");
+        let run_id = outcome.run().id().to_string();
+
+        providers
+            .apply_codex_run_selection(
+                &run_id,
+                CodexRunSelection {
+                    model: Some("codex/gpt-5.5".to_string()),
+                    variant: None,
+                },
+            )
+            .expect("selection should apply");
+
+        let run = providers.get_run(&run_id).expect("run should exist");
+        assert_eq!(run.model(), "gpt-5.5");
+    }
 
     #[test]
     fn claude_selection_models_stay_provider_native() {

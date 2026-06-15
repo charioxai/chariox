@@ -1,12 +1,9 @@
 import assert from "node:assert/strict"
-import { mkdtemp, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
-import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
+import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 test("agent command usage advertises hierarchical spawn placement", async () => {
   let flashedMessage = ""
@@ -464,18 +461,12 @@ test("agent spawn passes local directory as worktree and launches locally", asyn
   assert.match(flashedMessage, /^spawned agent agent-2 \(review\) · local · worktree /)
 })
 
-test("agent spawn creates a local git worktree placement before spawning", async () => {
-  const preparedWorktree = "/tmp/arroba-feature-worktree"
-  const prepareCalls: Array<{ targetDirectory?: string; branch?: string; fromRef?: string }> = []
-  const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined }> = []
+test("agent spawn forwards local git worktree placement to the kernel", async () => {
+  const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined; placement: unknown }> = []
   let flashedMessage = ""
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    prepareLocalGitWorktree: async (options: { targetDirectory?: string; branch?: string; fromRef?: string }) => {
-      prepareCalls.push(options)
-      return preparedWorktree
-    },
-    spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string) => {
-      spawnCalls.push({ worktreeId, machineRef })
+    spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string, placement?: unknown) => {
+      spawnCalls.push({ worktreeId, machineRef, placement })
       const agent = makeAgent({
         id: "agent-2",
         agent_ref: "agent-2",
@@ -496,12 +487,16 @@ test("agent spawn creates a local git worktree placement before spawning", async
     args: ["spawn", "review", "openai/gpt-5", "--worktree", "../feature", "--branch", "feature/test", "--from", "main"],
   })
 
-  assert.equal(prepareCalls.length, 1)
-  assert.equal(prepareCalls[0]?.targetDirectory, "../feature")
-  assert.equal(prepareCalls[0]?.branch, "feature/test")
-  assert.equal(prepareCalls[0]?.fromRef, "main")
-  assert.deepEqual(spawnCalls, [{ worktreeId: preparedWorktree, machineRef: undefined }])
-  assert.equal(flashedMessage, "spawned agent agent-2 (review) · local · worktree /tmp/arroba-feature-worktree")
+  assert.deepEqual(spawnCalls, [{
+    worktreeId: undefined,
+    machineRef: undefined,
+    placement: {
+      target_directory: "../feature",
+      branch: "feature/test",
+      from_ref: "main",
+    },
+  }])
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) · local")
 })
 
 test("agent spawn with machine requires directory and does not launch local provider", async () => {
@@ -769,7 +764,7 @@ test("agent spawn with machine forwards remote git worktree placement", async ()
   })
 
   assert.deepEqual(spawnCalls, [{
-    worktreeId: "/srv/project-feature",
+    worktreeId: undefined,
     machineRef: "worker",
     placement: {
       target_directory: "/srv/project-feature",
@@ -778,7 +773,7 @@ test("agent spawn with machine forwards remote git worktree placement", async ()
     },
   }])
   assert.equal(launchCount, 0)
-  assert.equal(flashedMessage, "spawned agent agent-2 (review) · remote machine-worker · worktree /srv/project-feature")
+  assert.equal(flashedMessage, "spawned agent agent-2 (review) · remote machine-worker")
 })
 
 test("agent mode updates the focused agent through shared agent config", async () => {

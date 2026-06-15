@@ -45,7 +45,6 @@ export type LocalPlacementOptions = {
 
 export type LocalPlacementContext = {
   baseDirectory: string
-  prepareLocalGitWorktree?: ((options: LocalGitWorktreeOptions) => Promise<string>) | undefined
 }
 
 export function parsePlacementOptions(
@@ -255,18 +254,20 @@ export async function resolveLocalPlacement(
     }
     return resolveExistingLocalDirectory(options.directory, context.baseDirectory, options.label)
   }
-  if (options.gitWorktree || options.branch || options.fromRef) {
-    if (options.machineRef || options.kernelRef) {
-      return options.gitWorktree
-    }
-    return prepareLocalGitWorktree({
-      baseDirectory: context.baseDirectory,
-      targetDirectory: options.gitWorktree,
-      branch: options.branch,
-      fromRef: options.fromRef,
-    }, context.prepareLocalGitWorktree)
-  }
   return undefined
+}
+
+export function gitWorktreePlacementFromParse(
+  parsed: Pick<PlacementParseResult, "gitWorktree" | "branch" | "fromRef">,
+): RemoteGitWorktreePlacement | undefined {
+  if (!parsed.gitWorktree && !parsed.branch && !parsed.fromRef) {
+    return undefined
+  }
+  return {
+    target_directory: parsed.gitWorktree ?? null,
+    branch: parsed.branch ?? null,
+    from_ref: parsed.fromRef ?? null,
+  }
 }
 
 export function worktreeAliasConfigPath(worktreePath: string): string {

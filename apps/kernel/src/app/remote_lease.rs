@@ -10,7 +10,6 @@ use crate::provider::ProviderRunState;
 use crate::session::CreateSessionRequest;
 
 mod git_observation;
-mod git_worktree;
 mod mcp_availability;
 mod native_provider;
 mod projection;
@@ -20,7 +19,6 @@ mod provider_run;
 mod relay_context;
 mod skill_sync;
 
-use git_worktree::prepare_remote_git_worktree;
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 
 pub(crate) struct RemoteLeaseRuntime<'a> {
@@ -105,7 +103,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         }
         let worktree = if let Some(placement) = worktree_placement {
-            prepare_remote_git_worktree(&placement, worktree_id.as_deref())?
+            let base_directory =
+                std::env::current_dir().map_err(|error| DaemonError::LocalTransport {
+                    operation: "resolve leased agent working directory",
+                    message: error.to_string(),
+                })?;
+            crate::git_worktree_placement::prepare_git_worktree(
+                &placement,
+                base_directory,
+                worktree_id.as_deref(),
+                "create remote git worktree",
+            )?
         } else {
             match worktree_id {
                 Some(worktree) => worktree,

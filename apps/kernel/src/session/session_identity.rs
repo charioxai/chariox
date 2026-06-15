@@ -120,6 +120,8 @@ pub struct CreateSessionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_placement: Option<crate::agent::GitWorktreePlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     #[serde(default)]
     pub metaagent: bool,
@@ -138,6 +140,7 @@ impl CreateSessionRequest {
             agent_defaults: None,
             slice_ref: None,
             kernel_ref: None,
+            worktree_placement: None,
             workspace_live_sync_mode: None,
             metaagent: false,
             hidden: false,
@@ -167,6 +170,14 @@ impl CreateSessionRequest {
 
     pub fn with_kernel_ref(mut self, kernel_ref: impl Into<String>) -> Self {
         self.kernel_ref = Some(kernel_ref.into());
+        self
+    }
+
+    pub fn with_worktree_placement(
+        mut self,
+        placement: crate::agent::GitWorktreePlacement,
+    ) -> Self {
+        self.worktree_placement = Some(placement);
         self
     }
 

@@ -101,6 +101,47 @@ test("createSession forwards metaagent session creation to the kernel request", 
   }])
 })
 
+test("createSession forwards worktree placement to the kernel request", async () => {
+  const sent: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      sent.push(request)
+      return { SessionCreated: { session: runtimeSession() } }
+    },
+  } as unknown as LocalIpcClient
+
+  await createSession(
+    client,
+    "/workspace",
+    "/workspace",
+    undefined,
+    undefined,
+    null,
+    null,
+    null,
+    false,
+    {
+      target_directory: "../feature",
+      branch: "feature/session",
+      from_ref: "main",
+    },
+  )
+
+  assert.deepEqual(sent, [{
+    CreateSession: {
+      workspace_id: "/workspace",
+      worktree_id: "/workspace",
+      alias: null,
+      slice_ref: null,
+      worktree_placement: {
+        target_directory: "../feature",
+        branch: "feature/session",
+        from_ref: "main",
+      },
+    },
+  }])
+})
+
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",

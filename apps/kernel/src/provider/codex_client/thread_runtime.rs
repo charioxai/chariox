@@ -7,7 +7,8 @@ use crate::error::DaemonError;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderWriteAccessMode};
 
 use super::mcp_config::{append_codex_mcp_overrides, append_runtime_mcp_overrides};
-use super::permission::{codex_collaboration_mode, codex_permission_policy, CodexPermissionPolicy};
+use super::permission::codex_permission_policy;
+use super::permission::CodexPermissionPolicy;
 use super::{CodexClient, CodexNotification, CodexSocket};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -33,6 +34,7 @@ impl CodexClient {
         write_access_mode: ProviderWriteAccessMode,
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
+        developer_instructions: Option<&str>,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
         let params = self.thread_start_params(
             cwd,
@@ -40,6 +42,7 @@ impl CodexClient {
             write_access_mode,
             execution_mode,
             permission_level,
+            developer_instructions,
         )?;
         self.send_request(socket, next_request_id, "thread/start", params)
     }
@@ -51,6 +54,7 @@ impl CodexClient {
         write_access_mode: ProviderWriteAccessMode,
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
+        developer_instructions: Option<&str>,
     ) -> Result<Value, DaemonError> {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         crate::logging::info_with_fields(
@@ -71,7 +75,6 @@ impl CodexClient {
             "approvalPolicy": policy.approval_policy,
             "approvalsReviewer": "user",
             "sandbox": policy.sandbox,
-            "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
             "persistExtendedHistory": true,
             "serviceName": "arroba",
@@ -87,6 +90,12 @@ impl CodexClient {
         if let Some(model) = model {
             params["model"] = json!(model);
         }
+        if let Some(developer_instructions) = developer_instructions
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            params["developerInstructions"] = json!(developer_instructions);
+        }
         Ok(params)
     }
 
@@ -100,6 +109,7 @@ impl CodexClient {
         write_access_mode: ProviderWriteAccessMode,
         execution_mode: AgentExecutionMode,
         permission_level: AgentPermissionLevel,
+        developer_instructions: Option<&str>,
     ) -> Result<CodexThreadStartResponse, DaemonError> {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         crate::logging::info_with_fields(
@@ -121,7 +131,6 @@ impl CodexClient {
             "approvalPolicy": policy.approval_policy,
             "approvalsReviewer": "user",
             "sandbox": policy.sandbox,
-            "sandboxPolicy": policy.sandbox_policy,
             "personality": "pragmatic",
             "persistExtendedHistory": true,
         });
@@ -135,6 +144,12 @@ impl CodexClient {
         }
         if let Some(model) = model {
             params["model"] = json!(model);
+        }
+        if let Some(developer_instructions) = developer_instructions
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            params["developerInstructions"] = json!(developer_instructions);
         }
         self.send_request(socket, next_request_id, "thread/resume", params)
     }
@@ -154,6 +169,38 @@ impl CodexClient {
         input: Vec<Value>,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
+        let params = Self::turn_start_params(
+            thread_id,
+            input,
+            cwd,
+            model,
+            effort,
+            write_access_mode,
+            execution_mode,
+            permission_level,
+            developer_instructions,
+        );
+        self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "turn/start",
+            params,
+            buffered_notifications,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn turn_start_params(
+        thread_id: &str,
+        input: Vec<Value>,
+        cwd: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+        write_access_mode: ProviderWriteAccessMode,
+        execution_mode: AgentExecutionMode,
+        permission_level: AgentPermissionLevel,
+        _developer_instructions: Option<&str>,
+    ) -> Value {
         let policy = codex_permission_policy(write_access_mode, execution_mode, permission_level);
         let mut params = json!({
             "threadId": thread_id,
@@ -161,7 +208,6 @@ impl CodexClient {
             "approvalPolicy": policy.approval_policy,
             "approvalsReviewer": "user",
             "personality": "pragmatic",
-            "sandbox": policy.sandbox,
             "sandboxPolicy": policy.sandbox_policy,
             "summary": "detailed",
         });
@@ -174,18 +220,7 @@ impl CodexClient {
         if let Some(effort) = effort {
             params["effort"] = json!(effort);
         }
-        if let Some(collaboration_mode) =
-            codex_collaboration_mode(execution_mode, model, effort, developer_instructions)
-        {
-            params["collaborationMode"] = collaboration_mode;
-        }
-        self.send_request_buffering_notifications(
-            socket,
-            next_request_id,
-            "turn/start",
-            params,
-            buffered_notifications,
-        )
+        params
     }
 
     pub fn turn_interrupt(

@@ -1,21 +1,23 @@
+use crate::agent::GitWorktreePlacement;
 use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
     AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasAgentRequest,
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
-    CancelWorkflowRunRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-    DestroyAgentRequest, ExtensionKind, FocusAgentRequest, GetCredentialRequest,
-    GetCredentialVaultStatusRequest, GetMcpServerRequest, GetSkillRequest, GetWorkflowRunRequest,
-    GrantAgentExtensionRequest, ImportMcpServersRequest, ImportSkillsRequest,
-    InstallMcpServerRequest, InstallSkillRequest, InvokeWorkflowEndpointRequest, ListAgentsRequest,
-    ListCredentialsRequest, ListMcpServersRequest, ListSkillsRequest, ListWorkflowRunsRequest,
-    ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ManageCredentialVaultRequest,
-    RemoveCredentialRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
-    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeAgentExtensionRequest,
-    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
-    SetWorkflowNodeMaxTurnsRequest, SpawnAgentRequest, UninstallMcpServerRequest,
-    UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
-    UpdateWorkflowNodeInstructionsRequest, UpsertCredentialRequest,
+    CancelWorkflowRunRequest, CreateSliceRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowRequest, DestroyAgentRequest, ExtensionKind, FocusAgentRequest,
+    GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest, GetSkillRequest,
+    GetWorkflowRunRequest, GrantAgentExtensionRequest, ImportMcpServersRequest,
+    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
+    InvokeWorkflowEndpointRequest, ListAgentsRequest, ListCredentialsRequest,
+    ListMcpServersRequest, ListSkillsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ManageCredentialVaultRequest, RemoveCredentialRequest,
+    RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveWorkflowRequest,
+    ResumeWorkflowRunRequest, RevokeAgentExtensionRequest, SetWorkflowNodeCanCompleteRunRequest,
+    SetWorkflowNodeCanEmitIntermediateOutputRequest, SetWorkflowNodeMaxTurnsRequest,
+    SliceRefRequest, SpawnAgentRequest, UninstallMcpServerRequest, UninstallSkillRequest,
+    UpdateMcpServerRequest, UpdateSkillRequest, UpdateWorkflowNodeInstructionsRequest,
+    UpsertCredentialRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -96,6 +98,28 @@ impl CommandRouter {
             let result = self
                 .dispatch_meta_prompt_command(&session, &metaagent, &args.command, &tokens[1..])
                 .await?;
+            self.audit_meta_run_command(
+                Some(provider_run.id()),
+                &session,
+                &metaagent,
+                &args.command,
+                if result.ok { "succeeded" } else { "failed" },
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
+        }
+        if tokens.first().map(String::as_str) == Some("agent")
+            && tokens.get(1).map(String::as_str) == Some("spawn")
+        {
+            let result = Box::pin(self.dispatch_meta_agent_spawn_command(
+                Some(&provider_run),
+                &session,
+                &metaagent,
+                &args.command,
+                &tokens[2..],
+            ))
+            .await?;
             self.audit_meta_run_command(
                 Some(provider_run.id()),
                 &session,
@@ -247,6 +271,28 @@ impl CommandRouter {
             let result = self
                 .dispatch_meta_prompt_command(&session, &metaagent, &args.command, &tokens[1..])
                 .await?;
+            self.audit_meta_run_command(
+                None,
+                &session,
+                &metaagent,
+                &args.command,
+                if result.ok { "succeeded" } else { "failed" },
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
+        }
+        if tokens.first().map(String::as_str) == Some("agent")
+            && tokens.get(1).map(String::as_str) == Some("spawn")
+        {
+            let result = Box::pin(self.dispatch_meta_agent_spawn_command(
+                None,
+                &session,
+                &metaagent,
+                &args.command,
+                &tokens[2..],
+            ))
+            .await?;
             self.audit_meta_run_command(
                 None,
                 &session,
@@ -424,6 +470,124 @@ impl CommandRouter {
         Ok(result)
     }
 
+    async fn dispatch_meta_agent_spawn_command(
+        &self,
+        provider_run: Option<&crate::provider::RuntimeProviderRun>,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let mut spawn = match parse_meta_agent_spawn_args(args, session) {
+            Ok(spawn) => spawn,
+            Err(error) => return Ok(meta_command_failure_result(command, error)),
+        };
+
+        let mut created_slice = None;
+        if let Some(slice_create) = spawn.slice_create.take() {
+            let worktree_id = spawn
+                .worktree_id
+                .clone()
+                .or_else(|| metaagent.worktree_id().map(str::to_string))
+                .unwrap_or_else(|| session.worktree_id().to_string());
+            let create_request = LocalDaemonRequest::CreateSlice(CreateSliceRequest {
+                name: metaagent_spawn_slice_name(spawn.alias.as_deref()),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: slice_create.display_mode,
+                workspace_id: Some(session.workspace_id().to_string()),
+                worktree_id: Some(worktree_id.clone()),
+                workspace_mount: Some(worktree_id),
+                worker_kernel_ref: spawn.kernel_ref.clone(),
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                base: None,
+            });
+            let create_response = match Box::pin(self.dispatch(
+                meta_kernel_command(provider_run, metaagent, &create_request),
+                create_request,
+            ))
+            .await
+            {
+                Ok(response) => response,
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            };
+            let slice = match create_response {
+                LocalDaemonResponse::SliceCreated { slice } => slice,
+                other => {
+                    return Ok(meta_command_failure_result(
+                        command,
+                        meta_command_error(format!("unexpected slice create response: {other:?}")),
+                    ))
+                }
+            };
+            let start_request = LocalDaemonRequest::StartSlice(SliceRefRequest {
+                slice_ref: slice.id.clone(),
+            });
+            let start_response = match Box::pin(self.dispatch(
+                meta_kernel_command(provider_run, metaagent, &start_request),
+                start_request,
+            ))
+            .await
+            {
+                Ok(response) => response,
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            };
+            let slice = match start_response {
+                LocalDaemonResponse::SliceStarted { slice } => slice,
+                other => {
+                    return Ok(meta_command_failure_result(
+                        command,
+                        meta_command_error(format!("unexpected slice start response: {other:?}")),
+                    ))
+                }
+            };
+            spawn.slice_ref = Some(slice.id.clone());
+            spawn.kernel_ref = None;
+            created_slice = Some(slice);
+        }
+
+        let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: spawn.alias,
+            provider: Some(metaagent.provider().to_string()),
+            model: spawn
+                .model
+                .or_else(|| metaagent.model().map(str::to_string)),
+            effort: metaagent.effort().map(str::to_string),
+            execution_mode: metaagent.execution_mode_override(),
+            permission_level: metaagent.permission_level_override(),
+            worktree_id: spawn
+                .worktree_id
+                .or_else(|| metaagent.worktree_id().map(str::to_string)),
+            kernel_ref: if spawn.slice_ref.is_some() {
+                None
+            } else {
+                spawn.kernel_ref
+            },
+            slice_ref: spawn.slice_ref,
+            worktree_placement: spawn.worktree_placement,
+            metaagent: false,
+        });
+        let response = match Box::pin(self.dispatch(
+            meta_kernel_command(provider_run, metaagent, &request),
+            request,
+        ))
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => return Ok(meta_command_failure_result(command, error)),
+        };
+        let mut result = meta_command_success_result(command, &response);
+        if let Some(slice) = created_slice {
+            if let Some(payload) = result.payload.as_object_mut() {
+                payload.insert("created_slice".to_string(), serde_json::json!(slice));
+            }
+        }
+        Ok(result)
+    }
+
     async fn meta_command_request(
         &self,
         session: &crate::session::RuntimeSession,
@@ -544,6 +708,278 @@ impl CommandRouter {
     }
 }
 
+#[derive(Debug, Clone)]
+struct MetaAgentSpawnArgs {
+    alias: Option<String>,
+    model: Option<String>,
+    worktree_id: Option<String>,
+    kernel_ref: Option<String>,
+    slice_ref: Option<String>,
+    worktree_placement: Option<GitWorktreePlacement>,
+    slice_create: Option<MetaAgentSliceCreate>,
+}
+
+#[derive(Debug, Clone)]
+struct MetaAgentSliceCreate {
+    display_mode: crate::slice::SliceDisplayMode,
+}
+
+fn parse_meta_agent_spawn_args(
+    args: &[String],
+    session: &crate::session::RuntimeSession,
+) -> Result<MetaAgentSpawnArgs, DaemonError> {
+    let mut positional = Vec::new();
+    let mut directory = None;
+    let mut git_worktree = None;
+    let mut branch = None;
+    let mut from_ref = None;
+    let mut kernel_ref = None;
+    let mut slice_ref = None;
+    let mut slice_create = None;
+    let mut slice_display_mode = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        match arg.as_str() {
+            "--meta" | "--metaagent" | "--as-metaagent" => {
+                return Err(meta_command_error(
+                    "metaagents cannot spawn another metaagent through run_command",
+                ));
+            }
+            "--dir" | "--directory" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(format!(
+                        "usage: {}",
+                        crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
+                    )));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error("usage: agent spawn --dir <directory>"));
+                }
+                directory = Some(value.clone());
+                index += 2;
+            }
+            "--worktree" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --worktree <directory> [--branch <branch>] [--from <ref>]",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --worktree <directory> [--branch <branch>] [--from <ref>]",
+                    ));
+                }
+                git_worktree = Some(value.clone());
+                index += 2;
+            }
+            "--branch" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error("usage: agent spawn --branch <branch>"));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error("usage: agent spawn --branch <branch>"));
+                }
+                branch = Some(value.clone());
+                index += 2;
+            }
+            "--from" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error("usage: agent spawn --from <ref>"));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error("usage: agent spawn --from <ref>"));
+                }
+                from_ref = Some(value.clone());
+                index += 2;
+            }
+            "--machine" | "--kernel" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --machine <machine-ref>|--kernel <kernel-ref>",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --machine <machine-ref>|--kernel <kernel-ref>",
+                    ));
+                }
+                if kernel_ref.is_some() {
+                    return Err(meta_command_error(
+                        "usage: agent spawn uses either --machine or --kernel, not both",
+                    ));
+                }
+                kernel_ref = Some(value.clone());
+                index += 2;
+            }
+            "--slice" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --slice off|new|new:headless|new:headed|<slice-ref>",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --slice off|new|new:headless|new:headed|<slice-ref>",
+                    ));
+                }
+                match value.as_str() {
+                    "off" => {
+                        slice_ref = None;
+                        slice_create = None;
+                    }
+                    "new" | "new:headless" => {
+                        slice_ref = None;
+                        slice_create = Some(MetaAgentSliceCreate {
+                            display_mode: crate::slice::SliceDisplayMode::Headless,
+                        });
+                    }
+                    "new:headed" => {
+                        slice_ref = None;
+                        slice_create = Some(MetaAgentSliceCreate {
+                            display_mode: crate::slice::SliceDisplayMode::Headed,
+                        });
+                    }
+                    _ => {
+                        slice_ref = Some(value.clone());
+                        slice_create = None;
+                    }
+                }
+                index += 2;
+            }
+            "--slice-display" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --slice-display headless|headed",
+                    ));
+                };
+                let mode = match value.as_str() {
+                    "headless" => crate::slice::SliceDisplayMode::Headless,
+                    "headed" => crate::slice::SliceDisplayMode::Headed,
+                    _ => {
+                        return Err(meta_command_error(
+                            "usage: agent spawn --slice-display headless|headed",
+                        ));
+                    }
+                };
+                slice_display_mode = Some(mode);
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(meta_command_error(format!(
+                    "unknown agent spawn option `{value}`; usage: {}",
+                    crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
+                )));
+            }
+            _ => {
+                positional.push(arg.clone());
+                index += 1;
+            }
+        }
+    }
+
+    if positional.len() > 2 {
+        return Err(meta_command_error(format!(
+            "usage: {}",
+            crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
+        )));
+    }
+    if directory.is_some() && git_worktree.is_some() {
+        return Err(meta_command_error(
+            "usage: agent spawn uses either --dir or --worktree/--branch, not both",
+        ));
+    }
+    if (branch.is_some() || from_ref.is_some()) && git_worktree.is_none() {
+        return Err(meta_command_error(
+            "usage: agent spawn --branch/--from require --worktree",
+        ));
+    }
+    if let (Some(slice), None) = (slice_ref.as_deref(), slice_create.as_ref()) {
+        if kernel_ref.is_some() {
+            return Err(meta_command_error(
+                "usage: agent spawn uses either --kernel/--machine or a reusable --slice, not both",
+            ));
+        }
+        if directory.is_some() || git_worktree.is_some() {
+            return Err(meta_command_error(
+                "usage: agent spawn --slice <slice-ref> does not accept --dir or --worktree",
+            ));
+        }
+        if slice.is_empty() {
+            return Err(meta_command_error(
+                "usage: agent spawn --slice off|new|new:headless|new:headed|<slice-ref>",
+            ));
+        }
+    }
+    if let Some(mode) = slice_display_mode {
+        let Some(create) = slice_create.as_mut() else {
+            return Err(meta_command_error(
+                "usage: agent spawn --slice-display requires --slice new",
+            ));
+        };
+        create.display_mode = mode;
+    }
+    let worktree_id = directory.map(|directory| resolve_metaagent_directory(session, &directory));
+    let worktree_placement = if let Some(target_directory) = git_worktree {
+        Some(GitWorktreePlacement {
+            target_directory: Some(target_directory),
+            branch,
+            from_ref,
+        })
+    } else {
+        None
+    };
+
+    Ok(MetaAgentSpawnArgs {
+        alias: positional.first().cloned(),
+        model: positional.get(1).cloned(),
+        worktree_id,
+        kernel_ref,
+        slice_ref,
+        worktree_placement,
+        slice_create,
+    })
+}
+
+fn resolve_metaagent_directory(
+    session: &crate::session::RuntimeSession,
+    directory: &str,
+) -> String {
+    let path = std::path::Path::new(directory);
+    if path.is_absolute() {
+        directory.to_string()
+    } else {
+        std::path::Path::new(session.worktree_id())
+            .join(path)
+            .to_string_lossy()
+            .to_string()
+    }
+}
+
+fn metaagent_spawn_slice_name(alias: Option<&str>) -> String {
+    let base = alias.unwrap_or("metaagent-worker");
+    let sanitized = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let base = if sanitized.is_empty() {
+        "metaagent-worker".to_string()
+    } else {
+        sanitized
+    };
+    let suffix = crate::session::unix_epoch_ms().to_string();
+    format!("{base}-slice-{}", &suffix[suffix.len().saturating_sub(5)..])
+}
+
 fn meta_agent_request(
     session: &crate::session::RuntimeSession,
     metaagent: &crate::agent::AgentInstance,
@@ -555,38 +991,28 @@ fn meta_agent_request(
             session_id: session.id().to_string(),
         })),
         Some("spawn") => {
-            let spawn_args = &args[1..];
-            if spawn_args
-                .iter()
-                .any(|arg| matches!(arg.as_str(), "--meta" | "--metaagent" | "--as-metaagent"))
-            {
+            let spawn = parse_meta_agent_spawn_args(&args[1..], session)?;
+            if spawn.slice_create.is_some() {
                 return Err(meta_command_error(
-                    "metaagents cannot spawn another metaagent through run_command",
+                    "agent spawn --slice new requires composed metaagent spawn dispatch",
                 ));
-            }
-            if spawn_args.iter().any(|arg| arg.starts_with("--slice")) {
-                return Err(meta_command_error(
-                    "metaagent run_command does not enable slice placement yet",
-                ));
-            }
-            if spawn_args.len() > 2 {
-                return Err(meta_command_error("usage: agent spawn [alias] [model]"));
             }
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session.id().to_string(),
-                alias: spawn_args.first().cloned(),
+                alias: spawn.alias,
                 provider: Some(metaagent.provider().to_string()),
-                model: spawn_args
-                    .get(1)
-                    .cloned()
+                model: spawn
+                    .model
                     .or_else(|| metaagent.model().map(str::to_string)),
                 effort: metaagent.effort().map(str::to_string),
                 execution_mode: metaagent.execution_mode_override(),
                 permission_level: metaagent.permission_level_override(),
-                worktree_id: metaagent.worktree_id().map(str::to_string),
-                kernel_ref: None,
-                slice_ref: None,
-                worktree_placement: None,
+                worktree_id: spawn
+                    .worktree_id
+                    .or_else(|| metaagent.worktree_id().map(str::to_string)),
+                kernel_ref: spawn.kernel_ref,
+                slice_ref: spawn.slice_ref,
+                worktree_placement: spawn.worktree_placement,
                 metaagent: false,
             }))
         }
@@ -1743,5 +2169,61 @@ fn trim_meta_text(value: &str, max_chars: usize) -> String {
         format!("{trimmed}...")
     } else {
         trimmed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_session() -> crate::session::RuntimeSession {
+        crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace",
+            "/repo",
+            "machine",
+            "daemon",
+        )
+    }
+
+    #[test]
+    fn meta_agent_spawn_parser_supports_new_slice_launch_parameters() {
+        let args = vec![
+            "builder".to_string(),
+            "gpt-5.5".to_string(),
+            "--slice".to_string(),
+            "new:headed".to_string(),
+            "--kernel".to_string(),
+            "linux-worker".to_string(),
+        ];
+
+        let parsed = parse_meta_agent_spawn_args(&args, &test_session())
+            .expect("new slice spawn args should parse");
+
+        assert_eq!(parsed.alias.as_deref(), Some("builder"));
+        assert_eq!(parsed.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(parsed.kernel_ref.as_deref(), Some("linux-worker"));
+        assert!(parsed.slice_ref.is_none());
+        assert_eq!(
+            parsed.slice_create.map(|create| create.display_mode),
+            Some(crate::slice::SliceDisplayMode::Headed)
+        );
+    }
+
+    #[test]
+    fn meta_agent_spawn_parser_supports_existing_slice_placement() {
+        let args = vec![
+            "checker".to_string(),
+            "--slice".to_string(),
+            "linux-dev".to_string(),
+        ];
+
+        let parsed = parse_meta_agent_spawn_args(&args, &test_session())
+            .expect("existing slice spawn args should parse");
+
+        assert_eq!(parsed.alias.as_deref(), Some("checker"));
+        assert_eq!(parsed.slice_ref.as_deref(), Some("linux-dev"));
+        assert!(parsed.slice_create.is_none());
     }
 }

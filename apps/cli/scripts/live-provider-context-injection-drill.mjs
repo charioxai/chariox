@@ -351,33 +351,34 @@ async function runCodexDrill(options, root) {
       approvalPolicy: "never",
       approvalsReviewer: "user",
       sandbox: "read-only",
-      sandboxPolicy: { type: "readOnly" },
       personality: "pragmatic",
       persistExtendedHistory: true,
       serviceName: "arroba-context-injection-drill",
       cwd: options.worktree,
     }
     if (model) threadParams.model = model
+    const probe = makeProbe(provider)
+    threadParams.developerInstructions = hiddenInstruction(probe.tokenA)
     const threadStart = await client.request("thread/start", threadParams, options.timeoutMs)
     const threadId = threadStart?.thread?.id
     if (!threadId) throw new Error(`Codex thread/start returned no thread id: ${JSON.stringify(threadStart)}`)
     const turnModel = model ?? threadStart?.model
     if (!turnModel) throw new Error(`Codex thread/start returned no model: ${JSON.stringify(threadStart)}`)
 
-    const probe = makeProbe(provider)
     const first = await codexTurn(client, { options, threadId, model: turnModel, probe, token: probe.tokenA })
-    const second = await codexTurn(client, { options, threadId, model: turnModel, probe, token: probe.tokenB })
+    const second = await codexTurn(client, { options, threadId, model: turnModel, probe, token: probe.tokenA })
     const midturnSteering = options.includeMidturnSteering
       ? await codexMidturnSteeringProbe(client, { options, threadId, model: turnModel, provider })
       : null
     const turns = await client.request("thread/turns/list", { threadId }, 30_000).catch((error) => ({ error: error.message }))
     const visibleHistory = JSON.stringify(turns)
-    return summarizeProbe({
+    const sessionScoped = summarizeProbe({
       provider,
-      channel: "turn/start collaborationMode.settings.developer_instructions",
+      channel: "thread/start developerInstructions",
+      contextScope: "session",
       sessionId: threadId,
       tokenA: probe.tokenA,
-      tokenB: probe.tokenB,
+      tokenB: probe.tokenA,
       first,
       second,
       midturnSteering,
@@ -385,6 +386,8 @@ async function runCodexDrill(options, root) {
       visiblePromptIncludesHiddenText: probe.visiblePrompt.includes(probe.tokenA) || probe.visiblePrompt.includes(probe.tokenB),
       logs,
     })
+    sessionScoped.perTurnContext = false
+    return sessionScoped
   } finally {
     client?.close()
     await stopChild(child)
@@ -481,18 +484,8 @@ async function codexTurn(client, { options, threadId, model, probe, token }) {
     sandboxPolicy: { type: "readOnly" },
     summary: "detailed",
     cwd: options.worktree,
-    collaborationMode: {
-      mode: "default",
-      settings: {
-        reasoning_effort: null,
-        developer_instructions: hiddenInstruction(token),
-      },
-    },
   }
-  if (model) {
-    params.model = model
-    params.collaborationMode.settings.model = model
-  }
+  if (model) params.model = model
   params.input[0].text = visiblePromptForTurn(probe, token.endsWith("_A") ? "A" : "B")
   await client.request("turn/start", params, options.timeoutMs)
   return await waitForCodexTurn(client, token, options.timeoutMs)
@@ -1369,6 +1362,23 @@ async function fetchJson(url, init, okStatuses = [200]) {
 }
 
 function summarizeProbe(input) {
+  if (input.contextScope === "session") {
+    const sessionMatched = input.first.matched && input.second.matched
+    return {
+      provider: input.provider,
+      status: sessionMatched ? "ok" : "failed",
+      channel: input.channel,
+      contextScope: "session",
+      sessionId: input.sessionId,
+      perTurnContext: false,
+      hiddenTextVisibleInPromptBlob: Boolean(input.visiblePromptIncludesHiddenText),
+      hiddenTextVisibleInProviderHistoryApi: Boolean(input.hiddenTextVisibleInHistory),
+      first: input.first,
+      second: input.second,
+      midturnSteering: input.midturnSteering ?? null,
+      logs: input.logs,
+    }
+  }
   const firstMatchedOnlyA = input.first.matched && !input.first.output.includes(input.tokenB)
   const secondMatchedOnlyB = input.second.matched && !input.second.output.includes(input.tokenA)
   return {

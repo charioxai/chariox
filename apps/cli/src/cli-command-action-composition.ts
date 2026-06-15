@@ -364,7 +364,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     appendNotice,
     appendCloudNotice,
     formatError,
-    createSession: (workspace, worktree, alias, agentDefaults) => createSession(client, workspace, worktree, alias, agentDefaults),
+    createSession: (workspace, worktree, alias, agentDefaults, worktreePlacement) =>
+      createSession(client, workspace, worktree, alias, agentDefaults, undefined, undefined, undefined, false, worktreePlacement),
     createSessionInvite: (sessionId, expiresInMs, maxUses, collaborationLevel) =>
       createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
     joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),

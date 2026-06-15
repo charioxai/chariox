@@ -54,17 +54,46 @@ impl DaemonApp {
         .with_variant(agent.effort().map(str::to_string))
         .with_execution_mode(effective_config.mode)
         .with_permission_level(effective_config.permission_level);
-        request = request.with_workspace_live_sync_mode(
-            crate::provider::provider_workspace_live_sync_mode_for_session(
-                provider,
-                &self.config,
-                Some(&session),
-            ),
-        );
         if let Some(worktree_id) = agent.worktree_id() {
             request = request.with_working_directory(PathBuf::from(worktree_id));
         }
         let provider_run = self.launch_provider_detached(request)?;
         Ok(provider_run.id().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::CreateAgentRequest;
+    use crate::app::KernelSessionService;
+    use crate::config::{DaemonConfig, WorkspaceLiveSyncMode};
+    use crate::provider::ProviderWriteAccessMode;
+    use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn prompt_launched_agents_default_to_non_sync_even_when_session_sync_is_enabled() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        app.sessions_mut()
+            .set_workspace_live_sync_mode(session.id(), WorkspaceLiveSyncMode::Managed)
+            .expect("session sync mode should update");
+        let worker = KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub"))
+            .expect("worker should spawn");
+
+        let run_id = app
+            .ensure_prompt_provider_run_for_agent(session.id(), worker.id())
+            .expect("worker provider run should launch");
+        let run = app.providers.get_run(&run_id).expect("run should exist");
+
+        assert_eq!(
+            run.write_access_mode(),
+            ProviderWriteAccessMode::Unrestricted
+        );
+        assert!(!run.requires_workspace_live_sync());
+        assert!(!run.tracks_workspace_live_sync());
     }
 }

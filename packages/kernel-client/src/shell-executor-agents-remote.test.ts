@@ -725,7 +725,7 @@ test("executeShellCommand spawns worker agent on kernel", async () => {
         effort: "low",
         execution_mode: null,
         permission_level: null,
-        worktree_id: null,
+        worktree_id: "/repo/qa",
         kernel_ref: "worker-1",
         slice_ref: null,
         worktree_placement: null,
@@ -742,7 +742,7 @@ test("executeShellCommand spawns worker agent on kernel", async () => {
     model: "gpt-5.2",
     effort: "low",
   })
-  const result = await executeShellCommand(parseShellCommand("agent spawn qa --kernel worker-1 as qa"), context, { client: fake.client })
+  const result = await executeShellCommand(parseShellCommand("agent spawn qa --kernel worker-1 --dir qa as qa"), context, { client: fake.client })
   assert.equal(result.ok, true)
   assert.deepEqual(result.bindings, { qa: "agent-remote" })
   assert.deepEqual(result.contextUpdates, { agentId: "agent-remote" })
@@ -833,11 +833,37 @@ test("executeShellCommand rejects machine spawn when no ready kernel supports th
   assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
 })
 
-test("executeShellCommand rejects machine spawn directory placement before resolving kernels", async () => {
+test("executeShellCommand forwards machine spawn directory placement after resolving kernels", async () => {
   const requests: Record<string, unknown>[] = []
+  const agent = makeAgent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "qa",
+    remote_execution: {
+      worker_kernel_id: "worker-ready",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
   const fake = fakeClient((request) => {
     requests.push(request)
-    return {}
+    if ("ListRemoteMachineKernels" in request) {
+      return {
+        RemoteMachineKernelsListed: {
+          kernels: [{
+            kernel_id: "worker-ready",
+            machine_id: "machine-1",
+            accepting_remote_leases: true,
+            available_providers: ["codex"],
+          }],
+        },
+      }
+    }
+    if ("SpawnAgent" in request) {
+      return { AgentSpawned: { agent } }
+    }
+    throw new Error(`unexpected request ${JSON.stringify(request)}`)
   })
   const context = createDefaultShellContext({
     workspace: "/repo",
@@ -850,9 +876,10 @@ test("executeShellCommand rejects machine spawn directory placement before resol
 
   const result = await executeShellCommand(parseShellCommand("agent spawn qa --machine machine-1 --dir /repo"), context, { client: fake.client })
 
-  assert.equal(result.ok, false)
-  assert.match(result.message ?? "", /uses the worker kernel default directory/)
-  assert.deepEqual(requests, [])
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests[0], { ListRemoteMachineKernels: { machine_ref: "machine-1" } })
+  assert.equal((requests[1] as { SpawnAgent: { kernel_ref: string | null; worktree_id: string | null } }).SpawnAgent.kernel_ref, "worker-ready")
+  assert.equal((requests[1] as { SpawnAgent: { kernel_ref: string | null; worktree_id: string | null } }).SpawnAgent.worktree_id, "/repo")
 })
 
 test("executeShellCommand treats --slice off as local agent placement", async () => {
@@ -1017,14 +1044,13 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
     context,
     {
       client: fake.client,
-      prepareLocalGitWorktree: async () => "/repo-feature",
     },
   )
 
   assert.equal(result.ok, true)
   assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["CreateSlice", "StartSlice", "SpawnAgent"])
   const createRequest = requests[0] as { CreateSlice: { name: string } }
-  assert.match(createRequest.CreateSlice.name, /^repo-feature-slice-/)
+  assert.match(createRequest.CreateSlice.name, /^repo-slice-/)
   assert.deepEqual({
     ...requests[0],
     CreateSlice: {
@@ -1038,8 +1064,8 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
       os: "linux",
       display_mode: "headed",
       workspace_id: "/repo",
-      worktree_id: "/repo-feature",
-      workspace_mount: "/repo-feature",
+      worktree_id: "/repo",
+      workspace_mount: "/repo",
       worker_kernel_ref: null,
       display_url: null,
       provider_auth: [],
@@ -1057,10 +1083,14 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
       effort: "low",
       execution_mode: null,
       permission_level: null,
-      worktree_id: "/repo-feature",
+      worktree_id: null,
       kernel_ref: null,
       slice_ref: "slice-1",
-      worktree_placement: null,
+      worktree_placement: {
+        target_directory: "../repo-feature",
+        branch: "feature/login",
+        from_ref: null,
+      },
       metaagent: false,
     },
   })

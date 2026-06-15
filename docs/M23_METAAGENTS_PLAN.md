@@ -564,8 +564,9 @@ Current web product drill coverage:
   that submits a prompt to the regular agent through the web terminal product
   prompt, deterministically completes the local dev-stub provider turn, and
   verifies the metaagent pane renders the inline `agent.turn.completed` event
-  prompt. This path is kept opt-in because repeated hosted staging runs can hit
-  Cloud rate limits while polling the browser relay.
+  prompt. This is only a UI/event-rendering contract check, not evidence of
+  independent metaagent behavior. This path is kept opt-in because repeated
+  hosted staging runs can hit Cloud rate limits while polling the browser relay.
 - `pnpm --filter @arroba-cloud/web run drill:metaagent:web:local` runs the
   same event-prompt validation against a local relay, local kernel, and local
   product web frontend. It creates the metaagent session and worker agent

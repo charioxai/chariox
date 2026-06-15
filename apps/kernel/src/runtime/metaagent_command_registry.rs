@@ -35,6 +35,8 @@ pub(crate) struct MetaCommandDoc {
     pub(crate) description: &'static str,
 }
 
+pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>]";
+
 pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "session overview",
@@ -72,7 +74,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Submit a normal Arroba prompt to one of this user's regular agents through the existing prompt path. Metaagent prompt commands do not support blocking reply flags; use events, turn_overview, and turn_blob for supervision.",
+        description: "Submit a normal Arroba prompt to one of this user's regular agents through the existing prompt path. Do not use `prompt` to steer an agent that is currently running or queued for workflow work; inspect the workflow run and wait for its events instead. Metaagent prompt commands do not support blocking reply flags; use events, turn_overview, and turn_blob for supervision.",
     },
     MetaCommandDoc {
         name: "agent list",
@@ -103,8 +105,14 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
             "create worker",
             "make worker",
         ],
-        usage: "agent spawn [alias] [model]",
-        examples: &["agent spawn reviewer gpt-5.2"],
+        usage: AGENT_SPAWN_USAGE,
+        examples: &[
+            "agent spawn reviewer gpt-5.2",
+            "agent spawn verifier --dir ../qa",
+            "agent spawn linux-checker --kernel linux-worker",
+            "agent spawn isolated-builder --slice new:headless",
+            "agent spawn slice-worker --slice linux-dev",
+        ],
         tags: &["agent", "spawn", "worker", "orchestration"],
         intents: &[
             "create a new agent",
@@ -118,7 +126,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Create a regular agent owned by the current user. Metaagents cannot spawn another metaagent.",
+        description: "Create a regular agent owned by the current user. Metaagents cannot spawn another metaagent. Spawn uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation.",
     },
     MetaCommandDoc {
         name: "agent focus",
@@ -497,6 +505,9 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
             "workflow node add qa-flow implementer",
             "workflow node add qa-flow reviewer",
             "workflow resolve qa-flow",
+            "workflow node instructions qa-flow <implementer-node-id> \"Implement the change, run checks, and hand off files plus command results\"",
+            "workflow node instructions qa-flow <reviewer-node-id> \"Review independently, run checks, and complete only on pass\"",
+            "workflow node can-complete qa-flow <reviewer-node-id> true",
             "workflow edge add qa-flow <implementer-node-id> <reviewer-node-id>",
             "workflow endpoint new qa-flow <entry-node-id> start",
             "workflow run qa-flow start \"Build and verify the app\"",
@@ -515,7 +526,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "documentation only",
         routed: false,
-        description: "Basic workflow sequence: create the workflow, spawn regular agents, add each agent as a node, resolve the workflow to get node ids, connect nodes with edges when work should flow between them, create an endpoint on the entry node, run the endpoint with the task prompt, then inspect runs or a specific run. Workflow nodes use agent aliases; node ids come from workflow resolve/list output.",
+        description: "Basic workflow sequence: create the workflow, spawn regular agents, add each agent as a node, resolve the workflow to get node ids, configure node instructions and completion permissions, connect nodes with edges when work should flow between them, create an endpoint on the entry node, run the endpoint with the task prompt, then inspect runs or a specific run. Configure nodes before running; instruction changes after a run starts do not rewrite the already-dispatched turn. While a run is Running, use `workflow get-run`, events, and turn_overview for visibility. Do not direct-prompt workflow workers, create replacement workflows, or cancel/restart the run unless the run is truly blocked or the user asked to abort. Workflow nodes use agent aliases; node ids come from workflow resolve/list output.",
     },
     MetaCommandDoc {
         name: "workflow run-output-schema",
@@ -617,7 +628,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "session workflow policy",
         routed: true,
-        description: "Resume a paused or resumable workflow run.",
+        description: "Resume a paused or resumable workflow run. Do not call this on a Running workflow; poll `workflow get-run`, wait for workflow events, or inspect worker turns instead.",
     },
     MetaCommandDoc {
         name: "agent app guide",
@@ -635,6 +646,9 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
             "workflow node add app-build builder",
             "workflow node add app-build verifier",
             "workflow resolve app-build",
+            "workflow node instructions app-build <builder-node-id> \"Build the app, run checks, and hand off files plus command results\"",
+            "workflow node instructions app-build <verifier-node-id> \"Review independently, run checks, and complete only on pass\"",
+            "workflow node can-complete app-build <verifier-node-id> true",
             "workflow edge add app-build <builder-node-id> <verifier-node-id>",
             "workflow endpoint new app-build <builder-node-id> start",
             "workflow run app-build start \"Build the requested app, then verify it\"",
@@ -652,7 +666,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "documentation only",
         routed: false,
-        description: "For app-building tasks, use a workflow when requested: create builder and verifier regular agents, add them as workflow nodes, connect builder to verifier, create an endpoint on the builder node, run the workflow with the user's high-level app prompt, then inspect the run and worker turns. The metaagent should supervise and complete the task only after the workflow output and worker evidence show the app was built and verified.",
+        description: "For app-building tasks, use a workflow when requested: create builder and verifier regular agents, add them as workflow nodes, resolve node ids, configure builder/reviewer node instructions, set only the verifier node as able to complete the run, connect builder to verifier, create an endpoint on the builder node, run the workflow with the user's high-level app prompt, then inspect the run and worker turns. The app should be built by the workflow run, not by direct prompts outside the run. While the run is active, wait for final workflow JSON, workflow events, or clear failure before retrying. The metaagent should supervise and complete the task only after the workflow output and worker evidence show the app was built and verified.",
     },
     MetaCommandDoc {
         name: "mcp list",

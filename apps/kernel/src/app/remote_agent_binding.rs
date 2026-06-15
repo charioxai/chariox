@@ -144,6 +144,7 @@ impl DaemonApp {
             relay_config,
         )?;
         let worker_worktree_id = request.worktree_id.clone();
+        let worktree_placement = request.worktree_placement.clone();
         request.kernel_ref = None;
         request.worktree_id = None;
         request.worktree_placement = None;
@@ -156,7 +157,7 @@ impl DaemonApp {
             &agent,
             &worker_kernel,
             worker_worktree_id,
-            None,
+            worktree_placement,
             relay_override,
         );
         if remote_setup.is_err() {

@@ -94,6 +94,10 @@ pub const META_READ_EVENT_TOOL: &str = "arroba.meta.read_event";
 pub const META_ACK_EVENT_TOOL: &str = "arroba.meta.ack_event";
 pub const META_TURN_OVERVIEW_TOOL: &str = "arroba.meta.turn_overview";
 pub const META_TURN_BLOB_TOOL: &str = "arroba.meta.turn_blob";
+pub const META_SUBSCRIBE_TRACE_TOOL: &str = "arroba.meta.subscribe_trace";
+pub const META_POLL_TRACE_TOOL: &str = "arroba.meta.poll_trace";
+pub const META_WAIT_TRACE_TOOL: &str = "arroba.meta.wait_trace";
+pub const META_UNSUBSCRIBE_TRACE_TOOL: &str = "arroba.meta.unsubscribe_trace";
 pub const META_SUBSCRIBE_EVENTS_TOOL: &str = "arroba.meta.subscribe_events";
 pub const META_UNSUBSCRIBE_EVENTS_TOOL: &str = "arroba.meta.unsubscribe_events";
 pub const META_LIST_SUBSCRIPTIONS_TOOL: &str = "arroba.meta.list_subscriptions";
@@ -424,6 +428,34 @@ pub struct MetaTurnOverviewArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaTurnBlobArgs {
     pub blob_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaSubscribeTraceArgs {
+    pub agent_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaPollTraceArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaUnsubscribeTraceArgs {
+    pub subscription_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1090,6 +1122,59 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_SUBSCRIBE_TRACE_TOOL.to_string(),
+            description: "Attach this metaagent to the live terminal stream for one owned regular agent. Subscribe before prompting the worker so provider output is routed to the supervision stream.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["agent_ref"],
+                "properties": {
+                    "agent_ref": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["compact", "verbose"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_POLL_TRACE_TOOL.to_string(),
+            description: "Drain currently buffered live trace records from a metaagent supervision stream without waiting. Compact mode returns summaries and short excerpts; verbose mode returns capped raw text. Use wait_trace for normal worker supervision.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subscription_id": {"type": "string"},
+                    "agent_ref": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["compact", "verbose"]},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WAIT_TRACE_TOOL.to_string(),
+            description: "Wait briefly for live worker trace records, then drain them. Prefer this after prompting a worker: it blocks until activity, worker output, completion, error, or timeout instead of returning an empty snapshot immediately.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subscription_id": {"type": "string"},
+                    "agent_ref": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["compact", "verbose"]},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "wait_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
+                    "until": {"type": "string", "enum": ["any", "activity", "worker_output", "completion", "error"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_UNSUBSCRIBE_TRACE_TOOL.to_string(),
+            description: "Detach a metaagent live trace subscription and discard any pending compact stream records for it.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["subscription_id"],
+                "properties": {"subscription_id": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_SUBSCRIBE_EVENTS_TOOL.to_string(),
             description: format!(
                 "Subscribe the metaagent to an optional session event. Valid event kinds: {}.",
@@ -1274,6 +1359,22 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_meta_turn_blob"
         | "mcp__arroba__meta_turn_blob"
         | "mcp__arroba__arroba_meta_turn_blob" => Some(META_TURN_BLOB_TOOL),
+        META_SUBSCRIBE_TRACE_TOOL
+        | "arroba_meta_subscribe_trace"
+        | "mcp__arroba__meta_subscribe_trace"
+        | "mcp__arroba__arroba_meta_subscribe_trace" => Some(META_SUBSCRIBE_TRACE_TOOL),
+        META_POLL_TRACE_TOOL
+        | "arroba_meta_poll_trace"
+        | "mcp__arroba__meta_poll_trace"
+        | "mcp__arroba__arroba_meta_poll_trace" => Some(META_POLL_TRACE_TOOL),
+        META_WAIT_TRACE_TOOL
+        | "arroba_meta_wait_trace"
+        | "mcp__arroba__meta_wait_trace"
+        | "mcp__arroba__arroba_meta_wait_trace" => Some(META_WAIT_TRACE_TOOL),
+        META_UNSUBSCRIBE_TRACE_TOOL
+        | "arroba_meta_unsubscribe_trace"
+        | "mcp__arroba__meta_unsubscribe_trace"
+        | "mcp__arroba__arroba_meta_unsubscribe_trace" => Some(META_UNSUBSCRIBE_TRACE_TOOL),
         META_SUBSCRIBE_EVENTS_TOOL
         | "arroba_meta_subscribe_events"
         | "mcp__arroba__meta_subscribe_events"

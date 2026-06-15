@@ -6,9 +6,9 @@ import type {
   WaitingRoomRemoteKernelView,
 } from "./cli-types.js"
 import {
+  gitWorktreePlacementFromParse,
   parseAgentSpawnOptions,
   resolveLocalPlacement,
-  type LocalGitWorktreeOptions,
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
 import { remoteKernelReadiness } from "./remote-kernel-readiness.js"
@@ -28,7 +28,6 @@ export type AgentSpawnCommandHandlerDeps = {
   currentProviderId: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   formatError: (error: unknown) => string
-  prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   createSlice?: (options: {
     name: string
     displayMode: "headless" | "headed"
@@ -116,27 +115,17 @@ export async function handleAgentSpawnCommand(
     const effectiveProvider = provider ?? deps.currentProviderId()
     const effort = model ? deps.currentVariantId() : null
     const remoteRef = parsed.kernelRef ?? parsed.machineRef
-    const remoteGitPlacement = remoteRef && (parsed.gitWorktree || parsed.branch || parsed.fromRef)
-      ? {
-          target_directory: parsed.gitWorktree ?? null,
-          branch: parsed.branch ?? null,
-          from_ref: parsed.fromRef ?? null,
-        }
-      : undefined
+    const worktreePlacement = gitWorktreePlacementFromParse(parsed)
     if (parsed.machineRef) {
       await validateRemoteMachineSpawnTarget(deps, parsed.machineRef, effectiveProvider)
     }
     const worktreeId = await resolveLocalPlacement({
       directory: parsed.directory,
-      gitWorktree: parsed.gitWorktree,
-      branch: parsed.branch,
-      fromRef: parsed.fromRef,
       machineRef: parsed.machineRef,
       kernelRef: parsed.kernelRef,
       label: "agent working directory",
     }, {
       baseDirectory: deps.currentWorktreeTarget(),
-      prepareLocalGitWorktree: deps.prepareLocalGitWorktree,
     })
     const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId, remoteRef)
     const payload = await spawnAndLaunchAgent(deps, {
@@ -146,7 +135,7 @@ export async function handleAgentSpawnCommand(
       effort,
       worktreeId,
       machineRef: sliceRef ? undefined : remoteRef,
-      worktreePlacement: remoteGitPlacement,
+      worktreePlacement,
       sliceRef,
       metaagent: parsed.metaagent ?? false,
     })

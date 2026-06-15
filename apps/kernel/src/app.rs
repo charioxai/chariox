@@ -45,8 +45,8 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use external_provider_session_discovery::{
-    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
     discover_external_provider_sessions, read_external_provider_observed_turns,
+    ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
 pub(crate) use external_provider_sessions::ExternalProviderSessionIndexStore;
 pub(crate) use prompt_activity::{
@@ -54,9 +54,9 @@ pub(crate) use prompt_activity::{
     PromptWorkspaceClaimStore,
 };
 pub(crate) use prompt_lifecycle::{
-    KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
-    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
-    serialize_remote_prompt_attachments,
+    serialize_remote_prompt_attachments, KernelPreparedPromptSubmission, KernelPromptAbortDispatch,
+    KernelPromptCancellation, KernelPromptDispatch, KernelPromptSubmission,
+    KernelRemotePromptDispatch,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
@@ -91,9 +91,9 @@ pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_first_output_watchdog::{
-    ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
     provider_first_output_timeout_candidates, provider_first_output_timeout_diagnostic,
     provider_inactivity_timeout_candidates, provider_inactivity_timeout_diagnostic,
+    ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
 };
 pub(crate) use provider_launch_policy::{
     apply_metaagent_launch_policy, failed_codex_resume_state_replacement,
@@ -126,6 +126,7 @@ pub struct DaemonApp {
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
+    metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     config_projection: DaemonConfigProjectionStore,
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
@@ -219,6 +220,8 @@ impl DaemonApp {
             operational_history,
             durable_state,
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
+            metaagent_trace_subscriptions:
+                crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
             config_projection: DaemonConfigProjectionStore::new(config.clone()),
             session_projection: SessionStateProjectionStore::default(),
             agent_runtime_projection: AgentRuntimeProjectionStore::default(),
@@ -310,6 +313,12 @@ impl DaemonApp {
         &self,
     ) -> crate::runtime::metaagent_event::MetaagentEventStore {
         self.metaagent_events.clone()
+    }
+
+    pub(crate) fn metaagent_trace_subscription_store(
+        &self,
+    ) -> crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore {
+        self.metaagent_trace_subscriptions.clone()
     }
 
     pub(crate) fn session_state_projection_store(&self) -> SessionStateProjectionStore {

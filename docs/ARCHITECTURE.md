@@ -902,11 +902,11 @@ The registry layout is intentionally ordinary markdown so later Arroba Cloud edi
 
 Provider adapters inject `hidden_system_context` through provider-native hidden/system surfaces on every turn:
 
-- Codex: `turn/start.collaborationMode.settings.developer_instructions`
+- Codex: `thread/start.developerInstructions` or `thread/resume.developerInstructions` when the thread is created or resumed. Because Codex does not accept this context through `turn/start`, kernel-managed Codex runs hot-reload the Codex thread before a turn when the assembled hidden-context fingerprint changes.
 - OpenCode: `POST /session/{id}/prompt_async` request body `system`
 - Claude Code: `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`
 
-Live drills against the installed provider harnesses confirmed these three channels are turn-scoped, not only initialization-scoped. That means a mid-context MCP grant, skill grant, workflow control update, or utility instruction can be reflected in the next turn without a provider-process warm restart. A warm restart remains a fallback for provider capabilities that cannot be changed through a turn-scoped native surface.
+Live drills against the installed provider harnesses confirmed OpenCode and Claude Code support turn-scoped hidden context. Current Codex app-server supports this context at thread creation/resume, so the kernel performs a managed thread hot reload before a Codex turn when mid-session hidden-context changes must be reflected.
 
 Visibility rules:
 

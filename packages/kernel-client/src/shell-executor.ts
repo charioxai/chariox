@@ -27,10 +27,7 @@ import { executePromptCommand } from "./shell-prompt-command.js"
 import { executeProviderCommand } from "./shell-provider-command.js"
 import { executeKernelCommand } from "./shell-kernel-command.js"
 import { executeStopCommand } from "./shell-stop-command.js"
-import {
-  type LocalGitWorktreeOptions,
-  type ShellPlacementDeps,
-} from "./shell-placement.js"
+import type { ShellPlacementDeps } from "./shell-placement.js"
 import { executeWorkflowCommand } from "./shell-workflow-command.js"
 import { executeWorkspaceCommand } from "./shell-workspace-command.js"
 
@@ -42,7 +39,6 @@ export type ShellExecutorDeps = ShellPlacementDeps & {
   client: ShellKernelClient
   clientId?: string | undefined
   readSecret?: ((prompt: string) => Promise<string>) | undefined
-  prepareLocalGitWorktree?: ((options: LocalGitWorktreeOptions) => Promise<string>) | undefined
 }
 
 export async function executeShellCommand(

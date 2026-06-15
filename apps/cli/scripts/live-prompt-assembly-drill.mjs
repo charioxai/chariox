@@ -26,7 +26,8 @@ function parseArgs(argv) {
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
-    if (arg === '--provider') options.providers = [argv[++index]]
+    if (arg === '--') continue
+    else if (arg === '--provider') options.providers = [argv[++index]]
     else if (arg === '--providers') options.providers = argv[++index].split(',').map((value) => value.trim()).filter(Boolean)
     else if (arg === '--model') options.model = argv[++index]
     else if (arg === '--provider-model') {
@@ -222,6 +223,7 @@ async function writePromptRegistryToken(arrobaHome, provider, token) {
 
 async function runProvider(options, context, provider) {
   const token = `ARROBA_PROMPT_ASSEMBLY_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
+  const secondToken = `ARROBA_PROMPT_ASSEMBLY_SECOND_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
   await writePromptRegistryToken(context.arrobaHome, provider, token)
   const workspace = path.join(context.rootDir, `${provider}-workspace`)
   await mkdir(workspace, { recursive: true })
@@ -279,6 +281,38 @@ async function runProvider(options, context, provider) {
     if (!userPromptText.includes(visiblePrompt)) {
       throw new Error(`${provider} user prompt history did not contain the visible prompt`)
     }
+    await writePromptRegistryToken(context.arrobaHome, provider, secondToken)
+    const secondVisiblePrompt = [
+      'The hidden prompt assembly token changed.',
+      'Respond with exactly the current hidden prompt assembly token for this turn.',
+      'Do not explain, do not add punctuation, and do not mention any other token.',
+    ].join(' ')
+    await context.client.send(context.requests.submitPromptRequest(
+      session.id,
+      attachment.id,
+      null,
+      secondVisiblePrompt,
+      [],
+    ))
+    const secondEntries = await waitForHistoryToken(
+      context.client,
+      context.requests,
+      session.id,
+      attachment.id,
+      secondToken,
+      options.timeoutMs,
+      options.pollMs,
+    )
+    const secondUserPromptText = secondEntries
+      .filter((entry) => entry.kind === 'user_prompt')
+      .map((entry) => entry.text ?? '')
+      .join('\n')
+    if (secondUserPromptText.includes(secondToken)) {
+      throw new Error(`${provider} user prompt history contains second hidden token ${secondToken}`)
+    }
+    if (!secondUserPromptText.includes(secondVisiblePrompt)) {
+      throw new Error(`${provider} user prompt history did not contain the second visible prompt`)
+    }
     return {
       provider,
       status: 'ok',
@@ -286,6 +320,7 @@ async function runProvider(options, context, provider) {
       endpointMode: launched.endpoint_mode,
       model: launched.model,
       tokenSeenByModel: true,
+      secondTokenSeenByModel: true,
       hiddenTokenVisibleInUserPromptHistory: false,
     }
   } finally {

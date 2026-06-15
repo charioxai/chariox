@@ -34,6 +34,7 @@ import { resolveShellAgent } from "./shell-agent-resolver.js"
 import {
   parsePlacementOptions,
   resolveShellPlacement,
+  shellGitWorktreePlacement,
   type ShellPlacementDeps,
 } from "./shell-placement.js"
 import {
@@ -121,10 +122,6 @@ export async function executeAgentCommand(
       if (metaagent && parsedSpawn.options.sliceRef && parsedSpawn.options.sliceRef !== "off") {
         return { ok: false, message: "metaagents cannot be launched in a slice" }
       }
-      const remotePlacementRef = parsedSpawn.options.kernelRef ?? parsedSpawn.options.machineRef
-      if (remotePlacementRef && (parsedSpawn.options.directory || parsedSpawn.options.gitWorktree || parsedSpawn.options.branch || parsedSpawn.options.fromRef)) {
-        return { ok: false, message: "usage: agent spawn [alias] [model] --machine/--kernel <ref> uses the worker kernel default directory" }
-      }
       const resolvedMachineKernel = await resolveMachineSpawnKernelRef(parsedSpawn.options.machineRef, context.provider, deps)
       if (!resolvedMachineKernel.ok) {
         return { ok: false, message: resolvedMachineKernel.message }
@@ -138,7 +135,8 @@ export async function executeAgentCommand(
       ) {
         return { ok: false, message: "usage: agent spawn [alias] [model] --slice <slice-ref> does not accept --dir or --worktree" }
       }
-      const worktree = await resolveShellPlacement(parsedSpawn.options, context.worktree, "agent working directory", deps)
+      const worktree = await resolveShellPlacement(parsedSpawn.options, context.worktree, "agent working directory", deps, false)
+      const worktreePlacement = shellGitWorktreePlacement(parsedSpawn.options)
       const effectiveWorktree = worktree ?? context.worktree
       const sliceRef = await resolveShellSliceRef(
         parsedSpawn.options.sliceRef,
@@ -158,7 +156,7 @@ export async function executeAgentCommand(
         undefined,
         undefined,
         sliceRef ? undefined : remoteKernelRef,
-        undefined,
+        worktreePlacement,
         sliceRef,
         metaagent,
       ))

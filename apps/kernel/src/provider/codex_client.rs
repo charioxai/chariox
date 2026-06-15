@@ -24,9 +24,7 @@ use json_rpc::JsonRpcMessage;
 #[cfg(test)]
 use notifications::parse_notification;
 #[cfg(test)]
-use permission::{
-    codex_collaboration_mode, codex_permission_policy, workspace_live_sync_codex_permission_grant,
-};
+use permission::{codex_permission_policy, workspace_live_sync_codex_permission_grant};
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::codex_endpoint_is_healthy;
@@ -135,8 +133,8 @@ mod tests {
     };
 
     use super::{
-        codex_collaboration_mode, codex_permission_policy, parse_notification,
-        workspace_live_sync_codex_permission_grant, CodexClient, CodexNotification, JsonRpcMessage,
+        codex_permission_policy, parse_notification, workspace_live_sync_codex_permission_grant,
+        CodexClient, CodexNotification, JsonRpcMessage,
     };
 
     #[test]
@@ -209,15 +207,13 @@ mod tests {
                 ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
                 AgentExecutionMode::Build,
                 AgentPermissionLevel::Required,
+                None,
             )
             .expect("thread start params should render");
 
         assert_eq!(params.get("approvalPolicy"), Some(&json!("untrusted")));
         assert_eq!(params.get("sandbox"), Some(&json!("danger-full-access")));
-        assert_eq!(
-            params.get("sandboxPolicy"),
-            Some(&json!({ "type": "dangerFullAccess" }))
-        );
+        assert_eq!(params.get("sandboxPolicy"), None);
         assert_eq!(params.get("cwd"), Some(&json!("/repo/selected")));
         assert_eq!(params.get("model"), Some(&json!("gpt-5.2")));
     }
@@ -233,7 +229,18 @@ mod tests {
         assert_eq!(policy.approval_policy, json!("never"));
         assert_eq!(policy.sandbox, "read-only");
         assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
-        assert!(policy.config_overrides.is_empty());
+        assert_eq!(
+            policy.config_overrides.get("include_apply_patch_tool"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("features.apply_patch_freeform"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("tui.mode"),
+            Some(&json!("plan"))
+        );
     }
 
     #[test]
@@ -260,52 +267,41 @@ mod tests {
         assert_eq!(policy.approval_policy, json!("never"));
         assert_eq!(policy.sandbox, "read-only");
         assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
-    }
-
-    #[test]
-    fn codex_plan_mode_uses_native_collaboration_mode() {
         assert_eq!(
-            codex_collaboration_mode(AgentExecutionMode::Plan, Some("gpt-5.4"), Some("low"), None),
-            Some(json!({
-                "mode": "plan",
-                "settings": {
-                    "model": "gpt-5.4",
-                    "reasoning_effort": "low",
-                    "developer_instructions": null,
-                }
-            }))
+            policy.config_overrides.get("include_apply_patch_tool"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("features.apply_patch_freeform"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("tui.mode"),
+            Some(&json!("plan"))
         );
     }
 
     #[test]
-    fn codex_build_mode_resets_native_collaboration_mode() {
-        assert_eq!(
-            codex_collaboration_mode(AgentExecutionMode::Build, Some("gpt-5.4"), None, None),
-            Some(json!({
-                "mode": "default",
-                "settings": {
-                    "model": "gpt-5.4",
-                    "reasoning_effort": null,
-                    "developer_instructions": null,
-                }
-            }))
-        );
-    }
-
-    #[test]
-    fn codex_collaboration_mode_carries_hidden_developer_instructions() {
-        let mode = codex_collaboration_mode(
-            AgentExecutionMode::Build,
-            Some("gpt-5.4"),
-            None,
+    fn codex_turn_start_omits_session_scoped_hidden_context() {
+        let params = CodexClient::turn_start_params(
+            "thread-1",
+            vec![json!({"type": "text", "text": "visible"})],
+            Some("/tmp/worktree"),
+            Some("gpt-5.5"),
+            Some("low"),
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
             Some("hidden system context"),
-        )
-        .expect("collaboration mode should build");
-
-        assert_eq!(
-            mode["settings"]["developer_instructions"],
-            json!("hidden system context")
         );
+
+        assert_eq!(params.get("threadId"), Some(&json!("thread-1")));
+        assert_eq!(
+            params.get("sandboxPolicy"),
+            Some(&json!({ "type": "readOnly" }))
+        );
+        assert_eq!(params.get("developerInstructions"), None);
+        assert_eq!(params.get("collaborationMode"), None);
     }
 
     #[test]
@@ -320,6 +316,7 @@ mod tests {
                 ProviderWriteAccessMode::Unrestricted,
                 AgentExecutionMode::Build,
                 AgentPermissionLevel::Yolo,
+                Some("hidden at thread start"),
             )
             .expect("params should build");
 
@@ -328,6 +325,10 @@ mod tests {
         assert_eq!(params.get("serviceName"), Some(&json!("arroba")));
         assert_eq!(params.get("cwd"), Some(&json!("/tmp/worktree")));
         assert_eq!(params.get("model"), Some(&json!("gpt-5.5")));
+        assert_eq!(
+            params.get("developerInstructions"),
+            Some(&json!("hidden at thread start"))
+        );
     }
 
     #[test]

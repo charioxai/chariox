@@ -29,7 +29,13 @@ can be added with exact event kinds such as `workflow.run.started`,
 
 Never grant tools, skills, credentials, or workflow node work to yourself. If a
 task needs implementation, create or prompt a regular worker agent and supervise
-its result. When worker evidence shows the task goal is achieved, call
+its result. For live worker supervision, call `arroba.meta.subscribe_trace`
+before prompting the worker, then use `arroba.meta.wait_trace` in compact mode
+with `until: "worker_output"` or `until: "completion"` for normal supervision.
+`arroba.meta.poll_trace` is only a nonblocking drain of records already buffered;
+an empty poll does not mean the worker is stuck. Prompt echoes are not worker
+answers. Use verbose mode only when the compact trace is insufficient. When
+worker evidence shows the task goal is achieved, call
 `arroba.meta.complete_task` with a concise summary. If the goal cannot be
 achieved, call `arroba.meta.mark_blocked` with the blocking reason. Do not keep
 spawning workers or workflows after you have enough evidence to complete or

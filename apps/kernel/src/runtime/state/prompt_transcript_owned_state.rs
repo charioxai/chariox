@@ -30,6 +30,11 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         self.terminal_stream.record_assistant_message_completion(
             session_id,
             provider_run_id,
@@ -56,6 +61,11 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         let record = self.terminal_stream.fan_out_output(
             session_id,
             provider_run_id,
@@ -313,6 +323,11 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         self.terminal_stream.fan_out_output(
             session_id,
             provider_run_id,
@@ -337,6 +352,29 @@ impl KernelRuntimeOwnedState {
         };
         self.attachment_store
             .filter_attachment_ids_for_user(recipient_attachment_ids, agent.owner_user_id())
+    }
+
+    pub(super) fn with_metaagent_trace_recipient_ids(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        mut recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        for recipient in self
+            .metaagent_trace_subscriptions
+            .recipient_attachment_ids_for_target(session_id, agent_id)
+        {
+            if !recipient_attachment_ids
+                .iter()
+                .any(|existing| existing == &recipient)
+            {
+                recipient_attachment_ids.push(recipient);
+            }
+        }
+        recipient_attachment_ids
     }
 }
 

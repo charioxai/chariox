@@ -1153,7 +1153,6 @@ test("executeShellCommand creates a session and binds assignment", async () => {
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --dir qa as s"), context, {
     client: fake.client,
-    resolveExistingDirectory: async () => "/repo/qa",
   })
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /workspace live sync: config default/)
@@ -1188,7 +1187,6 @@ test("executeShellCommand creates a session with a metaagent", async () => {
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --meta --dir qa as s"), context, {
     client: fake.client,
-    resolveExistingDirectory: async () => "/repo/qa",
   })
 
   assert.equal(result.ok, true)
@@ -1226,7 +1224,6 @@ test("executeShellCommand does not adopt stale focused agent ids from session pa
 
   const result = await executeShellCommand(parseShellCommand("session new --dir qa"), context, {
     client: fake.client,
-    resolveExistingDirectory: async () => "/repo/qa",
   })
 
   assert.equal(result.ok, true)
@@ -1252,7 +1249,6 @@ test("executeShellCommand reports explicit session workspace live sync mode afte
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --dir qa"), context, {
     client: fake.client,
-    resolveExistingDirectory: async () => "/repo/qa",
   })
 
   assert.equal(result.ok, true)
@@ -1278,7 +1274,6 @@ test("executeShellCommand creates and starts a headless slice for a new session"
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new as s"), context, {
     client: fake.client,
-    resolveExistingDirectory: async () => "/repo/qa",
   })
 
   assert.equal(result.ok, true)
@@ -1331,7 +1326,6 @@ test("executeShellCommand creates and starts a headed slice for a new session", 
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice new:headed as s"), context, {
     client: fake.client,
-    resolveExistingDirectory: async () => "/repo/qa",
   })
 
   assert.equal(result.ok, true)
@@ -1381,7 +1375,6 @@ test("executeShellCommand reuses only slices scoped to the session worktree", as
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --dir qa --slice qa"), context, {
     client: fake.client,
-    resolveExistingDirectory: async () => "/repo/qa",
   })
 
   assert.equal(result.ok, true)
@@ -1409,7 +1402,6 @@ test("executeShellCommand rejects slices from another worktree", async () => {
   await assert.rejects(
     () => executeShellCommand(parseShellCommand("session new --dir qa --slice main"), context, {
       client: fake.client,
-      resolveExistingDirectory: async () => "/repo/qa",
     }),
     /slice main is scoped to worktree \/repo\/main, not \/repo\/qa/,
   )
@@ -2055,7 +2047,6 @@ test("executeShellCommand attaches standalone shell clients when switching sessi
   const result = await executeShellCommand(parseShellCommand("session new --dir qa as s"), context, {
     client: fake.client,
     clientId: "arroba-shell-test",
-    resolveExistingDirectory: async () => "/repo/qa",
   })
   assert.equal(result.ok, true)
   assert.equal(result.contextUpdates?.attachmentId, "attachment-shell")

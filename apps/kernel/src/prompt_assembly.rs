@@ -442,11 +442,10 @@ mod tests {
             .expect("defaults should materialize");
 
         assert!(root.join("runtime").join("base.md").exists());
-        assert!(
-            root.join("runtime")
-                .join("workspace-live-sync-tracked.md")
-                .exists()
-        );
+        assert!(root
+            .join("runtime")
+            .join("workspace-live-sync-tracked.md")
+            .exists());
         assert!(root.join("workflow").join("turn.md").exists());
         let base = fs::read_to_string(root.join("runtime").join("base.md"))
             .expect("base prompt should read");
@@ -479,11 +478,9 @@ mod tests {
             .read_required("runtime/base")
             .expect_err("missing template should fail");
 
-        assert!(
-            error
-                .to_string()
-                .contains("required prompt template `runtime/base` missing")
-        );
+        assert!(error
+            .to_string()
+            .contains("required prompt template `runtime/base` missing"));
     }
 
     #[test]
@@ -506,20 +503,16 @@ mod tests {
             .expect("envelope should assemble");
 
         assert_eq!(envelope.manifest.version, PROMPT_REGISTRY_VERSION);
-        assert!(
-            envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/base" && entry.sha256.len() == 64)
-        );
-        assert!(
-            envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/native-permissions")
-        );
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/base" && entry.sha256.len() == 64));
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/native-permissions"));
     }
 
     #[test]
@@ -541,18 +534,14 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(
-            envelope
-                .hidden_system_context
-                .contains("You are an Arroba metaagent")
-        );
-        assert!(
-            envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/metaagent-delegation")
-        );
+        assert!(envelope
+            .hidden_system_context
+            .contains("You are an Arroba metaagent"));
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/metaagent-delegation"));
     }
 
     #[test]
@@ -574,13 +563,11 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(
-            !envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/metaagent-delegation")
-        );
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/metaagent-delegation"));
     }
 
     #[test]
@@ -602,18 +589,14 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(
-            envelope
-                .hidden_system_context
-                .contains("do not write pseudo tool calls")
-        );
-        assert!(
-            envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/workflow-direct-json-fallback")
-        );
+        assert!(envelope
+            .hidden_system_context
+            .contains("do not write pseudo tool calls"));
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workflow-direct-json-fallback"));
     }
 
     #[test]
@@ -638,16 +621,12 @@ mod tests {
             .expect("envelope should assemble");
 
         assert_eq!(envelope.visible_user_prompt, "user visible prompt");
-        assert!(
-            envelope
-                .hidden_system_context
-                .contains("HIDDEN_RUNTIME_TOKEN")
-        );
-        assert!(
-            !envelope
-                .visible_user_prompt
-                .contains("HIDDEN_RUNTIME_TOKEN")
-        );
+        assert!(envelope
+            .hidden_system_context
+            .contains("HIDDEN_RUNTIME_TOKEN"));
+        assert!(!envelope
+            .visible_user_prompt
+            .contains("HIDDEN_RUNTIME_TOKEN"));
     }
 
     #[test]
@@ -669,30 +648,22 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(
-            envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/workspace-live-sync")
-        );
-        assert!(
-            envelope
-                .hidden_system_context
-                .contains("Do not interpret live sync as a global filesystem restriction")
-        );
-        assert!(
-            envelope
-                .hidden_system_context
-                .contains("use provider-native edit/write/patch or shell/bash tools normally")
-        );
-        assert!(
-            !envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/native-permissions")
-        );
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Do not interpret live sync as a global filesystem restriction"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("use provider-native edit/write/patch or shell/bash tools normally"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/native-permissions"));
     }
 
     #[test]
@@ -714,42 +685,30 @@ mod tests {
             )
             .expect("envelope should assemble");
 
-        assert!(
-            envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/workspace-live-sync-tracked")
-        );
-        assert!(
-            envelope
-                .hidden_system_context
-                .contains("provider-native edits inside the selected synced roots are allowed")
-        );
-        assert!(
-            envelope
-                .hidden_system_context
-                .contains("Other repositories outside the synced roots are not part of live sync")
-        );
-        assert!(
-            !envelope
-                .hidden_system_context
-                .contains("Direct filesystem writes inside those roots are unavailable")
-        );
-        assert!(
-            !envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/workspace-live-sync")
-        );
-        assert!(
-            !envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/native-permissions")
-        );
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync-tracked"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("provider-native edits inside the selected synced roots are allowed"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Other repositories outside the synced roots are not part of live sync"));
+        assert!(!envelope
+            .hidden_system_context
+            .contains("Direct filesystem writes inside those roots are unavailable"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/native-permissions"));
     }
 
     #[test]
@@ -775,13 +734,11 @@ mod tests {
             .expect("envelope should assemble");
         std::env::remove_var("ARROBA_MACHINE_ID");
 
-        assert!(
-            envelope
-                .manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/slice")
-        );
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/slice"));
     }
 
     #[test]
@@ -803,11 +760,9 @@ mod tests {
             .expect("continuation context should assemble");
 
         assert_eq!(hidden, "CONTINUATION_TEMPLATE playwright");
-        assert!(
-            manifest
-                .entries
-                .iter()
-                .any(|entry| entry.template_id == "runtime/mcp-skill-continuation")
-        );
+        assert!(manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/mcp-skill-continuation"));
     }
 }

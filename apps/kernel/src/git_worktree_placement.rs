@@ -4,19 +4,42 @@ use std::process::Command;
 use crate::agent::GitWorktreePlacement;
 use crate::error::DaemonError;
 
-pub(super) fn prepare_remote_git_worktree(
-    placement: &GitWorktreePlacement,
-    target_hint: Option<&str>,
+pub(crate) fn resolve_existing_worktree(
+    directory: &str,
+    base_directory: impl AsRef<Path>,
+    operation: &'static str,
 ) -> Result<String, DaemonError> {
-    let base_directory = std::env::current_dir().map_err(|error| DaemonError::LocalTransport {
-        operation: "resolve remote git worktree base",
-        message: error.to_string(),
-    })?;
-    let repo_root = run_remote_git(&base_directory, &["rev-parse", "--show-toplevel"])?;
+    let resolved = resolve_target_directory(base_directory.as_ref(), directory);
+    if !resolved.exists() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!("working directory `{}` does not exist", resolved.display()),
+        });
+    }
+    if !resolved.is_dir() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "working directory `{}` is not a directory",
+                resolved.display()
+            ),
+        });
+    }
+    Ok(resolved.display().to_string())
+}
+
+pub(crate) fn prepare_git_worktree(
+    placement: &GitWorktreePlacement,
+    base_directory: impl AsRef<Path>,
+    target_hint: Option<&str>,
+    operation: &'static str,
+) -> Result<String, DaemonError> {
+    let base_directory = base_directory.as_ref();
+    let repo_root = run_git(base_directory, &["rev-parse", "--show-toplevel"], operation)?;
     let repo_root = PathBuf::from(repo_root.trim());
     if repo_root.as_os_str().is_empty() {
         return Err(DaemonError::LocalTransport {
-            operation: "create remote git worktree",
+            operation,
             message: format!(
                 "git did not report a repository root for `{}`",
                 base_directory.display()
@@ -29,14 +52,7 @@ pub(super) fn prepare_remote_git_worktree(
         .target_directory
         .as_deref()
         .or(target_hint)
-        .map(|target| {
-            let path = PathBuf::from(target);
-            if path.is_absolute() {
-                path
-            } else {
-                base_directory.join(path)
-            }
-        })
+        .map(|target| resolve_target_directory(base_directory, target))
         .unwrap_or_else(|| {
             let slug = slugify_git_branch(placement.branch.as_deref().unwrap_or(from_ref));
             let repo_name = repo_root
@@ -51,7 +67,7 @@ pub(super) fn prepare_remote_git_worktree(
 
     let target = target_directory.display().to_string();
     let args = if let Some(branch) = placement.branch.as_deref() {
-        if remote_git_branch_exists(&repo_root, branch)? {
+        if git_branch_exists(&repo_root, branch, operation)? {
             vec![
                 "worktree".to_string(),
                 "add".to_string(),
@@ -77,12 +93,25 @@ pub(super) fn prepare_remote_git_worktree(
         ]
     };
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    run_remote_git(&repo_root, &arg_refs)?;
-    Ok(target)
+    run_git(&repo_root, &arg_refs, operation)?;
+    resolve_existing_worktree(&target, Path::new("."), operation)
 }
 
-fn remote_git_branch_exists(repo_root: &Path, branch: &str) -> Result<bool, DaemonError> {
-    match run_remote_git(
+fn resolve_target_directory(base_directory: &Path, target: &str) -> PathBuf {
+    let path = PathBuf::from(target);
+    if path.is_absolute() {
+        path
+    } else {
+        base_directory.join(path)
+    }
+}
+
+fn git_branch_exists(
+    repo_root: &Path,
+    branch: &str,
+    operation: &'static str,
+) -> Result<bool, DaemonError> {
+    match run_git(
         repo_root,
         &[
             "rev-parse",
@@ -90,6 +119,7 @@ fn remote_git_branch_exists(repo_root: &Path, branch: &str) -> Result<bool, Daem
             "--quiet",
             &format!("refs/heads/{branch}"),
         ],
+        operation,
     ) {
         Ok(_) => Ok(true),
         Err(error) => {
@@ -102,13 +132,13 @@ fn remote_git_branch_exists(repo_root: &Path, branch: &str) -> Result<bool, Daem
     }
 }
 
-fn run_remote_git(cwd: &Path, args: &[&str]) -> Result<String, DaemonError> {
+fn run_git(cwd: &Path, args: &[&str], operation: &'static str) -> Result<String, DaemonError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .output()
         .map_err(|error| DaemonError::LocalTransport {
-            operation: "run remote git",
+            operation,
             message: format!(
                 "git {} failed in `{}`: {error}",
                 args.join(" "),
@@ -117,7 +147,7 @@ fn run_remote_git(cwd: &Path, args: &[&str]) -> Result<String, DaemonError> {
         })?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
-            operation: "run remote git",
+            operation,
             message: format!(
                 "git {} failed in `{}`: {}",
                 args.join(" "),

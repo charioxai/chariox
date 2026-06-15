@@ -5,10 +5,11 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
+  gitWorktreePlacementFromParse,
   parsePlacementOptions,
   resolveExistingLocalDirectory,
   resolveLocalPlacement,
-  type LocalGitWorktreeOptions,
+  type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
 import type { SessionListEntry } from "./sessions.js"
 
@@ -39,8 +40,8 @@ export type SessionCommandHandlerDeps = {
     worktree: string,
     alias?: string,
     agentDefaults?: RuntimeSession["agent_defaults"],
+    worktreePlacement?: RemoteGitWorktreePlacement,
   ) => Promise<CreateSessionResult>
-  prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
     session: Pick<RuntimeSession, "id">,
     createdSession: boolean,
@@ -108,16 +109,13 @@ async function createSession(
     } else {
       const resolvedPlacement = await resolveLocalPlacement({
         directory: parsed.directory,
-        gitWorktree: parsed.gitWorktree,
-        branch: parsed.branch,
-        fromRef: parsed.fromRef,
         label: "session working directory",
       }, {
         baseDirectory: deps.currentWorktreeTarget(),
-        prepareLocalGitWorktree: deps.prepareLocalGitWorktree,
       })
       sessionWorktree = resolvedPlacement ?? deps.currentWorktreeTarget()
     }
+    const worktreePlacement = gitWorktreePlacementFromParse(parsed)
     const session = await deps.createSession(deps.currentWorkspaceTarget(), sessionWorktree, undefined, {
       provider: deps.currentProviderId(),
       model: deps.currentModelId(),
@@ -125,7 +123,7 @@ async function createSession(
       account_profile: deps.accountProfile ?? null,
       execution_mode: "build",
       permission_level: "yolo",
-    })
+    }, worktreePlacement)
     await deps.attachBinding(session, true)
     const placement = sessionWorktree !== deps.currentWorktreeTarget() ? ` in ${sessionWorktree}` : ""
     deps.flashFooter(`attached to session ${session.alias ?? session.id}${placement}`, "info")

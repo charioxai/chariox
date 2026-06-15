@@ -19,6 +19,11 @@ impl KernelRuntimeOwnedState {
         });
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         self.terminal_stream.record_notice(
             session_id,
             provider_run_id,
