@@ -14,6 +14,7 @@ const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_TRACE_POLL_PROVIDER ?? 'co
 const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_TRACE_POLL_MODEL ?? 'gpt-5.5'
 const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_TRACE_POLL_EFFORT ?? 'medium'
 const TRACE_PHRASE = 'TRACE_POLL_DRILL_WORKER_VISIBLE'
+let logPrefix = 'metaagent-trace-poll-drill'
 
 function buildUserPrompt(options) {
   const workerPlacementInstruction = options.workerPlacement === 'new-headless-slice'
@@ -31,6 +32,18 @@ function buildUserPrompt(options) {
         '',
         'Use the session default model when spawning the worker; do not pass an explicit model.',
       ]
+
+  if (options.supervisionMode === 'event-continuation') {
+    return [
+      ...launchInstruction,
+      'Give the worker a slightly longer repository inspection task: inspect the README, git status, recent commit, and file list, then summarize what kind of fixture this repo is.',
+      `The worker response must include the exact phrase ${TRACE_PHRASE}.`,
+      'Do not call subscribe_trace, wait_trace, or poll_trace for this task.',
+      'After you have spawned and prompted the worker, stop this turn without marking the task complete.',
+      'Arroba will send you a continuation prompt when the worker turn completes.',
+      'On that continuation, review the worker output using the event and turn/history tools available to you, then complete this metaagent task with a concise summary of the worker result and the evidence you reviewed.',
+    ].join('\n')
+  }
 
   return [
     ...launchInstruction,
@@ -50,6 +63,7 @@ function parseArgs(argv) {
     workerModel: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_MODEL ?? '',
     workerEffort: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_EFFORT ?? '',
     workerPlacement: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_PLACEMENT ?? 'current-worktree',
+    supervisionMode: process.env.ARROBA_METAAGENT_TRACE_POLL_SUPERVISION_MODE ?? 'trace',
     accountProfile: 'default',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
@@ -66,6 +80,7 @@ function parseArgs(argv) {
     else if (arg === '--worker-model') options.workerModel = String(argv[++index] ?? '').trim()
     else if (arg === '--worker-effort' || arg === '--worker-variant') options.workerEffort = String(argv[++index] ?? '').trim()
     else if (arg === '--worker-placement') options.workerPlacement = String(argv[++index] ?? '').trim()
+    else if (arg === '--supervision-mode') options.supervisionMode = String(argv[++index] ?? '').trim()
     else if (arg === '--account-profile') options.accountProfile = String(argv[++index] ?? '').trim()
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++index])
@@ -76,7 +91,11 @@ function parseArgs(argv) {
       console.log([
         'Usage: node apps/cli/scripts/live-metaagent-trace-poll-drill.mjs [options]',
         '',
-        'Runs a real-provider metaagent drill that validates live worker trace polling.',
+        'Runs a real-provider metaagent drill that validates worker supervision.',
+        '',
+        'Supervision modes:',
+        '  trace               Subscribe and wait on live worker trace output.',
+        '  event-continuation  Yield after delegation, then rely on kernel event continuation.',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -94,6 +113,9 @@ function parseArgs(argv) {
   if (!['current-worktree', 'new-headless-slice'].includes(options.workerPlacement)) {
     throw new Error('--worker-placement must be current-worktree or new-headless-slice')
   }
+  if (!['trace', 'event-continuation'].includes(options.supervisionMode)) {
+    throw new Error('--supervision-mode must be trace or event-continuation')
+  }
   return options
 }
 
@@ -108,8 +130,8 @@ function makePorts() {
 }
 
 function log(name, details) {
-  if (details === undefined) console.log(`[metaagent-trace-poll-drill] ${name}`)
-  else console.log(`[metaagent-trace-poll-drill] ${name}`, JSON.stringify(details))
+  if (details === undefined) console.log(`[${logPrefix}] ${name}`)
+  else console.log(`[${logPrefix}] ${name}`, JSON.stringify(details))
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -148,6 +170,16 @@ function unwrap(response, key) {
 
 function unwrapVariant(response, ...keys) {
   return keys.map((key) => response?.[key]).find((value) => value != null) ?? response
+}
+
+function listMetaagentEventsRequest(sessionId, metaagentId, limit = 100) {
+  return {
+    ListMetaagentEvents: {
+      session_id: sessionId,
+      metaagent_id: metaagentId,
+      limit,
+    },
+  }
 }
 
 async function initGitWorktree(root) {
@@ -287,9 +319,17 @@ function modelMatches(actual, expected, provider) {
 async function observe({ client, requests, sessionId, metaagentId, historyDir, beforeAgentIds, timeoutMs, pollMs, options }) {
   const deadline = Date.now() + timeoutMs
   const seenTools = new Set()
+  const seenEvents = new Set()
   let sawSubscribeTrace = false
   let sawTraceWait = false
   let sawTracePhrase = false
+  let sawForbiddenTraceTool = false
+  let sawWorkerPrompt = false
+  let sawWorkerCompletionEvent = false
+  let sawInjectedContinuationPrompt = false
+  let sawReviewTool = false
+  let sawPostEventReview = false
+  let sawCompleteBeforeEvent = false
   let finalTask = null
   let workers = []
   while (Date.now() < deadline) {
@@ -317,10 +357,48 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
         status: tool.status ?? null,
         summary: JSON.stringify(tool).slice(0, 300),
       })
-      if (tool.tool.includes('subscribe_trace')) sawSubscribeTrace = true
+      if (tool.tool.includes('subscribe_trace')) {
+        sawSubscribeTrace = true
+        if (options.supervisionMode === 'event-continuation') sawForbiddenTraceTool = true
+      }
       if (tool.tool.includes('wait_trace') || tool.tool.includes('poll_trace')) {
+        if (options.supervisionMode === 'event-continuation') sawForbiddenTraceTool = true
         if (tool.tool.includes('wait_trace')) sawTraceWait = true
         if (traceItems(tool).some(traceItemContainsWorkerPhrase)) sawTracePhrase = true
+      }
+      if (tool.tool.includes('run_command') && tool.input?.command?.trim().startsWith('prompt ')) {
+        sawWorkerPrompt = true
+      }
+      if (tool.tool.includes('complete_task') && !sawWorkerCompletionEvent) {
+        sawCompleteBeforeEvent = true
+      }
+      if (tool.tool.includes('turn_overview') || tool.tool.includes('turn_blob') || tool.tool.includes('read_event')) {
+        sawReviewTool = true
+      }
+      if (sawWorkerCompletionEvent && sawReviewTool) {
+        sawPostEventReview = true
+      }
+    }
+    if (options.supervisionMode === 'event-continuation') {
+      const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
+      const events = eventsPayload.events ?? []
+      const workerIds = new Set(workers.map((agent) => agent.id))
+      for (const event of events) {
+        if (!seenEvents.has(event.event_id)) {
+          seenEvents.add(event.event_id)
+          log('metaagent-event-observed', {
+            eventId: event.event_id,
+            kind: event.kind,
+            sourceAgentId: event.source_agent_id ?? null,
+            injectedPromptId: event.injected_prompt_id ?? null,
+            deliveryStatus: event.prompt_delivery_status ?? null,
+          })
+        }
+        if (event.kind === 'agent.turn.completed' && workerIds.has(event.source_agent_id)) {
+          sawWorkerCompletionEvent = true
+          if (event.injected_prompt_id) sawInjectedContinuationPrompt = true
+          if (sawReviewTool) sawPostEventReview = true
+        }
       }
     }
     if (finalTask?.status) {
@@ -333,6 +411,54 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
       throw new Error(`metaagent task ended as ${finalTask.status}: ${finalTask.blocked_reason ?? finalTask.aborted_reason ?? 'no reason'}`)
     }
     const profileMatched = workers.some((agent) => workerMatchesProfile(agent, options))
+    if (options.supervisionMode === 'event-continuation') {
+      if (sawForbiddenTraceTool) throw new Error('metaagent used trace tools in event-continuation mode')
+      if (sawCompleteBeforeEvent) throw new Error('metaagent completed task before worker completion event')
+      if (finalTask?.status === 'completed'
+        && workers.length > 0
+        && profileMatched
+        && sawWorkerPrompt
+        && sawWorkerCompletionEvent
+        && sawInjectedContinuationPrompt
+        && sawPostEventReview
+        && (finalTask.completion_summary ?? '').includes(TRACE_PHRASE)) {
+        return {
+          task: finalTask,
+          workers,
+          sawSubscribeTrace,
+          sawTraceWait,
+          sawTracePhrase,
+          sawWorkerPrompt,
+          sawWorkerCompletionEvent,
+          sawInjectedContinuationPrompt,
+          sawPostEventReview,
+        }
+      }
+      if (finalTask?.status === 'completed') {
+        throw new Error(`metaagent task completed without validated event continuation: ${JSON.stringify({
+          workers: workers.map((agent) => ({
+            id: agent.id,
+            alias: agent.alias,
+            provider: agent.provider,
+            model: agent.model,
+            effort: agent.effort ?? null,
+          })),
+          expectedWorkerProfile: options.workerProvider ? {
+            provider: options.workerProvider,
+            model: options.workerModel,
+            effort: options.workerEffort,
+          } : null,
+          profileMatched,
+          sawWorkerPrompt,
+          sawWorkerCompletionEvent,
+          sawInjectedContinuationPrompt,
+          sawPostEventReview,
+          summary: finalTask.completion_summary ?? null,
+        }, null, 2)}`)
+      }
+      await sleep(pollMs)
+      continue
+    }
     if (finalTask?.status === 'completed' && workers.length > 0 && profileMatched && sawSubscribeTrace && sawTraceWait && sawTracePhrase) {
       return { task: finalTask, workers, sawSubscribeTrace, sawTraceWait, sawTracePhrase }
     }
@@ -376,12 +502,23 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
     sawSubscribeTrace,
     sawTraceWait,
     sawTracePhrase,
+    sawWorkerPrompt,
+    sawWorkerCompletionEvent,
+    sawInjectedContinuationPrompt,
+    sawPostEventReview,
+    sawForbiddenTraceTool,
   }, null, 2)}`)
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const rootDir = path.join(repoRoot, 'target', 'live-metaagent-trace-poll-drill', `${process.pid}-${Date.now()}`)
+  logPrefix = options.supervisionMode === 'event-continuation'
+    ? 'metaagent-event-continuation-drill'
+    : 'metaagent-trace-poll-drill'
+  const artifactName = options.supervisionMode === 'event-continuation'
+    ? 'live-metaagent-event-continuation-drill'
+    : 'live-metaagent-trace-poll-drill'
+  const rootDir = path.join(repoRoot, 'target', artifactName, `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
   const scriptsDir = path.join(rootDir, 'scripts')
@@ -500,7 +637,9 @@ async function main() {
     })
     console.log(JSON.stringify({
       status: 'ok',
-      mode: 'metaagent-trace-poll-drill',
+      mode: options.supervisionMode === 'event-continuation'
+        ? 'metaagent-event-continuation-drill'
+        : 'metaagent-trace-poll-drill',
       sessionId,
       metaagentId: metaagent.id,
       provider: options.provider,
@@ -509,6 +648,7 @@ async function main() {
       workerModel: options.workerModel || null,
       workerEffort: options.workerEffort || null,
       workerPlacement: options.workerPlacement,
+      supervisionMode: options.supervisionMode,
       promptCount: 1,
       workers: observed.workers.map((agent) => ({
         id: agent.id,
@@ -521,6 +661,10 @@ async function main() {
       sawSubscribeTrace: observed.sawSubscribeTrace,
       sawTraceWait: observed.sawTraceWait,
       sawTracePhrase: observed.sawTracePhrase,
+      sawWorkerPrompt: observed.sawWorkerPrompt ?? null,
+      sawWorkerCompletionEvent: observed.sawWorkerCompletionEvent ?? null,
+      sawInjectedContinuationPrompt: observed.sawInjectedContinuationPrompt ?? null,
+      sawPostEventReview: observed.sawPostEventReview ?? null,
     }, null, 2))
     succeeded = true
   } catch (error) {
@@ -540,6 +684,7 @@ async function main() {
         failure,
         metadata: {
           drill: 'metaagent-trace-poll',
+          supervisionMode: options.supervisionMode,
           provider: options.provider,
           model: options.model,
           effort: options.effort,
