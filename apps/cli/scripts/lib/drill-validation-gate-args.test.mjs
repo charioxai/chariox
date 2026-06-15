@@ -38,6 +38,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-generated-evidence-kind", "matrix-report"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--unknown"], 0, options)
   assert.equal(index, null)
 
@@ -62,6 +64,7 @@ test("parses validation gate requirement arguments", () => {
     requiredProviders: ["codex"],
     requiredScenarios: [],
     requiredGeneratedEvidenceKinds: ["matrix-report"],
+    requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
   })
 })
 

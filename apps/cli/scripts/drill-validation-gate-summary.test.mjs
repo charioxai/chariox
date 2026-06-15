@@ -131,12 +131,16 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
       reportPath,
       "--require-generated-evidence-kind",
       "matrix-report,validation-suite-run",
+      "--require-generated-matrix-limitation",
+      "dry-run-classification-coverage",
       "--json",
     ])
     const aggregate = JSON.parse(stdout)
     assert.equal(aggregate.status, "passed")
     assert.deepEqual(aggregate.requiredGeneratedEvidenceKinds, ["matrix-report", "validation-suite-run"])
     assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
+    assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+    assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, [])
 
     await assert.rejects(
       execFile(process.execPath, [
@@ -374,6 +378,11 @@ function generatedEvidence() {
       roots: ["/tmp/generated-matrix"],
       dryRun: false,
       continueOnFailure: true,
+      limitations: [{
+        kind: "dry-run-classification-coverage",
+        owner: "validation-harness",
+        nextAction: "rerun generated matrix reports without --dry-run before release",
+      }],
       commands: [{
         artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
         args: ["--include-remote"],

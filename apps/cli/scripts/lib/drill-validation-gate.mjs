@@ -33,6 +33,7 @@ import {
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredGeneratedEvidenceKinds,
+  normalizeRequiredGeneratedMatrixLimitations,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
   normalizeRequiredMatrixRuntimeSignals,
@@ -244,5 +245,6 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredProviders: normalizeRequiredProviders(options.requiredProviders ?? []),
     requiredScenarios: normalizeRequiredScenarios(options.requiredScenarios ?? []),
     requiredGeneratedEvidenceKinds: normalizeRequiredGeneratedEvidenceKinds(options.requiredGeneratedEvidenceKinds ?? []),
+    requiredGeneratedMatrixLimitations: normalizeRequiredGeneratedMatrixLimitations(options.requiredGeneratedMatrixLimitations ?? []),
   }
 }

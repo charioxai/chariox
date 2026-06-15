@@ -18,6 +18,7 @@ const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-provider", "requiredProviders"],
   ["--require-scenario", "requiredScenarios"],
   ["--require-generated-evidence-kind", "requiredGeneratedEvidenceKinds"],
+  ["--require-generated-matrix-limitation", "requiredGeneratedMatrixLimitations"],
 ])
 
 export function validationGateRequirementOptionDefaults({ presetKey = "presets" } = {}) {
@@ -42,6 +43,7 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
     requiredProviders: [],
     requiredScenarios: [],
     requiredGeneratedEvidenceKinds: [],
+    requiredGeneratedMatrixLimitations: [],
   }
 }
 

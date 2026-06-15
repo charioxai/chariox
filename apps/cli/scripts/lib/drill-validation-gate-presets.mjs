@@ -358,6 +358,13 @@ export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenc
   return kinds
 }
 
+export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMatrixLimitations) {
+  return normalizeCommaSeparatedStrings(requiredGeneratedMatrixLimitations, {
+    fieldName: "requiredGeneratedMatrixLimitations",
+    itemName: "limitation",
+  })
+}
+
 export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifactGeneratedEvidenceKinds) {
   const kinds = normalizeCommaSeparatedStrings(requiredArtifactGeneratedEvidenceKinds, {
     fieldName: "requiredArtifactGeneratedEvidenceKinds",

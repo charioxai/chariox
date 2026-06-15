@@ -101,6 +101,9 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const generatedEvidenceKinds = new Set([
     ...Object.keys(aggregate.coverage?.generatedEvidenceKinds ?? {}),
   ])
+  const generatedMatrixLimitations = new Set([
+    ...Object.keys(aggregate.coverage?.generatedMatrixLimitations ?? {}),
+  ])
   const requiredGeneratedEvidenceKinds = new Set([
     ...Object.keys(aggregate.coverage?.requiredGeneratedEvidenceKinds ?? {}),
     ...(aggregate.requiredGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
@@ -109,14 +112,25 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.missingGeneratedEvidenceKinds ?? {}),
     ...(aggregate.missingGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
   ])
+  const requiredGeneratedMatrixLimitations = new Set([
+    ...Object.keys(aggregate.coverage?.requiredGeneratedMatrixLimitations ?? {}),
+    ...(aggregate.requiredGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
+  ])
+  const missingGeneratedMatrixLimitations = new Set([
+    ...Object.keys(aggregate.coverage?.missingGeneratedMatrixLimitations ?? {}),
+    ...(aggregate.missingGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
+  ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
+    ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
     ...(requiredGeneratedEvidenceKinds.size > 0 ? { requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds].sort().join(",") } : {}),
     ...(missingGeneratedEvidenceKinds.size > 0 ? { missingGeneratedEvidenceKinds: [...missingGeneratedEvidenceKinds].sort().join(",") } : {}),
+    ...(requiredGeneratedMatrixLimitations.size > 0 ? { requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations].sort().join(",") } : {}),
+    ...(missingGeneratedMatrixLimitations.size > 0 ? { missingGeneratedMatrixLimitations: [...missingGeneratedMatrixLimitations].sort().join(",") } : {}),
   }
 }
 
