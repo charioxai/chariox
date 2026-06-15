@@ -12,7 +12,7 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
-import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
+import { validateDrillGeneratedMatrixName } from "./drill-generated-matrix-metadata.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
@@ -41,6 +41,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
   "apps/cli/scripts/lib/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
+  "apps/cli/scripts/lib/drill-generated-matrix-metadata.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-names.test.mjs",
   "apps/cli/scripts/lib/drill-history-outline.test.mjs",
   "apps/cli/scripts/lib/drill-json-discovery.test.mjs",
@@ -96,6 +97,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-artifacts.test.mjs",
       "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
+      "apps/cli/scripts/lib/drill-generated-matrix-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-names.test.mjs",
       "apps/cli/scripts/lib/drill-json-discovery.test.mjs",
       "apps/cli/scripts/lib/drill-platform-bundle.test.mjs",
@@ -430,12 +432,10 @@ function sortedGeneratedMatrixLimitationArray(value, source) {
 function sortedGeneratedMatrixNameArray(value, source) {
   const names = sortedStringArray(value, source)
   for (const [index, name] of names.entries()) {
-    if (redactDrillSecretText(name) !== name) {
-      throw new Error(`validation suite preset ${source}[${index}] includes secret-looking generated matrix name`)
-    }
-    if (!isKnownDrillGeneratedMatrixName(name)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown generated matrix name ${JSON.stringify(name)}`)
-    }
+    validateDrillGeneratedMatrixName(name, {
+      secretSource: `validation suite preset ${source}[${index}]`,
+      unknownSource: `validation suite preset ${source}[${index}]`,
+    })
   }
   return names
 }

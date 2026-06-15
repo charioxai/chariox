@@ -1,7 +1,7 @@
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillGeneratedMatrixName } from "./drill-generated-matrix-metadata.mjs"
 import {
   drillGeneratedMatrixRepoForName,
-  isKnownDrillGeneratedMatrixName,
 } from "./drill-generated-matrix-names.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
 
@@ -10,12 +10,11 @@ export function validateDrillGeneratedMatrixCommandMetadata(command, source) {
     if (!nonEmptyString(command.matrix)) {
       throw new Error(`${source} has invalid matrix`)
     }
-    if (redactDrillSecretText(command.matrix) !== command.matrix) {
-      throw new Error(`${source}.matrix includes secret-looking generated matrix metadata`)
-    }
-    if (!isKnownDrillGeneratedMatrixName(command.matrix)) {
-      throw new Error(`${source}.matrix has unknown generated matrix name ${JSON.stringify(command.matrix)}`)
-    }
+    validateDrillGeneratedMatrixName(command.matrix, {
+      secretDescription: "generated matrix metadata",
+      secretSource: `${source}.matrix`,
+      unknownSource: `${source}.matrix`,
+    })
   }
   if (command.repo !== undefined) {
     if (!nonEmptyString(command.repo)) {
