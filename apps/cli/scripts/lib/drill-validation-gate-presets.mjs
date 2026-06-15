@@ -190,6 +190,8 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredMatrices: Object.freeze(["remote-home-extension-matrix"]),
     requiredMatrixClassifications: Object.freeze(["kernel-authority", "remote-extension-sync", "worker-execution"]),
     requiredMatrixRuntimeSignals: Object.freeze(["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+    requiredDeploymentPresets: Object.freeze(["hetzner", "local", "self-hosted-relay"]),
+    requiredScenarios: Object.freeze(["hetzner-collab", "hetzner-single", "local-collab", "local-single"]),
   }),
   "slice-runtime": Object.freeze({
     description: "Slice lifecycle, provider-auth isolation, worker discovery, and UI projection evidence.",
