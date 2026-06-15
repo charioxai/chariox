@@ -308,7 +308,10 @@ export function formatDrillMatrixReportSummary(report, { source = null } = {}) {
     lines.push("incomplete exit criteria:")
     for (const criterion of summary.incompleteExitCriteria) {
       const reason = criterion.reason ? ` reason=${criterion.reason}` : ""
-      lines.push(`- ${criterion.scenarioId}/${criterion.id} status=${criterion.status}${reason}: ${criterion.criterion}`)
+      const owner = criterion.owner ? ` owner=${criterion.owner}` : ""
+      const classification = criterion.classification ? ` classification=${criterion.classification}` : ""
+      const nextAction = criterion.nextAction ? ` next=${criterion.nextAction}` : ""
+      lines.push(`- ${criterion.scenarioId}/${criterion.id} status=${criterion.status}${owner}${classification}${reason}: ${criterion.criterion}${nextAction}`)
     }
   }
 
@@ -407,7 +410,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     for (const criterion of aggregate.incompleteExitCriteria) {
       const source = criterion.source ? ` source=${criterion.source}` : ""
       const reason = criterion.reason ? ` reason=${criterion.reason}` : ""
-      lines.push(`- ${criterion.matrix}/${criterion.scenarioId}/${criterion.id} status=${criterion.status}${reason}${source}: ${criterion.criterion}`)
+      const owner = criterion.owner ? ` owner=${criterion.owner}` : ""
+      const classification = criterion.classification ? ` classification=${criterion.classification}` : ""
+      const nextAction = criterion.nextAction ? ` next=${criterion.nextAction}` : ""
+      lines.push(`- ${criterion.matrix}/${criterion.scenarioId}/${criterion.id} status=${criterion.status}${owner}${classification}${reason}${source}: ${criterion.criterion}${nextAction}`)
     }
   }
 
@@ -896,6 +902,31 @@ function validateMatrixAggregateExitCriterion(criterion, source) {
   if (criterion.status === "satisfied") {
     throw new Error(`${source} must not be satisfied`)
   }
+  validateOptionalCriterionDiagnostics(criterion, source)
+}
+
+function validateOptionalCriterionDiagnostics(criterion, source) {
+  if (criterion.owner !== undefined && criterion.owner !== null && !nonEmptyString(criterion.owner)) {
+    throw new Error(`${source} has invalid owner`)
+  }
+  if (criterion.classification !== undefined && criterion.classification !== null) {
+    if (!nonEmptyString(criterion.classification)) {
+      throw new Error(`${source} has invalid classification`)
+    }
+    if (!isKnownDrillFailureClassification(criterion.classification)) {
+      throw new Error(`${source} has unknown classification ${JSON.stringify(criterion.classification)}`)
+    }
+    const expectedOwner = drillFailureOwnerForClassification(criterion.classification)
+    if (criterion.owner !== expectedOwner) {
+      throw new Error(`${source} owner does not match classification`)
+    }
+    const expectedNextAction = drillFailureNextActionForClassification(criterion.classification, { target: "scenario" })
+    if (criterion.nextAction !== expectedNextAction) {
+      throw new Error(`${source} nextAction does not match classification`)
+    }
+  } else if (criterion.nextAction !== undefined && criterion.nextAction !== null) {
+    throw new Error(`${source} nextAction requires classification`)
+  }
 }
 
 function validateMatrixAggregateScenario(scenario, source) {
@@ -1267,11 +1298,23 @@ function incompleteExitCriteriaForScenarios(scenarios) {
           criterion: criterion.criterion,
           status: criterion.status,
           reason: criterion.reason ?? null,
+          ...diagnosticsForIncompleteExitCriterion(scenario),
         })
       }
     }
   }
   return incomplete
+}
+
+function diagnosticsForIncompleteExitCriterion(scenario) {
+  const diagnostics = {}
+  if (nonEmptyString(scenario.owner)) diagnostics.owner = scenario.owner
+  if (nonEmptyString(scenario.classification)) {
+    diagnostics.classification = scenario.classification
+    diagnostics.owner = drillFailureOwnerForClassification(scenario.classification)
+    diagnostics.nextAction = scenario.nextAction ?? drillFailureNextActionForClassification(scenario.classification, { target: "scenario" })
+  }
+  return diagnostics
 }
 
 function incompleteExitCriteriaCount(exitCriteria) {

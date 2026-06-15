@@ -97,7 +97,7 @@ test("formats dry-run reports without failures", () => {
   assert.match(text, /selected scenario criteria:/)
   assert.match(text, /- local: local runtime path is selected/)
   assert.match(text, /incomplete exit criteria:/)
-  assert.match(text, /local\/local:exit-01 status=dry-run reason=scenario command was selected but not executed: local runtime path is selected/)
+  assert.match(text, /local\/local:exit-01 status=dry-run owner=cloud-web reason=scenario command was selected but not executed: local runtime path is selected/)
   assert.match(text, /next: run or reconcile incomplete criteria before treating this matrix report as complete/)
   assert.equal(drillMatrixReportExitCode([report]), 0)
   assert.equal(drillMatrixReportCompletionExitCode([report]), 2)
@@ -160,6 +160,56 @@ test("tracks criterion-level completion evidence", () => {
   assert.match(text, /exit_criteria: dry-run=1 satisfied=1/)
   assert.match(text, /incomplete exit criteria:/)
   assert.match(text, /test-matrix\/projection\/projection:exit-02 status=dry-run reason=scenario command was selected but not executed source=\/tmp\/projection-matrix\.json: worker acknowledgement is observed/)
+})
+
+test("carries ownership diagnostics for incomplete exit criteria", () => {
+  const report = matrixReport({
+    scenarios: [
+      scenario("auth", "failed", {
+        classification: "provider-auth",
+        reason: "token refresh failed",
+        exitCriteria: ["provider account is usable"],
+        exitCriteriaEvidence: [{
+          id: "auth:exit-01",
+          criterion: "provider account is usable",
+          status: "failed",
+          reason: "token refresh failed",
+        }],
+      }),
+    ],
+  })
+
+  const summary = summarizeDrillMatrixReport(report)
+  const aggregate = summarizeDrillMatrixReports([report], { sources: ["/tmp/auth-matrix.json"] })
+
+  assert.deepEqual(summary.incompleteExitCriteria, [{
+    matrix: "test-matrix",
+    source: null,
+    scenarioId: "auth",
+    id: "auth:exit-01",
+    criterion: "provider account is usable",
+    status: "failed",
+    reason: "token refresh failed",
+    owner: "provider-account",
+    classification: "provider-auth",
+    nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
+  }])
+  assert.deepEqual(aggregate.incompleteExitCriteria, [{
+    matrix: "test-matrix",
+    source: "/tmp/auth-matrix.json",
+    scenarioId: "auth",
+    id: "auth:exit-01",
+    criterion: "provider account is usable",
+    status: "failed",
+    reason: "token refresh failed",
+    owner: "provider-account",
+    classification: "provider-auth",
+    nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
+  }])
+  assert.match(
+    formatDrillMatrixAggregateSummary(aggregate),
+    /test-matrix\/auth\/auth:exit-01 status=failed owner=provider-account classification=provider-auth reason=token refresh failed source=\/tmp\/auth-matrix\.json: provider account is usable next=refresh provider login/,
+  )
 })
 
 test("aggregates multiple matrix reports for CI", () => {
