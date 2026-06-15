@@ -1375,6 +1375,147 @@ async fn metaagent_run_command_submits_prompts_through_router_path() {
 }
 
 #[tokio::test]
+async fn metaagent_prompt_command_does_not_steer_active_workflow_turns() {
+    let env = TestMetaRuntimeEnv::new("run-command-workflow-prompt-guard");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let _worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("guarded-flow".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), worker.id())
+        .expect("workflow node should be created");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("start".to_string()),
+        )
+        .expect("endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("run guarded workflow".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "workflow node prompt".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
+        .expect("workflow node run should start");
+    let workflow_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        worker.id(),
+        "workflow node prompt".to_string(),
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    app.prompt_owner_submit_prepared_prompt(session.id(), workflow_prompt, false)
+        .expect("workflow prompt should become active");
+
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let result = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": "prompt worker \"finish the active workflow turn\""
+            }),
+        )
+        .await
+        .expect("meta run_command should return a structured failure");
+
+    assert!(!result.ok, "{:?}", result.payload);
+    assert!(
+        result
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| {
+                message.contains("currently executing workflow run")
+                    && message.contains("normal metaagent prompts cannot steer")
+            }),
+        "{:?}",
+        result.payload
+    );
+    let session_state = app
+        .lock()
+        .await
+        .sessions()
+        .get_session(session.id())
+        .expect("session should load");
+    let active_prompt = session_state
+        .active_prompt_for_agent(worker.id())
+        .expect("workflow prompt should remain active");
+    assert_eq!(active_prompt.workflow_run_id(), Some(workflow_run.id()));
+    assert_eq!(
+        session_state
+            .queued_prompts_for_agent(worker.id())
+            .map(|queued| queued.len())
+            .unwrap_or_default(),
+        0,
+        "metaagent workflow steering failures must not queue detached prompts"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_run_command_routes_core_workflow_commands() {
     let env = TestMetaRuntimeEnv::new("run-command-workflow");
     let workspace = env.root.join("workspace");

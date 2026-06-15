@@ -393,7 +393,7 @@ impl CommandRouter {
             Ok(attachment_id) => attachment_id,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        let mut result = self
+        let mut result = match self
             .runtime_state
             .submit_metaagent_command_prompt(
                 session.id(),
@@ -402,7 +402,11 @@ impl CommandRouter {
                 target.id(),
                 prompt,
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return Ok(meta_command_failure_result(command, error)),
+        };
         if let Some(payload) = result.payload.as_object_mut() {
             payload.insert(
                 "command".to_string(),

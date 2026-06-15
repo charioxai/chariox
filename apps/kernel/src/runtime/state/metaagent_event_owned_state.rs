@@ -696,12 +696,19 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        if self
+        let Some(active_prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, &target_agent_id)
-            .is_none()
-        {
+        else {
             return Ok(None);
+        };
+        if let Some(workflow_run_id) = active_prompt.workflow_run_id() {
+            return Err(DaemonError::LocalTransport {
+                operation: "metaagent prompt active worker",
+                message: format!(
+                    "agent `{target_agent_id}` is currently executing workflow run `{workflow_run_id}`; normal metaagent prompts cannot steer an active workflow turn. Use `workflow get-run {workflow_run_id}`, wait for workflow events, or cancel/resume the workflow instead."
+                ),
+            });
         }
         let Some(provider_run) = self
             .provider_store
