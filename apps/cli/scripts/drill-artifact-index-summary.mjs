@@ -21,6 +21,7 @@ import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 import {
+  DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalNextAction,
   isKnownDrillRuntimeSignal,
@@ -57,6 +58,8 @@ function printHelp() {
     "                         Exit non-zero when validation preset metadata is missing; repeatable",
     "  --require-runtime-signal ID[,ID]",
     "                         Exit non-zero when runtime signal metadata is missing; repeatable",
+    "  --require-runtime-signal-owner OWNER[,OWNER]",
+    "                         Exit non-zero when runtime signal owner metadata is missing; repeatable",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -127,6 +130,7 @@ async function main() {
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
     || (aggregate.missingValidationPresets ?? []).length > 0
     || (aggregate.missingRuntimeSignalRequirements ?? []).length > 0
+    || (aggregate.missingRuntimeSignalOwnerRequirements ?? []).length > 0
   ) {
     process.exitCode = 1
   }
@@ -149,6 +153,7 @@ function parseArgs(argv) {
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredMatrixMaxAgeMs: null,
     requiredProviderAccountAliases: [],
+    requiredRuntimeSignalOwners: [],
     requiredRuntimeSignals: [],
     requiredValidationPresets: [],
   }
@@ -257,6 +262,14 @@ function parseArgs(argv) {
         arg.slice("--require-runtime-signal=".length),
         "--require-runtime-signal",
       ))
+    } else if (arg === "--require-runtime-signal-owner") {
+      options.requiredRuntimeSignalOwners.push(...parseRuntimeSignalOwnerRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-runtime-signal-owner=")) {
+      options.requiredRuntimeSignalOwners.push(...parseRuntimeSignalOwnerRequirement(
+        arg.slice("--require-runtime-signal-owner=".length),
+        "--require-runtime-signal-owner",
+      ))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -351,6 +364,19 @@ function parseRuntimeSignalRequirement(value, flag) {
     }
   }
   return signals
+}
+
+function parseRuntimeSignalOwnerRequirement(value, flag) {
+  const owners = String(value ?? "").split(",").map((owner) => owner.trim()).filter(Boolean)
+  if (owners.length === 0) {
+    throw new Error(`${flag} requires a value`)
+  }
+  for (const owner of owners) {
+    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
+      throw new Error(`${flag} has unknown runtime signal owner: ${owner}`)
+    }
+  }
+  return owners
 }
 
 function parseDiagnosticRequirementText(value, flag) {
@@ -538,19 +564,29 @@ function validationPresetRequirementMetadataFor(aggregate) {
 
 function runtimeSignalDiagnosticsFor(aggregate, options) {
   const required = [...new Set(options.requiredRuntimeSignals)].sort()
-  if (required.length === 0) return {}
+  const requiredOwners = [...new Set(options.requiredRuntimeSignalOwners)].sort()
+  if (required.length === 0 && requiredOwners.length === 0) return {}
   const available = new Set(Object.keys(aggregate.runtimeSignals ?? {}))
+  const availableOwners = new Set(Object.keys(aggregate.runtimeSignalOwners ?? {}))
   return {
     requiredRuntimeSignalRequirements: required,
     missingRuntimeSignalRequirements: required.filter((signal) => !available.has(signal)),
+    requiredRuntimeSignalOwnerRequirements: requiredOwners,
+    missingRuntimeSignalOwnerRequirements: requiredOwners.filter((owner) => !availableOwners.has(owner)),
   }
 }
 
 function runtimeSignalRequirementMetadataFor(aggregate) {
   const required = aggregate.requiredRuntimeSignalRequirements ?? []
   const missing = aggregate.missingRuntimeSignalRequirements ?? []
-  const requiredOwners = drillRuntimeSignalOwnersFor(required)
-  const missingOwners = drillRuntimeSignalOwnersFor(missing)
+  const requiredOwners = [...new Set([
+    ...drillRuntimeSignalOwnersFor(required),
+    ...(aggregate.requiredRuntimeSignalOwnerRequirements ?? []),
+  ])].sort()
+  const missingOwners = [...new Set([
+    ...drillRuntimeSignalOwnersFor(missing),
+    ...(aggregate.missingRuntimeSignalOwnerRequirements ?? []),
+  ])].sort()
   return {
     ...(required.length > 0 ? { requiredRuntimeSignals: required.join(",") } : {}),
     ...(requiredOwners.length > 0 ? { requiredRuntimeSignalOwners: requiredOwners.join(",") } : {}),
@@ -605,6 +641,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingRuntimeSignalRequirements ?? []
     lines.push(`runtime_signals_required=${aggregate.requiredRuntimeSignalRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredRuntimeSignalOwnerRequirements !== undefined) {
+    const missing = aggregate.missingRuntimeSignalOwnerRequirements ?? []
+    lines.push(`runtime_signal_owners_required=${aggregate.requiredRuntimeSignalOwnerRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if ((aggregate.staleArtifactIndexes ?? []).length > 0) {
     lines.push("next: regenerate stale drill artifact indexes before using them as validation evidence")
   }
@@ -634,6 +674,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   for (const signal of aggregate.missingRuntimeSignalRequirements ?? []) {
     lines.push(`next: ${drillRuntimeSignalNextAction(signal, { target: "artifact-index" })}`)
+  }
+  if ((aggregate.missingRuntimeSignalOwnerRequirements ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes with runtime signal owner coverage: ${aggregate.missingRuntimeSignalOwnerRequirements.join(", ")}`)
   }
   return lines.join("\n")
 }

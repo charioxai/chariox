@@ -700,6 +700,8 @@ test("drill artifact index summary gates runtime signals with owner-routed next 
       indexPath,
       "--require-runtime-signal",
       "lease-health,session-authority",
+      "--require-runtime-signal-owner",
+      "kernel-authority",
       "--json",
       "--output",
       outputPath,
@@ -711,6 +713,8 @@ test("drill artifact index summary gates runtime signals with owner-routed next 
 
     assert.deepEqual(aggregate.requiredRuntimeSignalRequirements, ["lease-health", "session-authority"])
     assert.deepEqual(aggregate.missingRuntimeSignalRequirements, [])
+    assert.deepEqual(aggregate.requiredRuntimeSignalOwnerRequirements, ["kernel-authority"])
+    assert.deepEqual(aggregate.missingRuntimeSignalOwnerRequirements, [])
     assert.equal(artifactIndex.metadata.requiredRuntimeSignals, "lease-health,session-authority")
     assert.equal(artifactIndex.metadata.requiredRuntimeSignalOwners, "kernel-authority")
     assert.equal(artifactIndex.metadata.missingRuntimeSignals, undefined)
@@ -736,12 +740,41 @@ test("drill artifact index summary gates runtime signals with owner-routed next 
         scriptPath,
         "--artifact-index",
         indexPath,
+        "--require-runtime-signal-owner=runtime-network",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /runtime_signal_owners_required=runtime-network missing=runtime-network/)
+        assert.match(error.stdout, /next: include drill artifact indexes with runtime signal owner coverage: runtime-network/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
         "--require-runtime-signal",
         "workspace-live-synch-state",
       ]),
       (error) => {
         assert.equal(error.code, 1)
         assert.match(error.stderr, /--require-runtime-signal has unknown runtime signal: workspace-live-synch-state/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-runtime-signal-owner",
+        "kernel-authoritiy",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-runtime-signal-owner has unknown runtime signal owner: kernel-authoritiy/)
         return true
       },
     )
