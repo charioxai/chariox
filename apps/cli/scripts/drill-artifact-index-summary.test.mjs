@@ -687,6 +687,67 @@ test("drill artifact index summary gates validation presets", async () => {
   }
 })
 
+test("drill artifact index summary gates runtime signals with owner-routed next actions", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-runtime-signal",
+      "lease-health,session-authority",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredRuntimeSignalRequirements, ["lease-health", "session-authority"])
+    assert.deepEqual(aggregate.missingRuntimeSignalRequirements, [])
+    assert.equal(artifactIndex.metadata.requiredRuntimeSignals, "lease-health,session-authority")
+    assert.equal(artifactIndex.metadata.missingRuntimeSignals, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-runtime-signal=relay-target-freshness",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /runtime_signals_required=relay-target-freshness missing=relay-target-freshness/)
+        assert.match(error.stdout, /next: include drill artifact indexes proving relay-target-freshness owned by runtime-network/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-runtime-signal",
+        "workspace-live-synch-state",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-runtime-signal has unknown runtime signal: workspace-live-synch-state/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary accepts explicit index paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   try {

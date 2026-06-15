@@ -46,6 +46,10 @@ test("writes and validates runtime signal manifest", () => {
     drillRuntimeSignalNextAction("slice-auth-state", { target: "platform-bundle" }),
     "add runtime-signal contract coverage for slice-auth-state owned by provider-account to the drill platform bundle",
   )
+  assert.equal(
+    drillRuntimeSignalNextAction("relay-target-freshness", { target: "artifact-index" }),
+    "include drill artifact indexes proving relay-target-freshness owned by runtime-network: Relay target heartbeat freshness, selected kernel identity, and stale-target rejection.",
+  )
   assert.deepEqual(drillRuntimeSignalOwnersFor(["slice-auth-state", "session-authority", "lease-health"]), [
     "kernel-authority",
     "provider-account",

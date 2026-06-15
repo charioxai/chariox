@@ -303,6 +303,11 @@ function artifactAggregateFixture() {
       "kernel-authority": 1,
       "runtime-state": 1,
     },
+    requiredRuntimeSignals: {
+      "session-authority": 2,
+      "workspace-live-sync-state": 1,
+    },
+    missingRuntimeSignals: {},
     coverageAreas: {
       "distributed-observability": 1,
     },
@@ -385,6 +390,11 @@ function artifactAggregateFixture() {
         "kernel-authority": 1,
         "runtime-state": 1,
       },
+      requiredRuntimeSignals: {
+        "session-authority": 2,
+        "workspace-live-sync-state": 1,
+      },
+      missingRuntimeSignals: {},
       coverageAreas: {
         "distributed-observability": 1,
       },

@@ -76,6 +76,9 @@ export function drillRuntimeSignalNextAction(signal, { target = "matrix" } = {})
   if (target === "platform-bundle") {
     return `add runtime-signal contract coverage for ${signal} owned by ${owner} to the drill platform bundle`
   }
+  if (target === "artifact-index") {
+    return `include drill artifact indexes proving ${signal} owned by ${owner}: ${RUNTIME_SIGNALS[signal].description}`
+  }
   return `run matrix scenarios that prove ${signal} owned by ${owner}: ${RUNTIME_SIGNALS[signal].description}`
 }
 

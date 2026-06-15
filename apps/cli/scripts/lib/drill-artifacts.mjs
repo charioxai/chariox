@@ -20,6 +20,7 @@ import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
   drillRuntimeSignalOwnersFor,
   isKnownDrillRuntimeSignal,
+  validateDrillRuntimeSignals,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 
@@ -28,6 +29,8 @@ export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_inde
 export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "runtimeSignals",
   "runtimeSignalOwners",
+  "requiredRuntimeSignals",
+  "missingRuntimeSignals",
   "coverageAreas",
   "validationPresets",
   "owners",
@@ -60,6 +63,8 @@ const DRILL_ARTIFACT_INDEX_FILE = "arroba-drill-artifacts.json"
 const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   runtimeSignals: "runtime_signals",
   runtimeSignalOwners: "runtime_signal_owners",
+  requiredRuntimeSignals: "required_runtime_signals",
+  missingRuntimeSignals: "missing_runtime_signals",
   coverageAreas: "coverage_areas",
   validationPresets: "validation_presets",
   owners: "owners",
@@ -218,6 +223,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const schemas = new Map()
   const runtimeSignals = new Map()
   const runtimeSignalOwners = new Map()
+  const requiredRuntimeSignals = new Map()
+  const missingRuntimeSignals = new Map()
   const coverageAreas = new Map()
   const validationPresets = new Map()
   const owners = new Map()
@@ -250,6 +257,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexSchemas = new Map()
     const indexRuntimeSignals = runtimeSignalsFromMetadata(index.metadata)
     const indexRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRuntimeSignals)
+    const indexRequiredRuntimeSignals = metadataListFromMetadata(index.metadata, "requiredRuntimeSignals")
+    const indexMissingRuntimeSignals = metadataListFromMetadata(index.metadata, "missingRuntimeSignals")
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
@@ -275,6 +284,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexArtifactCoverageInputSources = metadataListFromMetadata(index.metadata, "artifactCoverageInputSources")
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
+    countValues(indexRequiredRuntimeSignals, requiredRuntimeSignals)
+    countValues(indexMissingRuntimeSignals, missingRuntimeSignals)
     countValues(indexCoverageAreas, coverageAreas)
     countValues(indexValidationPresets, validationPresets)
     countValues(indexOwners, owners)
@@ -314,6 +325,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       schemas: sortedCountObject(indexSchemas),
       runtimeSignals: countValues(indexRuntimeSignals),
       runtimeSignalOwners: countValues(indexRuntimeSignalOwners),
+      requiredRuntimeSignals: countValues(indexRequiredRuntimeSignals),
+      missingRuntimeSignals: countValues(indexMissingRuntimeSignals),
       coverageAreas: countValues(indexCoverageAreas),
       validationPresets: countValues(indexValidationPresets),
       owners: countValues(indexOwners),
@@ -345,6 +358,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     schemas: sortedCountObject(schemas),
     runtimeSignals: sortedCountObject(runtimeSignals),
     runtimeSignalOwners: sortedCountObject(runtimeSignalOwners),
+    requiredRuntimeSignals: sortedCountObject(requiredRuntimeSignals),
+    missingRuntimeSignals: sortedCountObject(missingRuntimeSignals),
     coverageAreas: sortedCountObject(coverageAreas),
     validationPresets: sortedCountObject(validationPresets),
     owners: sortedCountObject(owners),
@@ -637,7 +652,7 @@ function validateDiagnosticCountObject(value, source, key) {
       }
     }
   }
-  if (key === "runtimeSignals") {
+  if (["runtimeSignals", "requiredRuntimeSignals", "missingRuntimeSignals"].includes(key)) {
     for (const signal of Object.keys(value)) {
       if (!isKnownDrillRuntimeSignal(signal)) {
         throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
@@ -888,6 +903,8 @@ function runtimeSignalOwnersFromRuntimeSignals(runtimeSignals) {
 function validateDrillArtifactIndexRuntimeSignalOwnerMetadata(metadata, source) {
   const runtimeSignals = runtimeSignalsFromMetadata(metadata)
   const runtimeSignalOwners = metadataListFromMetadata(metadata, "runtimeSignalOwners")
+  validateDrillRuntimeSignals(metadataListFromMetadata(metadata, "requiredRuntimeSignals"), `${source}.requiredRuntimeSignals`)
+  validateDrillRuntimeSignals(metadataListFromMetadata(metadata, "missingRuntimeSignals"), `${source}.missingRuntimeSignals`)
   if (runtimeSignals.length === 0 && runtimeSignalOwners.length === 0) return
   const expectedRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(runtimeSignals)
   if (runtimeSignals.length === 0) {

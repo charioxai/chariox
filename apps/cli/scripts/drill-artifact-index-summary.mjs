@@ -20,6 +20,10 @@ import {
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
+import {
+  drillRuntimeSignalNextAction,
+  isKnownDrillRuntimeSignal,
+} from "./lib/drill-runtime-signals.mjs"
 import { isKnownDrillArtifactValidationPreset } from "./lib/drill-validation-gate-presets.mjs"
 
 function printHelp() {
@@ -50,6 +54,8 @@ function printHelp() {
     "                         Exit non-zero when provider account alias metadata is missing; repeatable",
     "  --require-validation-preset PRESET",
     "                         Exit non-zero when validation preset metadata is missing; repeatable",
+    "  --require-runtime-signal ID[,ID]",
+    "                         Exit non-zero when runtime signal metadata is missing; repeatable",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -83,6 +89,7 @@ async function main() {
   Object.assign(aggregate, generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, validationPresetDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, runtimeSignalDiagnosticsFor(aggregate, options))
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
@@ -99,6 +106,7 @@ async function main() {
         ...generatedMatrixArtifactIndexRequirementMetadataFor(aggregate),
         ...providerAccountAliasRequirementMetadataFor(aggregate),
         ...validationPresetRequirementMetadataFor(aggregate),
+        ...runtimeSignalRequirementMetadataFor(aggregate),
       },
     })
   }
@@ -117,6 +125,7 @@ async function main() {
     || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
     || (aggregate.missingValidationPresets ?? []).length > 0
+    || (aggregate.missingRuntimeSignalRequirements ?? []).length > 0
   ) {
     process.exitCode = 1
   }
@@ -139,6 +148,7 @@ function parseArgs(argv) {
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredMatrixMaxAgeMs: null,
     requiredProviderAccountAliases: [],
+    requiredRuntimeSignals: [],
     requiredValidationPresets: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -238,6 +248,14 @@ function parseArgs(argv) {
         arg.slice("--require-validation-preset=".length),
         "--require-validation-preset",
       ))
+    } else if (arg === "--require-runtime-signal") {
+      options.requiredRuntimeSignals.push(...parseRuntimeSignalRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-runtime-signal=")) {
+      options.requiredRuntimeSignals.push(...parseRuntimeSignalRequirement(
+        arg.slice("--require-runtime-signal=".length),
+        "--require-runtime-signal",
+      ))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -319,6 +337,19 @@ function parseValidationPresetRequirement(value, flag) {
     throw new Error(`${flag} has unknown validation preset: ${value}`)
   }
   return value
+}
+
+function parseRuntimeSignalRequirement(value, flag) {
+  const signals = String(value ?? "").split(",").map((signal) => signal.trim()).filter(Boolean)
+  if (signals.length === 0) {
+    throw new Error(`${flag} requires a value`)
+  }
+  for (const signal of signals) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${flag} has unknown runtime signal: ${signal}`)
+    }
+  }
+  return signals
 }
 
 function parseDiagnosticRequirementText(value, flag) {
@@ -504,6 +535,25 @@ function validationPresetRequirementMetadataFor(aggregate) {
   }
 }
 
+function runtimeSignalDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredRuntimeSignals)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.runtimeSignals ?? {}))
+  return {
+    requiredRuntimeSignalRequirements: required,
+    missingRuntimeSignalRequirements: required.filter((signal) => !available.has(signal)),
+  }
+}
+
+function runtimeSignalRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredRuntimeSignalRequirements ?? []
+  const missing = aggregate.missingRuntimeSignalRequirements ?? []
+  return {
+    ...(required.length > 0 ? { requiredRuntimeSignals: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingRuntimeSignals: missing.join(",") } : {}),
+  }
+}
+
 function formatAggregateSummaryWithFreshness(aggregate) {
   const lines = [formatDrillArtifactIndexAggregateSummary(aggregate)]
   if (aggregate.requiredArtifactMaxAgeMs !== undefined) {
@@ -546,6 +596,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingValidationPresets ?? []
     lines.push(`validation_presets_required=${aggregate.requiredValidationPresets.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredRuntimeSignalRequirements !== undefined) {
+    const missing = aggregate.missingRuntimeSignalRequirements ?? []
+    lines.push(`runtime_signals_required=${aggregate.requiredRuntimeSignalRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if ((aggregate.staleArtifactIndexes ?? []).length > 0) {
     lines.push("next: regenerate stale drill artifact indexes before using them as validation evidence")
   }
@@ -572,6 +626,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingValidationPresets ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record validation presets: ${aggregate.missingValidationPresets.join(", ")}`)
+  }
+  for (const signal of aggregate.missingRuntimeSignalRequirements ?? []) {
+    lines.push(`next: ${drillRuntimeSignalNextAction(signal, { target: "artifact-index" })}`)
   }
   return lines.join("\n")
 }
