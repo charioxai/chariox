@@ -103,25 +103,35 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
   ])
   const generatedEvidenceKinds = new Set([
+    ...Object.keys(aggregate.coverage?.artifactGeneratedEvidenceKinds ?? {}),
     ...Object.keys(aggregate.coverage?.generatedEvidenceKinds ?? {}),
   ])
   const generatedMatrixLimitations = new Set([
+    ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixLimitations ?? {}),
     ...Object.keys(aggregate.coverage?.generatedMatrixLimitations ?? {}),
   ])
   const requiredGeneratedEvidenceKinds = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedEvidenceKinds ?? {}),
     ...Object.keys(aggregate.coverage?.requiredGeneratedEvidenceKinds ?? {}),
+    ...(aggregate.requiredArtifactGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
     ...(aggregate.requiredGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
   ])
   const missingGeneratedEvidenceKinds = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactGeneratedEvidenceKinds ?? {}),
     ...Object.keys(aggregate.coverage?.missingGeneratedEvidenceKinds ?? {}),
+    ...(aggregate.missingArtifactGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
     ...(aggregate.missingGeneratedEvidenceKinds ?? []).filter(nonEmptyString),
   ])
   const requiredGeneratedMatrixLimitations = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedMatrixLimitations ?? {}),
     ...Object.keys(aggregate.coverage?.requiredGeneratedMatrixLimitations ?? {}),
+    ...(aggregate.requiredArtifactGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
     ...(aggregate.requiredGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
   ])
   const missingGeneratedMatrixLimitations = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactGeneratedMatrixLimitations ?? {}),
     ...Object.keys(aggregate.coverage?.missingGeneratedMatrixLimitations ?? {}),
+    ...(aggregate.missingArtifactGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
     ...(aggregate.missingGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
   ])
   return {

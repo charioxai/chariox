@@ -92,6 +92,8 @@ test("drill validation gate summary rejects output artifact index without output
 test("drill validation gate summary help lists artifact coverage requirements", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
 
+  assert.match(stdout, /--artifact-index PATH/)
+  assert.match(stdout, /--artifact-root ROOT/)
   assert.match(stdout, /--require-artifact-coverage-area AREA/)
   assert.match(stdout, /--require-artifact-generated-evidence-kind KIND/)
   assert.match(stdout, /--require-artifact-generated-matrix-limitation KIND/)
@@ -335,6 +337,60 @@ test("drill validation gate summary gates artifact generated matrix limitation c
         return true
       },
     )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate summary consumes artifact metadata inputs", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  try {
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await writeGateReport(reportPath, await passingGateReport(rootDir))
+
+    const evidenceRoot = path.join(rootDir, "evidence", "distributed-gate")
+    const evidencePath = path.join(evidenceRoot, "distributed-runtime-gate.json")
+    await mkdir(evidenceRoot, { recursive: true })
+    await writeFile(evidencePath, `${JSON.stringify(await passingGateReport(rootDir), null, 2)}\n`, "utf8")
+    await writeDrillArtifactIndex({
+      rootDir: evidenceRoot,
+      artifacts: ["distributed-runtime-gate.json"],
+      metadata: {
+        generatedMatrixLimitations: "dry-run-classification-coverage",
+      },
+    })
+
+    const outputPath = path.join(rootDir, "aggregate.json")
+    const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--gate-report",
+      reportPath,
+      "--artifact-root",
+      path.join(rootDir, "evidence"),
+      "--require-artifact-generated-matrix-limitation",
+      "dry-run-classification-coverage",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const stdoutAggregate = JSON.parse(stdout)
+    const fileAggregate = JSON.parse(await readFile(outputPath, "utf8"))
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(fileAggregate, stdoutAggregate)
+    assert.equal(stdoutAggregate.status, "passed")
+    assert.deepEqual(stdoutAggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+    assert.deepEqual(stdoutAggregate.missingArtifactGeneratedMatrixLimitations, [])
+    assert.equal(stdoutAggregate.coverage.artifactGeneratedMatrixLimitations["dry-run-classification-coverage"], 1)
+    assert.deepEqual(stdoutAggregate.reports.map((report) => report.source), [
+      reportPath,
+      "artifact metadata inputs",
+    ])
+    assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
