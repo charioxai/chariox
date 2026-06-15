@@ -12,6 +12,7 @@ import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   isKnownDrillRuntimeSignal,
 } from "./drill-runtime-signals.mjs"
+import { redactDrillSecretText } from "./drill-secrets.mjs"
 import { WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS } from "./workspace-live-sync-fixtures.mjs"
 
 export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
@@ -409,21 +410,21 @@ export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMat
 }
 
 export function normalizeRequiredGeneratedMatrixArtifactIndexes(requiredGeneratedMatrixArtifactIndexes) {
-  return normalizeCommaSeparatedStrings(requiredGeneratedMatrixArtifactIndexes, {
+  return normalizeGeneratedEvidencePathRequirements(requiredGeneratedMatrixArtifactIndexes, {
     fieldName: "requiredGeneratedMatrixArtifactIndexes",
     itemName: "path",
   })
 }
 
 export function normalizeRequiredGeneratedValidationSuiteFailureRoots(requiredGeneratedValidationSuiteFailureRoots) {
-  return normalizeCommaSeparatedStrings(requiredGeneratedValidationSuiteFailureRoots, {
+  return normalizeGeneratedEvidencePathRequirements(requiredGeneratedValidationSuiteFailureRoots, {
     fieldName: "requiredGeneratedValidationSuiteFailureRoots",
     itemName: "root",
   })
 }
 
 export function normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(requiredArtifactGeneratedMatrixArtifactIndexes) {
-  return normalizeCommaSeparatedStrings(requiredArtifactGeneratedMatrixArtifactIndexes, {
+  return normalizeGeneratedEvidencePathRequirements(requiredArtifactGeneratedMatrixArtifactIndexes, {
     fieldName: "requiredArtifactGeneratedMatrixArtifactIndexes",
     itemName: "path",
   })
@@ -766,6 +767,16 @@ function normalizeCommaSeparatedStrings(values, { fieldName, itemName }) {
     }
   }
   return [...new Set(normalizedValues)].sort()
+}
+
+function normalizeGeneratedEvidencePathRequirements(values, { fieldName, itemName }) {
+  const paths = normalizeCommaSeparatedStrings(values, { fieldName, itemName })
+  for (const [index, valuePath] of paths.entries()) {
+    if (redactDrillSecretText(valuePath) !== valuePath) {
+      throw new Error(`${fieldName}[${index}] includes secret-looking generated evidence path`)
+    }
+  }
+  return paths
 }
 
 function validateExitCriterionStatuses(statuses, fieldName) {

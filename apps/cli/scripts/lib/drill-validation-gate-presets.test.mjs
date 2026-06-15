@@ -18,9 +18,12 @@ import {
   normalizeRequiredArtifactRuntimeSignalOwners,
   normalizeRequiredArtifactRuntimeSignals,
   normalizeRequiredArtifactSchemas,
+  normalizeRequiredArtifactGeneratedMatrixArtifactIndexes,
   normalizeRequiredFailureClassifications,
   normalizeRequiredGeneratedEvidenceKinds,
+  normalizeRequiredGeneratedMatrixArtifactIndexes,
   normalizeRequiredGeneratedMatrixLimitations,
+  normalizeRequiredGeneratedValidationSuiteFailureRoots,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
   normalizeRequiredMatrixRuntimeSignals,
@@ -394,6 +397,18 @@ test("normalizes validation gate requirements", () => {
     "validation-suite-run",
   ])
   assert.deepEqual(normalizeRequiredGeneratedMatrixLimitations(["dry-run-classification-coverage"]), ["dry-run-classification-coverage"])
+  assert.deepEqual(normalizeRequiredArtifactGeneratedMatrixArtifactIndexes([
+    "/tmp/generated-matrix/a.json,/tmp/generated-matrix/b.json",
+    "/tmp/generated-matrix/a.json",
+  ]), ["/tmp/generated-matrix/a.json", "/tmp/generated-matrix/b.json"])
+  assert.deepEqual(normalizeRequiredGeneratedMatrixArtifactIndexes([
+    "/tmp/generated-matrix/a.json,/tmp/generated-matrix/b.json",
+    "/tmp/generated-matrix/a.json",
+  ]), ["/tmp/generated-matrix/a.json", "/tmp/generated-matrix/b.json"])
+  assert.deepEqual(normalizeRequiredGeneratedValidationSuiteFailureRoots([
+    "/tmp/generated-suite/failed-run,/tmp/generated-suite/other-failed-run",
+    "/tmp/generated-suite/failed-run",
+  ]), ["/tmp/generated-suite/failed-run", "/tmp/generated-suite/other-failed-run"])
   assert.deepEqual(normalizeRequiredArtifactEvidenceRepos(["oss,cloud", "cloud"]), [
     "cloud",
     "oss",
@@ -512,5 +527,17 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredGeneratedMatrixLimitations(["dry-run-classification-covergae"]),
     /unknown required generated matrix limitation: dry-run-classification-covergae/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(["/tmp/Bearer abcdefghijklmnop.json"]),
+    /requiredArtifactGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => normalizeRequiredGeneratedMatrixArtifactIndexes(["/tmp/Bearer abcdefghijklmnop.json"]),
+    /requiredGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => normalizeRequiredGeneratedValidationSuiteFailureRoots(["/tmp/Bearer abcdefghijklmnop"]),
+    /requiredGeneratedValidationSuiteFailureRoots\[0\] includes secret-looking generated evidence path/,
   )
 })
