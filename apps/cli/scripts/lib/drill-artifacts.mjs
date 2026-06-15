@@ -111,26 +111,31 @@ export async function finalizeDrillArtifacts({
 export async function writeDrillArtifactIndex({
   rootDir,
   artifacts,
-  indexPath = path.join(rootDir, DRILL_ARTIFACT_INDEX_FILE),
+  indexPath = null,
   metadata = {},
 }) {
   if (!Array.isArray(artifacts) || artifacts.length === 0) {
     throw new Error("drill artifact index requires artifacts")
   }
+  if (!nonEmptyString(rootDir)) {
+    throw new Error("drill artifact rootDir is required")
+  }
+  const resolvedRootDir = path.resolve(rootDir)
+  const resolvedIndexPath = indexPath ?? path.join(resolvedRootDir, DRILL_ARTIFACT_INDEX_FILE)
   const records = []
   for (const artifact of artifacts) {
-    records.push(await artifactRecord(rootDir, artifact))
+    records.push(await artifactRecord(resolvedRootDir, artifact))
   }
   const index = {
     schema: DRILL_ARTIFACT_INDEX_SCHEMA,
-    rootDir,
+    rootDir: resolvedRootDir,
     createdAt: new Date().toISOString(),
     metadata: sanitizeDrillMetadata(metadata),
     artifacts: records.sort((left, right) => left.path.localeCompare(right.path)),
   }
   validateDrillArtifactIndex(index)
-  await mkdir(path.dirname(indexPath), { recursive: true })
-  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8")
+  await mkdir(path.dirname(resolvedIndexPath), { recursive: true })
+  await writeFile(resolvedIndexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8")
   return index
 }
 
@@ -144,7 +149,7 @@ export async function writeDrillJsonArtifactOutput({
   await writeFile(outputPath, `${JSON.stringify(value, null, 2)}\n`, "utf8")
   if (!artifactIndexPath) return null
   return await writeDrillArtifactIndex({
-    rootDir: path.dirname(outputPath),
+    rootDir: path.dirname(path.resolve(outputPath)),
     artifacts: [path.basename(outputPath)],
     indexPath: artifactIndexPath,
     metadata,
@@ -387,8 +392,8 @@ export function validateDrillArtifactIndex(index, source = "drill artifact index
   if (index.schema !== DRILL_ARTIFACT_INDEX_SCHEMA) {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(index.schema)}`)
   }
-  if (!nonEmptyString(index.rootDir)) {
-    throw new Error(`${source} is missing rootDir`)
+  if (!nonEmptyString(index.rootDir) || !path.isAbsolute(index.rootDir)) {
+    throw new Error(`${source} has invalid rootDir`)
   }
   if (!nonEmptyString(index.createdAt)) {
     throw new Error(`${source} is missing createdAt`)
@@ -523,8 +528,8 @@ function validateArtifactIndexSummary(summary, source) {
   if (summary.source !== null && typeof summary.source !== "string") {
     throw new Error(`${source} has invalid source`)
   }
-  if (!nonEmptyString(summary.rootDir)) {
-    throw new Error(`${source} is missing rootDir`)
+  if (!nonEmptyString(summary.rootDir) || !path.isAbsolute(summary.rootDir)) {
+    throw new Error(`${source} has invalid rootDir`)
   }
   for (const key of ["artifacts", "sizeBytes"]) {
     if (!Number.isSafeInteger(summary[key]) || summary[key] < 0) {

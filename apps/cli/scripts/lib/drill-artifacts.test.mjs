@@ -165,6 +165,7 @@ test("writes and verifies drill artifact indexes", async () => {
     const verified = await verifyDrillArtifactIndex(indexPath)
 
     assert.equal(index.schema, DRILL_ARTIFACT_INDEX_SCHEMA)
+    assert.equal(index.rootDir, root)
     assert.deepEqual(readIndex, index)
     assert.deepEqual(verified, index)
     assert.equal(index.metadata.relayToken, "<redacted>")
@@ -177,6 +178,28 @@ test("writes and verifies drill artifact indexes", async () => {
       null,
     ])
     assert.doesNotMatch(JSON.stringify(index), /should-not-persist/)
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("normalizes drill artifact index roots to absolute paths", async () => {
+  const targetRoot = path.join(process.cwd(), "target")
+  await mkdir(targetRoot, { recursive: true })
+  const root = await mkdtemp(path.join(targetRoot, "arroba-drill-artifacts-relative-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    const relativeRoot = path.relative(process.cwd(), root)
+
+    const index = await writeDrillArtifactIndex({
+      rootDir: relativeRoot,
+      artifacts: ["reports/gate.json"],
+    })
+    const verified = await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json"))
+
+    assert.equal(index.rootDir, root)
+    assert.deepEqual(verified, index)
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
@@ -950,12 +973,34 @@ test("rejects unsafe drill artifact index paths", async () => {
   try {
     await assert.rejects(
       writeDrillArtifactIndex({
+        rootDir: "",
+        artifacts: ["reports/gate.json"],
+      }),
+      /rootDir is required/,
+    )
+    await assert.rejects(
+      writeDrillArtifactIndex({
         rootDir: root,
         artifacts: ["../outside.json"],
       }),
       /escapes root/,
     )
 
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: "relative-root",
+        createdAt: new Date().toISOString(),
+        metadata: {},
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /invalid rootDir/,
+    )
     assert.throws(
       () => validateDrillArtifactIndex({
         schema: DRILL_ARTIFACT_INDEX_SCHEMA,
