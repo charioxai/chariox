@@ -93,6 +93,12 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactClassifications.length > 0) {
     lines.push(`artifact_required_classifications=${requiredArtifactClassifications.join(",")} missing=${missingArtifactClassifications.join(",") || "none"}`)
   }
+  if (artifacts.requiredArtifactMaxAgeMs !== undefined && artifacts.requiredArtifactMaxAgeMs !== null) {
+    lines.push(`artifact_required_max_age_ms=${artifacts.requiredArtifactMaxAgeMs} stale_indexes=${(artifacts.staleArtifactIndexes ?? []).length}`)
+    for (const staleIndex of artifacts.staleArtifactIndexes ?? []) {
+      lines.push(`- stale_artifact_index=${staleIndex.source ?? "unknown"} created_at=${staleIndex.createdAt} age_ms=${staleIndex.ageMs} max_age_ms=${staleIndex.maxAgeMs}`)
+    }
+  }
   if (artifacts.error) lines.push(`artifact_error=${artifacts.error}`)
   if (artifacts.aggregate) {
     lines.push(`artifact_total=${artifacts.aggregate.totals.artifacts} size_bytes=${artifacts.aggregate.totals.sizeBytes}`)

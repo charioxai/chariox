@@ -3,6 +3,7 @@ import {
   summarizeDrillArtifactIndexes,
   verifyDrillArtifactIndex,
 } from "./drill-artifacts.mjs"
+import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
 export async function artifactValidationGateCheck({ artifactIndexes, artifactRoots }, {
   maxDepth,
@@ -18,6 +19,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
+  requiredArtifactMaxAgeMs = null,
+  nowMs = Date.now(),
 }) {
   if (artifactRoots.length === 0 && artifactIndexes.length === 0) {
     if (requiredArtifactSchemas.length > 0
@@ -31,12 +34,15 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       || requiredArtifactOwners.length > 0
       || requiredArtifactClassifications.length > 0
       || requiredArtifactExitCriterionStatuses.length > 0
-      || requiredArtifactIncompleteExitCriterionStatuses.length > 0) {
+      || requiredArtifactIncompleteExitCriterionStatuses.length > 0
+      || requiredArtifactMaxAgeMs !== null) {
       return {
         status: "failed",
         roots: [],
         inputs: [],
         indexPaths: [],
+        requiredArtifactMaxAgeMs,
+        staleArtifactIndexes: [],
         requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
         missingArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
         requiredArtifactSchemas: [...requiredArtifactSchemas],
@@ -74,7 +80,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactClassifications: requiredArtifactClassifications,
           missingArtifactExitCriterionStatuses: requiredArtifactExitCriterionStatuses,
           missingArtifactIncompleteExitCriterionStatuses: requiredArtifactIncompleteExitCriterionStatuses,
-        }),
+          staleArtifactIndexes: requiredArtifactMaxAgeMs !== null ? [] : undefined,
+        }) || "no artifact indexes found",
       }
     }
     return {
@@ -82,6 +89,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       roots: [],
       inputs: [],
       indexPaths: [],
+      requiredArtifactMaxAgeMs,
+      staleArtifactIndexes: [],
       requiredArtifactCoverageAreas: [],
       missingArtifactCoverageAreas: [],
       requiredArtifactSchemas: [],
@@ -119,6 +128,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         roots: [...artifactRoots],
         inputs: [...artifactIndexes],
         indexPaths,
+        requiredArtifactMaxAgeMs,
+        staleArtifactIndexes: [],
         requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
         missingArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
         requiredArtifactSchemas: [...requiredArtifactSchemas],
@@ -148,6 +159,10 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     }
     const indexes = await Promise.all(indexPaths.map((indexPath) => verifyDrillArtifactIndex(indexPath)))
     const aggregate = summarizeDrillArtifactIndexes(indexes, { sources: indexPaths })
+    const staleArtifactIndexes = staleArtifactIndexesFor(indexes, indexPaths, {
+      nowMs,
+      requiredArtifactMaxAgeMs,
+    })
     const missingArtifactCoverageAreas = requiredArtifactCoverageAreas.filter((area) => !Object.prototype.hasOwnProperty.call(aggregate.coverageAreas ?? {}, area))
     const missingArtifactSchemas = requiredArtifactSchemas.filter((schema) => !Object.prototype.hasOwnProperty.call(aggregate.schemas, schema))
     const missingArtifactKinds = requiredArtifactKinds.filter((kind) => !Object.prototype.hasOwnProperty.call(aggregate.artifactKinds ?? {}, kind))
@@ -172,11 +187,14 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       + missingArtifactClassifications.length
       + missingArtifactExitCriterionStatuses.length
       + missingArtifactIncompleteExitCriterionStatuses.length
+      + staleArtifactIndexes.length
     return {
       status: missingRequirements > 0 ? "failed" : "passed",
       roots: [...artifactRoots],
       inputs: [...artifactIndexes],
       indexPaths,
+      requiredArtifactMaxAgeMs,
+      staleArtifactIndexes,
       requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
       missingArtifactCoverageAreas,
       requiredArtifactSchemas: [...requiredArtifactSchemas],
@@ -217,6 +235,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactClassifications,
             missingArtifactExitCriterionStatuses,
             missingArtifactIncompleteExitCriterionStatuses,
+            staleArtifactIndexes,
           }),
         }
         : {}),
@@ -227,6 +246,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       roots: [...artifactRoots],
       inputs: [...artifactIndexes],
       indexPaths: [],
+      requiredArtifactMaxAgeMs,
+      staleArtifactIndexes: [],
       requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
       missingArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
       requiredArtifactSchemas: [...requiredArtifactSchemas],
@@ -269,6 +290,7 @@ function artifactRequirementError({
   missingArtifactClassifications,
   missingArtifactExitCriterionStatuses,
   missingArtifactIncompleteExitCriterionStatuses,
+  staleArtifactIndexes,
 }) {
   const messages = []
   if (missingArtifactCoverageAreas.length > 0) {
@@ -307,5 +329,29 @@ function artifactRequirementError({
   if (missingArtifactIncompleteExitCriterionStatuses.length > 0) {
     messages.push(`missing required artifact incomplete exit criterion statuses: ${missingArtifactIncompleteExitCriterionStatuses.join(", ")}`)
   }
+  if ((staleArtifactIndexes ?? []).length > 0) {
+    messages.push(`stale artifact indexes: ${staleArtifactIndexes.map((index) => `${index.source} age_ms=${index.ageMs} max_age_ms=${index.maxAgeMs}`).join(", ")}`)
+  }
   return messages.join("; ")
+}
+
+function staleArtifactIndexesFor(indexes, sources, { nowMs, requiredArtifactMaxAgeMs }) {
+  if (requiredArtifactMaxAgeMs === null) return []
+  if (!Number.isSafeInteger(requiredArtifactMaxAgeMs) || requiredArtifactMaxAgeMs < 0) {
+    throw new Error("requiredArtifactMaxAgeMs must be a non-negative integer")
+  }
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("nowMs must be finite")
+  }
+  return indexes
+    .map((index, position) => {
+      const createdMs = parseDrillIsoTimestamp(index.createdAt, `artifact index ${sources[position] ?? position}.createdAt`)
+      return {
+        source: sources[position] ?? null,
+        createdAt: index.createdAt,
+        ageMs: Math.max(0, Math.floor(nowMs - createdMs)),
+        maxAgeMs: requiredArtifactMaxAgeMs,
+      }
+    })
+    .filter((entry) => entry.ageMs > requiredArtifactMaxAgeMs)
 }

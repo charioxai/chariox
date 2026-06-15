@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
+import {
+  parseDrillMaxDepth,
+  parseDrillNonNegativeInteger,
+} from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
   parseValidationGateRequirementArg,
@@ -60,6 +63,8 @@ function printHelp() {
     "                         Fail when artifact index metadata lacks each exit criterion status; repeatable",
     "  --require-artifact-incomplete-exit-criterion-status STATUS[,STATUS]",
     "                         Fail when artifact index metadata lacks each incomplete exit criterion status; repeatable",
+    "  --require-artifact-max-age-ms MS",
+    "                         Fail when artifact indexes are older than this many milliseconds",
     "  --require-runtime-signal ID[,ID]",
     "                         Fail when platform bundle lacks each distributed runtime signal; repeatable",
     "  --require-failure-classification KIND[,KIND]",
@@ -135,6 +140,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    requiredArtifactMaxAgeMs: null,
     ...validationGateRequirementOptionDefaults({ presetKey: "presets" }),
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -205,6 +211,16 @@ function parseArgs(argv) {
         index += 1
       } else if (arg.startsWith("--max-depth=")) {
         options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
+      } else if (arg === "--require-artifact-max-age-ms") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--require-artifact-max-age-ms requires a value")
+        options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(value, "--require-artifact-max-age-ms")
+        index += 1
+      } else if (arg.startsWith("--require-artifact-max-age-ms=")) {
+        options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(
+          arg.slice("--require-artifact-max-age-ms=".length),
+          "--require-artifact-max-age-ms",
+        )
       } else if (arg === "--output") {
         const value = argv[index + 1]
         if (!value || value.startsWith("--")) throw new Error("--output requires a value")

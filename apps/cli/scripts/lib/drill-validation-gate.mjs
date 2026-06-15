@@ -111,6 +111,7 @@ export async function runDrillValidationGate({
   requiredArtifactClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
+  requiredArtifactMaxAgeMs = null,
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -192,6 +193,7 @@ export async function runDrillValidationGate({
       requiredArtifactClassifications: normalizedRequiredArtifactClassifications,
       requiredArtifactExitCriterionStatuses: normalizedRequiredArtifactExitCriterionStatuses,
       requiredArtifactIncompleteExitCriterionStatuses: normalizedRequiredArtifactIncompleteExitCriterionStatuses,
+      requiredArtifactMaxAgeMs,
       requiredRuntimeSignals: normalizedRequiredRuntimeSignals,
       requiredFailureClassifications: normalizedRequiredFailureClassifications,
       requiredMatrices: normalizedRequiredMatrices,
@@ -220,6 +222,7 @@ export async function runDrillValidationGate({
       requiredArtifactClassifications: normalizedRequiredArtifactClassifications,
       requiredArtifactExitCriterionStatuses: normalizedRequiredArtifactExitCriterionStatuses,
       requiredArtifactIncompleteExitCriterionStatuses: normalizedRequiredArtifactIncompleteExitCriterionStatuses,
+      requiredArtifactMaxAgeMs,
     }),
     matrices: await matrixValidationGateCheck({
       matrixReports,

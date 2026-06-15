@@ -2,7 +2,10 @@
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
+import {
+  parseDrillMaxDepth,
+  parseDrillNonNegativeInteger,
+} from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
   parseValidationGateRequirementArg,
@@ -60,6 +63,7 @@ function printHelp() {
   "  --require-artifact-classification KIND[,KIND]",
   "  --require-artifact-exit-criterion-status STATUS[,STATUS]",
   "  --require-artifact-incomplete-exit-criterion-status STATUS[,STATUS]",
+  "  --require-artifact-max-age-ms MS",
     "  --require-runtime-signal ID[,ID]",
     "  --require-failure-classification KIND[,KIND]",
     "  --require-matrix NAME[,NAME]",
@@ -128,6 +132,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    requiredArtifactMaxAgeMs: null,
     ...validationGateRequirementOptionDefaults({ presetKey: "presets" }),
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -189,6 +194,14 @@ function parseArgs(argv) {
         index += 1
       } else if (arg.startsWith("--max-depth=")) {
         options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
+      } else if (arg === "--require-artifact-max-age-ms") {
+        options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(readValue(argv, index, arg), "--require-artifact-max-age-ms")
+        index += 1
+      } else if (arg.startsWith("--require-artifact-max-age-ms=")) {
+        options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(
+          arg.slice("--require-artifact-max-age-ms=".length),
+          "--require-artifact-max-age-ms",
+        )
       } else if (arg === "--output") {
         options.outputPath = readValue(argv, index, arg)
         index += 1
@@ -269,6 +282,7 @@ function gateOptionsFor(options) {
     requiredArtifactClassifications: options.requiredArtifactClassifications,
     requiredArtifactExitCriterionStatuses: options.requiredArtifactExitCriterionStatuses,
     requiredArtifactIncompleteExitCriterionStatuses: options.requiredArtifactIncompleteExitCriterionStatuses,
+    requiredArtifactMaxAgeMs: options.requiredArtifactMaxAgeMs,
     requiredRuntimeSignals: options.requiredRuntimeSignals,
     requiredFailureClassifications: options.requiredFailureClassifications,
     requiredMatrices: options.requiredMatrices,

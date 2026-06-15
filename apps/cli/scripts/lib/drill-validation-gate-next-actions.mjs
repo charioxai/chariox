@@ -92,6 +92,14 @@ export function validationGateNextActions(checks) {
         nextAction: `collect artifact evidence from repos: ${missingArtifactEvidenceRepos.join(", ")}`,
       })
     }
+    if ((checks.artifacts.staleArtifactIndexes ?? []).length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-staleness",
+        nextAction: "regenerate stale drill artifact indexes, then rerun the validation gate",
+        count: checks.artifacts.staleArtifactIndexes.length,
+      })
+    }
   }
   if (checks.matrices.status === "failed") {
     if (checks.matrices.error) {

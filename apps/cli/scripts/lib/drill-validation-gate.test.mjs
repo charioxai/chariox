@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -816,6 +816,54 @@ test("passes with explicit artifact index paths", async () => {
   }
 })
 
+test("gates explicit artifact index paths by required freshness", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "reports", "gate.json")
+    await mkdir(path.dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeDrillArtifactIndex({
+      rootDir,
+      artifacts: ["reports/gate.json"],
+    })
+    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    await rewriteArtifactIndexCreatedAt(indexPath, new Date(Date.now() - 500).toISOString())
+
+    const fresh = await runDrillValidationGate({
+      artifactIndexes: [indexPath],
+      requiredArtifactMaxAgeMs: 3_600_000,
+    })
+    assert.equal(fresh.status, "passed")
+    assert.equal(fresh.checks.artifacts.requiredArtifactMaxAgeMs, 3_600_000)
+    assert.deepEqual(fresh.checks.artifacts.staleArtifactIndexes, [])
+    assert.match(formatDrillValidationGateSummary(fresh), /artifact_required_max_age_ms=3600000 stale_indexes=0/)
+
+    const stale = await runDrillValidationGate({
+      artifactIndexes: [indexPath],
+      requiredArtifactMaxAgeMs: 100,
+    })
+    assert.equal(stale.status, "failed")
+    assert.equal(stale.checks.artifacts.staleArtifactIndexes.length, 1)
+    assert.equal(stale.checks.artifacts.staleArtifactIndexes[0].source, indexPath)
+    assert.match(stale.checks.artifacts.error, /stale artifact indexes:/)
+    assert.match(formatDrillValidationGateSummary(stale), /artifact_required_max_age_ms=100 stale_indexes=1/)
+    assert.match(formatDrillValidationGateSummary(stale), /stale_artifact_index=.*arroba-drill-artifacts\.json/)
+    assert.deepEqual(
+      stale.nextActions
+        .filter(({ classification }) => classification === "artifact-staleness")
+        .map(({ owner, classification, nextAction, count }) => ({ owner, classification, nextAction, count })),
+      [{
+        owner: "validation-harness",
+        classification: "artifact-staleness",
+        nextAction: "regenerate stale drill artifact indexes, then rerun the validation gate",
+        count: 1,
+      }],
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("gates explicit artifact index paths by required schema", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -1321,6 +1369,12 @@ async function writeFailureManifest(file) {
     metadata: { drill: "failed-drill" },
     error: { name: "Error", message: "Token refresh failed: 401", stack: null },
   }, null, 2)}\n`, "utf8")
+}
+
+async function rewriteArtifactIndexCreatedAt(indexPath, createdAt) {
+  const index = JSON.parse(await readFile(indexPath, "utf8"))
+  index.createdAt = createdAt
+  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8")
 }
 
 function matrixReport(overrides = {}) {

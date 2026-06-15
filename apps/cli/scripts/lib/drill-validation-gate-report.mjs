@@ -141,11 +141,43 @@ function validateArtifactIndexCheck(check, source) {
   validateExitCriterionStatusArray(check.missingArtifactExitCriterionStatuses ?? [], `${source}.missingArtifactExitCriterionStatuses`)
   validateExitCriterionStatusArray(check.requiredArtifactIncompleteExitCriterionStatuses ?? [], `${source}.requiredArtifactIncompleteExitCriterionStatuses`)
   validateExitCriterionStatusArray(check.missingArtifactIncompleteExitCriterionStatuses ?? [], `${source}.missingArtifactIncompleteExitCriterionStatuses`)
+  if (check.requiredArtifactMaxAgeMs !== undefined
+    && check.requiredArtifactMaxAgeMs !== null
+    && (!Number.isSafeInteger(check.requiredArtifactMaxAgeMs) || check.requiredArtifactMaxAgeMs < 0)) {
+    throw new Error(`${source} has invalid requiredArtifactMaxAgeMs`)
+  }
+  if (check.staleArtifactIndexes !== undefined) {
+    validateStaleArtifactIndexes(check.staleArtifactIndexes, `${source}.staleArtifactIndexes`)
+  }
   if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
     throw new Error(`${source} is missing error`)
   }
   if (check.aggregate) {
     validateDrillArtifactIndexAggregate(check.aggregate, `${source}.aggregate`)
+  }
+}
+
+function validateStaleArtifactIndexes(indexes, source) {
+  if (!Array.isArray(indexes)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, entry] of indexes.entries()) {
+    const entrySource = `${source}[${index}]`
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${entrySource} is not an object`)
+    }
+    if (entry.source !== null && typeof entry.source !== "string") {
+      throw new Error(`${entrySource} has invalid source`)
+    }
+    if (!nonEmptyString(entry.createdAt)) {
+      throw new Error(`${entrySource} has invalid createdAt`)
+    }
+    if (!Number.isSafeInteger(entry.ageMs) || entry.ageMs < 0) {
+      throw new Error(`${entrySource} has invalid ageMs`)
+    }
+    if (!Number.isSafeInteger(entry.maxAgeMs) || entry.maxAgeMs < 0) {
+      throw new Error(`${entrySource} has invalid maxAgeMs`)
+    }
   }
 }
 

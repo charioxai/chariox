@@ -18,6 +18,8 @@ test("skips artifact validation when no roots or indexes are configured", async 
     roots: [],
     inputs: [],
     indexPaths: [],
+    requiredArtifactMaxAgeMs: null,
+    staleArtifactIndexes: [],
     requiredArtifactCoverageAreas: [],
     missingArtifactCoverageAreas: [],
     requiredArtifactSchemas: [],
