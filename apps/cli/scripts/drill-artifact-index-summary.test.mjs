@@ -127,6 +127,25 @@ test("drill artifact index summary rejects output artifact index without output"
   )
 })
 
+test("drill artifact index summary prints artifact coverage input count", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  try {
+    await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-root",
+      rootDir,
+    ])
+
+    assert.match(stdout, /artifact_coverage_input_sources: artifact metadata inputs=1/)
+    assert.match(stdout, /artifact_coverage_input_count=1/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary accepts explicit index paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   try {
