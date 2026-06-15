@@ -131,6 +131,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_required_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
   assert.match(text, /artifact_owners=validation-platform:1/)
   assert.match(text, /artifact_classifications=cloud-validation-suite:1/)
+  assert.match(text, /artifact_planned_owners=runtime-state:1/)
+  assert.match(text, /artifact_planned_classifications=workspace-live-sync-conflict:1/)
   assert.match(text, /artifact_kinds=artifact-index:1,matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_evidence_kinds=matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_matrix_limitations=dry-run-classification-coverage:1/)
@@ -327,6 +329,12 @@ function artifactAggregateFixture() {
     classifications: {
       "cloud-validation-suite": 1,
     },
+    plannedOwners: {
+      "runtime-state": 1,
+    },
+    plannedClassifications: {
+      "workspace-live-sync-conflict": 1,
+    },
     exitCriterionStatuses: {},
     incompleteExitCriterionStatuses: {},
     artifactKinds: {
@@ -418,6 +426,12 @@ function artifactAggregateFixture() {
       },
       classifications: {
         "cloud-validation-suite": 1,
+      },
+      plannedOwners: {
+        "runtime-state": 1,
+      },
+      plannedClassifications: {
+        "workspace-live-sync-conflict": 1,
       },
       exitCriterionStatuses: {},
       incompleteExitCriterionStatuses: {},

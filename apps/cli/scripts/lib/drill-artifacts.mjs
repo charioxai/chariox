@@ -37,6 +37,8 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "validationPresets",
   "owners",
   "classifications",
+  "plannedOwners",
+  "plannedClassifications",
   "exitCriterionStatuses",
   "incompleteExitCriterionStatuses",
   "artifactKinds",
@@ -73,6 +75,8 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   validationPresets: "validation_presets",
   owners: "owners",
   classifications: "classifications",
+  plannedOwners: "planned_owners",
+  plannedClassifications: "planned_classifications",
   exitCriterionStatuses: "exit_criterion_statuses",
   incompleteExitCriterionStatuses: "incomplete_exit_criterion_statuses",
   artifactKinds: "artifact_kinds",
@@ -235,6 +239,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const validationPresets = new Map()
   const owners = new Map()
   const classifications = new Map()
+  const plannedOwners = new Map()
+  const plannedClassifications = new Map()
   const exitCriterionStatuses = new Map()
   const incompleteExitCriterionStatuses = new Map()
   const artifactKinds = new Map()
@@ -271,6 +277,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
+    const indexPlannedOwners = metadataListFromMetadata(index.metadata, "plannedOwners")
+    const indexPlannedClassifications = metadataListFromMetadata(index.metadata, "plannedClassifications")
     const indexExitCriterionStatuses = metadataListFromMetadata(index.metadata, "exitCriterionStatuses")
     const indexIncompleteExitCriterionStatuses = metadataListFromMetadata(index.metadata, "incompleteExitCriterionStatuses")
     const indexArtifactKinds = metadataListFromMetadata(index.metadata, "artifactKinds")
@@ -300,6 +308,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexValidationPresets, validationPresets)
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
+    countValues(indexPlannedOwners, plannedOwners)
+    countValues(indexPlannedClassifications, plannedClassifications)
     countValues(indexExitCriterionStatuses, exitCriterionStatuses)
     countValues(indexIncompleteExitCriterionStatuses, incompleteExitCriterionStatuses)
     countValues(indexArtifactKinds, artifactKinds)
@@ -343,6 +353,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       validationPresets: countValues(indexValidationPresets),
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
+      plannedOwners: countValues(indexPlannedOwners),
+      plannedClassifications: countValues(indexPlannedClassifications),
       exitCriterionStatuses: countValues(indexExitCriterionStatuses),
       incompleteExitCriterionStatuses: countValues(indexIncompleteExitCriterionStatuses),
       artifactKinds: countValues(indexArtifactKinds),
@@ -378,6 +390,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     validationPresets: sortedCountObject(validationPresets),
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
+    plannedOwners: sortedCountObject(plannedOwners),
+    plannedClassifications: sortedCountObject(plannedClassifications),
     exitCriterionStatuses: sortedCountObject(exitCriterionStatuses),
     incompleteExitCriterionStatuses: sortedCountObject(incompleteExitCriterionStatuses),
     artifactKinds: sortedCountObject(artifactKinds),
@@ -848,6 +862,38 @@ function validateMatrixArtifactMetadata(report, artifactPath, metadata) {
   }
   if (metadata?.scenarios !== undefined && metadata.scenarios !== report.scenarios.length) {
     throw new Error(`drill artifact ${artifactPath} metadata.scenarios must match artifact scenarios`)
+  }
+  validateMatrixPlannedMetadata(report, artifactPath, metadata)
+}
+
+function validateMatrixPlannedMetadata(report, artifactPath, metadata) {
+  const expectedPlannedOwners = plannedMetadataForReport(report, "plannedOwner")
+  const expectedPlannedClassifications = plannedMetadataForReport(report, "plannedClassification")
+  validateOptionalMetadataListMatches({
+    artifactPath,
+    field: "plannedOwners",
+    actual: metadataListFromMetadata(metadata, "plannedOwners"),
+    expected: expectedPlannedOwners,
+  })
+  validateOptionalMetadataListMatches({
+    artifactPath,
+    field: "plannedClassifications",
+    actual: metadataListFromMetadata(metadata, "plannedClassifications"),
+    expected: expectedPlannedClassifications,
+  })
+}
+
+function plannedMetadataForReport(report, key) {
+  return [...new Set((report.scenarios ?? [])
+    .map((scenario) => scenario?.[key])
+    .filter(nonEmptyString))]
+    .sort()
+}
+
+function validateOptionalMetadataListMatches({ artifactPath, field, actual, expected }) {
+  if (actual.length === 0) return
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`drill artifact ${artifactPath} metadata.${field} must match artifact planned diagnostics`)
   }
 }
 

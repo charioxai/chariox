@@ -378,6 +378,7 @@ test("writes dry-run report without executing scenarios", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "fail-if-executed.mjs", "process.exit(9)")
   const reportPath = path.join(dir, "dry-run.json")
+  const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
   const logs = []
   const originalLog = console.log
   console.log = (...args) => logs.push(args.join(" "))
@@ -391,6 +392,7 @@ test("writes dry-run report without executing scenarios", async () => {
       cwd: dir,
       dryRun: true,
       reportPath,
+      artifactIndexPath,
     })
   } finally {
     console.log = originalLog
@@ -419,6 +421,9 @@ test("writes dry-run report without executing scenarios", async () => {
     status: "dry-run",
     reason: "scenario command was selected but not executed",
   }])
+  const index = await verifyDrillArtifactIndex(artifactIndexPath)
+  assert.equal(index.metadata.plannedOwners, "kernel-authority")
+  assert.equal(index.metadata.plannedClassifications, "kernel-authority")
   await rm(dir, { recursive: true, force: true })
 })
 

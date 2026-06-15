@@ -386,6 +386,8 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
       }
       : {}),
   }
+  const plannedOwners = uniqueScenarioFieldValues(scenarios, "plannedOwner")
+  const plannedClassifications = uniqueScenarioFieldValues(scenarios, "plannedClassification")
   validateDrillMatrixReport(report, reportPath)
   await writeDrillJsonArtifactOutput({
     outputPath: reportPath,
@@ -402,6 +404,8 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
           runtimeSignalOwners: runtimeSignalOwners.join(","),
         }
         : {}),
+      ...(plannedOwners.length > 0 ? { plannedOwners: plannedOwners.join(",") } : {}),
+      ...(plannedClassifications.length > 0 ? { plannedClassifications: plannedClassifications.join(",") } : {}),
     },
   })
   console.log(`[${matrixName}] report ${reportPath}`)
@@ -409,6 +413,13 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     console.log(`[${matrixName}] runtime_signals ${formatRuntimeSignalCounts(runtimeSignals)}`)
     console.log(`[${matrixName}] runtime_signal_owners ${formatRuntimeSignalCounts(drillRuntimeSignalOwnerCounts(runtimeSignals))}`)
   }
+}
+
+function uniqueScenarioFieldValues(scenarios, field) {
+  return [...new Set(scenarios
+    .map((scenario) => scenario[field])
+    .filter(nonEmptyString))]
+    .sort()
 }
 
 function ownerForResult(result) {

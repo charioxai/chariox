@@ -491,6 +491,54 @@ test("rejects matrix report artifacts with stale metadata", async () => {
   }
 })
 
+test("rejects matrix report artifacts with stale planned diagnostic metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-matrix-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "matrix.json"), `${JSON.stringify(matrixReportArtifact({
+      status: "dry-run",
+      dryRun: true,
+      scenarios: [{
+        id: "dry",
+        description: "dry scenario",
+        requires: [],
+        exitCriteria: [],
+        exitCriteriaEvidence: [],
+        runtimeSignals: [],
+        status: "dry-run",
+        expectedFailure: false,
+        classification: null,
+        owner: null,
+        nextAction: null,
+        plannedClassification: "workspace-live-sync-conflict",
+        plannedOwner: "runtime-state",
+        plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
+        durationMs: 0,
+        reason: null,
+        command: "node",
+        args: ["--version"],
+        artifactHints: [],
+      }],
+    }), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/matrix.json"],
+      metadata: {
+        plannedOwners: "kernel-authority",
+        plannedClassifications: "workspace-live-sync-conflict",
+      },
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /matrix\.json metadata\.plannedOwners must match artifact planned diagnostics/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
 test("rejects inconsistent drill runtime signal owner metadata", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
   try {
@@ -639,6 +687,8 @@ test("summarizes drill artifact indexes", async () => {
       metadata: {
         classifications: "matrix-coverage",
         owners: "validation-harness,runtime-network",
+        plannedClassifications: "workspace-live-sync-conflict",
+        plannedOwners: "runtime-state",
         exitCriterionStatuses: "dry-run",
         incompleteExitCriterionStatuses: "dry-run",
         runtimeSignals: "session-authority,lease-health",
@@ -710,6 +760,12 @@ test("summarizes drill artifact indexes", async () => {
       "artifact-coverage": 1,
       "matrix-coverage": 1,
       "validation-gate": 1,
+    })
+    assert.deepEqual(aggregate.plannedClassifications, {
+      "workspace-live-sync-conflict": 1,
+    })
+    assert.deepEqual(aggregate.plannedOwners, {
+      "runtime-state": 1,
     })
     assert.deepEqual(aggregate.exitCriterionStatuses, {
       "dry-run": 1,
@@ -827,6 +883,8 @@ test("summarizes drill artifact indexes", async () => {
       missingRuntimeSignals: "relay-target-freshness",
       missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
       owners: "runtime-network,validation-harness",
+      plannedClassifications: "workspace-live-sync-conflict",
+      plannedOwners: "runtime-state",
       providerAccountAliases: "claude=team,codex=work,opencode=zen",
       requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
       requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
@@ -849,6 +907,8 @@ test("summarizes drill artifact indexes", async () => {
       "validationPresets",
       "owners",
       "classifications",
+      "plannedOwners",
+      "plannedClassifications",
       "exitCriterionStatuses",
       "incompleteExitCriterionStatuses",
       "artifactKinds",
@@ -887,6 +947,8 @@ test("summarizes drill artifact indexes", async () => {
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /validation_presets: distributed-runtime=2 slice-runtime=1 workspace-live-sync=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /owners: runtime-network=1 validation-harness=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /planned_owners: runtime-state=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /planned_classifications: workspace-live-sync-conflict=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /exit_criterion_statuses: dry-run=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /incomplete_exit_criterion_statuses: dry-run=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /provider_account_aliases: claude=team=1 codex=work=2 opencode=zen=1/)
