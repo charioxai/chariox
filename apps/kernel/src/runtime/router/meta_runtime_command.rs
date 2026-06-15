@@ -1,16 +1,21 @@
 use crate::attachment::ClientCapabilityLevel;
 use crate::error::DaemonError;
 use crate::local::{
-    AddWorkflowNodeRequest, AliasAgentRequest, AttachToSessionRequest, CancelWorkflowRunRequest,
-    CreateWorkflowEndpointRequest, CreateWorkflowRequest, DestroyAgentRequest, ExtensionKind,
-    FocusAgentRequest, GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest,
-    GetSkillRequest, GrantAgentExtensionRequest, ImportMcpServersRequest, ImportSkillsRequest,
+    AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasAgentRequest,
+    AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
+    CancelWorkflowRunRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+    DestroyAgentRequest, ExtensionKind, FocusAgentRequest, GetCredentialRequest,
+    GetCredentialVaultStatusRequest, GetMcpServerRequest, GetSkillRequest, GetWorkflowRunRequest,
+    GrantAgentExtensionRequest, ImportMcpServersRequest, ImportSkillsRequest,
     InstallMcpServerRequest, InstallSkillRequest, InvokeWorkflowEndpointRequest, ListAgentsRequest,
     ListCredentialsRequest, ListMcpServersRequest, ListSkillsRequest, ListWorkflowRunsRequest,
     ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, ManageCredentialVaultRequest,
-    RemoveCredentialRequest, ResumeWorkflowRunRequest, RevokeAgentExtensionRequest,
-    SpawnAgentRequest, UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest,
-    UpdateSkillRequest, UpsertCredentialRequest,
+    RemoveCredentialRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
+    ResolveWorkflowRequest, ResumeWorkflowRunRequest, RevokeAgentExtensionRequest,
+    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    SetWorkflowNodeMaxTurnsRequest, SpawnAgentRequest, UninstallMcpServerRequest,
+    UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    UpdateWorkflowNodeInstructionsRequest, UpsertCredentialRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -665,6 +670,31 @@ fn meta_workflow_request(
                 alias: args.get(1).cloned(),
             }))
         }
+        Some("resolve" | "show" | "get") => {
+            let Some(workflow_ref) = args.get(1) else {
+                return Err(meta_command_error("usage: workflow resolve <workflow-ref>"));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: workflow resolve <workflow-ref>"));
+            }
+            Ok(LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_ref.clone(),
+            }))
+        }
+        Some("alias" | "name") => {
+            if args.len() < 3 {
+                return Err(meta_command_error(
+                    "usage: workflow alias <workflow-ref> <alias>",
+                ));
+            }
+            Ok(LocalDaemonRequest::AliasWorkflow(AliasWorkflowRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: args[1].clone(),
+                alias: args[2..].join(" "),
+                expected_workflow_revision: None,
+            }))
+        }
         Some("node") => match args.get(1).map(String::as_str) {
             Some("add") => {
                 if args.len() != 4 {
@@ -682,8 +712,96 @@ fn meta_workflow_request(
                     },
                 ))
             }
+            Some("remove" | "delete") => {
+                if args.len() != 4 {
+                    return Err(meta_command_error(
+                        "usage: workflow node remove <workflow-ref> <node-id>",
+                    ));
+                }
+                Ok(LocalDaemonRequest::RemoveWorkflowNode(
+                    RemoveWorkflowNodeRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        node_id: args[3].clone(),
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
+            Some("instructions" | "instruct") => {
+                if args.len() < 4 {
+                    return Err(meta_command_error(
+                        "usage: workflow node instructions <workflow-ref> <node-id> [instructions]",
+                    ));
+                }
+                let instructions = (!args[4..].is_empty())
+                    .then(|| args[4..].join(" "))
+                    .filter(|value| !matches!(value.as_str(), "clear" | "none" | "-"));
+                Ok(LocalDaemonRequest::UpdateWorkflowNodeInstructions(
+                    UpdateWorkflowNodeInstructionsRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        node_id: args[3].clone(),
+                        instructions,
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
+            Some("can-complete" | "complete") => {
+                if args.len() != 5 {
+                    return Err(meta_command_error(
+                        "usage: workflow node can-complete <workflow-ref> <node-id> <true|false>",
+                    ));
+                }
+                Ok(LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(
+                    SetWorkflowNodeCanCompleteRunRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        node_id: args[3].clone(),
+                        can_complete_workflow_run: parse_meta_bool(&args[4])?,
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
+            Some("intermediate-output" | "intermediate") => {
+                if args.len() != 5 {
+                    return Err(meta_command_error(
+                        "usage: workflow node intermediate-output <workflow-ref> <node-id> <true|false>",
+                    ));
+                }
+                Ok(LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(
+                    SetWorkflowNodeCanEmitIntermediateOutputRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        node_id: args[3].clone(),
+                        can_emit_intermediate_workflow_run_output: parse_meta_bool(&args[4])?,
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
+            Some("max-turns") => {
+                if args.len() != 5 {
+                    return Err(meta_command_error(
+                        "usage: workflow node max-turns <workflow-ref> <node-id> <number|none>",
+                    ));
+                }
+                let max_turns = match args[4].as_str() {
+                    "none" | "clear" | "-" => None,
+                    value => Some(value.parse::<u32>().map_err(|error| {
+                        meta_command_error(format!("invalid max turns `{value}`: {error}"))
+                    })?),
+                };
+                Ok(LocalDaemonRequest::SetWorkflowNodeMaxTurns(
+                    SetWorkflowNodeMaxTurnsRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        node_id: args[3].clone(),
+                        max_turns,
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
             _ => Err(meta_command_error(
-                "usage: workflow node add <workflow-ref> <owned-agent-ref>",
+                "usage: workflow node <add|remove|instructions|can-complete|intermediate-output|max-turns> ...",
             )),
         },
         Some("endpoint") => match args.get(1).map(String::as_str) {
@@ -703,10 +821,76 @@ fn meta_workflow_request(
                     },
                 ))
             }
+            Some("alias" | "name") => {
+                if args.len() < 5 {
+                    return Err(meta_command_error(
+                        "usage: workflow endpoint alias <workflow-ref> <endpoint-ref> <alias>",
+                    ));
+                }
+                Ok(LocalDaemonRequest::AliasWorkflowEndpoint(
+                    AliasWorkflowEndpointRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        endpoint_ref: args[3].clone(),
+                        alias: args[4..].join(" "),
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
             _ => Err(meta_command_error(
-                "usage: workflow endpoint new <workflow-ref> <entry-node-id> [alias]",
+                "usage: workflow endpoint <new|alias> ...",
             )),
         },
+        Some("edge") => match args.get(1).map(String::as_str) {
+            Some("add") => {
+                if args.len() != 5 {
+                    return Err(meta_command_error(
+                        "usage: workflow edge add <workflow-ref> <from-node-id> <to-node-id>",
+                    ));
+                }
+                Ok(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: args[2].clone(),
+                    from_node_id: args[3].clone(),
+                    to_node_id: args[4].clone(),
+                    handoff_schema_ref: None,
+                    validation_policy: None,
+                    source_side: None,
+                    target_side: None,
+                    expected_workflow_revision: None,
+                }))
+            }
+            Some("remove" | "delete") => {
+                if args.len() != 4 {
+                    return Err(meta_command_error(
+                        "usage: workflow edge remove <workflow-ref> <edge-id>",
+                    ));
+                }
+                Ok(LocalDaemonRequest::RemoveWorkflowEdge(
+                    RemoveWorkflowEdgeRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        edge_id: args[3].clone(),
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
+            _ => Err(meta_command_error(
+                "usage: workflow edge <add|remove> ...",
+            )),
+        },
+        Some("run") if args.get(1).map(String::as_str) == Some("get") => {
+            let Some(workflow_run_ref) = args.get(2) else {
+                return Err(meta_command_error("usage: workflow run get <run-ref>"));
+            };
+            if args.len() > 3 {
+                return Err(meta_command_error("usage: workflow run get <run-ref>"));
+            }
+            Ok(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run_ref.clone(),
+            }))
+        }
         Some("run" | "start") => {
             if args.len() < 3 {
                 return Err(meta_command_error(
@@ -730,6 +914,18 @@ fn meta_workflow_request(
                 workflow_ref: args.get(1).cloned(),
             },
         )),
+        Some("get-run" | "run-status") => {
+            let Some(workflow_run_ref) = args.get(1) else {
+                return Err(meta_command_error("usage: workflow get-run <run-ref>"));
+            };
+            if args.len() > 2 {
+                return Err(meta_command_error("usage: workflow get-run <run-ref>"));
+            }
+            Ok(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run_ref.clone(),
+            }))
+        }
         Some("cancel") => {
             let Some(workflow_run_ref) = args.get(1) else {
                 return Err(meta_command_error("usage: workflow cancel <run-ref>"));
@@ -759,7 +955,7 @@ fn meta_workflow_request(
             ))
         }
         _ => Err(meta_command_error(
-            "usage: workflow <list|new|node|endpoint|run|runs|cancel|resume> ...",
+            "usage: workflow <list|new|resolve|alias|node|endpoint|edge|run|runs|get-run|cancel|resume> ...",
         )),
     }
 }
@@ -952,6 +1148,16 @@ fn meta_extension_request(
         }
         _ => Err(meta_command_error(format!(
             "usage: {family} <list|show|install|update|uninstall|import|grant|revoke> ..."
+        ))),
+    }
+}
+
+fn parse_meta_bool(value: &str) -> Result<bool, DaemonError> {
+    match value {
+        "true" | "yes" | "on" | "1" => Ok(true),
+        "false" | "no" | "off" | "0" => Ok(false),
+        _ => Err(meta_command_error(format!(
+            "expected true or false, got `{value}`"
         ))),
     }
 }

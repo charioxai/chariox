@@ -26,6 +26,7 @@ pub(crate) struct MetaCommandDoc {
     pub(crate) usage: &'static str,
     pub(crate) examples: &'static [&'static str],
     pub(crate) tags: &'static [&'static str],
+    pub(crate) intents: &'static [&'static str],
     pub(crate) scope: &'static str,
     pub(crate) mutates: bool,
     pub(crate) policy: MetaCommandPolicy,
@@ -41,6 +42,12 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         usage: "Use arroba.meta.session_overview for current session state.",
         examples: &["arroba.meta.session_overview({})"],
         tags: &["inspect", "session", "agents", "workflows"],
+        intents: &[
+            "inspect current session",
+            "see existing agents",
+            "check workflow state",
+            "understand what is happening",
+        ],
         scope: "session",
         mutates: false,
         policy: MetaCommandPolicy::Allow,
@@ -54,6 +61,12 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         usage: "prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]",
         examples: &["prompt agent-2 \"Investigate this failure\" --wait"],
         tags: &["prompt", "agent", "orchestration"],
+        intents: &[
+            "delegate work to an agent",
+            "ask a worker to do a task",
+            "send instructions to a regular agent",
+            "have another agent implement something",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -62,21 +75,44 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         description: "Submit a normal Arroba prompt to one of this user's regular agents through the existing prompt path.",
     },
     MetaCommandDoc {
+        name: "agent list",
+        aliases: &["agent list", "agent ls"],
+        usage: "agent list",
+        examples: &["agent list"],
+        tags: &["agent", "inspect", "orchestration"],
+        intents: &[
+            "list agents",
+            "see available workers",
+            "find existing agents",
+            "inspect agent roster",
+        ],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned and visible session agents",
+        routed: true,
+        description: "List agents in the current session so the metaagent can pick a regular worker to prompt or supervise.",
+    },
+    MetaCommandDoc {
         name: "agent spawn",
         aliases: &[
             "agent spawn",
-            "agent focus",
-            "agent alias",
-            "agent delete",
-            "agent destroy",
+            "agent create",
+            "spawn agent",
+            "create agent",
+            "create worker",
+            "make worker",
         ],
-        usage: "agent <list|spawn|focus|alias|delete|destroy> ...",
-        examples: &[
-            "agent spawn reviewer gpt-5.2",
-            "agent alias reviewer code-reviewer",
-            "agent delete code-reviewer",
+        usage: "agent spawn [alias] [model]",
+        examples: &["agent spawn reviewer gpt-5.2"],
+        tags: &["agent", "spawn", "worker", "orchestration"],
+        intents: &[
+            "create a new agent",
+            "spawn a worker",
+            "make a worker agent",
+            "delegate implementation to a new agent",
+            "start another agent for a task",
         ],
-        tags: &["agent", "spawn", "orchestration"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
@@ -85,74 +121,668 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         description: "Create a regular agent owned by the current user. Metaagents cannot spawn another metaagent.",
     },
     MetaCommandDoc {
-        name: "workflow",
-        aliases: &[
-            "workflow new",
-            "workflow node add",
-            "workflow endpoint new",
-            "workflow run",
-            "workflow cancel",
-            "workflow resume",
-        ],
-        usage: "workflow <new|list|node add|endpoint new|run|runs|cancel|resume> ...",
-        examples: &[
-            "workflow new qa-flow",
-            "workflow node add qa-flow reviewer",
-            "workflow endpoint new qa-flow node-1 default",
-            "workflow run qa-flow default \"Run QA\"",
-        ],
-        tags: &["workflow", "orchestration"],
+        name: "agent focus",
+        aliases: &["agent focus"],
+        usage: "agent focus <agent-ref>",
+        examples: &["agent focus reviewer"],
+        tags: &["agent", "focus", "orchestration"],
+        intents: &["focus an agent", "switch selected agent", "make an agent current"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned agents only",
+        routed: true,
+        description: "Focus one of this user's agents in the current session.",
+    },
+    MetaCommandDoc {
+        name: "agent alias",
+        aliases: &["agent alias", "agent name"],
+        usage: "agent alias <agent-ref> <alias>",
+        examples: &["agent alias reviewer code-reviewer"],
+        tags: &["agent", "alias", "rename", "orchestration"],
+        intents: &["rename an agent", "give an agent an alias", "label a worker"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned agents only",
+        routed: true,
+        description: "Assign or update a stable alias for one of this user's agents.",
+    },
+    MetaCommandDoc {
+        name: "agent delete",
+        aliases: &["agent delete", "agent destroy", "agent remove"],
+        usage: "agent delete <agent-ref>",
+        examples: &["agent delete code-reviewer"],
+        tags: &["agent", "delete", "remove", "orchestration"],
+        intents: &["delete an agent", "remove a worker", "clean up an agent"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned agents only",
+        routed: true,
+        description: "Delete one of this user's regular agents from the current session.",
+    },
+    MetaCommandDoc {
+        name: "workflow list",
+        aliases: &["workflow", "workflow list", "workflow ls"],
+        usage: "workflow list",
+        examples: &["workflow list"],
+        tags: &["workflow", "inspect", "orchestration"],
+        intents: &["list workflows", "see workflow definitions", "inspect workflow runs"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "List workflow definitions and runs visible in the current session.",
+    },
+    MetaCommandDoc {
+        name: "workflow new",
+        aliases: &["workflow new", "workflow create", "create workflow"],
+        usage: "workflow new <workflow-name>",
+        examples: &["workflow new qa-flow"],
+        tags: &["workflow", "create", "orchestration"],
+        intents: &["create a workflow", "make an automation graph", "start a workflow plan"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "session workflow policy",
         routed: true,
-        description: "Create, wire, run, cancel, resume, and observe workflows from above. Metaagents cannot be workflow nodes.",
+        description: "Create a workflow definition that can coordinate regular agents.",
     },
     MetaCommandDoc {
-        name: "mcp",
-        aliases: &[
-            "mcp install-json",
-            "mcp update-json",
-            "mcp uninstall",
-            "mcp import",
-            "mcp grant",
-            "mcp revoke",
-            "mcp list",
+        name: "workflow resolve",
+        aliases: &["workflow resolve", "workflow show", "workflow get"],
+        usage: "workflow resolve <workflow-ref>",
+        examples: &["workflow resolve qa-flow"],
+        tags: &["workflow", "inspect", "orchestration"],
+        intents: &[
+            "inspect workflow definition",
+            "get workflow node ids",
+            "find workflow endpoint ids",
+            "review workflow graph",
         ],
-        usage: "mcp <list|show|install-json|update-json|uninstall|import|grant|revoke> ...",
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Resolve a workflow reference to the full workflow definition, including node, edge, and endpoint ids needed by other workflow commands.",
+    },
+    MetaCommandDoc {
+        name: "workflow alias",
+        aliases: &["workflow alias", "workflow name", "rename workflow"],
+        usage: "workflow alias <workflow-ref> <alias>",
+        examples: &["workflow alias wf_123 qa-flow"],
+        tags: &["workflow", "rename", "orchestration"],
+        intents: &["rename workflow", "give workflow a stable alias", "label workflow"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Assign or update a human-readable workflow alias.",
+    },
+    MetaCommandDoc {
+        name: "workflow node add",
+        aliases: &["workflow node add", "add workflow node"],
+        usage: "workflow node add <workflow-ref> <agent-ref>",
+        examples: &["workflow node add qa-flow reviewer"],
+        tags: &["workflow", "node", "agent", "orchestration"],
+        intents: &[
+            "add a worker to a workflow",
+            "put an agent in a workflow",
+            "create a workflow node",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy; regular agents only",
+        routed: true,
+        description: "Add a regular agent as a node in a workflow. Use the agent alias as the human label; workflow nodes do not take a separate alias. Metaagents cannot be workflow nodes.",
+    },
+    MetaCommandDoc {
+        name: "workflow node remove",
+        aliases: &["workflow node remove", "workflow node delete", "remove workflow node"],
+        usage: "workflow node remove <workflow-ref> <node-id>",
+        examples: &["workflow node remove qa-flow node_123"],
+        tags: &["workflow", "node", "remove", "orchestration"],
+        intents: &["remove workflow node", "delete workflow node", "take agent out of workflow"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Remove a workflow node by node id. Resolve or list the workflow first if you need node ids.",
+    },
+    MetaCommandDoc {
+        name: "workflow node instructions",
+        aliases: &["workflow node instructions", "workflow node instruct"],
+        usage: "workflow node instructions <workflow-ref> <node-id> [instructions]",
+        examples: &["workflow node instructions qa-flow node_123 \"Review implementation and report risks\""],
+        tags: &["workflow", "node", "instructions", "orchestration"],
+        intents: &["set node instructions", "describe node task", "change worker instructions"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Set or clear per-node workflow instructions. Use `clear`, `none`, or `-` as the instructions value to clear them.",
+    },
+    MetaCommandDoc {
+        name: "workflow node can-complete",
+        aliases: &["workflow node can-complete", "workflow node complete"],
+        usage: "workflow node can-complete <workflow-ref> <node-id> <true|false>",
+        examples: &["workflow node can-complete qa-flow node_123 true"],
+        tags: &["workflow", "node", "completion", "orchestration"],
+        intents: &["allow node to complete workflow", "set final node", "prevent node completion"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Control whether a node may emit final workflow output and complete the run.",
+    },
+    MetaCommandDoc {
+        name: "workflow node intermediate-output",
+        aliases: &["workflow node intermediate-output", "workflow node intermediate"],
+        usage: "workflow node intermediate-output <workflow-ref> <node-id> <true|false>",
+        examples: &["workflow node intermediate-output qa-flow node_123 true"],
+        tags: &["workflow", "node", "output", "orchestration"],
+        intents: &["allow intermediate output", "publish partial workflow output", "disable intermediate output"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Control whether a node may emit intermediate workflow output while the run continues.",
+    },
+    MetaCommandDoc {
+        name: "workflow node max-turns",
+        aliases: &["workflow node max-turns", "workflow node turn limit"],
+        usage: "workflow node max-turns <workflow-ref> <node-id> <number|none>",
+        examples: &["workflow node max-turns qa-flow node_123 3"],
+        tags: &["workflow", "node", "limit", "orchestration"],
+        intents: &["limit node turns", "set max turns", "clear node turn limit"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Set or clear the maximum number of turns a workflow node may take in one run.",
+    },
+    MetaCommandDoc {
+        name: "workflow endpoint new",
+        aliases: &["workflow endpoint new", "workflow endpoint create"],
+        usage: "workflow endpoint new <workflow-ref> <node-ref> <endpoint-name>",
+        examples: &["workflow endpoint new qa-flow node-1 default"],
+        tags: &["workflow", "endpoint", "orchestration"],
+        intents: &["create workflow endpoint", "make workflow entrypoint", "wire workflow input"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Create an endpoint that can start a workflow run.",
+    },
+    MetaCommandDoc {
+        name: "workflow endpoint alias",
+        aliases: &["workflow endpoint alias", "workflow endpoint name", "rename workflow endpoint"],
+        usage: "workflow endpoint alias <workflow-ref> <endpoint-ref> <alias>",
+        examples: &["workflow endpoint alias qa-flow endpoint_123 start"],
+        tags: &["workflow", "endpoint", "rename", "orchestration"],
+        intents: &["rename endpoint", "label workflow entrypoint", "give endpoint alias"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Assign or update a human-readable alias for a workflow endpoint.",
+    },
+    MetaCommandDoc {
+        name: "workflow edge add",
+        aliases: &[
+            "workflow edge add",
+            "add workflow edge",
+            "connect workflow nodes",
+            "connect nodes",
+        ],
+        usage: "workflow edge add <workflow-ref> <from-node-id> <to-node-id>",
+        examples: &["workflow edge add qa-flow node_a node_b"],
+        tags: &["workflow", "edge", "connect", "orchestration"],
+        intents: &[
+            "connect workflow nodes",
+            "add edge between nodes",
+            "make workflow sequential",
+            "send output from one node to another",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Connect two workflow nodes so output can flow from the source node to the target node.",
+    },
+    MetaCommandDoc {
+        name: "workflow edge remove",
+        aliases: &["workflow edge remove", "workflow edge delete", "remove workflow edge"],
+        usage: "workflow edge remove <workflow-ref> <edge-id>",
+        examples: &["workflow edge remove qa-flow edge_123"],
+        tags: &["workflow", "edge", "remove", "orchestration"],
+        intents: &["remove workflow edge", "disconnect workflow nodes", "delete edge"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Remove an edge from a workflow by edge id. Resolve the workflow first if you need edge ids.",
+    },
+    MetaCommandDoc {
+        name: "workflow run",
+        aliases: &[
+            "workflow run",
+            "workflow start",
+            "run workflow",
+            "start workflow",
+        ],
+        usage: "workflow run <workflow-ref> <endpoint-ref> <prompt>",
+        examples: &["workflow run qa-flow default \"Run QA\""],
+        tags: &["workflow", "run", "orchestration"],
+        intents: &[
+            "run a workflow",
+            "start a workflow",
+            "execute an automation graph",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Start a workflow run from an endpoint with a prompt.",
+    },
+    MetaCommandDoc {
+        name: "workflow runs",
+        aliases: &["workflow runs"],
+        usage: "workflow runs [workflow-ref]",
+        examples: &["workflow runs qa-flow"],
+        tags: &["workflow", "inspect", "runs", "orchestration"],
+        intents: &["list workflow runs", "inspect workflow run status", "check workflow progress"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "List workflow runs and their current status.",
+    },
+    MetaCommandDoc {
+        name: "workflow get-run",
+        aliases: &["workflow get-run", "workflow run-status", "workflow run get"],
+        usage: "workflow get-run <run-ref>",
+        examples: &["workflow get-run run_123"],
+        tags: &["workflow", "inspect", "runs", "orchestration"],
+        intents: &["inspect workflow run", "check workflow run details", "read workflow output"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Fetch a single workflow run and its detailed status/output by run reference.",
+    },
+    MetaCommandDoc {
+        name: "workflow tutorial basic",
+        aliases: &[
+            "workflow guide",
+            "workflow tutorial",
+            "how to build workflow",
+            "workflow example",
+        ],
+        usage: "Read-only guide entry. Use command_docs(\"workflow tutorial basic\") or search_commands(\"build workflow tutorial\").",
+        examples: &[
+            "workflow new qa-flow",
+            "agent spawn implementer",
+            "agent spawn reviewer",
+            "workflow node add qa-flow implementer",
+            "workflow node add qa-flow reviewer",
+            "workflow resolve qa-flow",
+            "workflow edge add qa-flow <implementer-node-id> <reviewer-node-id>",
+            "workflow endpoint new qa-flow <entry-node-id> start",
+            "workflow run qa-flow start \"Build and verify the app\"",
+            "workflow runs qa-flow",
+            "workflow get-run <run-ref>",
+        ],
+        tags: &["workflow", "guide", "tutorial", "orchestration"],
+        intents: &[
+            "learn workflow basics",
+            "build workflow from scratch",
+            "connect nodes and run workflow",
+            "create endpoint and trigger workflow",
+        ],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "documentation only",
+        routed: false,
+        description: "Basic workflow sequence: create the workflow, spawn regular agents, add each agent as a node, resolve the workflow to get node ids, connect nodes with edges when work should flow between them, create an endpoint on the entry node, run the endpoint with the task prompt, then inspect runs or a specific run. Workflow nodes use agent aliases; node ids come from workflow resolve/list output.",
+    },
+    MetaCommandDoc {
+        name: "workflow cancel",
+        aliases: &["workflow cancel"],
+        usage: "workflow cancel <run-ref>",
+        examples: &["workflow cancel run-1"],
+        tags: &["workflow", "cancel", "orchestration"],
+        intents: &["cancel a workflow", "stop a workflow run", "abort workflow run"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Cancel an active workflow run.",
+    },
+    MetaCommandDoc {
+        name: "workflow resume",
+        aliases: &["workflow resume"],
+        usage: "workflow resume <run-ref>",
+        examples: &["workflow resume run-1"],
+        tags: &["workflow", "resume", "orchestration"],
+        intents: &["resume a workflow", "continue a paused workflow run"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Resume a paused or resumable workflow run.",
+    },
+    MetaCommandDoc {
+        name: "agent app guide",
+        aliases: &[
+            "generate agent app",
+            "agent app tutorial",
+            "workflow app guide",
+            "build web app with agents",
+        ],
+        usage: "Read-only guide entry. Use command_docs(\"agent app guide\") or search_commands(\"generate agent app\").",
+        examples: &[
+            "workflow new app-build",
+            "agent spawn builder",
+            "agent spawn verifier",
+            "workflow node add app-build builder",
+            "workflow node add app-build verifier",
+            "workflow resolve app-build",
+            "workflow edge add app-build <builder-node-id> <verifier-node-id>",
+            "workflow endpoint new app-build <builder-node-id> start",
+            "workflow run app-build start \"Build the requested app, then verify it\"",
+            "workflow get-run <run-ref>",
+        ],
+        tags: &["guide", "workflow", "agent-app", "webapp", "orchestration"],
+        intents: &[
+            "generate agent app",
+            "build web app with workflow",
+            "create app using agents",
+            "verify generated application",
+        ],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "documentation only",
+        routed: false,
+        description: "For app-building tasks, use a workflow when requested: create builder and verifier regular agents, add them as workflow nodes, connect builder to verifier, create an endpoint on the builder node, run the workflow with the user's high-level app prompt, then inspect the run and worker turns. The metaagent should supervise and complete the task only after the workflow output and worker evidence show the app was built and verified.",
+    },
+    MetaCommandDoc {
+        name: "mcp list",
+        aliases: &["mcp", "mcp list", "mcp ls"],
+        usage: "mcp list",
+        examples: &["mcp list"],
+        tags: &["extension", "mcp", "capability", "inspect"],
+        intents: &["list mcp tools", "see available mcp servers", "inspect worker tools"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "List MCP definitions known to Arroba.",
+    },
+    MetaCommandDoc {
+        name: "mcp show",
+        aliases: &["mcp show", "mcp get"],
+        usage: "mcp show <mcp-name>",
+        examples: &["mcp show playwright"],
+        tags: &["extension", "mcp", "capability", "inspect"],
+        intents: &["inspect mcp server", "show mcp config", "check mcp definition"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Inspect one MCP definition by name.",
+    },
+    MetaCommandDoc {
+        name: "mcp install-json",
+        aliases: &["mcp install-json", "mcp update-json", "install mcp", "add mcp"],
+        usage: "mcp install-json '<mcp-json>'",
         examples: &[
             "mcp install-json '{\"name\":\"playwright\",\"transport\":{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"@playwright/mcp\"],\"env\":{},\"env_vars\":[]},\"enabled\":true,\"required\":false}'",
-            "mcp grant agent-2 playwright",
         ],
-        tags: &["extension", "mcp", "capability"],
+        tags: &["extension", "mcp", "capability", "install", "tool"],
+        intents: &[
+            "install an mcp server",
+            "add a tool provider",
+            "make a new mcp capability available",
+        ],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Install MCP definitions and manage MCP extension grants for this user's agents through existing kernel extension policy.",
+        description: "Install or update an MCP definition through existing kernel extension policy.",
     },
     MetaCommandDoc {
-        name: "skill",
+        name: "mcp update-json",
+        aliases: &["mcp update-json", "update mcp"],
+        usage: "mcp update-json '<mcp-json>'",
+        examples: &[
+            "mcp update-json '{\"name\":\"playwright\",\"transport\":{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"@playwright/mcp\"],\"env\":{},\"env_vars\":[]},\"enabled\":true,\"required\":false}'",
+        ],
+        tags: &["extension", "mcp", "capability", "update", "tool"],
+        intents: &["update mcp server", "change mcp config", "replace mcp definition"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Update an existing MCP definition through existing kernel extension policy.",
+    },
+    MetaCommandDoc {
+        name: "mcp grant",
+        aliases: &[
+            "mcp grant",
+            "mcp revoke",
+            "grant mcp",
+            "give worker tool",
+            "give agent mcp",
+        ],
+        usage: "mcp grant <agent-ref> <mcp-name>",
+        examples: &["mcp grant agent-2 playwright"],
+        tags: &["extension", "mcp", "capability", "grant", "tool"],
+        intents: &[
+            "give a worker an mcp tool",
+            "grant a tool to an agent",
+            "enable mcp for a regular agent",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Grant or revoke an MCP extension for one of this user's regular agents. Metaagents cannot grant MCP tools to themselves.",
+    },
+    MetaCommandDoc {
+        name: "mcp uninstall",
+        aliases: &["mcp uninstall", "mcp remove"],
+        usage: "mcp uninstall <mcp-name>",
+        examples: &["mcp uninstall playwright"],
+        tags: &["extension", "mcp", "capability", "remove", "tool"],
+        intents: &["remove mcp server", "uninstall tool provider", "delete mcp capability"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Remove an MCP definition through existing kernel extension policy.",
+    },
+    MetaCommandDoc {
+        name: "mcp revoke",
+        aliases: &["mcp revoke", "revoke mcp", "remove worker mcp"],
+        usage: "mcp revoke <agent-ref> <mcp-name>",
+        examples: &["mcp revoke agent-2 playwright"],
+        tags: &["extension", "mcp", "capability", "revoke", "tool"],
+        intents: &["remove tool from worker", "revoke mcp from agent", "disable agent mcp"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Revoke an MCP extension from one of this user's regular agents.",
+    },
+    MetaCommandDoc {
+        name: "mcp import",
+        aliases: &["mcp import"],
+        usage: "mcp import <provider> <mcp-name>",
+        examples: &["mcp import codex playwright"],
+        tags: &["extension", "mcp", "capability", "import", "tool"],
+        intents: &["import mcp from provider config", "bring existing mcp into arroba"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Import an MCP definition from a provider configuration.",
+    },
+    MetaCommandDoc {
+        name: "skill list",
+        aliases: &["skill", "skill list", "skills list", "skill ls", "skills"],
+        usage: "skill list",
+        examples: &["skill list"],
+        tags: &["extension", "skill", "capability", "inspect"],
+        intents: &["list skills", "see available skills", "inspect worker skills"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "List skills known to Arroba.",
+    },
+    MetaCommandDoc {
+        name: "skill show",
+        aliases: &["skill show", "skill get", "skills show", "skills get"],
+        usage: "skill show <skill-name>",
+        examples: &["skill show browser-qa"],
+        tags: &["extension", "skill", "capability", "inspect"],
+        intents: &["inspect skill", "show skill config", "check skill definition"],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Inspect one skill definition by name.",
+    },
+    MetaCommandDoc {
+        name: "skill install",
         aliases: &[
             "skill install",
             "skill update",
-            "skill uninstall",
-            "skill import",
-            "skill grant",
-            "skill list",
-            "skills",
+            "install skill",
+            "add skill",
         ],
-        usage: "skill <list|show|install|update|uninstall|import|grant|revoke> ...",
-        examples: &["skill install ./skills/browser-qa", "skill grant agent-2 browser-qa"],
-        tags: &["extension", "skill", "capability"],
+        usage: "skill install <path-or-name>",
+        examples: &["skill install ./skills/browser-qa"],
+        tags: &["extension", "skill", "capability", "install", "tool"],
+        intents: &["install a skill", "add a skill", "make a skill available"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Install skills and manage skill grants for this user's agents through existing kernel extension policy.",
+        description: "Install or update a skill through existing kernel extension policy.",
+    },
+    MetaCommandDoc {
+        name: "skill update",
+        aliases: &["skill update", "skills update", "update skill"],
+        usage: "skill update <path-or-name>",
+        examples: &["skill update ./skills/browser-qa"],
+        tags: &["extension", "skill", "capability", "update", "tool"],
+        intents: &["update skill", "change skill", "replace skill definition"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Update an installed skill through existing kernel extension policy.",
+    },
+    MetaCommandDoc {
+        name: "skill grant",
+        aliases: &[
+            "skill grant",
+            "skill revoke",
+            "grant skill",
+            "give worker skill",
+            "give agent skill",
+        ],
+        usage: "skill grant <agent-ref> <skill-name>",
+        examples: &["skill grant agent-2 browser-qa"],
+        tags: &["extension", "skill", "capability", "grant", "tool"],
+        intents: &[
+            "give a worker a skill",
+            "grant a skill to an agent",
+            "enable skill for a regular agent",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Grant or revoke a skill for one of this user's regular agents. Metaagents cannot grant skills to themselves.",
+    },
+    MetaCommandDoc {
+        name: "skill uninstall",
+        aliases: &["skill uninstall", "skill remove"],
+        usage: "skill uninstall <skill-name>",
+        examples: &["skill uninstall browser-qa"],
+        tags: &["extension", "skill", "capability", "remove", "tool"],
+        intents: &["remove skill", "uninstall skill", "delete worker skill"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Remove a skill through existing kernel extension policy.",
+    },
+    MetaCommandDoc {
+        name: "skill revoke",
+        aliases: &["skill revoke", "revoke skill", "remove worker skill"],
+        usage: "skill revoke <agent-ref> <skill-name>",
+        examples: &["skill revoke agent-2 browser-qa"],
+        tags: &["extension", "skill", "capability", "revoke", "tool"],
+        intents: &["remove skill from worker", "revoke skill from agent", "disable agent skill"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Revoke a skill from one of this user's regular agents.",
+    },
+    MetaCommandDoc {
+        name: "skill import",
+        aliases: &["skill import"],
+        usage: "skill import <provider> <skill-name>",
+        examples: &["skill import codex browser-qa"],
+        tags: &["extension", "skill", "capability", "import", "tool"],
+        intents: &["import skill from provider config", "bring existing skill into arroba"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Import a skill definition from a provider configuration.",
     },
     MetaCommandDoc {
         name: "slice",
@@ -160,6 +790,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         usage: "slice <list|show|start|stop|save-state|status|backup> ...",
         examples: &["slice save-state dev --restart-agents"],
         tags: &["slice", "environment"],
+        intents: &["manage slice", "save slice state", "stop environment"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Deny,
@@ -168,29 +799,91 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         description: "Denied for metaagents. Slice placement and management are execution-environment operations, not delegation commands.",
     },
     MetaCommandDoc {
-        name: "credential",
+        name: "credential list",
         aliases: &[
+            "credential",
             "credential list",
-            "credential get",
+            "credential ls",
+            "credentials list",
+        ],
+        usage: "credential list",
+        examples: &["credential list"],
+        tags: &["credential", "vault", "sensitive", "inspect"],
+        intents: &["list credentials", "see credential handles", "inspect available secrets"],
+        scope: "global",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "credential handle metadata only",
+        routed: true,
+        description: "List credential handles without exposing raw secret values.",
+    },
+    MetaCommandDoc {
+        name: "credential get",
+        aliases: &["credential get", "credential show", "credentials get"],
+        usage: "credential get <credential-id>",
+        examples: &["credential get credential-1"],
+        tags: &["credential", "vault", "sensitive", "inspect"],
+        intents: &["inspect credential", "view credential metadata", "check credential handle"],
+        scope: "global",
+        mutates: false,
+        policy: MetaCommandPolicy::Allow,
+        authority: "credential handle metadata only",
+        routed: true,
+        description: "Inspect credential handle metadata without exposing raw secret values.",
+    },
+    MetaCommandDoc {
+        name: "credential upsert-json",
+        aliases: &[
             "credential upsert-json",
-            "credential remove",
-            "credential vault status",
-            "credential vault manage",
+            "create credential",
+            "store credential",
+            "add credential handle",
         ],
-        usage: "credential <list|get|upsert-json|remove|vault status|vault manage> ...",
+        usage: "credential upsert-json '<credential-json>'",
         examples: &[
-            "credential list",
-            "credential get credential-1",
             "credential upsert-json '{\"id\":\"github-token\",\"source\":{\"type\":\"vault\",\"key\":\"github-token\"},\"allowed_uses\":[\"http\"],\"injection\":{\"kind\":\"header\",\"name\":\"authorization\",\"value\":\"Bearer ${secret}\"}}'",
-            "credential vault manage",
         ],
-        tags: &["credential", "vault", "sensitive"],
+        tags: &["credential", "vault", "sensitive", "create"],
+        intents: &[
+            "create credential handle",
+            "store credential metadata",
+            "add a credential",
+            "prepare a secret for worker use",
+        ],
         scope: "global",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
         authority: "credential handle metadata and vault unlock only",
         routed: true,
-        description: "List, inspect, and mutate credential handles, and request vault management. Secret values are never accepted as metaagent command arguments.",
+        description: "Create or update a credential handle. Secret values are never accepted as metaagent command arguments.",
+    },
+    MetaCommandDoc {
+        name: "credential remove",
+        aliases: &["credential remove"],
+        usage: "credential remove <credential-id>",
+        examples: &["credential remove credential-1"],
+        tags: &["credential", "vault", "sensitive", "remove"],
+        intents: &["remove credential handle", "delete credential metadata"],
+        scope: "global",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "credential handle metadata only",
+        routed: true,
+        description: "Remove a credential handle without reading raw secret values.",
+    },
+    MetaCommandDoc {
+        name: "credential vault",
+        aliases: &["credential vault status", "credential vault manage"],
+        usage: "credential vault <status|manage>",
+        examples: &["credential vault status", "credential vault manage"],
+        tags: &["credential", "vault", "sensitive"],
+        intents: &["open vault management", "check vault status", "enter new secret in vault"],
+        scope: "global",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "vault unlock and management request only",
+        routed: true,
+        description: "Request vault status or user-facing vault management. Raw secret values are not returned to the metaagent.",
     },
     MetaCommandDoc {
         name: "credential secret mutation",
@@ -198,6 +891,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         usage: "credential set|set-secret|delete-secret ...",
         examples: &[],
         tags: &["credential", "vault", "sensitive"],
+        intents: &["set secret value", "delete secret value", "write raw secret"],
         scope: "global",
         mutates: true,
         policy: MetaCommandPolicy::Deny,
@@ -216,6 +910,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         usage: "session new|create|attach|use|delete ...",
         examples: &[],
         tags: &["session", "denied"],
+        intents: &["create session", "attach session", "switch session", "delete session"],
         scope: "global",
         mutates: true,
         policy: MetaCommandPolicy::Deny,
@@ -293,18 +988,14 @@ pub(crate) fn tokenize_command(input: &str) -> Result<Vec<String>, MetaCommandPa
 }
 
 pub(crate) fn search_commands(args: MetaCommandSearchArgs) -> Vec<serde_json::Value> {
-    let query = args.query.map(|value| value.to_lowercase());
+    let query_terms = args.query.as_deref().map(search_terms);
     let tag = args.tag.map(|value| value.to_lowercase());
     let scope = args.scope.map(|value| value.to_lowercase());
     let policy = args.policy.map(|value| value.to_lowercase());
     let limit = args.limit.unwrap_or(50).clamp(1, 100);
-    META_COMMANDS
+
+    let mut commands: Vec<(&MetaCommandDoc, Option<CommandSearchMatch>)> = META_COMMANDS
         .iter()
-        .filter(|command| {
-            query
-                .as_ref()
-                .is_none_or(|query| command_matches_query(command, query))
-        })
         .filter(|command| {
             tag.as_ref().is_none_or(|tag| {
                 command
@@ -323,8 +1014,37 @@ pub(crate) fn search_commands(args: MetaCommandSearchArgs) -> Vec<serde_json::Va
                 .as_ref()
                 .is_none_or(|policy| command.policy.as_str() == policy)
         })
+        .filter_map(|command| match query_terms.as_ref() {
+            Some(terms) => score_command(command, terms).map(|score| (command, Some(score))),
+            None => Some((command, None)),
+        })
+        .collect();
+
+    if query_terms.is_some() {
+        commands.sort_by(|(left, left_match), (right, right_match)| {
+            right_match
+                .as_ref()
+                .map_or(0, |search_match| search_match.score)
+                .cmp(
+                    &left_match
+                        .as_ref()
+                        .map_or(0, |search_match| search_match.score),
+                )
+                .then_with(|| right.routed.cmp(&left.routed))
+                .then_with(|| left.policy.as_str().cmp(right.policy.as_str()))
+                .then_with(|| left.name.cmp(right.name))
+        });
+    }
+
+    commands
+        .into_iter()
         .take(limit)
-        .map(command_json)
+        .map(|(command, search_match)| {
+            search_match.map_or_else(
+                || command_json(command),
+                |search_match| command_search_json(command, search_match),
+            )
+        })
         .collect()
 }
 
@@ -408,22 +1128,47 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
         "workflow" => match tokens.get(1).map(String::as_str) {
             None
             | Some(
-                "list" | "ls" | "new" | "create" | "run" | "start" | "runs" | "cancel"
+                "list" | "ls" | "new" | "create" | "resolve" | "show" | "get" | "alias"
+                | "name" | "run" | "start" | "runs" | "get-run" | "run-status" | "cancel"
                 | "resume",
             ) => Some(MetaCommandExecutionPolicy::Routed),
-            Some("node") if matches!(tokens.get(2).map(String::as_str), Some("add")) => {
+            Some("node")
+                if matches!(
+                    tokens.get(2).map(String::as_str),
+                    Some(
+                        "add"
+                            | "remove"
+                            | "delete"
+                            | "instructions"
+                            | "instruct"
+                            | "can-complete"
+                            | "complete"
+                            | "intermediate-output"
+                            | "intermediate"
+                            | "max-turns"
+                    )
+                ) =>
+            {
                 Some(MetaCommandExecutionPolicy::Routed)
             }
             Some("endpoint")
                 if matches!(
                     tokens.get(2).map(String::as_str),
-                    Some("new" | "create")
+                    Some("new" | "create" | "alias" | "name")
+                ) =>
+            {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
+            Some("edge")
+                if matches!(
+                    tokens.get(2).map(String::as_str),
+                    Some("add" | "remove" | "delete")
                 ) =>
             {
                 Some(MetaCommandExecutionPolicy::Routed)
             }
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `workflow list`, `workflow new`, `workflow node add`, `workflow endpoint new`, `workflow run`, `workflow runs`, `workflow cancel`, and `workflow resume` are routed for metaagent command execution yet".to_string(),
+                message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow node add/remove/instructions/can-complete/intermediate-output/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
             }),
         },
         "mcp" => match tokens.get(1).map(String::as_str) {
@@ -484,12 +1229,25 @@ const ROUTED_COMMAND_CASES: &[&str] = &[
     "workflow ls",
     "workflow new qa-flow",
     "workflow create qa-flow",
+    "workflow resolve qa-flow",
+    "workflow show qa-flow",
+    "workflow alias wf-1 qa-flow",
     "workflow node add qa-flow reviewer",
+    "workflow node remove qa-flow node-1",
+    "workflow node instructions qa-flow node-1 Review the implementation",
+    "workflow node can-complete qa-flow node-1 true",
+    "workflow node intermediate-output qa-flow node-1 false",
+    "workflow node max-turns qa-flow node-1 3",
     "workflow endpoint new qa-flow node-1 default",
     "workflow endpoint create qa-flow node-1 default",
+    "workflow endpoint alias qa-flow endpoint-1 default",
+    "workflow edge add qa-flow node-1 node-2",
+    "workflow edge remove qa-flow edge-1",
     "workflow run qa-flow default Run QA",
     "workflow start qa-flow default Run QA",
     "workflow runs qa-flow",
+    "workflow get-run run-1",
+    "workflow run get run-1",
     "workflow cancel run-1",
     "workflow resume run-1",
     "mcp list",
@@ -528,26 +1286,6 @@ const ROUTED_COMMAND_CASES: &[&str] = &[
     "credentials get credential-1",
 ];
 
-fn command_matches_query(command: &MetaCommandDoc, query: &str) -> bool {
-    command.name.contains(query)
-        || command.usage.to_lowercase().contains(query)
-        || command.description.to_lowercase().contains(query)
-        || command.authority.to_lowercase().contains(query)
-        || command.policy.as_str().contains(query)
-        || command
-            .aliases
-            .iter()
-            .any(|alias| alias.to_lowercase().contains(query))
-        || command
-            .examples
-            .iter()
-            .any(|example| example.to_lowercase().contains(query))
-        || command
-            .tags
-            .iter()
-            .any(|tag| tag.to_lowercase().contains(query))
-}
-
 fn find_command(command: &str) -> Option<&'static MetaCommandDoc> {
     let normalized = command.to_lowercase();
     META_COMMANDS
@@ -578,6 +1316,179 @@ fn token_prefix_matches(normalized: &str, candidate: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(char::is_whitespace))
 }
 
+#[derive(Debug, Clone)]
+struct CommandSearchMatch {
+    score: i64,
+    matched_fields: Vec<&'static str>,
+    matched_terms: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SearchTerm {
+    original: String,
+    expanded: Vec<String>,
+}
+
+fn search_terms(query: &str) -> Vec<SearchTerm> {
+    normalize_tokens(query)
+        .into_iter()
+        .map(|term| {
+            let mut expanded = vec![term.clone()];
+            for synonym in synonyms_for(&term) {
+                if !expanded.iter().any(|candidate| candidate == synonym) {
+                    expanded.push((*synonym).to_string());
+                }
+            }
+            SearchTerm {
+                original: term,
+                expanded,
+            }
+        })
+        .collect()
+}
+
+fn score_command(command: &MetaCommandDoc, terms: &[SearchTerm]) -> Option<CommandSearchMatch> {
+    if terms.is_empty() {
+        return Some(CommandSearchMatch {
+            score: 1,
+            matched_fields: Vec::new(),
+            matched_terms: Vec::new(),
+        });
+    }
+
+    let fields: [(&'static str, i64, String); 8] = [
+        ("name", 90, command.name.to_string()),
+        ("aliases", 75, command.aliases.join(" ")),
+        ("intents", 55, command.intents.join(" ")),
+        ("description", 35, command.description.to_string()),
+        ("usage", 30, command.usage.to_string()),
+        ("examples", 20, command.examples.join(" ")),
+        ("tags", 20, command.tags.join(" ")),
+        ("authority", 10, command.authority.to_string()),
+    ];
+    let field_tokens: Vec<(&'static str, i64, Vec<String>)> = fields
+        .iter()
+        .map(|(name, weight, text)| (*name, *weight, normalize_tokens(text)))
+        .collect();
+    let mut score = 0;
+    let mut matched_fields = Vec::new();
+    let mut matched_terms = Vec::new();
+
+    for term in terms {
+        let mut term_matched = false;
+        for (field_name, weight, tokens) in &field_tokens {
+            let field_hits = term
+                .expanded
+                .iter()
+                .filter(|expanded| tokens.iter().any(|token| token == *expanded))
+                .count();
+            if field_hits > 0 {
+                score += *weight * i64::try_from(field_hits).unwrap_or(1);
+                term_matched = true;
+                if !matched_fields.contains(field_name) {
+                    matched_fields.push(*field_name);
+                }
+            }
+        }
+        if term_matched
+            && !matched_terms
+                .iter()
+                .any(|matched| matched == &term.original)
+        {
+            matched_terms.push(term.original.clone());
+        }
+    }
+
+    if matched_terms.len() == terms.len() {
+        score += 40;
+    }
+    if terms.iter().any(|term| {
+        term.expanded.iter().any(|expanded| {
+            command.name == expanded || command.aliases.contains(&expanded.as_str())
+        })
+    }) {
+        score += 50;
+    }
+    if command.routed {
+        score += 5;
+    }
+
+    (score > 0).then_some(CommandSearchMatch {
+        score,
+        matched_fields,
+        matched_terms,
+    })
+}
+
+fn normalize_tokens(input: &str) -> Vec<String> {
+    input
+        .to_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter_map(|raw| {
+            let token = normalize_token(raw);
+            (!token.is_empty()).then_some(token)
+        })
+        .collect()
+}
+
+fn normalize_token(raw: &str) -> String {
+    if matches!(
+        raw,
+        "a" | "an"
+            | "and"
+            | "as"
+            | "do"
+            | "for"
+            | "how"
+            | "i"
+            | "in"
+            | "it"
+            | "me"
+            | "of"
+            | "on"
+            | "please"
+            | "the"
+            | "to"
+            | "with"
+    ) {
+        return String::new();
+    }
+    if raw.len() > 4 && raw.ends_with('s') {
+        raw.trim_end_matches('s').to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+fn synonyms_for(term: &str) -> &'static [&'static str] {
+    match term {
+        "abort" => &["cancel", "stop"],
+        "add" => &["create", "install", "new"],
+        "ask" => &["prompt", "delegate"],
+        "capability" => &["mcp", "skill", "tool"],
+        "continue" => &["resume"],
+        "create" => &["spawn", "new", "add", "make"],
+        "credential" => &["secret", "vault"],
+        "delegate" => &["prompt", "agent", "worker"],
+        "execute" => &["run", "start"],
+        "give" => &["grant"],
+        "make" => &["create", "spawn", "new", "add"],
+        "pause" => &["cancel", "stop"],
+        "remove" => &["delete", "uninstall"],
+        "run" => &["start", "execute"],
+        "secret" => &["credential", "vault"],
+        "see" => &["list", "inspect"],
+        "start" => &["run", "spawn", "create"],
+        "stop" => &["cancel", "abort"],
+        "store" => &["credential", "vault", "upsert"],
+        "task" => &["prompt", "delegate", "workflow"],
+        "tell" => &["prompt", "delegate"],
+        "tool" => &["mcp", "skill", "capability"],
+        "worker" => &["agent"],
+        _ => &[],
+    }
+}
+
 fn command_json(command: &MetaCommandDoc) -> serde_json::Value {
     serde_json::json!({
         "name": command.name,
@@ -585,6 +1496,7 @@ fn command_json(command: &MetaCommandDoc) -> serde_json::Value {
         "usage": command.usage,
         "examples": command.examples,
         "tags": command.tags,
+        "intents": command.intents,
         "scope": command.scope,
         "mutates": command.mutates,
         "metaagent_policy": command.policy.as_str(),
@@ -592,6 +1504,28 @@ fn command_json(command: &MetaCommandDoc) -> serde_json::Value {
         "routed": command.routed,
         "description": command.description,
     })
+}
+
+fn command_search_json(
+    command: &MetaCommandDoc,
+    search_match: CommandSearchMatch,
+) -> serde_json::Value {
+    let mut value = command_json(command);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "search_score".to_string(),
+            serde_json::json!(search_match.score),
+        );
+        object.insert(
+            "matched_fields".to_string(),
+            serde_json::json!(search_match.matched_fields),
+        );
+        object.insert(
+            "matched_terms".to_string(),
+            serde_json::json!(search_match.matched_terms),
+        );
+    }
+    value
 }
 
 #[cfg(test)]
@@ -644,7 +1578,10 @@ mod tests {
         });
 
         assert!(commands.iter().any(|command| {
-            command.get("name").and_then(serde_json::Value::as_str) == Some("credential")
+            matches!(
+                command.get("name").and_then(serde_json::Value::as_str),
+                Some("credential upsert-json" | "credential remove" | "credential vault")
+            )
         }));
         assert!(commands.iter().all(|command| {
             command
@@ -658,6 +1595,93 @@ mod tests {
                     .and_then(serde_json::Value::as_str)
                     == Some("allow")
         }));
+    }
+
+    #[test]
+    fn search_commands_ranks_natural_language_intents() {
+        let cases = [
+            ("create new agent", "agent spawn"),
+            ("make worker", "agent spawn"),
+            ("delegate task", "prompt"),
+            ("store credential", "credential upsert-json"),
+            ("enter new secret", "credential vault"),
+            ("stop workflow", "workflow cancel"),
+            ("continue workflow", "workflow resume"),
+            ("connect workflow nodes", "workflow edge add"),
+        ];
+
+        for (query, expected_name) in cases {
+            let commands = search_commands(MetaCommandSearchArgs {
+                query: Some(query.to_string()),
+                tag: None,
+                scope: None,
+                mutates: None,
+                policy: Some("allow".to_string()),
+                limit: Some(3),
+            });
+            assert!(
+                commands.iter().any(|command| {
+                    command.get("name").and_then(serde_json::Value::as_str) == Some(expected_name)
+                }),
+                "`{query}` should return `{expected_name}` near the top: {commands:?}"
+            );
+            assert!(
+                commands
+                    .iter()
+                    .all(|command| command.get("search_score").is_some()),
+                "query searches should include match diagnostics"
+            );
+        }
+    }
+
+    #[test]
+    fn search_commands_finds_worker_capability_grants() {
+        let commands = search_commands(MetaCommandSearchArgs {
+            query: Some("give worker tool".to_string()),
+            tag: None,
+            scope: Some("session".to_string()),
+            mutates: Some(true),
+            policy: Some("allow".to_string()),
+            limit: Some(4),
+        });
+
+        assert!(
+            commands.iter().any(|command| {
+                matches!(
+                    command.get("name").and_then(serde_json::Value::as_str),
+                    Some("mcp grant" | "skill grant")
+                )
+            }),
+            "grant command should be discoverable: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn search_commands_finds_workflow_guides() {
+        let commands = search_commands(MetaCommandSearchArgs {
+            query: Some("build workflow tutorial connect nodes run endpoint".to_string()),
+            tag: Some("guide".to_string()),
+            scope: Some("session".to_string()),
+            mutates: Some(false),
+            policy: Some("allow".to_string()),
+            limit: Some(5),
+        });
+
+        assert!(
+            commands.iter().any(|command| {
+                command.get("name").and_then(serde_json::Value::as_str)
+                    == Some("workflow tutorial basic")
+            }),
+            "workflow tutorial should be discoverable: {commands:?}"
+        );
+        let docs = command_docs(MetaCommandDocsArgs {
+            command: "agent app guide".to_string(),
+        })
+        .expect("agent app guide docs should exist");
+        assert_eq!(
+            docs.get("routed").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]
@@ -689,7 +1713,8 @@ mod tests {
     #[test]
     fn command_docs_do_not_advertise_unrouted_subcommands() {
         let forbidden = [
-            ("workflow", &["show", "edit"][..]),
+            ("workflow", &["edit"][..]),
+            ("workflow node add", &["node-name", "node alias"][..]),
             ("mcp", &["test", "adapter", "connector"][..]),
             ("skill", &["grants", "script", "connector"][..]),
             ("slice", &["reset-state"][..]),
