@@ -54,6 +54,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactKinds: new Map(),
     requiredArtifactGeneratedEvidenceKinds: new Map(),
     missingArtifactGeneratedEvidenceKinds: new Map(),
+    requiredArtifactGeneratedMatrixArtifactIndexes: new Map(),
+    missingArtifactGeneratedMatrixArtifactIndexes: new Map(),
     requiredArtifactGeneratedMatrixLimitations: new Map(),
     missingArtifactGeneratedMatrixLimitations: new Map(),
     requiredArtifactEvidenceRepos: new Map(),
@@ -84,6 +86,7 @@ export function summarizeValidationGateReportAggregate(
     artifactIncompleteExitCriterionStatuses: new Map(),
     artifactKinds: new Map(),
     artifactGeneratedEvidenceKinds: new Map(),
+    artifactGeneratedMatrixArtifactIndexes: new Map(),
     artifactGeneratedMatrixLimitations: new Map(),
     artifactGeneratedValidationSuiteFailureRoots: new Map(),
     artifactEvidenceRepos: new Map(),
@@ -112,10 +115,13 @@ export function summarizeValidationGateReportAggregate(
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
     generatedEvidenceKinds: new Map(),
+    generatedMatrixArtifactIndexes: new Map(),
     generatedMatrixLimitations: new Map(),
     generatedValidationSuiteFailureRoots: new Map(),
     requiredGeneratedEvidenceKinds: new Map(),
     missingGeneratedEvidenceKinds: new Map(),
+    requiredGeneratedMatrixArtifactIndexes: new Map(),
+    missingGeneratedMatrixArtifactIndexes: new Map(),
     requiredGeneratedMatrixLimitations: new Map(),
     missingGeneratedMatrixLimitations: new Map(),
     requiredGeneratedValidationSuiteFailureRoots: new Map(),
@@ -171,6 +177,7 @@ export function summarizeValidationGateReportAggregate(
       coverage.generatedMatrixLimitations,
       (generatedEvidence?.matrixReports?.limitations ?? []).map((limitation) => limitation.kind),
     )
+    countStringValues(coverage.generatedMatrixArtifactIndexes, generatedEvidence?.matrixReports?.artifactIndexes ?? [])
     countStringValues(coverage.generatedValidationSuiteFailureRoots, generatedEvidence?.validationSuites?.failureRoots ?? [])
     return {
       source: sources[index] ?? null,
@@ -204,6 +211,14 @@ export function summarizeValidationGateReportAggregate(
     missingCoverageRequirements(
       countMapToObject(coverage.generatedEvidenceKinds),
       normalizedAggregateRequirements.requiredGeneratedEvidenceKinds ?? [],
+    ),
+  )
+  countStringValues(coverage.requiredGeneratedMatrixArtifactIndexes, normalizedAggregateRequirements.requiredGeneratedMatrixArtifactIndexes ?? [])
+  countStringValues(
+    coverage.missingGeneratedMatrixArtifactIndexes,
+    missingCoverageRequirements(
+      countMapToObject(coverage.generatedMatrixArtifactIndexes),
+      normalizedAggregateRequirements.requiredGeneratedMatrixArtifactIndexes ?? [],
     ),
   )
   countStringValues(coverage.requiredGeneratedMatrixLimitations, normalizedAggregateRequirements.requiredGeneratedMatrixLimitations ?? [])
@@ -253,6 +268,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactKinds: missingRequirements.missingArtifactKinds,
     requiredArtifactGeneratedEvidenceKinds: normalizedAggregateRequirements.requiredArtifactGeneratedEvidenceKinds,
     missingArtifactGeneratedEvidenceKinds: missingRequirements.missingArtifactGeneratedEvidenceKinds,
+    requiredArtifactGeneratedMatrixArtifactIndexes: normalizedAggregateRequirements.requiredArtifactGeneratedMatrixArtifactIndexes,
+    missingArtifactGeneratedMatrixArtifactIndexes: missingRequirements.missingArtifactGeneratedMatrixArtifactIndexes,
     requiredArtifactGeneratedMatrixLimitations: normalizedAggregateRequirements.requiredArtifactGeneratedMatrixLimitations,
     missingArtifactGeneratedMatrixLimitations: missingRequirements.missingArtifactGeneratedMatrixLimitations,
     requiredArtifactEvidenceRepos: normalizedAggregateRequirements.requiredArtifactEvidenceRepos,
@@ -289,6 +306,8 @@ export function summarizeValidationGateReportAggregate(
     missingScenarios: missingRequirements.missingScenarios,
     requiredGeneratedEvidenceKinds: normalizedAggregateRequirements.requiredGeneratedEvidenceKinds,
     missingGeneratedEvidenceKinds: missingRequirements.missingGeneratedEvidenceKinds,
+    requiredGeneratedMatrixArtifactIndexes: normalizedAggregateRequirements.requiredGeneratedMatrixArtifactIndexes,
+    missingGeneratedMatrixArtifactIndexes: missingRequirements.missingGeneratedMatrixArtifactIndexes,
     requiredGeneratedMatrixLimitations: normalizedAggregateRequirements.requiredGeneratedMatrixLimitations,
     missingGeneratedMatrixLimitations: missingRequirements.missingGeneratedMatrixLimitations,
     requiredGeneratedValidationSuiteFailureRoots: normalizedAggregateRequirements.requiredGeneratedValidationSuiteFailureRoots,
@@ -338,6 +357,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_artifact_schemas", aggregate.requiredArtifactSchemas, aggregate.missingArtifactSchemas)
   appendAggregateRequirementLine(lines, "required_artifact_kinds", aggregate.requiredArtifactKinds, aggregate.missingArtifactKinds)
   appendAggregateRequirementLine(lines, "required_artifact_generated_evidence_kinds", aggregate.requiredArtifactGeneratedEvidenceKinds, aggregate.missingArtifactGeneratedEvidenceKinds)
+  appendAggregateRequirementLine(lines, "required_artifact_generated_matrix_artifact_indexes", aggregate.requiredArtifactGeneratedMatrixArtifactIndexes, aggregate.missingArtifactGeneratedMatrixArtifactIndexes)
   appendAggregateRequirementLine(lines, "required_artifact_generated_matrix_limitations", aggregate.requiredArtifactGeneratedMatrixLimitations, aggregate.missingArtifactGeneratedMatrixLimitations)
   appendAggregateRequirementLine(lines, "required_artifact_evidence_repos", aggregate.requiredArtifactEvidenceRepos, aggregate.missingArtifactEvidenceRepos)
   appendAggregateRequirementLine(lines, "required_artifact_provider_account_aliases", aggregate.requiredArtifactProviderAccountAliases, aggregate.missingArtifactProviderAccountAliases)
@@ -357,6 +377,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_providers", aggregate.requiredProviders, aggregate.missingProviders)
   appendAggregateRequirementLine(lines, "required_scenarios", aggregate.requiredScenarios, aggregate.missingScenarios)
   appendAggregateRequirementLine(lines, "required_generated_evidence_kinds", aggregate.requiredGeneratedEvidenceKinds, aggregate.missingGeneratedEvidenceKinds)
+  appendAggregateRequirementLine(lines, "required_generated_matrix_artifact_indexes", aggregate.requiredGeneratedMatrixArtifactIndexes, aggregate.missingGeneratedMatrixArtifactIndexes)
   appendAggregateRequirementLine(lines, "required_generated_matrix_limitations", aggregate.requiredGeneratedMatrixLimitations, aggregate.missingGeneratedMatrixLimitations)
   appendAggregateRequirementLine(lines, "required_generated_validation_suite_failure_roots", aggregate.requiredGeneratedValidationSuiteFailureRoots, aggregate.missingGeneratedValidationSuiteFailureRoots)
   lines.push(aggregate.status === "passed"
@@ -403,6 +424,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateArtifactKindArray(aggregate.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(aggregate.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(aggregate.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateStringArray(aggregate.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
+  validateStringArray(aggregate.missingArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationArray(aggregate.requiredArtifactGeneratedMatrixLimitations ?? [], `${source}.requiredArtifactGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationArray(aggregate.missingArtifactGeneratedMatrixLimitations ?? [], `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoArray(aggregate.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
@@ -442,6 +465,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingScenarios ?? [], `${source}.missingScenarios`)
   validateGeneratedEvidenceKindArray(aggregate.requiredGeneratedEvidenceKinds ?? [], `${source}.requiredGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(aggregate.missingGeneratedEvidenceKinds ?? [], `${source}.missingGeneratedEvidenceKinds`)
+  validateStringArray(aggregate.requiredGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredGeneratedMatrixArtifactIndexes`)
+  validateStringArray(aggregate.missingGeneratedMatrixArtifactIndexes ?? [], `${source}.missingGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationArray(aggregate.requiredGeneratedMatrixLimitations ?? [], `${source}.requiredGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationArray(aggregate.missingGeneratedMatrixLimitations ?? [], `${source}.missingGeneratedMatrixLimitations`)
   validateStringArray(aggregate.requiredGeneratedValidationSuiteFailureRoots ?? [], `${source}.requiredGeneratedValidationSuiteFailureRoots`)
@@ -481,6 +506,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredArtifactSchemas: aggregate.requiredArtifactSchemas ?? [],
     requiredArtifactKinds: aggregate.requiredArtifactKinds ?? [],
     requiredArtifactGeneratedEvidenceKinds: aggregate.requiredArtifactGeneratedEvidenceKinds ?? [],
+    requiredArtifactGeneratedMatrixArtifactIndexes: aggregate.requiredArtifactGeneratedMatrixArtifactIndexes ?? [],
     requiredArtifactGeneratedMatrixLimitations: aggregate.requiredArtifactGeneratedMatrixLimitations ?? [],
     requiredArtifactEvidenceRepos: aggregate.requiredArtifactEvidenceRepos ?? [],
     requiredArtifactProviderAccountAliases: aggregate.requiredArtifactProviderAccountAliases ?? [],
@@ -499,6 +525,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredProviders: aggregate.requiredProviders ?? [],
     requiredScenarios: aggregate.requiredScenarios ?? [],
     requiredGeneratedEvidenceKinds: aggregate.requiredGeneratedEvidenceKinds ?? [],
+    requiredGeneratedMatrixArtifactIndexes: aggregate.requiredGeneratedMatrixArtifactIndexes ?? [],
     requiredGeneratedMatrixLimitations: aggregate.requiredGeneratedMatrixLimitations ?? [],
     requiredGeneratedValidationSuiteFailureRoots: aggregate.requiredGeneratedValidationSuiteFailureRoots ?? [],
   })
@@ -542,6 +569,8 @@ function validationGateReportArtifactCoverage(report) {
     missingArtifactKinds: [...(report.checks.artifacts.missingArtifactKinds ?? [])],
     requiredArtifactGeneratedEvidenceKinds: [...(report.checks.artifacts.requiredArtifactGeneratedEvidenceKinds ?? [])],
     missingArtifactGeneratedEvidenceKinds: [...(report.checks.artifacts.missingArtifactGeneratedEvidenceKinds ?? [])],
+    requiredArtifactGeneratedMatrixArtifactIndexes: [...(report.checks.artifacts.requiredArtifactGeneratedMatrixArtifactIndexes ?? [])],
+    missingArtifactGeneratedMatrixArtifactIndexes: [...(report.checks.artifacts.missingArtifactGeneratedMatrixArtifactIndexes ?? [])],
     requiredArtifactGeneratedMatrixLimitations: [...(report.checks.artifacts.requiredArtifactGeneratedMatrixLimitations ?? [])],
     missingArtifactGeneratedMatrixLimitations: [...(report.checks.artifacts.missingArtifactGeneratedMatrixLimitations ?? [])],
     requiredArtifactEvidenceRepos: [...(report.checks.artifacts.requiredArtifactEvidenceRepos ?? [])],
@@ -570,6 +599,7 @@ function validationGateReportArtifactCoverage(report) {
     incompleteExitCriterionStatuses: { ...(report.checks.artifacts.aggregate?.incompleteExitCriterionStatuses ?? {}) },
     artifactKinds: { ...(report.checks.artifacts.aggregate?.artifactKinds ?? {}) },
     generatedEvidenceKinds: { ...(report.checks.artifacts.aggregate?.generatedEvidenceKinds ?? {}) },
+    generatedMatrixArtifactIndexes: { ...(report.checks.artifacts.aggregate?.generatedMatrixArtifactIndexes ?? {}) },
     generatedMatrixLimitations: { ...(report.checks.artifacts.aggregate?.generatedMatrixLimitations ?? {}) },
     generatedValidationSuiteFailureRoots: { ...(report.checks.artifacts.aggregate?.generatedValidationSuiteFailureRoots ?? {}) },
     evidenceRepos: { ...(report.checks.artifacts.aggregate?.evidenceRepos ?? {}) },
@@ -585,6 +615,8 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countStringValues(coverage.missingArtifactKinds, artifactCoverage.missingArtifactKinds)
   countStringValues(coverage.requiredArtifactGeneratedEvidenceKinds, artifactCoverage.requiredArtifactGeneratedEvidenceKinds)
   countStringValues(coverage.missingArtifactGeneratedEvidenceKinds, artifactCoverage.missingArtifactGeneratedEvidenceKinds)
+  countStringValues(coverage.requiredArtifactGeneratedMatrixArtifactIndexes, artifactCoverage.requiredArtifactGeneratedMatrixArtifactIndexes)
+  countStringValues(coverage.missingArtifactGeneratedMatrixArtifactIndexes, artifactCoverage.missingArtifactGeneratedMatrixArtifactIndexes)
   countStringValues(coverage.requiredArtifactGeneratedMatrixLimitations, artifactCoverage.requiredArtifactGeneratedMatrixLimitations)
   countStringValues(coverage.missingArtifactGeneratedMatrixLimitations, artifactCoverage.missingArtifactGeneratedMatrixLimitations)
   countStringValues(coverage.requiredArtifactEvidenceRepos, artifactCoverage.requiredArtifactEvidenceRepos)
@@ -615,6 +647,7 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countObjectValues(coverage.artifactIncompleteExitCriterionStatuses, artifactCoverage.incompleteExitCriterionStatuses)
   countObjectValues(coverage.artifactKinds, artifactCoverage.artifactKinds)
   countObjectValues(coverage.artifactGeneratedEvidenceKinds, artifactCoverage.generatedEvidenceKinds)
+  countObjectValues(coverage.artifactGeneratedMatrixArtifactIndexes, artifactCoverage.generatedMatrixArtifactIndexes)
   countObjectValues(coverage.artifactGeneratedMatrixLimitations, artifactCoverage.generatedMatrixLimitations)
   countObjectValues(coverage.artifactGeneratedValidationSuiteFailureRoots, artifactCoverage.generatedValidationSuiteFailureRoots)
   countObjectValues(coverage.artifactEvidenceRepos, artifactCoverage.evidenceRepos)
@@ -688,6 +721,7 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingArtifactSchemas: missingCoverageRequirements(coverage.artifactSchemas, requirements.requiredArtifactSchemas ?? []),
     missingArtifactKinds: missingCoverageRequirements(coverage.artifactKinds, requirements.requiredArtifactKinds ?? []),
     missingArtifactGeneratedEvidenceKinds: missingCoverageRequirements(coverage.artifactGeneratedEvidenceKinds, requirements.requiredArtifactGeneratedEvidenceKinds ?? []),
+    missingArtifactGeneratedMatrixArtifactIndexes: missingCoverageRequirements(coverage.artifactGeneratedMatrixArtifactIndexes, requirements.requiredArtifactGeneratedMatrixArtifactIndexes ?? []),
     missingArtifactGeneratedMatrixLimitations: missingCoverageRequirements(coverage.artifactGeneratedMatrixLimitations, requirements.requiredArtifactGeneratedMatrixLimitations ?? []),
     missingArtifactEvidenceRepos: missingCoverageRequirements(coverage.artifactEvidenceRepos, requirements.requiredArtifactEvidenceRepos ?? []),
     missingArtifactProviderAccountAliases: missingCoverageRequirements(coverage.artifactProviderAccountAliases, requirements.requiredArtifactProviderAccountAliases ?? []),
@@ -706,6 +740,7 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingProviders: missingCoverageRequirements(coverage.requiredProviders, requirements.requiredProviders ?? []),
     missingScenarios: missingCoverageRequirements(coverage.requiredScenarios, requirements.requiredScenarios ?? []),
     missingGeneratedEvidenceKinds: missingCoverageRequirements(coverage.generatedEvidenceKinds, requirements.requiredGeneratedEvidenceKinds ?? []),
+    missingGeneratedMatrixArtifactIndexes: missingCoverageRequirements(coverage.generatedMatrixArtifactIndexes, requirements.requiredGeneratedMatrixArtifactIndexes ?? []),
     missingGeneratedMatrixLimitations: missingCoverageRequirements(coverage.generatedMatrixLimitations, requirements.requiredGeneratedMatrixLimitations ?? []),
     missingGeneratedValidationSuiteFailureRoots: missingCoverageRequirements(coverage.generatedValidationSuiteFailureRoots, requirements.requiredGeneratedValidationSuiteFailureRoots ?? []),
   }
@@ -722,6 +757,7 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingArtifactCoverageAreas", "artifact-coverage", "provide validation gate reports with artifact coverage areas"],
     ["missingArtifactKinds", "artifact-coverage", "provide validation gate reports with artifact kinds"],
     ["missingArtifactGeneratedEvidenceKinds", "generated-evidence", "provide validation gate artifact indexes with generated evidence kinds"],
+    ["missingArtifactGeneratedMatrixArtifactIndexes", "generated-evidence", "provide validation gate artifact indexes with generated matrix artifact indexes"],
     ["missingArtifactGeneratedMatrixLimitations", "generated-evidence", "provide validation gate artifact indexes with generated matrix limitations"],
     ["missingArtifactEvidenceRepos", "artifact-coverage", "provide validation gate reports with artifact evidence repos"],
     ["missingArtifactProviderAccountAliases", "artifact-coverage", "provide validation gate reports with artifact provider account aliases"],
@@ -740,6 +776,7 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingProviders", "matrix-coverage", "provide validation gate reports requiring providers"],
     ["missingScenarios", "matrix-coverage", "provide validation gate reports requiring scenarios"],
     ["missingGeneratedEvidenceKinds", "generated-evidence", "provide validation gate reports with generated evidence kinds"],
+    ["missingGeneratedMatrixArtifactIndexes", "generated-evidence", "provide validation gate reports with generated matrix artifact indexes"],
     ["missingGeneratedMatrixLimitations", "generated-evidence", "provide validation gate reports with generated matrix limitations"],
     ["missingGeneratedValidationSuiteFailureRoots", "generated-evidence", "provide validation gate reports with generated validation-suite failure roots"],
   ]
@@ -781,6 +818,7 @@ function assertValidationGateAggregateMissingRequirementsMatch(aggregate, expect
     "missingArtifactSchemas",
     "missingArtifactKinds",
     "missingArtifactGeneratedEvidenceKinds",
+    "missingArtifactGeneratedMatrixArtifactIndexes",
     "missingArtifactGeneratedMatrixLimitations",
     "missingArtifactEvidenceRepos",
     "missingArtifactProviderAccountAliases",
@@ -799,6 +837,7 @@ function assertValidationGateAggregateMissingRequirementsMatch(aggregate, expect
     "missingProviders",
     "missingScenarios",
     "missingGeneratedEvidenceKinds",
+    "missingGeneratedMatrixArtifactIndexes",
     "missingGeneratedMatrixLimitations",
     "missingGeneratedValidationSuiteFailureRoots",
   ]
@@ -822,6 +861,8 @@ function formatValidationGateCoverageCounts(coverage) {
     missingArtifactKinds: countMapToObject(coverage.missingArtifactKinds),
     requiredArtifactGeneratedEvidenceKinds: countMapToObject(coverage.requiredArtifactGeneratedEvidenceKinds),
     missingArtifactGeneratedEvidenceKinds: countMapToObject(coverage.missingArtifactGeneratedEvidenceKinds),
+    requiredArtifactGeneratedMatrixArtifactIndexes: countMapToObject(coverage.requiredArtifactGeneratedMatrixArtifactIndexes),
+    missingArtifactGeneratedMatrixArtifactIndexes: countMapToObject(coverage.missingArtifactGeneratedMatrixArtifactIndexes),
     requiredArtifactGeneratedMatrixLimitations: countMapToObject(coverage.requiredArtifactGeneratedMatrixLimitations),
     missingArtifactGeneratedMatrixLimitations: countMapToObject(coverage.missingArtifactGeneratedMatrixLimitations),
     requiredArtifactEvidenceRepos: countMapToObject(coverage.requiredArtifactEvidenceRepos),
@@ -854,6 +895,7 @@ function formatValidationGateCoverageCounts(coverage) {
     artifactIncompleteExitCriterionStatuses: countMapToObject(coverage.artifactIncompleteExitCriterionStatuses),
     artifactKinds: countMapToObject(coverage.artifactKinds),
     artifactGeneratedEvidenceKinds: countMapToObject(coverage.artifactGeneratedEvidenceKinds),
+    artifactGeneratedMatrixArtifactIndexes: countMapToObject(coverage.artifactGeneratedMatrixArtifactIndexes),
     artifactGeneratedMatrixLimitations: countMapToObject(coverage.artifactGeneratedMatrixLimitations),
     artifactGeneratedValidationSuiteFailureRoots: countMapToObject(coverage.artifactGeneratedValidationSuiteFailureRoots),
     artifactEvidenceRepos: countMapToObject(coverage.artifactEvidenceRepos),
@@ -882,10 +924,13 @@ function formatValidationGateCoverageCounts(coverage) {
     requiredScenarios: countMapToObject(coverage.requiredScenarios),
     missingScenarios: countMapToObject(coverage.missingScenarios),
     generatedEvidenceKinds: countMapToObject(coverage.generatedEvidenceKinds),
+    generatedMatrixArtifactIndexes: countMapToObject(coverage.generatedMatrixArtifactIndexes),
     generatedMatrixLimitations: countMapToObject(coverage.generatedMatrixLimitations),
     generatedValidationSuiteFailureRoots: countMapToObject(coverage.generatedValidationSuiteFailureRoots),
     requiredGeneratedEvidenceKinds: countMapToObject(coverage.requiredGeneratedEvidenceKinds),
     missingGeneratedEvidenceKinds: countMapToObject(coverage.missingGeneratedEvidenceKinds),
+    requiredGeneratedMatrixArtifactIndexes: countMapToObject(coverage.requiredGeneratedMatrixArtifactIndexes),
+    missingGeneratedMatrixArtifactIndexes: countMapToObject(coverage.missingGeneratedMatrixArtifactIndexes),
     requiredGeneratedMatrixLimitations: countMapToObject(coverage.requiredGeneratedMatrixLimitations),
     missingGeneratedMatrixLimitations: countMapToObject(coverage.missingGeneratedMatrixLimitations),
     requiredGeneratedValidationSuiteFailureRoots: countMapToObject(coverage.requiredGeneratedValidationSuiteFailureRoots),
@@ -910,6 +955,8 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_artifact_kinds", coverage.missingArtifactKinds)
   appendCoverageLine(lines, "required_artifact_generated_evidence_kinds", coverage.requiredArtifactGeneratedEvidenceKinds)
   appendCoverageLine(lines, "missing_artifact_generated_evidence_kinds", coverage.missingArtifactGeneratedEvidenceKinds)
+  appendCoverageLine(lines, "required_artifact_generated_matrix_artifact_indexes", coverage.requiredArtifactGeneratedMatrixArtifactIndexes)
+  appendCoverageLine(lines, "missing_artifact_generated_matrix_artifact_indexes", coverage.missingArtifactGeneratedMatrixArtifactIndexes)
   appendCoverageLine(lines, "required_artifact_generated_matrix_limitations", coverage.requiredArtifactGeneratedMatrixLimitations)
   appendCoverageLine(lines, "missing_artifact_generated_matrix_limitations", coverage.missingArtifactGeneratedMatrixLimitations)
   appendCoverageLine(lines, "required_artifact_evidence_repos", coverage.requiredArtifactEvidenceRepos)
@@ -942,6 +989,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "artifact_incomplete_exit_criterion_statuses", coverage.artifactIncompleteExitCriterionStatuses)
   appendCoverageLine(lines, "artifact_kinds", coverage.artifactKinds)
   appendCoverageLine(lines, "artifact_generated_evidence_kinds", coverage.artifactGeneratedEvidenceKinds)
+  appendCoverageLine(lines, "artifact_generated_matrix_artifact_indexes", coverage.artifactGeneratedMatrixArtifactIndexes)
   appendCoverageLine(lines, "artifact_generated_matrix_limitations", coverage.artifactGeneratedMatrixLimitations)
   appendCoverageLine(lines, "artifact_generated_validation_suite_failure_roots", coverage.artifactGeneratedValidationSuiteFailureRoots)
   appendCoverageLine(lines, "artifact_evidence_repos", coverage.artifactEvidenceRepos)
@@ -970,10 +1018,13 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "required_scenarios", coverage.requiredScenarios)
   appendCoverageLine(lines, "missing_scenarios", coverage.missingScenarios)
   appendCoverageLine(lines, "generated_evidence_kinds", coverage.generatedEvidenceKinds)
+  appendCoverageLine(lines, "generated_matrix_artifact_indexes", coverage.generatedMatrixArtifactIndexes)
   appendCoverageLine(lines, "generated_matrix_limitations", coverage.generatedMatrixLimitations)
   appendCoverageLine(lines, "generated_validation_suite_failure_roots", coverage.generatedValidationSuiteFailureRoots)
   appendCoverageLine(lines, "required_generated_evidence_kinds", coverage.requiredGeneratedEvidenceKinds)
   appendCoverageLine(lines, "missing_generated_evidence_kinds", coverage.missingGeneratedEvidenceKinds)
+  appendCoverageLine(lines, "required_generated_matrix_artifact_indexes", coverage.requiredGeneratedMatrixArtifactIndexes)
+  appendCoverageLine(lines, "missing_generated_matrix_artifact_indexes", coverage.missingGeneratedMatrixArtifactIndexes)
   appendCoverageLine(lines, "required_generated_matrix_limitations", coverage.requiredGeneratedMatrixLimitations)
   appendCoverageLine(lines, "missing_generated_matrix_limitations", coverage.missingGeneratedMatrixLimitations)
   appendCoverageLine(lines, "required_generated_validation_suite_failure_roots", coverage.requiredGeneratedValidationSuiteFailureRoots)
@@ -1027,6 +1078,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateArtifactKindCountObject(coverage.missingArtifactKinds ?? {}, `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.requiredArtifactGeneratedEvidenceKinds ?? {}, `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.missingArtifactGeneratedEvidenceKinds ?? {}, `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateCountObject(coverage.requiredArtifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
+  validateCountObject(coverage.missingArtifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.requiredArtifactGeneratedMatrixLimitations ?? {}, `${source}.requiredArtifactGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationCountObject(coverage.missingArtifactGeneratedMatrixLimitations ?? {}, `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoCountObject(coverage.requiredArtifactEvidenceRepos ?? {}, `${source}.requiredArtifactEvidenceRepos`)
@@ -1059,6 +1112,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateExitCriterionStatusCountObject(coverage.artifactIncompleteExitCriterionStatuses ?? {}, `${source}.artifactIncompleteExitCriterionStatuses`)
   validateArtifactKindCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.artifactGeneratedEvidenceKinds ?? {}, `${source}.artifactGeneratedEvidenceKinds`)
+  validateCountObject(coverage.artifactGeneratedMatrixArtifactIndexes ?? {}, `${source}.artifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.artifactGeneratedMatrixLimitations ?? {}, `${source}.artifactGeneratedMatrixLimitations`)
   validateCountObject(coverage.artifactGeneratedValidationSuiteFailureRoots ?? {}, `${source}.artifactGeneratedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoCountObject(coverage.artifactEvidenceRepos ?? {}, `${source}.artifactEvidenceRepos`)
@@ -1087,10 +1141,13 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
+  validateCountObject(coverage.generatedMatrixArtifactIndexes ?? {}, `${source}.generatedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
   validateCountObject(coverage.generatedValidationSuiteFailureRoots ?? {}, `${source}.generatedValidationSuiteFailureRoots`)
   validateGeneratedEvidenceKindCountObject(coverage.requiredGeneratedEvidenceKinds ?? {}, `${source}.requiredGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.missingGeneratedEvidenceKinds ?? {}, `${source}.missingGeneratedEvidenceKinds`)
+  validateCountObject(coverage.requiredGeneratedMatrixArtifactIndexes ?? {}, `${source}.requiredGeneratedMatrixArtifactIndexes`)
+  validateCountObject(coverage.missingGeneratedMatrixArtifactIndexes ?? {}, `${source}.missingGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.requiredGeneratedMatrixLimitations ?? {}, `${source}.requiredGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationCountObject(coverage.missingGeneratedMatrixLimitations ?? {}, `${source}.missingGeneratedMatrixLimitations`)
   validateCountObject(coverage.requiredGeneratedValidationSuiteFailureRoots ?? {}, `${source}.requiredGeneratedValidationSuiteFailureRoots`)
@@ -1212,6 +1269,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingArtifactKinds: new Map(),
     requiredArtifactGeneratedEvidenceKinds: new Map(),
     missingArtifactGeneratedEvidenceKinds: new Map(),
+    requiredArtifactGeneratedMatrixArtifactIndexes: new Map(),
+    missingArtifactGeneratedMatrixArtifactIndexes: new Map(),
     requiredArtifactGeneratedMatrixLimitations: new Map(),
     missingArtifactGeneratedMatrixLimitations: new Map(),
     requiredArtifactEvidenceRepos: new Map(),
@@ -1244,6 +1303,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     artifactIncompleteExitCriterionStatuses: new Map(),
     artifactKinds: new Map(),
     artifactGeneratedEvidenceKinds: new Map(),
+    artifactGeneratedMatrixArtifactIndexes: new Map(),
     artifactGeneratedMatrixLimitations: new Map(),
     artifactGeneratedValidationSuiteFailureRoots: new Map(),
     artifactEvidenceRepos: new Map(),
@@ -1272,10 +1332,13 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
     generatedEvidenceKinds: new Map(),
+    generatedMatrixArtifactIndexes: new Map(),
     generatedMatrixLimitations: new Map(),
     generatedValidationSuiteFailureRoots: new Map(),
     requiredGeneratedEvidenceKinds: new Map(),
     missingGeneratedEvidenceKinds: new Map(),
+    requiredGeneratedMatrixArtifactIndexes: new Map(),
+    missingGeneratedMatrixArtifactIndexes: new Map(),
     requiredGeneratedMatrixLimitations: new Map(),
     missingGeneratedMatrixLimitations: new Map(),
     requiredGeneratedValidationSuiteFailureRoots: new Map(),
@@ -1305,6 +1368,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactKinds, report.artifactCoverage?.missingArtifactKinds ?? [])
     countStringValues(expected.requiredArtifactGeneratedEvidenceKinds, report.artifactCoverage?.requiredArtifactGeneratedEvidenceKinds ?? [])
     countStringValues(expected.missingArtifactGeneratedEvidenceKinds, report.artifactCoverage?.missingArtifactGeneratedEvidenceKinds ?? [])
+    countStringValues(expected.requiredArtifactGeneratedMatrixArtifactIndexes, report.artifactCoverage?.requiredArtifactGeneratedMatrixArtifactIndexes ?? [])
+    countStringValues(expected.missingArtifactGeneratedMatrixArtifactIndexes, report.artifactCoverage?.missingArtifactGeneratedMatrixArtifactIndexes ?? [])
     countStringValues(expected.requiredArtifactGeneratedMatrixLimitations, report.artifactCoverage?.requiredArtifactGeneratedMatrixLimitations ?? [])
     countStringValues(expected.missingArtifactGeneratedMatrixLimitations, report.artifactCoverage?.missingArtifactGeneratedMatrixLimitations ?? [])
     countStringValues(expected.requiredArtifactEvidenceRepos, report.artifactCoverage?.requiredArtifactEvidenceRepos ?? [])
@@ -1333,6 +1398,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactIncompleteExitCriterionStatuses, report.artifactCoverage?.incompleteExitCriterionStatuses)
     countObjectValues(expected.artifactKinds, report.artifactCoverage?.artifactKinds)
     countObjectValues(expected.artifactGeneratedEvidenceKinds, report.artifactCoverage?.generatedEvidenceKinds)
+    countObjectValues(expected.artifactGeneratedMatrixArtifactIndexes, report.artifactCoverage?.generatedMatrixArtifactIndexes)
     countObjectValues(expected.artifactGeneratedMatrixLimitations, report.artifactCoverage?.generatedMatrixLimitations)
     countObjectValues(expected.artifactGeneratedValidationSuiteFailureRoots, report.artifactCoverage?.generatedValidationSuiteFailureRoots)
     countObjectValues(expected.artifactEvidenceRepos, report.artifactCoverage?.evidenceRepos)
@@ -1383,6 +1449,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
       expected.generatedMatrixLimitations,
       (report.generatedEvidence?.matrixReports?.limitations ?? []).map((limitation) => limitation.kind),
     )
+    countStringValues(expected.generatedMatrixArtifactIndexes, report.generatedEvidence?.matrixReports?.artifactIndexes ?? [])
     countStringValues(expected.generatedValidationSuiteFailureRoots, report.generatedEvidence?.validationSuites?.failureRoots ?? [])
   }
   for (const input of aggregate.artifactCoverageInputs ?? []) {
@@ -1394,6 +1461,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactKinds, input.artifactCoverage?.missingArtifactKinds ?? [])
     countStringValues(expected.requiredArtifactGeneratedEvidenceKinds, input.artifactCoverage?.requiredArtifactGeneratedEvidenceKinds ?? [])
     countStringValues(expected.missingArtifactGeneratedEvidenceKinds, input.artifactCoverage?.missingArtifactGeneratedEvidenceKinds ?? [])
+    countStringValues(expected.requiredArtifactGeneratedMatrixArtifactIndexes, input.artifactCoverage?.requiredArtifactGeneratedMatrixArtifactIndexes ?? [])
+    countStringValues(expected.missingArtifactGeneratedMatrixArtifactIndexes, input.artifactCoverage?.missingArtifactGeneratedMatrixArtifactIndexes ?? [])
     countStringValues(expected.requiredArtifactGeneratedMatrixLimitations, input.artifactCoverage?.requiredArtifactGeneratedMatrixLimitations ?? [])
     countStringValues(expected.missingArtifactGeneratedMatrixLimitations, input.artifactCoverage?.missingArtifactGeneratedMatrixLimitations ?? [])
     countStringValues(expected.requiredArtifactEvidenceRepos, input.artifactCoverage?.requiredArtifactEvidenceRepos ?? [])
@@ -1422,6 +1491,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactIncompleteExitCriterionStatuses, input.artifactCoverage?.incompleteExitCriterionStatuses)
     countObjectValues(expected.artifactKinds, input.artifactCoverage?.artifactKinds)
     countObjectValues(expected.artifactGeneratedEvidenceKinds, input.artifactCoverage?.generatedEvidenceKinds)
+    countObjectValues(expected.artifactGeneratedMatrixArtifactIndexes, input.artifactCoverage?.generatedMatrixArtifactIndexes)
     countObjectValues(expected.artifactGeneratedMatrixLimitations, input.artifactCoverage?.generatedMatrixLimitations)
     countObjectValues(expected.artifactGeneratedValidationSuiteFailureRoots, input.artifactCoverage?.generatedValidationSuiteFailureRoots)
     countObjectValues(expected.artifactEvidenceRepos, input.artifactCoverage?.evidenceRepos)
@@ -1430,6 +1500,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
   }
   countStringValues(expected.requiredGeneratedEvidenceKinds, aggregate.requiredGeneratedEvidenceKinds ?? [])
   countStringValues(expected.missingGeneratedEvidenceKinds, aggregate.missingGeneratedEvidenceKinds ?? [])
+  countStringValues(expected.requiredGeneratedMatrixArtifactIndexes, aggregate.requiredGeneratedMatrixArtifactIndexes ?? [])
+  countStringValues(expected.missingGeneratedMatrixArtifactIndexes, aggregate.missingGeneratedMatrixArtifactIndexes ?? [])
   countStringValues(expected.requiredGeneratedMatrixLimitations, aggregate.requiredGeneratedMatrixLimitations ?? [])
   countStringValues(expected.missingGeneratedMatrixLimitations, aggregate.missingGeneratedMatrixLimitations ?? [])
   countStringValues(expected.requiredGeneratedValidationSuiteFailureRoots, aggregate.requiredGeneratedValidationSuiteFailureRoots ?? [])
@@ -1697,6 +1769,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateArtifactKindArray(coverage.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(coverage.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(coverage.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateStringArray(coverage.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
+  validateStringArray(coverage.missingArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationArray(coverage.requiredArtifactGeneratedMatrixLimitations ?? [], `${source}.requiredArtifactGeneratedMatrixLimitations`)
   validateGeneratedMatrixLimitationArray(coverage.missingArtifactGeneratedMatrixLimitations ?? [], `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoArray(coverage.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
@@ -1725,6 +1799,7 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateExitCriterionStatusCountObject(coverage.incompleteExitCriterionStatuses ?? {}, `${source}.incompleteExitCriterionStatuses`)
   validateArtifactKindCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
+  validateCountObject(coverage.generatedMatrixArtifactIndexes ?? {}, `${source}.generatedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
   validateCountObject(coverage.generatedValidationSuiteFailureRoots ?? {}, `${source}.generatedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoCountObject(coverage.evidenceRepos ?? {}, `${source}.evidenceRepos`)

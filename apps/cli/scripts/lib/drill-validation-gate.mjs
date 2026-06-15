@@ -25,6 +25,7 @@ import {
   normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactEvidenceRepos,
   normalizeRequiredArtifactGeneratedEvidenceKinds,
+  normalizeRequiredArtifactGeneratedMatrixArtifactIndexes,
   normalizeRequiredArtifactGeneratedMatrixLimitations,
   normalizeRequiredArtifactProviderAccountAliases,
   normalizeRequiredArtifactClassifications,
@@ -37,6 +38,7 @@ import {
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredGeneratedEvidenceKinds,
+  normalizeRequiredGeneratedMatrixArtifactIndexes,
   normalizeRequiredGeneratedMatrixLimitations,
   normalizeRequiredGeneratedValidationSuiteFailureRoots,
   normalizeRequiredMatrices,
@@ -105,6 +107,7 @@ export async function runDrillValidationGate({
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
   requiredArtifactGeneratedEvidenceKinds = [],
+  requiredArtifactGeneratedMatrixArtifactIndexes = [],
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
@@ -135,6 +138,7 @@ export async function runDrillValidationGate({
     requiredArtifactSchemas,
     requiredArtifactKinds,
     requiredArtifactGeneratedEvidenceKinds,
+    requiredArtifactGeneratedMatrixArtifactIndexes,
     requiredArtifactGeneratedMatrixLimitations,
     requiredArtifactEvidenceRepos,
     requiredArtifactProviderAccountAliases,
@@ -161,6 +165,7 @@ export async function runDrillValidationGate({
   const normalizedRequiredArtifactSchemas = normalizeRequiredArtifactSchemas(expandedRequirements.requiredArtifactSchemas)
   const normalizedRequiredArtifactKinds = normalizeRequiredArtifactKinds(expandedRequirements.requiredArtifactKinds)
   const normalizedRequiredArtifactGeneratedEvidenceKinds = normalizeRequiredArtifactGeneratedEvidenceKinds(expandedRequirements.requiredArtifactGeneratedEvidenceKinds)
+  const normalizedRequiredArtifactGeneratedMatrixArtifactIndexes = normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(expandedRequirements.requiredArtifactGeneratedMatrixArtifactIndexes)
   const normalizedRequiredArtifactGeneratedMatrixLimitations = normalizeRequiredArtifactGeneratedMatrixLimitations(expandedRequirements.requiredArtifactGeneratedMatrixLimitations)
   const normalizedRequiredArtifactEvidenceRepos = normalizeRequiredArtifactEvidenceRepos(expandedRequirements.requiredArtifactEvidenceRepos)
   const normalizedRequiredArtifactProviderAccountAliases = normalizeRequiredArtifactProviderAccountAliases(expandedRequirements.requiredArtifactProviderAccountAliases)
@@ -192,6 +197,7 @@ export async function runDrillValidationGate({
       requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
       requiredArtifactKinds: normalizedRequiredArtifactKinds,
       requiredArtifactGeneratedEvidenceKinds: normalizedRequiredArtifactGeneratedEvidenceKinds,
+      requiredArtifactGeneratedMatrixArtifactIndexes: normalizedRequiredArtifactGeneratedMatrixArtifactIndexes,
       requiredArtifactGeneratedMatrixLimitations: normalizedRequiredArtifactGeneratedMatrixLimitations,
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
       requiredArtifactProviderAccountAliases: normalizedRequiredArtifactProviderAccountAliases,
@@ -224,6 +230,7 @@ export async function runDrillValidationGate({
       requiredArtifactSchemas: normalizedRequiredArtifactSchemas,
       requiredArtifactKinds: normalizedRequiredArtifactKinds,
       requiredArtifactGeneratedEvidenceKinds: normalizedRequiredArtifactGeneratedEvidenceKinds,
+      requiredArtifactGeneratedMatrixArtifactIndexes: normalizedRequiredArtifactGeneratedMatrixArtifactIndexes,
       requiredArtifactGeneratedMatrixLimitations: normalizedRequiredArtifactGeneratedMatrixLimitations,
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
       requiredArtifactProviderAccountAliases: normalizedRequiredArtifactProviderAccountAliases,
@@ -289,6 +296,7 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredArtifactSchemas: normalizeRequiredArtifactSchemas(options.requiredArtifactSchemas ?? []),
     requiredArtifactKinds: normalizeRequiredArtifactKinds(options.requiredArtifactKinds ?? []),
     requiredArtifactGeneratedEvidenceKinds: normalizeRequiredArtifactGeneratedEvidenceKinds(options.requiredArtifactGeneratedEvidenceKinds ?? []),
+    requiredArtifactGeneratedMatrixArtifactIndexes: normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(options.requiredArtifactGeneratedMatrixArtifactIndexes ?? []),
     requiredArtifactGeneratedMatrixLimitations: normalizeRequiredArtifactGeneratedMatrixLimitations(options.requiredArtifactGeneratedMatrixLimitations ?? []),
     requiredArtifactEvidenceRepos: normalizeRequiredArtifactEvidenceRepos(options.requiredArtifactEvidenceRepos ?? []),
     requiredArtifactProviderAccountAliases: normalizeRequiredArtifactProviderAccountAliases(options.requiredArtifactProviderAccountAliases ?? []),
@@ -307,6 +315,7 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredProviders: normalizeRequiredProviders(options.requiredProviders ?? []),
     requiredScenarios: normalizeRequiredScenarios(options.requiredScenarios ?? []),
     requiredGeneratedEvidenceKinds: normalizeRequiredGeneratedEvidenceKinds(options.requiredGeneratedEvidenceKinds ?? []),
+    requiredGeneratedMatrixArtifactIndexes: normalizeRequiredGeneratedMatrixArtifactIndexes(options.requiredGeneratedMatrixArtifactIndexes ?? []),
     requiredGeneratedMatrixLimitations: normalizeRequiredGeneratedMatrixLimitations(options.requiredGeneratedMatrixLimitations ?? []),
     requiredGeneratedValidationSuiteFailureRoots: normalizeRequiredGeneratedValidationSuiteFailureRoots(options.requiredGeneratedValidationSuiteFailureRoots ?? []),
   }

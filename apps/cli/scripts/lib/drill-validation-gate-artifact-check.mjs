@@ -11,6 +11,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
   requiredArtifactGeneratedEvidenceKinds = [],
+  requiredArtifactGeneratedMatrixArtifactIndexes = [],
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
@@ -28,6 +29,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       || requiredArtifactCoverageAreas.length > 0
       || requiredArtifactKinds.length > 0
       || requiredArtifactGeneratedEvidenceKinds.length > 0
+      || requiredArtifactGeneratedMatrixArtifactIndexes.length > 0
       || requiredArtifactGeneratedMatrixLimitations.length > 0
       || requiredArtifactEvidenceRepos.length > 0
       || requiredArtifactProviderAccountAliases.length > 0
@@ -53,6 +55,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactKinds: [...requiredArtifactKinds],
         requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
         missingArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+        requiredArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
+        missingArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
         requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
         missingArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -76,6 +80,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactSchemas: requiredArtifactSchemas,
           missingArtifactKinds: requiredArtifactKinds,
           missingArtifactGeneratedEvidenceKinds: requiredArtifactGeneratedEvidenceKinds,
+          missingArtifactGeneratedMatrixArtifactIndexes: requiredArtifactGeneratedMatrixArtifactIndexes,
           missingArtifactGeneratedMatrixLimitations: requiredArtifactGeneratedMatrixLimitations,
           missingArtifactEvidenceRepos: requiredArtifactEvidenceRepos,
           missingArtifactProviderAccountAliases: requiredArtifactProviderAccountAliases,
@@ -104,6 +109,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactKinds: [],
       requiredArtifactGeneratedEvidenceKinds: [],
       missingArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixArtifactIndexes: [],
+      missingArtifactGeneratedMatrixArtifactIndexes: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       missingArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
@@ -145,6 +152,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactKinds: [...requiredArtifactKinds],
         requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
         missingArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+        requiredArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
+        missingArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
         requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
         missingArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -176,6 +185,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactSchemas = requiredArtifactSchemas.filter((schema) => !Object.prototype.hasOwnProperty.call(aggregate.schemas, schema))
     const missingArtifactKinds = requiredArtifactKinds.filter((kind) => !Object.prototype.hasOwnProperty.call(aggregate.artifactKinds ?? {}, kind))
     const missingArtifactGeneratedEvidenceKinds = requiredArtifactGeneratedEvidenceKinds.filter((kind) => !Object.prototype.hasOwnProperty.call(aggregate.generatedEvidenceKinds ?? {}, kind))
+    const missingArtifactGeneratedMatrixArtifactIndexes = requiredArtifactGeneratedMatrixArtifactIndexes.filter((indexPath) => !Object.prototype.hasOwnProperty.call(aggregate.generatedMatrixArtifactIndexes ?? {}, indexPath))
     const missingArtifactGeneratedMatrixLimitations = requiredArtifactGeneratedMatrixLimitations.filter((limitation) => !Object.prototype.hasOwnProperty.call(aggregate.generatedMatrixLimitations ?? {}, limitation))
     const missingArtifactEvidenceRepos = requiredArtifactEvidenceRepos.filter((repo) => !Object.prototype.hasOwnProperty.call(aggregate.evidenceRepos ?? {}, repo))
     const missingArtifactProviderAccountAliases = requiredArtifactProviderAccountAliases.filter((alias) => !Object.prototype.hasOwnProperty.call(aggregate.providerAccountAliases ?? {}, alias))
@@ -189,6 +199,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       + missingArtifactSchemas.length
       + missingArtifactKinds.length
       + missingArtifactGeneratedEvidenceKinds.length
+      + missingArtifactGeneratedMatrixArtifactIndexes.length
       + missingArtifactGeneratedMatrixLimitations.length
       + missingArtifactEvidenceRepos.length
       + missingArtifactProviderAccountAliases.length
@@ -214,6 +225,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactKinds,
       requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
       missingArtifactGeneratedEvidenceKinds,
+      requiredArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
+      missingArtifactGeneratedMatrixArtifactIndexes,
       requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
       missingArtifactGeneratedMatrixLimitations,
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -240,6 +253,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactSchemas,
             missingArtifactKinds,
             missingArtifactGeneratedEvidenceKinds,
+            missingArtifactGeneratedMatrixArtifactIndexes,
             missingArtifactGeneratedMatrixLimitations,
             missingArtifactEvidenceRepos,
             missingArtifactProviderAccountAliases,
@@ -270,6 +284,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactKinds: [...requiredArtifactKinds],
       requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
       missingArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+      requiredArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
+      missingArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
       requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
       missingArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -298,6 +314,7 @@ function artifactRequirementError({
   missingArtifactSchemas,
   missingArtifactKinds,
   missingArtifactGeneratedEvidenceKinds,
+  missingArtifactGeneratedMatrixArtifactIndexes,
   missingArtifactGeneratedMatrixLimitations,
   missingArtifactEvidenceRepos,
   missingArtifactProviderAccountAliases,
@@ -321,6 +338,9 @@ function artifactRequirementError({
   }
   if (missingArtifactGeneratedEvidenceKinds.length > 0) {
     messages.push(`missing required artifact generated evidence kinds: ${missingArtifactGeneratedEvidenceKinds.join(", ")}`)
+  }
+  if (missingArtifactGeneratedMatrixArtifactIndexes.length > 0) {
+    messages.push(`missing required artifact generated matrix artifact indexes: ${missingArtifactGeneratedMatrixArtifactIndexes.join(", ")}`)
   }
   if (missingArtifactGeneratedMatrixLimitations.length > 0) {
     messages.push(`missing required artifact generated matrix limitations: ${missingArtifactGeneratedMatrixLimitations.join(", ")}`)

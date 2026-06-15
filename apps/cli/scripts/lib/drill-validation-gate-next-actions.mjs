@@ -84,6 +84,14 @@ export function validationGateNextActions(checks) {
         nextAction: `produce artifact evidence with kinds: ${missingArtifactKinds.join(", ")}`,
       })
     }
+    const missingArtifactGeneratedMatrixArtifactIndexes = checks.artifacts.missingArtifactGeneratedMatrixArtifactIndexes ?? []
+    if (missingArtifactGeneratedMatrixArtifactIndexes.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "generated-evidence",
+        nextAction: `provide artifact metadata with generated matrix artifact indexes: ${missingArtifactGeneratedMatrixArtifactIndexes.join(", ")}`,
+      })
+    }
     const missingArtifactEvidenceRepos = checks.artifacts.missingArtifactEvidenceRepos ?? []
     if (missingArtifactEvidenceRepos.length > 0) {
       countDrillAggregateNextAction(counts, {

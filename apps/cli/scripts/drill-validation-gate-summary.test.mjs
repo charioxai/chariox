@@ -96,12 +96,14 @@ test("drill validation gate summary help lists artifact coverage requirements", 
   assert.match(stdout, /--artifact-root ROOT/)
   assert.match(stdout, /--require-artifact-coverage-area AREA/)
   assert.match(stdout, /--require-artifact-generated-evidence-kind KIND/)
+  assert.match(stdout, /--require-artifact-generated-matrix-artifact-index PATH/)
   assert.match(stdout, /--require-artifact-generated-matrix-limitation KIND/)
   assert.match(stdout, /--require-artifact-runtime-signal ID/)
   assert.match(stdout, /--require-artifact-runtime-signal-owner OWNER/)
   assert.match(stdout, /--require-artifact-owner OWNER/)
   assert.match(stdout, /--require-artifact-classification CLASSIFICATION/)
   assert.match(stdout, /--require-artifact-provider-account-alias P=A/)
+  assert.match(stdout, /--require-generated-matrix-artifact-index PATH/)
   assert.match(stdout, /--require-generated-matrix-limitation KIND/)
   assert.match(stdout, /--require-generated-validation-suite-failure-root PATH/)
 })
@@ -142,6 +144,8 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
       reportPath,
       "--require-generated-evidence-kind",
       "matrix-report,validation-suite-run",
+      "--require-generated-matrix-artifact-index",
+      "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       "--require-generated-matrix-limitation",
       "dry-run-classification-coverage",
       "--require-generated-validation-suite-failure-root",
@@ -152,6 +156,8 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
     assert.equal(aggregate.status, "passed")
     assert.deepEqual(aggregate.requiredGeneratedEvidenceKinds, ["matrix-report", "validation-suite-run"])
     assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
+    assert.deepEqual(aggregate.requiredGeneratedMatrixArtifactIndexes, ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"])
+    assert.deepEqual(aggregate.missingGeneratedMatrixArtifactIndexes, [])
     assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
     assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, [])
     assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, ["/tmp/generated-validation-suite/failed-run"])
@@ -169,6 +175,29 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
       (error) => {
         assert.equal(error.code, 1)
         assert.match(error.stderr, /unknown required generated evidence kind: not-generated/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-generated-matrix-artifact-index",
+        "/tmp/generated-matrix/missing-artifacts.json",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const missing = JSON.parse(error.stdout)
+        assert.deepEqual(missing.missingGeneratedMatrixArtifactIndexes, ["/tmp/generated-matrix/missing-artifacts.json"])
+        assert(
+          missing.nextActions.some((action) =>
+            action.classification === "generated-evidence"
+            && action.nextAction.includes("generated matrix artifact indexes")
+            && action.nextAction.includes("/tmp/generated-matrix/missing-artifacts.json"),
+          ),
+        )
         return true
       },
     )

@@ -63,6 +63,11 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactGeneratedEvidenceKinds.length > 0) {
     lines.push(`artifact_required_generated_evidence_kinds=${requiredArtifactGeneratedEvidenceKinds.join(",")} missing=${missingArtifactGeneratedEvidenceKinds.join(",") || "none"}`)
   }
+  const requiredArtifactGeneratedMatrixArtifactIndexes = artifacts.requiredArtifactGeneratedMatrixArtifactIndexes ?? []
+  const missingArtifactGeneratedMatrixArtifactIndexes = artifacts.missingArtifactGeneratedMatrixArtifactIndexes ?? []
+  if (requiredArtifactGeneratedMatrixArtifactIndexes.length > 0) {
+    lines.push(`artifact_required_generated_matrix_artifact_indexes=${requiredArtifactGeneratedMatrixArtifactIndexes.join(",")} missing=${missingArtifactGeneratedMatrixArtifactIndexes.join(",") || "none"}`)
+  }
   const requiredArtifactGeneratedMatrixLimitations = artifacts.requiredArtifactGeneratedMatrixLimitations ?? []
   const missingArtifactGeneratedMatrixLimitations = artifacts.missingArtifactGeneratedMatrixLimitations ?? []
   if (requiredArtifactGeneratedMatrixLimitations.length > 0) {
@@ -138,6 +143,10 @@ export function formatDrillValidationGateSummary(report) {
     const generatedEvidenceKinds = Object.entries(artifacts.aggregate.generatedEvidenceKinds ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (generatedEvidenceKinds.length > 0) {
       lines.push(`artifact_generated_evidence_kinds=${generatedEvidenceKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
+    const generatedMatrixArtifactIndexes = Object.entries(artifacts.aggregate.generatedMatrixArtifactIndexes ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (generatedMatrixArtifactIndexes.length > 0) {
+      lines.push(`artifact_generated_matrix_artifact_indexes=${generatedMatrixArtifactIndexes.map(([indexPath, count]) => `${indexPath}:${count}`).join(",")}`)
     }
     const generatedMatrixLimitations = Object.entries(artifacts.aggregate.generatedMatrixLimitations ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (generatedMatrixLimitations.length > 0) {

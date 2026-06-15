@@ -217,6 +217,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
       requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
+      requiredArtifactGeneratedMatrixArtifactIndexes: [...(preset.requiredArtifactGeneratedMatrixArtifactIndexes ?? [])],
       requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredArtifactProviderAccountAliases: [...(preset.requiredArtifactProviderAccountAliases ?? [])],
@@ -235,6 +236,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredProviders: [...(preset.requiredProviders ?? [])],
       requiredScenarios: [...(preset.requiredScenarios ?? [])],
       requiredGeneratedEvidenceKinds: [...(preset.requiredGeneratedEvidenceKinds ?? [])],
+      requiredGeneratedMatrixArtifactIndexes: [...(preset.requiredGeneratedMatrixArtifactIndexes ?? [])],
       requiredGeneratedMatrixLimitations: [...(preset.requiredGeneratedMatrixLimitations ?? [])],
       requiredGeneratedValidationSuiteFailureRoots: [...(preset.requiredGeneratedValidationSuiteFailureRoots ?? [])],
     }
@@ -248,6 +250,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
   requiredArtifactGeneratedEvidenceKinds = [],
+  requiredArtifactGeneratedMatrixArtifactIndexes = [],
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
@@ -266,6 +269,7 @@ export function expandValidationGatePresetRequirements({
   requiredProviders,
   requiredScenarios,
   requiredGeneratedEvidenceKinds = [],
+  requiredGeneratedMatrixArtifactIndexes = [],
   requiredGeneratedMatrixLimitations = [],
   requiredGeneratedValidationSuiteFailureRoots = [],
 }) {
@@ -275,6 +279,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactSchemas: [...requiredArtifactSchemas],
     requiredArtifactKinds: [...requiredArtifactKinds],
     requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+    requiredArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
     requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
     requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
@@ -293,6 +298,7 @@ export function expandValidationGatePresetRequirements({
     requiredProviders: [...requiredProviders],
     requiredScenarios: [...requiredScenarios],
     requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds],
+    requiredGeneratedMatrixArtifactIndexes: [...requiredGeneratedMatrixArtifactIndexes],
     requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations],
     requiredGeneratedValidationSuiteFailureRoots: [...requiredGeneratedValidationSuiteFailureRoots],
   }
@@ -303,6 +309,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
     expanded.requiredArtifactKinds.push(...(preset.requiredArtifactKinds ?? []))
     expanded.requiredArtifactGeneratedEvidenceKinds.push(...(preset.requiredArtifactGeneratedEvidenceKinds ?? []))
+    expanded.requiredArtifactGeneratedMatrixArtifactIndexes.push(...(preset.requiredArtifactGeneratedMatrixArtifactIndexes ?? []))
     expanded.requiredArtifactGeneratedMatrixLimitations.push(...(preset.requiredArtifactGeneratedMatrixLimitations ?? []))
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
     expanded.requiredArtifactProviderAccountAliases.push(...(preset.requiredArtifactProviderAccountAliases ?? []))
@@ -321,6 +328,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredProviders.push(...(preset.requiredProviders ?? []))
     expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
     expanded.requiredGeneratedEvidenceKinds.push(...(preset.requiredGeneratedEvidenceKinds ?? []))
+    expanded.requiredGeneratedMatrixArtifactIndexes.push(...(preset.requiredGeneratedMatrixArtifactIndexes ?? []))
     expanded.requiredGeneratedMatrixLimitations.push(...(preset.requiredGeneratedMatrixLimitations ?? []))
     expanded.requiredGeneratedValidationSuiteFailureRoots.push(...(preset.requiredGeneratedValidationSuiteFailureRoots ?? []))
   }
@@ -400,10 +408,24 @@ export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMat
   return limitations
 }
 
+export function normalizeRequiredGeneratedMatrixArtifactIndexes(requiredGeneratedMatrixArtifactIndexes) {
+  return normalizeCommaSeparatedStrings(requiredGeneratedMatrixArtifactIndexes, {
+    fieldName: "requiredGeneratedMatrixArtifactIndexes",
+    itemName: "path",
+  })
+}
+
 export function normalizeRequiredGeneratedValidationSuiteFailureRoots(requiredGeneratedValidationSuiteFailureRoots) {
   return normalizeCommaSeparatedStrings(requiredGeneratedValidationSuiteFailureRoots, {
     fieldName: "requiredGeneratedValidationSuiteFailureRoots",
     itemName: "root",
+  })
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(requiredArtifactGeneratedMatrixArtifactIndexes) {
+  return normalizeCommaSeparatedStrings(requiredArtifactGeneratedMatrixArtifactIndexes, {
+    fieldName: "requiredArtifactGeneratedMatrixArtifactIndexes",
+    itemName: "path",
   })
 }
 

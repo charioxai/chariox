@@ -334,6 +334,8 @@ function artifactAggregateFixture() {
     missingGeneratedEvidenceKinds: {
       "matrix-report": 1,
     },
+    requiredGeneratedMatrixArtifactIndexes: {},
+    missingGeneratedMatrixArtifactIndexes: {},
     requiredGeneratedMatrixLimitations: {
       "dry-run-classification-coverage": 1,
     },
@@ -402,6 +404,8 @@ function artifactAggregateFixture() {
       missingGeneratedEvidenceKinds: {
         "matrix-report": 1,
       },
+      requiredGeneratedMatrixArtifactIndexes: {},
+      missingGeneratedMatrixArtifactIndexes: {},
       requiredGeneratedMatrixLimitations: {
         "dry-run-classification-coverage": 1,
       },

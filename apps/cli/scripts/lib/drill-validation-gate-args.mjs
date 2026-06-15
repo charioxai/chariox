@@ -4,6 +4,7 @@ const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-artifact-schema", "requiredArtifactSchemas"],
   ["--require-artifact-kind", "requiredArtifactKinds"],
   ["--require-artifact-generated-evidence-kind", "requiredArtifactGeneratedEvidenceKinds"],
+  ["--require-artifact-generated-matrix-artifact-index", "requiredArtifactGeneratedMatrixArtifactIndexes"],
   ["--require-artifact-generated-matrix-limitation", "requiredArtifactGeneratedMatrixLimitations"],
   ["--require-artifact-evidence-repo", "requiredArtifactEvidenceRepos"],
   ["--require-artifact-provider-account-alias", "requiredArtifactProviderAccountAliases"],
@@ -22,6 +23,7 @@ const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-provider", "requiredProviders"],
   ["--require-scenario", "requiredScenarios"],
   ["--require-generated-evidence-kind", "requiredGeneratedEvidenceKinds"],
+  ["--require-generated-matrix-artifact-index", "requiredGeneratedMatrixArtifactIndexes"],
   ["--require-generated-matrix-limitation", "requiredGeneratedMatrixLimitations"],
   ["--require-generated-validation-suite-failure-root", "requiredGeneratedValidationSuiteFailureRoots"],
 ])
@@ -34,6 +36,7 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
     requiredArtifactSchemas: [],
     requiredArtifactKinds: [],
     requiredArtifactGeneratedEvidenceKinds: [],
+    requiredArtifactGeneratedMatrixArtifactIndexes: [],
     requiredArtifactGeneratedMatrixLimitations: [],
     requiredArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
@@ -52,6 +55,7 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
     requiredProviders: [],
     requiredScenarios: [],
     requiredGeneratedEvidenceKinds: [],
+    requiredGeneratedMatrixArtifactIndexes: [],
     requiredGeneratedMatrixLimitations: [],
     requiredGeneratedValidationSuiteFailureRoots: [],
   }

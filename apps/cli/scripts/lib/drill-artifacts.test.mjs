@@ -579,8 +579,11 @@ test("summarizes drill artifact indexes", async () => {
         runtimeSignalOwners: "kernel-authority",
         artifactKinds: "matrix-report",
         generatedEvidenceKinds: "matrix-report",
+        generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
         generatedMatrixLimitations: "dry-run-classification-coverage",
         requiredGeneratedEvidenceKinds: "matrix-report",
+        requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+        missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
         requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
         missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
         providerAccountAliases: "codex=work,claude=team",
@@ -637,6 +640,9 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.generatedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
     })
+    assert.deepEqual(aggregate.generatedMatrixArtifactIndexes, {
+      "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json": 1,
+    })
     assert.deepEqual(aggregate.generatedValidationSuiteFailureRoots, {
       "/tmp/generated-suite/failed-run": 1,
     })
@@ -646,6 +652,12 @@ test("summarizes drill artifact indexes", async () => {
     })
     assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, {
       "matrix-report": 1,
+    })
+    assert.deepEqual(aggregate.requiredGeneratedMatrixArtifactIndexes, {
+      "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json": 1,
+    })
+    assert.deepEqual(aggregate.missingGeneratedMatrixArtifactIndexes, {
+      "/tmp/generated-matrix/missing-matrix-artifacts.json": 1,
     })
     assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
@@ -706,13 +718,16 @@ test("summarizes drill artifact indexes", async () => {
       incompleteExitCriterionStatuses: "dry-run",
       evidenceRepos: "cloud,oss",
       generatedEvidenceKinds: "matrix-report,validation-suite-run",
+      generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       generatedMatrixLimitations: "dry-run-classification-coverage",
       generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       missingGeneratedEvidenceKinds: "matrix-report",
+      missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
       missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
       owners: "runtime-network,validation-harness",
       providerAccountAliases: "claude=team,codex=work,opencode=zen",
       requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
+      requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
@@ -732,6 +747,8 @@ test("summarizes drill artifact indexes", async () => {
       "generatedValidationSuiteFailureRoots",
       "requiredGeneratedEvidenceKinds",
       "missingGeneratedEvidenceKinds",
+      "requiredGeneratedMatrixArtifactIndexes",
+      "missingGeneratedMatrixArtifactIndexes",
       "requiredGeneratedMatrixLimitations",
       "missingGeneratedMatrixLimitations",
       "providerAccountAliases",

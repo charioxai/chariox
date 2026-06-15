@@ -20,6 +20,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-evidence-kind", "validation-suite-run"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-evidence-repo", "oss"], 0, options)
@@ -46,6 +48,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-generated-evidence-kind", "matrix-report"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-generated-matrix-artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run"], 0, options)
@@ -60,6 +64,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["validation-suite-run"],
+    requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactEvidenceRepos: ["oss"],
     requiredArtifactProviderAccountAliases: ["codex=work"],
@@ -78,6 +83,7 @@ test("parses validation gate requirement arguments", () => {
     requiredProviders: ["codex"],
     requiredScenarios: [],
     requiredGeneratedEvidenceKinds: ["matrix-report"],
+    requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   })

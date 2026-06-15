@@ -167,6 +167,18 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.missingArtifactGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
     ...(aggregate.missingGeneratedMatrixLimitations ?? []).filter(nonEmptyString),
   ])
+  const requiredGeneratedMatrixArtifactIndexes = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedMatrixArtifactIndexes ?? {}),
+    ...Object.keys(aggregate.coverage?.requiredGeneratedMatrixArtifactIndexes ?? {}),
+    ...(aggregate.requiredArtifactGeneratedMatrixArtifactIndexes ?? []).filter(nonEmptyString),
+    ...(aggregate.requiredGeneratedMatrixArtifactIndexes ?? []).filter(nonEmptyString),
+  ])
+  const missingGeneratedMatrixArtifactIndexes = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactGeneratedMatrixArtifactIndexes ?? {}),
+    ...Object.keys(aggregate.coverage?.missingGeneratedMatrixArtifactIndexes ?? {}),
+    ...(aggregate.missingArtifactGeneratedMatrixArtifactIndexes ?? []).filter(nonEmptyString),
+    ...(aggregate.missingGeneratedMatrixArtifactIndexes ?? []).filter(nonEmptyString),
+  ])
   const requiredGeneratedValidationSuiteFailureRoots = new Set([
     ...Object.keys(aggregate.coverage?.requiredGeneratedValidationSuiteFailureRoots ?? {}),
     ...(aggregate.requiredGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
@@ -202,6 +214,8 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),
     ...(requiredGeneratedEvidenceKinds.size > 0 ? { requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds].sort().join(",") } : {}),
     ...(missingGeneratedEvidenceKinds.size > 0 ? { missingGeneratedEvidenceKinds: [...missingGeneratedEvidenceKinds].sort().join(",") } : {}),
+    ...(requiredGeneratedMatrixArtifactIndexes.size > 0 ? { requiredGeneratedMatrixArtifactIndexes: [...requiredGeneratedMatrixArtifactIndexes].sort().join(",") } : {}),
+    ...(missingGeneratedMatrixArtifactIndexes.size > 0 ? { missingGeneratedMatrixArtifactIndexes: [...missingGeneratedMatrixArtifactIndexes].sort().join(",") } : {}),
     ...(requiredGeneratedMatrixLimitations.size > 0 ? { requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations].sort().join(",") } : {}),
     ...(missingGeneratedMatrixLimitations.size > 0 ? { missingGeneratedMatrixLimitations: [...missingGeneratedMatrixLimitations].sort().join(",") } : {}),
     ...(requiredGeneratedValidationSuiteFailureRoots.size > 0 ? { requiredGeneratedValidationSuiteFailureRoots: [...requiredGeneratedValidationSuiteFailureRoots].sort().join(",") } : {}),
