@@ -17,6 +17,7 @@ import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
 } from "./lib/drill-provider-profiles.mjs"
+import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 
 function printHelp() {
   console.log([
@@ -32,6 +33,8 @@ function printHelp() {
     "                         Exit non-zero when artifact indexes are older than this many milliseconds",
     "  --require-matrix-max-age-ms MS",
     "                         Exit non-zero when indexed matrix reports are older than this many milliseconds",
+    "  --require-generated-evidence-kind KIND",
+    "                         Exit non-zero when generated evidence kind metadata is missing; repeatable",
     "  --require-generated-validation-suite-failure-root PATH",
     "                         Exit non-zero when generated validation-suite failure-root metadata is missing; repeatable",
     "  --require-generated-matrix-artifact-index PATH",
@@ -64,6 +67,7 @@ async function main() {
     ...freshnessDiagnosticsFor(indexes, indexPaths, options),
     ...await matrixFreshnessDiagnosticsFor(indexes, options),
   }
+  Object.assign(aggregate, generatedEvidenceKindDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
@@ -76,6 +80,7 @@ async function main() {
         drill: "artifact-index-summary",
         indexes: aggregate.totals.indexes,
         ...diagnosticMetadataForDrillArtifactIndexAggregate(aggregate),
+        ...generatedEvidenceKindRequirementMetadataFor(aggregate),
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
         ...generatedMatrixArtifactIndexRequirementMetadataFor(aggregate),
         ...providerAccountAliasRequirementMetadataFor(aggregate),
@@ -90,6 +95,7 @@ async function main() {
   if (
     (aggregate.staleArtifactIndexes ?? []).length > 0
     || (aggregate.staleMatrixReports ?? []).length > 0
+    || (aggregate.missingRequiredGeneratedEvidenceKinds ?? []).length > 0
     || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
     || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
@@ -108,6 +114,7 @@ function parseArgs(argv) {
     outputArtifactIndexPath: null,
     outputPath: null,
     requiredArtifactMaxAgeMs: null,
+    requiredGeneratedEvidenceKinds: [],
     requiredGeneratedValidationSuiteFailureRoots: [],
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredMatrixMaxAgeMs: null,
@@ -154,6 +161,14 @@ function parseArgs(argv) {
         arg.slice("--require-matrix-max-age-ms=".length),
         "--require-matrix-max-age-ms",
       )
+    } else if (arg === "--require-generated-evidence-kind") {
+      options.requiredGeneratedEvidenceKinds.push(parseGeneratedEvidenceKindRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-generated-evidence-kind=")) {
+      options.requiredGeneratedEvidenceKinds.push(parseGeneratedEvidenceKindRequirement(
+        arg.slice("--require-generated-evidence-kind=".length),
+        "--require-generated-evidence-kind",
+      ))
     } else if (arg === "--require-generated-validation-suite-failure-root") {
       options.requiredGeneratedValidationSuiteFailureRoots.push(readValue(argv, index, arg))
       index += 1
@@ -234,6 +249,13 @@ function parseProviderAccountAliasRequirement(value, flag) {
   }
 }
 
+function parseGeneratedEvidenceKindRequirement(value, flag) {
+  if (!isKnownDrillGeneratedEvidenceKind(value)) {
+    throw new Error(`${flag} has unknown generated evidence kind: ${value}`)
+  }
+  return value
+}
+
 async function matrixFreshnessDiagnosticsFor(indexes, options) {
   if (options.requiredMatrixMaxAgeMs === null) return {}
   const staleMatrixReports = []
@@ -261,6 +283,25 @@ async function matrixFreshnessDiagnosticsFor(indexes, options) {
   return {
     requiredMatrixMaxAgeMs: options.requiredMatrixMaxAgeMs,
     staleMatrixReports,
+  }
+}
+
+function generatedEvidenceKindDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredGeneratedEvidenceKinds)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.generatedEvidenceKinds ?? {}))
+  return {
+    requiredGeneratedEvidenceKindRequirements: required,
+    missingRequiredGeneratedEvidenceKinds: required.filter((kind) => !available.has(kind)),
+  }
+}
+
+function generatedEvidenceKindRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredGeneratedEvidenceKindRequirements ?? []
+  const missing = aggregate.missingRequiredGeneratedEvidenceKinds ?? []
+  return {
+    ...(required.length > 0 ? { requiredGeneratedEvidenceKindRequirements: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingRequiredGeneratedEvidenceKinds: missing.join(",") } : {}),
   }
 }
 
@@ -335,6 +376,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
       lines.push(`- stale_matrix_report=${staleReport.source ?? "unknown"} matrix=${staleReport.matrix} completed_at=${staleReport.completedAt} age_ms=${staleReport.ageMs} max_age_ms=${staleReport.maxAgeMs}`)
     }
   }
+  if (aggregate.requiredGeneratedEvidenceKindRequirements !== undefined) {
+    const missing = aggregate.missingRequiredGeneratedEvidenceKinds ?? []
+    lines.push(`generated_evidence_kinds_required=${aggregate.requiredGeneratedEvidenceKindRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if (aggregate.requiredGeneratedValidationSuiteFailureRoots !== undefined) {
     const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
     lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRoots.join(",") || "none"} missing=${missing.join(",") || "none"}`)
@@ -352,6 +397,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.staleMatrixReports ?? []).length > 0) {
     lines.push("next: regenerate stale drill matrix reports before using them as validation evidence")
+  }
+  if ((aggregate.missingRequiredGeneratedEvidenceKinds ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes that record generated evidence kinds: ${aggregate.missingRequiredGeneratedEvidenceKinds.join(", ")}`)
   }
   if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
     lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRoots.join(", ")}`)

@@ -293,6 +293,66 @@ test("drill artifact index summary gates generated validation-suite failure root
   }
 })
 
+test("drill artifact index summary gates generated evidence kinds", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-generated-evidence-kind",
+      "validation-suite-run",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredGeneratedEvidenceKindRequirements, ["validation-suite-run"])
+    assert.deepEqual(aggregate.missingRequiredGeneratedEvidenceKinds, [])
+    assert.equal(artifactIndex.metadata.requiredGeneratedEvidenceKindRequirements, "validation-suite-run")
+    assert.equal(artifactIndex.metadata.missingRequiredGeneratedEvidenceKinds, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-evidence-kind=matrix-report",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /generated_evidence_kinds_required=matrix-report missing=matrix-report/)
+        assert.match(error.stdout, /next: include drill artifact indexes that record generated evidence kinds: matrix-report/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-evidence-kind",
+        "matrix-reprot",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-evidence-kind has unknown generated evidence kind: matrix-reprot/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary gates generated matrix artifact indexes", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
