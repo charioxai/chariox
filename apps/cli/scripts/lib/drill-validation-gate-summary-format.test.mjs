@@ -134,6 +134,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_required_generated_evidence_kinds=matrix-report:2,validation-suite-run:1/)
   assert.match(text, /artifact_missing_generated_evidence_kinds=matrix-report:1/)
+  assert.match(text, /artifact_required_generated_matrix_limitations=dry-run-classification-coverage:1/)
+  assert.match(text, /artifact_missing_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_evidence_repos=cloud:1,oss:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
   assert.match(text, /matrix_runtime_signals=session-authority:1,workspace-live-sync-state:1/)

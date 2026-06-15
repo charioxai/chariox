@@ -75,6 +75,12 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.deepEqual(stdoutAggregate.missingGeneratedEvidenceKinds, {
       "matrix-report": 1,
     })
+    assert.deepEqual(stdoutAggregate.requiredGeneratedMatrixLimitations, {
+      "dry-run-classification-coverage": 1,
+    })
+    assert.deepEqual(stdoutAggregate.missingGeneratedMatrixLimitations, {
+      "dry-run-classification-coverage": 1,
+    })
     assert.deepEqual(stdoutAggregate.indexes.map((index) => index.source), [
       firstIndexPath,
       secondIndexPath,
@@ -90,6 +96,8 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.requiredGeneratedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.missingGeneratedEvidenceKinds, "matrix-report")
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
@@ -199,6 +207,12 @@ async function writeIndexedReport(rootDir, name, schema) {
         : "matrix-report",
       missingGeneratedEvidenceKinds: name === "one"
         ? "matrix-report"
+        : "",
+      requiredGeneratedMatrixLimitations: name === "one"
+        ? "dry-run-classification-coverage"
+        : "",
+      missingGeneratedMatrixLimitations: name === "one"
+        ? "dry-run-classification-coverage"
         : "",
       evidenceRepos: name === "one"
         ? "oss"

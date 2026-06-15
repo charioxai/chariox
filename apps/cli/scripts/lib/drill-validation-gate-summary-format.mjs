@@ -135,6 +135,14 @@ export function formatDrillValidationGateSummary(report) {
     if (missingGeneratedEvidenceKinds.length > 0) {
       lines.push(`artifact_missing_generated_evidence_kinds=${missingGeneratedEvidenceKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
     }
+    const requiredGeneratedMatrixLimitations = Object.entries(artifacts.aggregate.requiredGeneratedMatrixLimitations ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (requiredGeneratedMatrixLimitations.length > 0) {
+      lines.push(`artifact_required_generated_matrix_limitations=${requiredGeneratedMatrixLimitations.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
+    const missingGeneratedMatrixLimitations = Object.entries(artifacts.aggregate.missingGeneratedMatrixLimitations ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (missingGeneratedMatrixLimitations.length > 0) {
+      lines.push(`artifact_missing_generated_matrix_limitations=${missingGeneratedMatrixLimitations.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
+    }
     const evidenceRepos = Object.entries(artifacts.aggregate.evidenceRepos ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (evidenceRepos.length > 0) {
       lines.push(`artifact_evidence_repos=${evidenceRepos.map(([repo, count]) => `${repo}:${count}`).join(",")}`)
