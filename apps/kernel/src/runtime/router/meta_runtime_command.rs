@@ -551,11 +551,15 @@ impl CommandRouter {
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
             alias: spawn.alias,
-            provider: Some(metaagent.provider().to_string()),
+            provider: spawn
+                .provider
+                .or_else(|| Some(metaagent.provider().to_string())),
             model: spawn
                 .model
                 .or_else(|| metaagent.model().map(str::to_string)),
-            effort: metaagent.effort().map(str::to_string),
+            effort: spawn
+                .effort
+                .or_else(|| metaagent.effort().map(str::to_string)),
             execution_mode: metaagent.execution_mode_override(),
             permission_level: metaagent.permission_level_override(),
             worktree_id: spawn
@@ -711,7 +715,9 @@ impl CommandRouter {
 #[derive(Debug, Clone)]
 struct MetaAgentSpawnArgs {
     alias: Option<String>,
+    provider: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
     worktree_id: Option<String>,
     kernel_ref: Option<String>,
     slice_ref: Option<String>,
@@ -729,6 +735,9 @@ fn parse_meta_agent_spawn_args(
     session: &crate::session::RuntimeSession,
 ) -> Result<MetaAgentSpawnArgs, DaemonError> {
     let mut positional = Vec::new();
+    let mut provider = None;
+    let mut explicit_model = None;
+    let mut effort = None;
     let mut directory = None;
     let mut git_worktree = None;
     let mut branch = None;
@@ -746,6 +755,44 @@ fn parse_meta_agent_spawn_args(
                 return Err(meta_command_error(
                     "metaagents cannot spawn another metaagent through run_command",
                 ));
+            }
+            "--provider" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --provider <provider>",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --provider <provider>",
+                    ));
+                }
+                provider = Some(value.clone());
+                index += 2;
+            }
+            "--model" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error("usage: agent spawn --model <model>"));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error("usage: agent spawn --model <model>"));
+                }
+                explicit_model = Some(value.clone());
+                index += 2;
+            }
+            "--effort" | "--variant" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --effort <effort>|--variant <variant>",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --effort <effort>|--variant <variant>",
+                    ));
+                }
+                effort = Some(value.clone());
+                index += 2;
             }
             "--dir" | "--directory" => {
                 let Some(value) = args.get(index + 1) else {
@@ -885,6 +932,11 @@ fn parse_meta_agent_spawn_args(
             crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
         )));
     }
+    if positional.get(1).is_some() && explicit_model.is_some() {
+        return Err(meta_command_error(
+            "usage: agent spawn accepts either positional [model] or --model <model>, not both",
+        ));
+    }
     if directory.is_some() && git_worktree.is_some() {
         return Err(meta_command_error(
             "usage: agent spawn uses either --dir or --worktree/--branch, not both",
@@ -933,7 +985,9 @@ fn parse_meta_agent_spawn_args(
 
     Ok(MetaAgentSpawnArgs {
         alias: positional.first().cloned(),
-        model: positional.get(1).cloned(),
+        provider,
+        model: explicit_model.or_else(|| positional.get(1).cloned()),
+        effort,
         worktree_id,
         kernel_ref,
         slice_ref,
@@ -1000,11 +1054,15 @@ fn meta_agent_request(
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 session_id: session.id().to_string(),
                 alias: spawn.alias,
-                provider: Some(metaagent.provider().to_string()),
+                provider: spawn
+                    .provider
+                    .or_else(|| Some(metaagent.provider().to_string())),
                 model: spawn
                     .model
                     .or_else(|| metaagent.model().map(str::to_string)),
-                effort: metaagent.effort().map(str::to_string),
+                effort: spawn
+                    .effort
+                    .or_else(|| metaagent.effort().map(str::to_string)),
                 execution_mode: metaagent.execution_mode_override(),
                 permission_level: metaagent.permission_level_override(),
                 worktree_id: spawn
@@ -2225,5 +2283,41 @@ mod tests {
         assert_eq!(parsed.alias.as_deref(), Some("checker"));
         assert_eq!(parsed.slice_ref.as_deref(), Some("linux-dev"));
         assert!(parsed.slice_create.is_none());
+    }
+
+    #[test]
+    fn meta_agent_spawn_parser_supports_provider_model_and_effort() {
+        let args = vec![
+            "verifier".to_string(),
+            "--provider".to_string(),
+            "opencode".to_string(),
+            "--model".to_string(),
+            "opencode/gpt-5.2".to_string(),
+            "--variant".to_string(),
+            "high".to_string(),
+        ];
+
+        let parsed = parse_meta_agent_spawn_args(&args, &test_session())
+            .expect("provider launch profile should parse");
+
+        assert_eq!(parsed.alias.as_deref(), Some("verifier"));
+        assert_eq!(parsed.provider.as_deref(), Some("opencode"));
+        assert_eq!(parsed.model.as_deref(), Some("opencode/gpt-5.2"));
+        assert_eq!(parsed.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn meta_agent_spawn_parser_rejects_positional_and_flag_model() {
+        let args = vec![
+            "verifier".to_string(),
+            "gpt-5.5".to_string(),
+            "--model".to_string(),
+            "opencode/gpt-5.2".to_string(),
+        ];
+
+        let error = parse_meta_agent_spawn_args(&args, &test_session())
+            .expect_err("model should be specified once");
+
+        assert!(format!("{error}").contains("either positional [model] or --model"));
     }
 }

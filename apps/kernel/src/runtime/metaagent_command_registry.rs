@@ -35,7 +35,7 @@ pub(crate) struct MetaCommandDoc {
     pub(crate) description: &'static str,
 }
 
-pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>]";
+pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--provider <provider>] [--model <model>] [--effort <effort>|--variant <variant>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>]";
 
 pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
@@ -108,6 +108,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         usage: AGENT_SPAWN_USAGE,
         examples: &[
             "agent spawn reviewer gpt-5.2",
+            "agent spawn verifier --provider opencode --model opencode/gpt-5.2 --effort high",
             "agent spawn verifier --dir ../qa",
             "agent spawn linux-checker --kernel linux-worker",
             "agent spawn isolated-builder --slice new:headless",
@@ -126,7 +127,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Create a regular agent owned by the current user. Metaagents cannot spawn another metaagent. Spawn uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation.",
+        description: "Create a regular agent owned by the current user. Metaagents cannot spawn another metaagent. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation.",
     },
     MetaCommandDoc {
         name: "agent focus",

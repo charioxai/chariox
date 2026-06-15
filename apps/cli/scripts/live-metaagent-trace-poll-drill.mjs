@@ -14,21 +14,38 @@ const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_TRACE_POLL_PROVIDER ?? 'co
 const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_TRACE_POLL_MODEL ?? 'gpt-5.5'
 const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_TRACE_POLL_EFFORT ?? 'medium'
 const TRACE_PHRASE = 'TRACE_POLL_DRILL_WORKER_VISIBLE'
-const USER_PROMPT = [
-  'Spawn one regular worker agent for a tiny supervision check.',
-  '',
-  'Use the session default model when spawning the worker; do not pass an explicit model.',
-  'Before prompting the worker, subscribe to that worker live trace with `arroba.meta.subscribe_trace`.',
-  `Ask the worker to inspect this repo and include the exact phrase ${TRACE_PHRASE} in its response.`,
-  'Call `arroba.meta.wait_trace` until you can see worker-generated output, not just a prompt echo.',
-  'Then complete this metaagent task with a concise summary of the worker result and the trace evidence you observed.',
-].join('\n')
+
+function buildUserPrompt(options) {
+  const launchInstruction = options.workerProvider || options.workerModel || options.workerEffort
+    ? [
+        'Spawn one regular worker agent for a tiny supervision check.',
+        `Use provider ${options.workerProvider}, model ${options.workerModel}, and variant/effort ${options.workerEffort} for the worker.`,
+        'Do not use the session default launch profile for the worker.',
+        'Keep the worker in this current session worktree; do not place it in a slice, remote kernel, separate directory, or new worktree.',
+      ]
+    : [
+        'Spawn one regular worker agent for a tiny supervision check.',
+        '',
+        'Use the session default model when spawning the worker; do not pass an explicit model.',
+      ]
+
+  return [
+    ...launchInstruction,
+    'Before prompting the worker, subscribe to that worker live trace with `arroba.meta.subscribe_trace`.',
+    `Ask the worker to inspect this repo and include the exact phrase ${TRACE_PHRASE} in its response.`,
+    'Call `arroba.meta.wait_trace` until you can see worker-generated output, not just a prompt echo.',
+    'Then complete this metaagent task with a concise summary of the worker result and the trace evidence you observed.',
+  ].join('\n')
+}
 
 function parseArgs(argv) {
   const options = {
     provider: DEFAULT_PROVIDER,
     model: DEFAULT_MODEL,
     effort: DEFAULT_EFFORT,
+    workerProvider: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_PROVIDER ?? '',
+    workerModel: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_MODEL ?? '',
+    workerEffort: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_EFFORT ?? '',
     accountProfile: 'default',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
@@ -41,6 +58,9 @@ function parseArgs(argv) {
     else if (arg === '--provider') options.provider = String(argv[++index] ?? '').trim()
     else if (arg === '--model') options.model = String(argv[++index] ?? '').trim()
     else if (arg === '--effort') options.effort = String(argv[++index] ?? '').trim()
+    else if (arg === '--worker-provider') options.workerProvider = String(argv[++index] ?? '').trim()
+    else if (arg === '--worker-model') options.workerModel = String(argv[++index] ?? '').trim()
+    else if (arg === '--worker-effort' || arg === '--worker-variant') options.workerEffort = String(argv[++index] ?? '').trim()
     else if (arg === '--account-profile') options.accountProfile = String(argv[++index] ?? '').trim()
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++index])
@@ -62,6 +82,10 @@ function parseArgs(argv) {
     throw new Error('trace poll drill requires a real provider; dev-stub is not valid evidence')
   }
   if (!options.model) throw new Error('--model is required')
+  const workerProfileParts = [options.workerProvider, options.workerModel, options.workerEffort].filter(Boolean).length
+  if (workerProfileParts > 0 && workerProfileParts < 3) {
+    throw new Error('--worker-provider, --worker-model, and --worker-effort must be provided together')
+  }
   return options
 }
 
@@ -239,7 +263,14 @@ async function terminateChild(child, signal = 'SIGTERM') {
   if (child.exitCode == null && child.signalCode == null) child.kill('SIGKILL')
 }
 
-async function observe({ client, requests, sessionId, metaagentId, historyDir, beforeAgentIds, timeoutMs, pollMs }) {
+function workerMatchesProfile(agent, options) {
+  if (!options.workerProvider) return true
+  return agent.provider === options.workerProvider
+    && agent.model === options.workerModel
+    && agent.effort === options.workerEffort
+}
+
+async function observe({ client, requests, sessionId, metaagentId, historyDir, beforeAgentIds, timeoutMs, pollMs, options }) {
   const deadline = Date.now() + timeoutMs
   const seenTools = new Set()
   let sawSubscribeTrace = false
@@ -252,7 +283,13 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
     finalTask = (session.metaagent_tasks ?? []).find((entry) => entry.metaagent_id === metaagentId) ?? null
     workers = (session.agents ?? []).filter((agent) => !beforeAgentIds.has(agent.id) && agent.id !== metaagentId && agent.role !== 'meta')
     if (workers.length > 0) {
-      log('workers-observed', workers.map((agent) => ({ id: agent.id, alias: agent.alias ?? null, provider: agent.provider })))
+      log('workers-observed', workers.map((agent) => ({
+        id: agent.id,
+        alias: agent.alias ?? null,
+        provider: agent.provider,
+        model: agent.model,
+        effort: agent.effort ?? null,
+      })))
     }
     for (const entry of await readHistoryEntries(historyDir)) {
       if (entry.kind !== 'provider_tool' || entry.agent_id !== metaagentId) continue
@@ -281,12 +318,25 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
     if (finalTask?.status === 'blocked' || finalTask?.status === 'aborted') {
       throw new Error(`metaagent task ended as ${finalTask.status}: ${finalTask.blocked_reason ?? finalTask.aborted_reason ?? 'no reason'}`)
     }
-    if (finalTask?.status === 'completed' && workers.length > 0 && sawSubscribeTrace && sawTraceWait && sawTracePhrase) {
+    const profileMatched = workers.some((agent) => workerMatchesProfile(agent, options))
+    if (finalTask?.status === 'completed' && workers.length > 0 && profileMatched && sawSubscribeTrace && sawTraceWait && sawTracePhrase) {
       return { task: finalTask, workers, sawSubscribeTrace, sawTraceWait, sawTracePhrase }
     }
     if (finalTask?.status === 'completed') {
       throw new Error(`metaagent task completed without validated worker trace output: ${JSON.stringify({
-        workers: workers.map((agent) => ({ id: agent.id, alias: agent.alias })),
+        workers: workers.map((agent) => ({
+          id: agent.id,
+          alias: agent.alias,
+          provider: agent.provider,
+          model: agent.model,
+          effort: agent.effort ?? null,
+        })),
+        expectedWorkerProfile: options.workerProvider ? {
+          provider: options.workerProvider,
+          model: options.workerModel,
+          effort: options.workerEffort,
+        } : null,
+        profileMatched,
         sawSubscribeTrace,
         sawTraceWait,
         sawTracePhrase,
@@ -297,7 +347,18 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
   }
   throw new Error(`timed out waiting for trace poll validation: ${JSON.stringify({
     task: finalTask,
-    workers: workers.map((agent) => ({ id: agent.id, alias: agent.alias })),
+    workers: workers.map((agent) => ({
+      id: agent.id,
+      alias: agent.alias,
+      provider: agent.provider,
+      model: agent.model,
+      effort: agent.effort ?? null,
+    })),
+    expectedWorkerProfile: options.workerProvider ? {
+      provider: options.workerProvider,
+      model: options.workerModel,
+      effort: options.workerEffort,
+    } : null,
     sawSubscribeTrace,
     sawTraceWait,
     sawTracePhrase,
@@ -408,8 +469,9 @@ async function main() {
     assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be plan mode', metaRun)
     log('metaagent-run-observed', { providerRunId: metaRun.id, executionMode: metaRun.execution_mode })
 
-    await client.send(requests.submitPromptRequest(sessionId, attachment.id, metaagent.id, USER_PROMPT, []))
-    log('single-prompt-submitted', { metaagentId: metaagent.id, prompt: USER_PROMPT })
+    const userPrompt = buildUserPrompt(options)
+    await client.send(requests.submitPromptRequest(sessionId, attachment.id, metaagent.id, userPrompt, []))
+    log('single-prompt-submitted', { metaagentId: metaagent.id, prompt: userPrompt })
 
     const observed = await observe({
       client,
@@ -420,6 +482,7 @@ async function main() {
       beforeAgentIds,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
+      options,
     })
     console.log(JSON.stringify({
       status: 'ok',
@@ -428,8 +491,17 @@ async function main() {
       metaagentId: metaagent.id,
       provider: options.provider,
       model: options.model,
+      workerProvider: options.workerProvider || null,
+      workerModel: options.workerModel || null,
+      workerEffort: options.workerEffort || null,
       promptCount: 1,
-      workerIds: observed.workers.map((agent) => agent.id),
+      workers: observed.workers.map((agent) => ({
+        id: agent.id,
+        alias: agent.alias ?? null,
+        provider: agent.provider,
+        model: agent.model,
+        effort: agent.effort ?? null,
+      })),
       taskStatus: observed.task.status,
       sawSubscribeTrace: observed.sawSubscribeTrace,
       sawTraceWait: observed.sawTraceWait,

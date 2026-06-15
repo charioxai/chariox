@@ -94,7 +94,6 @@ test("executeShellScriptLines runs comments, variables, and stops on success", a
         return {}
       },
     },
-    resolveExistingDirectory: async () => "/repo/qa",
   }, (line) => output.push(line))
   assert.equal(code, 0)
   assert.equal(seen.length, 2)
@@ -164,7 +163,6 @@ test("executeShellScript can source a disk script into current context", async (
         return {}
       },
     },
-    resolveExistingDirectory: async () => "/repo/qa",
   }, (line) => output.push(line), {
     loadScript: async (scriptPath) => {
       assert.equal(scriptPath, "/repo/setup.arroba")
