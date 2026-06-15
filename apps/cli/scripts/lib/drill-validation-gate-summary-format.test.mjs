@@ -162,6 +162,10 @@ test("formats generated evidence provenance when present", () => {
           "/tmp/suites/cloud/arroba-drill-artifacts.json",
           "/tmp/suites/oss/arroba-drill-artifacts.json",
         ],
+        failureRoots: [
+          "/tmp/suites/oss/failed-run",
+          "/tmp/suites/cloud/failed-run",
+        ],
         commands: [
           {
             artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",

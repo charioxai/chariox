@@ -62,6 +62,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
         artifactIndexes: [],
         commands: [],
         enabled: false,
+        failureRoots: [],
         outputRoots: [],
       },
     })
@@ -252,6 +253,10 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
     assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 2)
     assert.deepEqual(report.generatedEvidence.validationSuites, {
       artifactIndexes: expectedArtifactIndexes.sort(),
+      failureRoots: [
+        path.join(validationSuiteOutputRoot, "cloud", "failed-run"),
+        path.join(validationSuiteOutputRoot, "oss", "failed-run"),
+      ].sort(),
       commands: [
         {
           artifactIndexPath: path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
@@ -367,6 +372,10 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     assert.equal(artifactIndex.metadata.generatedValidationSuiteRoots, [
       path.join(validationSuiteOutputRoot, "cloud"),
       path.join(validationSuiteOutputRoot, "oss"),
+    ].sort().join(","))
+    assert.equal(artifactIndex.metadata.generatedValidationSuiteFailureRoots, [
+      path.join(validationSuiteOutputRoot, "cloud", "failed-run"),
+      path.join(validationSuiteOutputRoot, "oss", "failed-run"),
     ].sort().join(","))
   } finally {
     await rm(rootDir, { recursive: true, force: true })

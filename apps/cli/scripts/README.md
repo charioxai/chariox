@@ -77,7 +77,7 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
   --require-complete
 ```
 
-Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
+Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, validation-suite failure roots, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
 
 To reject stale or discovered-only bundles, summarize the generated gate report and require both generated evidence kinds:
 

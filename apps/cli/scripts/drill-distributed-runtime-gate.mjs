@@ -405,6 +405,9 @@ function generatedEvidenceMetadataFor(generatedEvidence) {
     ...(generatedEvidence.validationSuites.outputRoots.length > 0
       ? { generatedValidationSuiteRoots: generatedEvidence.validationSuites.outputRoots.join(",") }
       : {}),
+    ...(generatedEvidence.validationSuites.failureRoots.length > 0
+      ? { generatedValidationSuiteFailureRoots: generatedEvidence.validationSuites.failureRoots.join(",") }
+      : {}),
   }
 }
 

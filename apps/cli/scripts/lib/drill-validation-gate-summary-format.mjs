@@ -262,7 +262,10 @@ function appendGeneratedEvidenceSummary(lines, generatedEvidence) {
     const outputRoots = stringArrayForSummary(validationSuites.outputRoots)
     const artifactIndexes = stringArrayForSummary(validationSuites.artifactIndexes)
     const commands = Array.isArray(validationSuites.commands) ? validationSuites.commands.length : 0
-    const failureRoots = Array.isArray(validationSuites.commands)
+    const explicitFailureRoots = stringArrayForSummary(validationSuites.failureRoots)
+    const failureRoots = explicitFailureRoots.length > 0
+      ? explicitFailureRoots
+      : Array.isArray(validationSuites.commands)
       ? validationSuites.commands
         .map((command) => command?.failureRoot)
         .filter((failureRoot) => typeof failureRoot === "string" && failureRoot.length > 0)

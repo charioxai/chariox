@@ -57,6 +57,7 @@ test("validates optional generated evidence provenance", () => {
         validationSuites: {
           enabled: false,
           artifactIndexes: ["/tmp/artifacts.json"],
+          failureRoots: [],
           commands: [],
           outputRoots: [],
         },
@@ -71,6 +72,7 @@ test("validates optional generated evidence provenance", () => {
         validationSuites: {
           enabled: true,
           artifactIndexes: [],
+          failureRoots: [],
           commands: [],
           outputRoots: [],
         },
@@ -540,6 +542,10 @@ function generatedEvidence() {
       artifactIndexes: [
         "/tmp/suites/cloud/arroba-drill-artifacts.json",
         "/tmp/suites/oss/arroba-drill-artifacts.json",
+      ],
+      failureRoots: [
+        "/tmp/suites/cloud/failed-run",
+        "/tmp/suites/oss/failed-run",
       ],
       commands: [
         {

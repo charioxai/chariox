@@ -52,6 +52,9 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
     validationSuites: {
       enabled: options.runValidationSuites === true,
       artifactIndexes: [...validationSuiteArtifactIndexes].map((item) => path.resolve(item)).sort(),
+      failureRoots: options.runValidationSuites === true
+        ? distributedRuntimeValidationSuiteFailureRootsFor(options)
+        : [],
       commands: options.runValidationSuites === true
         ? distributedRuntimeValidationSuiteCommandsFor({
           cloudOutputDir: distributedRuntimeValidationSuiteOutputDirFor(options, "cloud"),
@@ -68,6 +71,19 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
         : [],
     },
   }
+}
+
+export function distributedRuntimeValidationSuiteFailureRootsFor(options) {
+  return distributedRuntimeValidationSuiteCommandsFor({
+    cloudOutputDir: distributedRuntimeValidationSuiteOutputDirFor(options, "cloud"),
+    cloudRoot: options.cloudRoot,
+    ossOutputDir: distributedRuntimeValidationSuiteOutputDirFor(options, "oss"),
+    ossRoot: options.ossRoot,
+  })
+    .map((command) => command.preserveFailureRoot)
+    .filter((failureRoot) => typeof failureRoot === "string" && failureRoot.length > 0)
+    .map((failureRoot) => path.resolve(failureRoot))
+    .sort()
 }
 
 export function distributedRuntimeGeneratedMatrixLimitationsFor(options) {

@@ -1441,6 +1441,11 @@ function validationGateReportGeneratedEvidence(report) {
     validationSuites: {
       enabled: validationSuites.enabled === true,
       artifactIndexes: stringArray(validationSuites.artifactIndexes),
+      failureRoots: stringArray(validationSuites.failureRoots).length > 0
+        ? stringArray(validationSuites.failureRoots)
+        : (Array.isArray(validationSuites.commands) ? validationSuites.commands : [])
+          .map((command) => command?.failureRoot)
+          .filter((failureRoot) => typeof failureRoot === "string" && failureRoot.length > 0),
       commands: (Array.isArray(validationSuites.commands) ? validationSuites.commands : []).map((command) => {
         const commandRecord = command && typeof command === "object" && !Array.isArray(command) ? command : {}
         return {
@@ -1498,6 +1503,7 @@ function validateGeneratedValidationSuitesSummary(validationSuites, source) {
     throw new Error(`${source} has invalid enabled`)
   }
   validateStringArray(validationSuites.artifactIndexes ?? [], `${source}.artifactIndexes`)
+  validateStringArray(validationSuites.failureRoots ?? [], `${source}.failureRoots`)
   if (!Array.isArray(validationSuites.commands)) {
     throw new Error(`${source}.commands is not an array`)
   }
@@ -1505,10 +1511,10 @@ function validateGeneratedValidationSuitesSummary(validationSuites, source) {
     validateGeneratedValidationSuiteCommandSummary(command, `${source}.commands[${index}]`)
   }
   validateStringArray(validationSuites.outputRoots ?? [], `${source}.outputRoots`)
-  if (validationSuites.enabled && ((validationSuites.artifactIndexes ?? []).length === 0 || validationSuites.commands.length === 0 || (validationSuites.outputRoots ?? []).length === 0)) {
+  if (validationSuites.enabled && ((validationSuites.artifactIndexes ?? []).length === 0 || (validationSuites.failureRoots ?? []).length === 0 || validationSuites.commands.length === 0 || (validationSuites.outputRoots ?? []).length === 0)) {
     throw new Error(`${source} enabled evidence is missing paths`)
   }
-  if (!validationSuites.enabled && ((validationSuites.artifactIndexes ?? []).length > 0 || validationSuites.commands.length > 0 || (validationSuites.outputRoots ?? []).length > 0)) {
+  if (!validationSuites.enabled && ((validationSuites.artifactIndexes ?? []).length > 0 || (validationSuites.failureRoots ?? []).length > 0 || validationSuites.commands.length > 0 || (validationSuites.outputRoots ?? []).length > 0)) {
     throw new Error(`${source} disabled evidence has paths`)
   }
 }

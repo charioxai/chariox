@@ -917,6 +917,10 @@ test("aggregates generated evidence provenance from gate reports", () => {
         "/tmp/suites/cloud/arroba-drill-artifacts.json",
         "/tmp/suites/oss/arroba-drill-artifacts.json",
       ],
+      failureRoots: [
+        "/tmp/suites/cloud/failed-run",
+        "/tmp/suites/oss/failed-run",
+      ],
       commands: [
         {
           artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
@@ -1122,6 +1126,10 @@ function generatedEvidenceFixture() {
       artifactIndexes: [
         "/tmp/suites/cloud/arroba-drill-artifacts.json",
         "/tmp/suites/oss/arroba-drill-artifacts.json",
+      ],
+      failureRoots: [
+        "/tmp/suites/cloud/failed-run",
+        "/tmp/suites/oss/failed-run",
       ],
       commands: [
         {

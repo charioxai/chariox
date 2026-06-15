@@ -173,6 +173,10 @@ test("builds distributed runtime generated evidence summary", () => {
       "/tmp/suites/cloud/arroba-drill-artifacts.json",
       "/tmp/suites/oss/arroba-drill-artifacts.json",
     ],
+    failureRoots: [
+      "/tmp/suites/cloud/failed-run",
+      "/tmp/suites/oss/failed-run",
+    ],
     commands: [
       {
         artifactIndexPath: path.join("/tmp/suites/oss", "arroba-drill-artifacts.json"),
@@ -219,6 +223,7 @@ test("builds empty generated evidence summary when generation is disabled", () =
       artifactIndexes: [],
       commands: [],
       enabled: false,
+      failureRoots: [],
       outputRoots: [],
     },
   })

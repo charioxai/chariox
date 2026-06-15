@@ -537,6 +537,7 @@ function generatedEvidence() {
     validationSuites: {
       enabled: true,
       artifactIndexes: ["/tmp/generated-validation-suite/arroba-drill-artifacts.json"],
+      failureRoots: ["/tmp/generated-validation-suite/failed-run"],
       commands: [{
         artifactIndexPath: "/tmp/generated-validation-suite/arroba-drill-artifacts.json",
         args: ["--run-json", "--preserve-failure-root", "/tmp/generated-validation-suite/failed-run"],
