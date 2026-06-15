@@ -47,6 +47,7 @@ export function diagnosticMetadataForValidationGateReport(report) {
   const generatedValidationSuiteFailureRoots = new Set(generatedValidationSuiteFailureRootsFor(report.generatedEvidence))
   const exitCriterionStatuses = new Set(Object.keys(report.checks?.artifacts?.aggregate?.exitCriterionStatuses ?? {}))
   const incompleteExitCriterionStatuses = new Set(Object.keys(report.checks?.artifacts?.aggregate?.incompleteExitCriterionStatuses ?? {}))
+  const providerAccountAliases = new Set(Object.keys(report.checks?.artifacts?.aggregate?.providerAccountAliases ?? {}))
   return {
     ...runtimeSignalMetadataForValidationGateReport(report),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
@@ -54,6 +55,7 @@ export function diagnosticMetadataForValidationGateReport(report) {
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
     ...(exitCriterionStatuses.size > 0 ? { exitCriterionStatuses: [...exitCriterionStatuses].sort().join(",") } : {}),
     ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
+    ...(providerAccountAliases.size > 0 ? { providerAccountAliases: [...providerAccountAliases].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
     ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),
@@ -166,6 +168,17 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.missingGeneratedValidationSuiteFailureRoots ?? {}),
     ...(aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
   ])
+  const providerAccountAliases = new Set([
+    ...Object.keys(aggregate.coverage?.artifactProviderAccountAliases ?? {}),
+  ])
+  const requiredProviderAccountAliases = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactProviderAccountAliases ?? {}),
+    ...(aggregate.requiredArtifactProviderAccountAliases ?? []).filter(nonEmptyString),
+  ])
+  const missingProviderAccountAliases = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactProviderAccountAliases ?? {}),
+    ...(aggregate.missingArtifactProviderAccountAliases ?? []).filter(nonEmptyString),
+  ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
@@ -173,6 +186,9 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
     ...(exitCriterionStatuses.size > 0 ? { exitCriterionStatuses: [...exitCriterionStatuses].sort().join(",") } : {}),
     ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
+    ...(providerAccountAliases.size > 0 ? { providerAccountAliases: [...providerAccountAliases].sort().join(",") } : {}),
+    ...(requiredProviderAccountAliases.size > 0 ? { requiredProviderAccountAliases: [...requiredProviderAccountAliases].sort().join(",") } : {}),
+    ...(missingProviderAccountAliases.size > 0 ? { missingProviderAccountAliases: [...missingProviderAccountAliases].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
     ...(generatedValidationSuiteFailureRoots.size > 0 ? { generatedValidationSuiteFailureRoots: [...generatedValidationSuiteFailureRoots].sort().join(",") } : {}),

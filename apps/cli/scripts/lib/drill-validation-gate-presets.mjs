@@ -4,7 +4,10 @@ import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
-import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
+import {
+  isKnownDrillProvider,
+  parseProviderAccountAlias,
+} from "./drill-provider-profiles.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   isKnownDrillRuntimeSignal,
@@ -216,6 +219,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
       requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
+      requiredArtifactProviderAccountAliases: [...(preset.requiredArtifactProviderAccountAliases ?? [])],
     requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
     requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
     requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
@@ -246,6 +250,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactGeneratedEvidenceKinds = [],
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactEvidenceRepos = [],
+  requiredArtifactProviderAccountAliases = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
@@ -272,6 +277,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
     requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
+    requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
     requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
     requiredArtifactOwners: [...requiredArtifactOwners],
@@ -299,6 +305,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactGeneratedEvidenceKinds.push(...(preset.requiredArtifactGeneratedEvidenceKinds ?? []))
     expanded.requiredArtifactGeneratedMatrixLimitations.push(...(preset.requiredArtifactGeneratedMatrixLimitations ?? []))
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
+    expanded.requiredArtifactProviderAccountAliases.push(...(preset.requiredArtifactProviderAccountAliases ?? []))
     expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
     expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
@@ -437,6 +444,20 @@ export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceR
     }
   }
   return repos
+}
+
+export function normalizeRequiredArtifactProviderAccountAliases(requiredArtifactProviderAccountAliases) {
+  const aliases = normalizeCommaSeparatedStrings(requiredArtifactProviderAccountAliases, {
+    fieldName: "requiredArtifactProviderAccountAliases",
+    itemName: "alias",
+  })
+  for (const alias of aliases) {
+    const { provider } = parseProviderAccountAlias(alias)
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`unknown required artifact provider account alias provider: ${provider}`)
+    }
+  }
+  return aliases
 }
 
 export function normalizeRequiredArtifactRuntimeSignals(requiredArtifactRuntimeSignals) {

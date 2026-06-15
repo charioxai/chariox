@@ -989,6 +989,7 @@ test("gates explicit artifact index paths by required diagnostic metadata", asyn
       metadata: {
         classifications: "validation-gate",
         owners: "validation-platform",
+        providerAccountAliases: "codex=work",
         runtimeSignals: "session-authority,workspace-live-sync-state",
         runtimeSignalOwners: "kernel-authority,runtime-state",
       },
@@ -999,12 +1000,14 @@ test("gates explicit artifact index paths by required diagnostic metadata", asyn
       artifactIndexes: [indexPath],
       requiredArtifactRuntimeSignals: ["session-authority"],
       requiredArtifactRuntimeSignalOwners: ["kernel-authority,runtime-state"],
+      requiredArtifactProviderAccountAliases: ["codex=work"],
       requiredArtifactOwners: ["validation-platform"],
       requiredArtifactClassifications: ["validation-gate"],
     })
     assert.equal(pass.status, "passed")
     assert.match(formatDrillValidationGateSummary(pass), /artifact_required_runtime_signals=session-authority missing=none/)
     assert.match(formatDrillValidationGateSummary(pass), /artifact_required_runtime_signal_owners=kernel-authority,runtime-state missing=none/)
+    assert.match(formatDrillValidationGateSummary(pass), /artifact_required_provider_account_aliases=codex=work missing=none/)
     assert.match(formatDrillValidationGateSummary(pass), /artifact_required_owners=validation-platform missing=none/)
     assert.match(formatDrillValidationGateSummary(pass), /artifact_required_classifications=validation-gate missing=none/)
 
@@ -1012,12 +1015,14 @@ test("gates explicit artifact index paths by required diagnostic metadata", asyn
       artifactIndexes: [indexPath],
       requiredArtifactRuntimeSignals: ["lease-health"],
       requiredArtifactRuntimeSignalOwners: ["worker-kernel"],
+      requiredArtifactProviderAccountAliases: ["opencode=zen"],
       requiredArtifactOwners: ["runtime-network"],
       requiredArtifactClassifications: ["cloud-validation-suite"],
     })
     assert.equal(fail.status, "failed")
     assert.deepEqual(fail.checks.artifacts.missingArtifactRuntimeSignals, ["lease-health"])
     assert.deepEqual(fail.checks.artifacts.missingArtifactRuntimeSignalOwners, ["worker-kernel"])
+    assert.deepEqual(fail.checks.artifacts.missingArtifactProviderAccountAliases, ["opencode=zen"])
     assert.deepEqual(fail.checks.artifacts.missingArtifactOwners, ["runtime-network"])
     assert.deepEqual(fail.checks.artifacts.missingArtifactClassifications, ["cloud-validation-suite"])
   } finally {
@@ -1241,6 +1246,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactGeneratedMatrixLimitations: {},
       requiredArtifactEvidenceRepos: {},
       missingArtifactEvidenceRepos: {},
+      requiredArtifactProviderAccountAliases: {},
+      missingArtifactProviderAccountAliases: {},
       requiredArtifactRuntimeSignals: {},
       missingArtifactRuntimeSignals: {},
       requiredArtifactRuntimeSignalOwners: {},
@@ -1266,6 +1273,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       artifactGeneratedMatrixLimitations: {},
       artifactGeneratedValidationSuiteFailureRoots: {},
       artifactEvidenceRepos: {},
+      artifactProviderAccountAliases: {},
       artifactCoverageInputSources: {},
       failureRuntimeSignals: {},
       failureRuntimeSignalOwners: {},
@@ -1318,8 +1326,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactGeneratedMatrixLimitations: [], missingArtifactGeneratedMatrixLimitations: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], requiredArtifactExitCriterionStatuses: [], missingArtifactExitCriterionStatuses: [], requiredArtifactIncompleteExitCriterionStatuses: [], missingArtifactIncompleteExitCriterionStatuses: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, exitCriterionStatuses: {}, incompleteExitCriterionStatuses: {}, artifactKinds: {}, generatedEvidenceKinds: {}, generatedMatrixLimitations: {}, generatedValidationSuiteFailureRoots: {}, evidenceRepos: {}, artifactCoverageInputSources: {} },
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactGeneratedMatrixLimitations: [], missingArtifactGeneratedMatrixLimitations: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], requiredArtifactExitCriterionStatuses: [], missingArtifactExitCriterionStatuses: [], requiredArtifactIncompleteExitCriterionStatuses: [], missingArtifactIncompleteExitCriterionStatuses: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, exitCriterionStatuses: {}, incompleteExitCriterionStatuses: {}, artifactKinds: {}, generatedEvidenceKinds: {}, generatedMatrixLimitations: {}, generatedValidationSuiteFailureRoots: {}, evidenceRepos: {}, artifactCoverageInputSources: {} },
+      emptyArtifactCoverageSummary(),
+      emptyArtifactCoverageSummary(),
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, staleFailureManifests: [] },
@@ -1488,6 +1496,9 @@ function platformValidationPresetSummaries() {
     requiredArtifactSchemas: preset.requiredArtifactSchemas,
     requiredArtifactKinds: preset.requiredArtifactKinds,
     requiredArtifactEvidenceRepos: preset.requiredArtifactEvidenceRepos,
+    ...(preset.requiredArtifactProviderAccountAliases
+      ? { requiredArtifactProviderAccountAliases: preset.requiredArtifactProviderAccountAliases }
+      : {}),
     requiredArtifactExitCriterionStatuses: preset.requiredArtifactExitCriterionStatuses,
     requiredArtifactIncompleteExitCriterionStatuses: preset.requiredArtifactIncompleteExitCriterionStatuses,
     requiredMatrices: preset.requiredMatrices,
@@ -1498,6 +1509,52 @@ function platformValidationPresetSummaries() {
     requiredProviders: preset.requiredProviders,
     requiredScenarios: preset.requiredScenarios,
   }))
+}
+
+function emptyArtifactCoverageSummary() {
+  return {
+    requiredArtifactCoverageAreas: [],
+    missingArtifactCoverageAreas: [],
+    requiredArtifactSchemas: [],
+    missingArtifactSchemas: [],
+    requiredArtifactKinds: [],
+    missingArtifactKinds: [],
+    requiredArtifactGeneratedEvidenceKinds: [],
+    missingArtifactGeneratedEvidenceKinds: [],
+    requiredArtifactGeneratedMatrixLimitations: [],
+    missingArtifactGeneratedMatrixLimitations: [],
+    requiredArtifactEvidenceRepos: [],
+    missingArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
+    missingArtifactProviderAccountAliases: [],
+    requiredArtifactRuntimeSignals: [],
+    missingArtifactRuntimeSignals: [],
+    requiredArtifactRuntimeSignalOwners: [],
+    missingArtifactRuntimeSignalOwners: [],
+    requiredArtifactOwners: [],
+    missingArtifactOwners: [],
+    requiredArtifactClassifications: [],
+    missingArtifactClassifications: [],
+    requiredArtifactExitCriterionStatuses: [],
+    missingArtifactExitCriterionStatuses: [],
+    requiredArtifactIncompleteExitCriterionStatuses: [],
+    missingArtifactIncompleteExitCriterionStatuses: [],
+    schemas: {},
+    coverageAreas: {},
+    runtimeSignals: {},
+    runtimeSignalOwners: {},
+    owners: {},
+    classifications: {},
+    exitCriterionStatuses: {},
+    incompleteExitCriterionStatuses: {},
+    artifactKinds: {},
+    generatedEvidenceKinds: {},
+    generatedMatrixLimitations: {},
+    generatedValidationSuiteFailureRoots: {},
+    evidenceRepos: {},
+    providerAccountAliases: {},
+    artifactCoverageInputSources: {},
+  }
 }
 
 function scenario(id, status, overrides = {}) {

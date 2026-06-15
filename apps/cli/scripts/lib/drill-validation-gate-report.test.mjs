@@ -362,6 +362,39 @@ test("rejects unknown artifact evidence repo labels in report checks", () => {
   )
 })
 
+test("rejects unknown artifact provider account alias labels in report checks", () => {
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactProviderAccountAliases: ["cdoex=work"],
+          missingArtifactProviderAccountAliases: [],
+        },
+      },
+    })),
+    /checks\.artifacts\.requiredArtifactProviderAccountAliases\[0\] has unknown provider account alias provider "cdoex"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactProviderAccountAliases: [],
+          missingArtifactProviderAccountAliases: ["codex=sk-secretsecretsecretsecret"],
+        },
+      },
+    })),
+    /provider account alias must be a non-secret label/,
+  )
+})
+
 test("rejects unknown generated evidence kind labels in report checks", () => {
   assert.throws(
     () => validateDrillValidationGateReport(report({

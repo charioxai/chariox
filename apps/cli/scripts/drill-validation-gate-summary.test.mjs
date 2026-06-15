@@ -101,6 +101,7 @@ test("drill validation gate summary help lists artifact coverage requirements", 
   assert.match(stdout, /--require-artifact-runtime-signal-owner OWNER/)
   assert.match(stdout, /--require-artifact-owner OWNER/)
   assert.match(stdout, /--require-artifact-classification CLASSIFICATION/)
+  assert.match(stdout, /--require-artifact-provider-account-alias P=A/)
   assert.match(stdout, /--require-generated-matrix-limitation KIND/)
   assert.match(stdout, /--require-generated-validation-suite-failure-root PATH/)
 })

@@ -8,7 +8,10 @@ import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
-import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
+import {
+  isKnownDrillProvider,
+  parseProviderAccountAlias,
+} from "./drill-provider-profiles.mjs"
 import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -129,6 +132,8 @@ function validateArtifactIndexCheck(check, source) {
   validateGeneratedMatrixLimitationArray(check.missingArtifactGeneratedMatrixLimitations ?? [], `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
+  validateProviderAccountAliasArray(check.requiredArtifactProviderAccountAliases ?? [], `${source}.requiredArtifactProviderAccountAliases`)
+  validateProviderAccountAliasArray(check.missingArtifactProviderAccountAliases ?? [], `${source}.missingArtifactProviderAccountAliases`)
   validateRuntimeSignalArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
   validateRuntimeSignalArray(check.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateRuntimeSignalOwnerArray(check.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -562,6 +567,16 @@ function validateProviderArray(value, source) {
   for (const [index, provider] of value.entries()) {
     if (!isKnownDrillProvider(provider)) {
       throw new Error(`${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+}
+
+function validateProviderAccountAliasArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, alias] of value.entries()) {
+    const { provider } = parseProviderAccountAlias(alias)
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`${source}[${index}] has unknown provider account alias provider ${JSON.stringify(provider)}`)
     }
   }
 }

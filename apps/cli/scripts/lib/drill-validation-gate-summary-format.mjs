@@ -73,6 +73,11 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactEvidenceRepos.length > 0) {
     lines.push(`artifact_required_evidence_repos=${requiredArtifactEvidenceRepos.join(",")} missing=${missingArtifactEvidenceRepos.join(",") || "none"}`)
   }
+  const requiredArtifactProviderAccountAliases = artifacts.requiredArtifactProviderAccountAliases ?? []
+  const missingArtifactProviderAccountAliases = artifacts.missingArtifactProviderAccountAliases ?? []
+  if (requiredArtifactProviderAccountAliases.length > 0) {
+    lines.push(`artifact_required_provider_account_aliases=${requiredArtifactProviderAccountAliases.join(",")} missing=${missingArtifactProviderAccountAliases.join(",") || "none"}`)
+  }
   const requiredArtifactRuntimeSignals = artifacts.requiredArtifactRuntimeSignals ?? []
   const missingArtifactRuntimeSignals = artifacts.missingArtifactRuntimeSignals ?? []
   if (requiredArtifactRuntimeSignals.length > 0) {

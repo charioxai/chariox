@@ -32,6 +32,8 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactGeneratedMatrixLimitations: [],
     requiredArtifactEvidenceRepos: [],
     missingArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
+    missingArtifactProviderAccountAliases: [],
     requiredArtifactRuntimeSignals: [],
     missingArtifactRuntimeSignals: [],
     requiredArtifactRuntimeSignalOwners: [],

@@ -10,6 +10,7 @@ import {
   normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactClassifications,
   normalizeRequiredArtifactEvidenceRepos,
+  normalizeRequiredArtifactProviderAccountAliases,
   normalizeRequiredArtifactExitCriterionStatuses,
   normalizeRequiredArtifactIncompleteExitCriterionStatuses,
   normalizeRequiredArtifactKinds,
@@ -60,6 +61,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedEvidenceKinds: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: ["cloud", "oss"],
+      requiredArtifactProviderAccountAliases: [],
       requiredArtifactRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredArtifactRuntimeSignalOwners: ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
       requiredArtifactOwners: ["validation-platform"],
@@ -91,6 +93,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedEvidenceKinds: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactProviderAccountAliases: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -124,6 +127,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedEvidenceKinds: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactProviderAccountAliases: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -155,6 +159,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedEvidenceKinds: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactProviderAccountAliases: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -186,6 +191,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedEvidenceKinds: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactProviderAccountAliases: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -228,6 +234,7 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactGeneratedEvidenceKinds: [],
     requiredArtifactGeneratedMatrixLimitations: [],
     requiredArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
     requiredArtifactRuntimeSignals: [],
     requiredArtifactRuntimeSignalOwners: [],
     requiredArtifactOwners: [],
@@ -281,6 +288,7 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactSchemas: [],
     requiredArtifactKinds: [],
     requiredArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: [],
     requiredMatrices: [],
@@ -297,6 +305,7 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactSchemas: [],
     requiredArtifactKinds: [],
     requiredArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: [],
     requiredMatrices: [],
@@ -313,6 +322,24 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactSchemas: [],
     requiredArtifactKinds: [],
     requiredArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
+    requiredRuntimeSignals: [],
+    requiredFailureClassifications: [],
+    requiredMatrices: [],
+    requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    requiredDeploymentPresets: [],
+    requiredProviders: [],
+    requiredScenarios: [],
+  }).requiredArtifactProviderAccountAliases, [])
+  assert.deepEqual(expandValidationGatePresetRequirements({
+    presets: ["distributed-runtime"],
+    requiredPlatformCoverageAreas: [],
+    requiredArtifactCoverageAreas: [],
+    requiredArtifactSchemas: [],
+    requiredArtifactKinds: [],
+    requiredArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
     requiredArtifactExitCriterionStatuses: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: [],
@@ -358,6 +385,10 @@ test("normalizes validation gate requirements", () => {
   assert.deepEqual(normalizeRequiredArtifactEvidenceRepos(["oss,cloud", "cloud"]), [
     "cloud",
     "oss",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactProviderAccountAliases(["codex=work,opencode=zen", "codex=work"]), [
+    "codex=work",
+    "opencode=zen",
   ])
   assert.deepEqual(normalizeRequiredArtifactExitCriterionStatuses(["satisfied,failed", "satisfied"]), [
     "failed",
@@ -437,6 +468,14 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredArtifactEvidenceRepos(["cluod"]),
     /unknown required artifact evidence repo: cluod/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactProviderAccountAliases(["cdoex=work"]),
+    /unknown required artifact provider account alias provider: cdoex/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactProviderAccountAliases(["codex=sk-secretsecretsecretsecret"]),
+    /provider account alias must be a non-secret label/,
   )
   assert.throws(
     () => normalizeRequiredMatrixClassifications(["not-a-classification"]),

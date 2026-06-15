@@ -18,6 +18,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
       requiredArtifactKinds: ["validation-suite-run"],
       requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredArtifactEvidenceRepos: ["oss"],
+      requiredArtifactProviderAccountAliases: ["codex=work"],
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -72,6 +73,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactEvidenceRepos, {
     oss: 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactProviderAccountAliases, {
+    "codex=work": 1,
+  })
   assert.deepEqual(aggregate.coverage.artifactCoverageInputSources, {
     "artifact metadata inputs": 1,
   })
@@ -101,10 +105,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.missingArtifactSchemas, [])
   assert.deepEqual(aggregate.missingArtifactKinds, [])
   assert.deepEqual(aggregate.missingArtifactEvidenceRepos, [])
+  assert.deepEqual(aggregate.missingArtifactProviderAccountAliases, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactKinds, ["validation-suite-run"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactEvidenceRepos, ["oss"])
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactProviderAccountAliases, ["codex=work"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeSignals, {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
@@ -133,6 +139,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.evidenceRepos, {
     oss: 1,
+  })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.providerAccountAliases, {
+    "codex=work": 1,
   })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.artifactCoverageInputSources, {
     "artifact metadata inputs": 1,
@@ -296,6 +305,41 @@ test("rejects unknown artifact evidence repo labels in aggregate reports", () =>
       }],
     }),
     /reports\[0\]\.artifactCoverage\.evidenceRepos has unknown evidence repo "cluod"/,
+  )
+})
+
+test("rejects unknown artifact provider account alias labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredArtifactProviderAccountAliases: ["cdoex=work"],
+    }),
+    /requiredArtifactProviderAccountAliases\[0\] has unknown provider account alias provider "cdoex"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        artifactProviderAccountAliases: { "codex=sk-secretsecretsecretsecret": 1 },
+      },
+    }),
+    /provider account alias must be a non-secret label/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          providerAccountAliases: { "cdoex=work": 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.providerAccountAliases has unknown provider account alias provider "cdoex"/,
   )
 })
 
@@ -1219,6 +1263,8 @@ function reportFixture(overrides = {}) {
         missingArtifactGeneratedMatrixLimitations: [],
         requiredArtifactEvidenceRepos: ["oss"],
         missingArtifactEvidenceRepos: [],
+        requiredArtifactProviderAccountAliases: ["codex=work"],
+        missingArtifactProviderAccountAliases: [],
         aggregate: {
           schemas: {
             "arroba.drill.validation_suite_run.v1": 1,
@@ -1254,6 +1300,9 @@ function reportFixture(overrides = {}) {
           },
           evidenceRepos: {
             oss: 1,
+          },
+          providerAccountAliases: {
+            "codex=work": 1,
           },
           artifactCoverageInputSources: {
             "artifact metadata inputs": 1,
