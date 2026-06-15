@@ -64,6 +64,7 @@ function printHelp() {
   "  --require-artifact-exit-criterion-status STATUS[,STATUS]",
   "  --require-artifact-incomplete-exit-criterion-status STATUS[,STATUS]",
   "  --require-artifact-max-age-ms MS",
+    "  --require-failure-max-age-ms MS",
     "  --require-runtime-signal ID[,ID]",
     "  --require-failure-classification KIND[,KIND]",
     "  --require-matrix NAME[,NAME]",
@@ -134,6 +135,7 @@ function parseArgs(argv) {
     platformBundleDir: null,
     requireComplete: false,
     requiredArtifactMaxAgeMs: null,
+    requiredFailureMaxAgeMs: null,
     requiredMatrixMaxAgeMs: null,
     ...validationGateRequirementOptionDefaults({ presetKey: "presets" }),
   }
@@ -203,6 +205,14 @@ function parseArgs(argv) {
         options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(
           arg.slice("--require-artifact-max-age-ms=".length),
           "--require-artifact-max-age-ms",
+        )
+      } else if (arg === "--require-failure-max-age-ms") {
+        options.requiredFailureMaxAgeMs = parseDrillNonNegativeInteger(readValue(argv, index, arg), "--require-failure-max-age-ms")
+        index += 1
+      } else if (arg.startsWith("--require-failure-max-age-ms=")) {
+        options.requiredFailureMaxAgeMs = parseDrillNonNegativeInteger(
+          arg.slice("--require-failure-max-age-ms=".length),
+          "--require-failure-max-age-ms",
         )
       } else if (arg === "--require-matrix-max-age-ms") {
         options.requiredMatrixMaxAgeMs = parseDrillNonNegativeInteger(readValue(argv, index, arg), "--require-matrix-max-age-ms")
@@ -293,6 +303,7 @@ function gateOptionsFor(options) {
     requiredArtifactExitCriterionStatuses: options.requiredArtifactExitCriterionStatuses,
     requiredArtifactIncompleteExitCriterionStatuses: options.requiredArtifactIncompleteExitCriterionStatuses,
     requiredArtifactMaxAgeMs: options.requiredArtifactMaxAgeMs,
+    requiredFailureMaxAgeMs: options.requiredFailureMaxAgeMs,
     requiredRuntimeSignals: options.requiredRuntimeSignals,
     requiredFailureClassifications: options.requiredFailureClassifications,
     requiredMatrices: options.requiredMatrices,

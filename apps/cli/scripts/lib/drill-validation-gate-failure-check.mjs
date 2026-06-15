@@ -5,13 +5,18 @@ import {
   summarizeDrillFailureManifests,
 } from "./drill-failure-manifest.mjs"
 
-export async function failureValidationGateCheck({ failureInputs, failureRoots }, { maxDepth }) {
+export async function failureValidationGateCheck({ failureInputs, failureRoots }, {
+  maxDepth,
+  requiredFailureMaxAgeMs = null,
+}) {
   if (failureRoots.length === 0 && failureInputs.length === 0) {
     return {
       status: "skipped",
       roots: [],
       inputs: [],
       manifestPaths: [],
+      requiredFailureMaxAgeMs,
+      staleFailureManifests: [],
     }
   }
   try {
@@ -21,12 +26,17 @@ export async function failureValidationGateCheck({ failureInputs, failureRoots }
     const inputManifestPaths = await Promise.all(failureInputs.map((input) => resolveFailureManifestPath(input)))
     const manifestPaths = [...new Set([...inputManifestPaths, ...discovered])].sort()
     const manifests = await Promise.all(manifestPaths.map((manifestPath) => readDrillFailureManifest(manifestPath)))
-    const aggregate = summarizeDrillFailureManifests(manifests, { sources: manifestPaths })
+    const aggregate = summarizeDrillFailureManifests(manifests, {
+      sources: manifestPaths,
+      requiredFailureMaxAgeMs,
+    })
     return {
       status: aggregate.total === 0 ? "passed" : "failed",
       roots: [...failureRoots],
       inputs: [...failureInputs],
       manifestPaths,
+      requiredFailureMaxAgeMs,
+      staleFailureManifests: aggregate.staleFailureManifests ?? [],
       aggregate,
     }
   } catch (error) {
@@ -35,6 +45,8 @@ export async function failureValidationGateCheck({ failureInputs, failureRoots }
       roots: [...failureRoots],
       inputs: [...failureInputs],
       manifestPaths: [],
+      requiredFailureMaxAgeMs,
+      staleFailureManifests: [],
       error: error instanceof Error ? error.message : String(error),
     }
   }

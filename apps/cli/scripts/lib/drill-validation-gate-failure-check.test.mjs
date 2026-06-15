@@ -17,6 +17,8 @@ test("skips failure validation when no roots or inputs are configured", async ()
     roots: [],
     inputs: [],
     manifestPaths: [],
+    requiredFailureMaxAgeMs: null,
+    staleFailureManifests: [],
   })
 })
 
@@ -107,15 +109,52 @@ test("fails with diagnostic error when a failure manifest is malformed", async (
   }
 })
 
+test("gates preserved failure manifests by required freshness", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-failures-"))
+  try {
+    const manifestPath = path.join(rootDir, "arroba-drill-failure.json")
+    const failedAt = new Date(Date.now() - 500).toISOString()
+    await writeFailureManifest(manifestPath, {
+      drill: "stale-failure",
+      failedAt,
+    })
+
+    const fresh = await failureValidationGateCheck({
+      failureInputs: [manifestPath],
+      failureRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredFailureMaxAgeMs: 3_600_000,
+    })
+    assert.equal(fresh.requiredFailureMaxAgeMs, 3_600_000)
+    assert.deepEqual(fresh.staleFailureManifests, [])
+
+    const stale = await failureValidationGateCheck({
+      failureInputs: [manifestPath],
+      failureRoots: [],
+    }, {
+      maxDepth: 8,
+      requiredFailureMaxAgeMs: 100,
+    })
+    assert.equal(stale.status, "failed")
+    assert.equal(stale.staleFailureManifests.length, 1)
+    assert.equal(stale.staleFailureManifests[0].source, manifestPath)
+    assert.equal(stale.staleFailureManifests[0].drill, "stale-failure")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 async function writeFailureManifest(file, {
   drill = "failed-drill",
+  failedAt = "2026-06-13T00:00:00.000Z",
   message = "Token refresh failed: 401",
 } = {}) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
     schema: "arroba.drill.failure.v1",
     rootDir: path.dirname(file),
-    failedAt: "2026-06-13T00:00:00.000Z",
+    failedAt,
     metadata: { drill },
     error: { name: "Error", message, stack: null },
   }, null, 2)}\n`, "utf8")

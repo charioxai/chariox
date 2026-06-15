@@ -648,6 +648,14 @@ test("distributed runtime gate rejects requirement flags without values", async 
       return true
     },
   )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-failure-max-age-ms", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-failure-max-age-ms requires a value/)
+      return true
+    },
+  )
 })
 
 test("distributed runtime gate rejects aggregate-only generated evidence requirements", async () => {

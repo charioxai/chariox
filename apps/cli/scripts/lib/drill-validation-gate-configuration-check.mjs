@@ -20,6 +20,7 @@ export function configurationValidationGateCheck({
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredArtifactMaxAgeMs = null,
+  requiredFailureMaxAgeMs = null,
   requiredRuntimeSignals = [],
   requiredFailureClassifications = [],
   requiredMatrices = [],
@@ -49,6 +50,7 @@ export function configurationValidationGateCheck({
     || requiredArtifactExitCriterionStatuses.length > 0
     || requiredArtifactIncompleteExitCriterionStatuses.length > 0
     || requiredArtifactMaxAgeMs !== null
+    || requiredFailureMaxAgeMs !== null
     || requiredRuntimeSignals.length > 0
     || requiredFailureClassifications.length > 0
     || failureRoots.length > 0

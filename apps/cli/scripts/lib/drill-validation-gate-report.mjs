@@ -254,6 +254,14 @@ function validateFailureCheck(check, source) {
   validateStringArray(check.roots, `${source}.roots`)
   validateStringArray(check.inputs, `${source}.inputs`)
   validateStringArray(check.manifestPaths, `${source}.manifestPaths`)
+  if (check.requiredFailureMaxAgeMs !== undefined
+    && check.requiredFailureMaxAgeMs !== null
+    && (!Number.isSafeInteger(check.requiredFailureMaxAgeMs) || check.requiredFailureMaxAgeMs < 0)) {
+    throw new Error(`${source} has invalid requiredFailureMaxAgeMs`)
+  }
+  if (check.staleFailureManifests !== undefined) {
+    validateStaleFailureManifests(check.staleFailureManifests, `${source}.staleFailureManifests`)
+  }
   if (check.status === "failed" && !check.aggregate && !nonEmptyString(check.error)) {
     throw new Error(`${source} is missing error`)
   }
@@ -263,6 +271,32 @@ function validateFailureCheck(check, source) {
     } catch (error) {
       const message = String(error.message ?? error).replace(/^aggregate\s+/, "")
       throw new Error(`${source}.aggregate ${message}`)
+    }
+  }
+}
+
+function validateStaleFailureManifests(staleFailures, source) {
+  if (!Array.isArray(staleFailures)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, staleFailure] of staleFailures.entries()) {
+    const entrySource = `${source}[${index}]`
+    if (!staleFailure || typeof staleFailure !== "object" || Array.isArray(staleFailure)) {
+      throw new Error(`${entrySource} is not an object`)
+    }
+    if (staleFailure.source !== null && staleFailure.source !== undefined && !nonEmptyString(staleFailure.source)) {
+      throw new Error(`${entrySource} has invalid source`)
+    }
+    for (const key of ["rootDir", "drill", "failedAt"]) {
+      if (!nonEmptyString(staleFailure[key])) {
+        throw new Error(`${entrySource} is missing ${key}`)
+      }
+    }
+    if (!Number.isSafeInteger(staleFailure.ageMs) || staleFailure.ageMs < 0) {
+      throw new Error(`${entrySource} has invalid ageMs`)
+    }
+    if (!Number.isSafeInteger(staleFailure.maxAgeMs) || staleFailure.maxAgeMs < 0) {
+      throw new Error(`${entrySource} has invalid maxAgeMs`)
     }
   }
 }

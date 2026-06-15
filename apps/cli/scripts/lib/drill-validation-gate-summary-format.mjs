@@ -229,6 +229,12 @@ export function formatDrillValidationGateSummary(report) {
   if (failures.error) lines.push(`failure_error=${failures.error}`)
   if (failures.aggregate) {
     lines.push(`failure_total=${failures.aggregate.total}`)
+    if (failures.requiredFailureMaxAgeMs !== undefined && failures.requiredFailureMaxAgeMs !== null) {
+      lines.push(`failure_required_max_age_ms=${failures.requiredFailureMaxAgeMs} stale_manifests=${(failures.staleFailureManifests ?? []).length}`)
+      for (const staleFailure of failures.staleFailureManifests ?? []) {
+        lines.push(`- stale_failure_manifest=${staleFailure.source ?? "unknown"} drill=${staleFailure.drill} failed_at=${staleFailure.failedAt} age_ms=${staleFailure.ageMs} max_age_ms=${staleFailure.maxAgeMs}`)
+      }
+    }
     const runtimeSignals = Object.entries(failures.aggregate.runtimeSignals ?? {})
     if (runtimeSignals.length > 0) {
       lines.push(`failure_runtime_signals=${runtimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)

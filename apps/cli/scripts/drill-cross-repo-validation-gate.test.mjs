@@ -473,6 +473,14 @@ test("cross repo validation gate requires artifact generated matrix limitation m
 
 test("cross repo validation gate rejects aggregate-only generated evidence requirements", async () => {
   await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-failure-max-age-ms", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-failure-max-age-ms requires a value/)
+      return true
+    },
+  )
+  await assert.rejects(
     execFile(process.execPath, [scriptPath, "--require-generated-evidence-kind", "matrix-report", "--json"]),
     (error) => {
       assert.equal(error.code, 1)

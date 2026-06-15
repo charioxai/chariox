@@ -65,6 +65,8 @@ function printHelp() {
     "                         Fail when artifact index metadata lacks each incomplete exit criterion status; repeatable",
     "  --require-artifact-max-age-ms MS",
     "                         Fail when artifact indexes are older than this many milliseconds",
+    "  --require-failure-max-age-ms MS",
+    "                         Fail when failure manifests are older than this many milliseconds",
     "  --require-runtime-signal ID[,ID]",
     "                         Fail when platform bundle lacks each distributed runtime signal; repeatable",
     "  --require-failure-classification KIND[,KIND]",
@@ -143,6 +145,7 @@ function parseArgs(argv) {
     platformBundleDir: null,
     requireComplete: false,
     requiredArtifactMaxAgeMs: null,
+    requiredFailureMaxAgeMs: null,
     requiredMatrixMaxAgeMs: null,
     ...validationGateRequirementOptionDefaults({ presetKey: "presets" }),
   }
@@ -223,6 +226,16 @@ function parseArgs(argv) {
         options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(
           arg.slice("--require-artifact-max-age-ms=".length),
           "--require-artifact-max-age-ms",
+        )
+      } else if (arg === "--require-failure-max-age-ms") {
+        const value = argv[index + 1]
+        if (!value || value.startsWith("--")) throw new Error("--require-failure-max-age-ms requires a value")
+        options.requiredFailureMaxAgeMs = parseDrillNonNegativeInteger(value, "--require-failure-max-age-ms")
+        index += 1
+      } else if (arg.startsWith("--require-failure-max-age-ms=")) {
+        options.requiredFailureMaxAgeMs = parseDrillNonNegativeInteger(
+          arg.slice("--require-failure-max-age-ms=".length),
+          "--require-failure-max-age-ms",
         )
       } else if (arg === "--require-matrix-max-age-ms") {
         const value = argv[index + 1]

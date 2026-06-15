@@ -201,6 +201,14 @@ export function validationGateNextActions(checks) {
     for (const action of checks.failures.aggregate?.nextActions ?? []) {
       countDrillAggregateNextAction(counts, action)
     }
+    if ((checks.failures.staleFailureManifests ?? []).length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "failure-artifacts",
+        nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
+        count: checks.failures.staleFailureManifests.length,
+      })
+    }
   }
   return formatDrillAggregateNextActionCounts(counts)
 }

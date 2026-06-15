@@ -828,6 +828,38 @@ test("fails with explicit failure manifest paths", async () => {
   }
 })
 
+test("reports stale preserved failure manifests", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const manifestPath = path.join(rootDir, "arroba-drill-failure.json")
+    await writeFailureManifest(manifestPath, {
+      drill: "stale-failure",
+      failedAt: new Date(Date.now() - 500).toISOString(),
+    })
+
+    const report = await runDrillValidationGate({
+      failureInputs: [manifestPath],
+      requiredFailureMaxAgeMs: 100,
+    })
+    const summary = formatDrillValidationGateSummary(report)
+
+    assert.equal(report.status, "failed")
+    assert.equal(report.checks.failures.requiredFailureMaxAgeMs, 100)
+    assert.equal(report.checks.failures.staleFailureManifests.length, 1)
+    assert.equal(report.checks.failures.staleFailureManifests[0].source, manifestPath)
+    assert.match(summary, /failure_required_max_age_ms=100 stale_manifests=1/)
+    assert.match(summary, /stale_failure_manifest=.*arroba-drill-failure\.json drill=stale-failure/)
+    assert.deepEqual(
+      report.nextActions
+        .filter(({ owner, classification }) => owner === "validation-harness" && classification === "failure-artifacts")
+        .map(({ count }) => count),
+      [1],
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("passes with explicit artifact index paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -1400,13 +1432,16 @@ async function writeMatrixReport(file, report) {
   await writeFile(file, `${JSON.stringify(report, null, 2)}\n`, "utf8")
 }
 
-async function writeFailureManifest(file) {
+async function writeFailureManifest(file, {
+  drill = "failed-drill",
+  failedAt = "2026-06-13T00:00:00.000Z",
+} = {}) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
     schema: "arroba.drill.failure.v1",
     rootDir: path.dirname(file),
-    failedAt: "2026-06-13T00:00:00.000Z",
-    metadata: { drill: "failed-drill" },
+    failedAt,
+    metadata: { drill },
     error: { name: "Error", message: "Token refresh failed: 401", stack: null },
   }, null, 2)}\n`, "utf8")
 }

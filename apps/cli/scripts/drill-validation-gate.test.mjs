@@ -11,6 +11,7 @@ import {
   verifyDrillArtifactIndex,
   writeDrillArtifactIndex,
 } from "./lib/drill-artifacts.mjs"
+import { formatDrillValidationGateSummary } from "./lib/drill-validation-gate.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 import { workspaceLiveSyncRequiredScenarioDescriptors } from "./lib/workspace-live-sync-fixtures.mjs"
 
@@ -94,6 +95,38 @@ test("drill validation gate rejects output artifact index without output", async
       return true
     },
   )
+})
+
+test("drill validation gate forwards failure freshness requirement", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  try {
+    const manifestPath = path.join(rootDir, "arroba-drill-failure.json")
+    await writeFailureManifest(manifestPath, {
+      drill: "cli-stale-failure",
+      failedAt: new Date(Date.now() - 500).toISOString(),
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--failure-manifest",
+        manifestPath,
+        "--require-failure-max-age-ms",
+        "100",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const report = JSON.parse(error.stdout)
+        assert.equal(report.checks.failures.requiredFailureMaxAgeMs, 100)
+        assert.equal(report.checks.failures.staleFailureManifests.length, 1)
+        assert.match(formatDrillValidationGateSummary(report), /failure_required_max_age_ms=100 stale_manifests=1/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
 })
 
 test("drill validation gate lists presets", async () => {
