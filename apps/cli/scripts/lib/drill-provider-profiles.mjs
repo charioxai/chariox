@@ -72,14 +72,14 @@ export function providerProfileMetadata({ providers, defaultModel, providerModel
   const providerSet = new Set(normalizedProviders)
   const accountProviders = Object.keys(providerAccounts).sort()
   for (const provider of accountProviders) {
-    validateKnownDrillProvider(provider, "provider account alias provider")
+    validateDrillProvider(provider, "provider account alias provider")
     if (!providerSet.has(provider)) {
       throw new Error(`provider account alias references unselected provider: ${provider}`)
     }
     validateProviderAccountAlias(providerAccounts[provider])
   }
   for (const provider of Object.keys(providerModels)) {
-    validateKnownDrillProvider(provider, "provider model override provider")
+    validateDrillProvider(provider, "provider model override provider")
     if (!providerSet.has(provider)) {
       throw new Error(`provider model override references unselected provider: ${provider}`)
     }
@@ -98,13 +98,16 @@ export function validateDrillProviders(providers, source) {
     throw new Error(`${source} has invalid providers`)
   }
   for (const [index, provider] of providers.entries()) {
-    validateKnownDrillProvider(provider, `${source}[${index}]`)
+    validateDrillProvider(provider, `${source}[${index}]`)
   }
 }
 
-function validateKnownDrillProvider(provider, source) {
+export function validateDrillProvider(provider, source, { label = "provider", message } = {}) {
   if (!isKnownDrillProvider(provider)) {
-    throw new Error(`${source} has unknown provider ${JSON.stringify(provider)}`)
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(provider) : message)
+    }
+    throw new Error(`${source} has unknown ${label} ${JSON.stringify(provider)}`)
   }
 }
 

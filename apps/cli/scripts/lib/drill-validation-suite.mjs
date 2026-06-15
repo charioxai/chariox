@@ -18,8 +18,8 @@ import {
 import { validateDrillGeneratedMatrixName } from "./drill-generated-matrix-metadata.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
-  isKnownDrillProvider,
   parseProviderAccountAlias,
+  validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
@@ -485,9 +485,7 @@ function sortedDeploymentPresetArray(value, source) {
 function sortedProviderArray(value, source) {
   const providers = sortedStringArray(value, source)
   for (const [index, provider] of providers.entries()) {
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, `validation suite preset ${source}[${index}]`)
   }
   return providers
 }
@@ -496,9 +494,7 @@ function sortedProviderAccountAliasArray(value, source) {
   const aliases = sortedStringArray(value, source)
   for (const [index, entry] of aliases.entries()) {
     const { provider } = parseProviderAccountAlias(entry)
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, `validation suite preset ${source}[${index}]`)
   }
   return aliases
 }

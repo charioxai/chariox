@@ -21,8 +21,8 @@ import {
 } from "./drill-secrets.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import {
-  isKnownDrillProvider,
   parseProviderAccountAlias,
+  validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import { isKnownDrillArtifactValidationPreset } from "./drill-validation-gate-presets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
@@ -1127,9 +1127,9 @@ function validateDrillArtifactIndexProviderAccountAliasMetadata(metadata, source
 
 function validateProviderAccountAliasEntry(accountAlias, source) {
   const { provider } = parseProviderAccountAlias(accountAlias)
-  if (!isKnownDrillProvider(provider)) {
-    throw new Error(`${source} has unknown provider account alias provider ${JSON.stringify(provider)}`)
-  }
+  validateDrillProvider(provider, source, {
+    label: "provider account alias provider",
+  })
 }
 
 function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {

@@ -22,7 +22,7 @@ import {
 } from "./lib/drill-validation-gate-args.mjs"
 import {
   applyProviderAccountAlias,
-  isKnownDrillProvider,
+  validateDrillProvider,
 } from "./lib/drill-provider-profiles.mjs"
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import {
@@ -410,9 +410,15 @@ function applyProviderAccountAliasRequirement(providerAccounts, value, flag) {
     const before = { ...providerAccounts }
     applyProviderAccountAlias(providerAccounts, value)
     const provider = Object.keys(providerAccounts).find((key) => before[key] !== providerAccounts[key])
-    if (provider && !isKnownDrillProvider(provider)) {
-      delete providerAccounts[provider]
-      throw new Error(`unknown provider account alias provider: ${provider}`)
+    if (provider) {
+      try {
+        validateDrillProvider(provider, "provider account alias provider", {
+          message: () => `unknown provider account alias provider: ${provider}`,
+        })
+      } catch (error) {
+        delete providerAccounts[provider]
+        throw error
+      }
     }
     if (provider && !DISTRIBUTED_RUNTIME_PROVIDER_ACCOUNT_PROVIDERS.includes(provider)) {
       delete providerAccounts[provider]

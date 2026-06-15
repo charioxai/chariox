@@ -12,12 +12,27 @@ import {
   parseProviderModelOverride,
   providerProfileMetadata,
   resolveProviderModel,
+  validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 
 test("defines known drill provider ids", () => {
   assert.deepEqual(DRILL_PROVIDER_IDS, ["claude", "claude-headless", "claude-p", "codex", "dev-stub", "opencode", "opencode-zen"])
   assert.equal(isKnownDrillProvider("codex"), true)
   assert.equal(isKnownDrillProvider("cdoex"), false)
+  assert.doesNotThrow(() => validateDrillProvider("codex", "provider"))
+  assert.throws(() => validateDrillProvider("cdoex", "provider"), /provider has unknown provider "cdoex"/)
+  assert.throws(
+    () => validateDrillProvider("cdoex", "provider account alias", {
+      label: "provider account alias provider",
+    }),
+    /provider account alias has unknown provider account alias provider "cdoex"/,
+  )
+  assert.throws(
+    () => validateDrillProvider("cdoex", "required providers", {
+      message: (provider) => `unknown required provider: ${provider}`,
+    }),
+    /unknown required provider: cdoex/,
+  )
 })
 
 test("parses provider lists", () => {

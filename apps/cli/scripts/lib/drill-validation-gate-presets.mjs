@@ -13,8 +13,8 @@ import {
 import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
-  isKnownDrillProvider,
   parseProviderAccountAlias,
+  validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -585,9 +585,9 @@ export function normalizeRequiredArtifactProviderAccountAliases(requiredArtifact
   })
   for (const alias of aliases) {
     const { provider } = parseProviderAccountAlias(alias)
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`unknown required artifact provider account alias provider: ${provider}`)
-    }
+    validateDrillProvider(provider, "required artifact provider account aliases", {
+      message: () => `unknown required artifact provider account alias provider: ${provider}`,
+    })
   }
   return aliases
 }
@@ -878,9 +878,9 @@ export function normalizeRequiredProviders(requiredProviders) {
     itemName: "provider",
   })
   for (const provider of providers) {
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`unknown required provider: ${provider}`)
-    }
+    validateDrillProvider(provider, "required providers", {
+      message: () => `unknown required provider: ${provider}`,
+    })
   }
   return providers
 }

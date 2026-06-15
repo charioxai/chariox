@@ -18,8 +18,8 @@ import {
   formatDrillAggregateNextActionCounts,
 } from "./lib/drill-aggregate-actions.mjs"
 import {
-  isKnownDrillProvider,
   parseProviderAccountAlias,
+  validateDrillProvider,
 } from "./lib/drill-provider-profiles.mjs"
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
@@ -385,9 +385,9 @@ function freshnessDiagnosticsFor(indexes, sources, options) {
 function parseProviderAccountAliasRequirement(value, flag) {
   try {
     const { provider, alias } = parseProviderAccountAlias(value)
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`unknown provider account alias provider: ${provider}`)
-    }
+    validateDrillProvider(provider, "provider account alias provider", {
+      message: () => `unknown provider account alias provider: ${provider}`,
+    })
     return `${provider}=${alias}`
   } catch (error) {
     throw new Error(`${flag} has invalid value: ${error.message}`)

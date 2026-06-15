@@ -13,8 +13,8 @@ import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-m
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
 import {
-  isKnownDrillProvider,
   parseProviderAccountAlias,
+  validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
 import {
@@ -649,9 +649,7 @@ function validateExitCriterionStatusArray(value, source) {
 function validateProviderArray(value, source) {
   validateStringArray(value, source)
   for (const [index, provider] of value.entries()) {
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, `${source}[${index}]`)
   }
 }
 
@@ -659,9 +657,9 @@ function validateProviderAccountAliasArray(value, source) {
   validateStringArray(value, source)
   for (const [index, alias] of value.entries()) {
     const { provider } = parseProviderAccountAlias(alias)
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`${source}[${index}] has unknown provider account alias provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, `${source}[${index}]`, {
+      label: "provider account alias provider",
+    })
   }
 }
 

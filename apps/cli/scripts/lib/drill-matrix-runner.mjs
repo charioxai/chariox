@@ -8,7 +8,7 @@ import {
   validateDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
-import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
+import { isKnownDrillProvider, validateDrillProvider } from "./drill-provider-profiles.mjs"
 import { drillRuntimeSignalOwnerCounts, drillRuntimeSignalOwnersFor, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
@@ -258,8 +258,8 @@ export function validateDrillMatrixScenarioDefinitions(scenarios, { requireDescr
     if (scenario.runtimeSignals !== undefined) {
       validateRuntimeSignals(scenario.runtimeSignals, `${source}.runtimeSignals`)
     }
-    if (scenario.provider !== undefined && !isKnownDrillProvider(scenario.provider)) {
-      throw new Error(`${source} has unknown provider ${JSON.stringify(scenario.provider)}`)
+    if (scenario.provider !== undefined) {
+      validateDrillProvider(scenario.provider, source)
     }
     if (scenario.deployment !== undefined && !nonSecretText(scenario.deployment)) {
       throw new Error(`${source} has invalid deployment`)

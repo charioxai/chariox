@@ -14,8 +14,8 @@ import {
 import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-matrix-command-metadata.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
-  isKnownDrillProvider,
   parseProviderAccountAlias,
+  validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import {
   isKnownDrillArtifactValidationPreset,
@@ -2226,9 +2226,7 @@ function validateArtifactKindArray(value, source) {
 function validateProviderArray(value, source) {
   validateStringArray(value, source)
   for (const [index, provider] of value.entries()) {
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, `${source}[${index}]`)
   }
 }
 
@@ -2236,9 +2234,9 @@ function validateProviderAccountAliasArray(value, source) {
   validateStringArray(value, source)
   for (const [index, alias] of value.entries()) {
     const { provider } = parseProviderAccountAlias(alias)
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`${source}[${index}] has unknown provider account alias provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, `${source}[${index}]`, {
+      label: "provider account alias provider",
+    })
   }
 }
 
@@ -2367,9 +2365,7 @@ function validateExitCriterionStatusCountObject(value, source) {
 function validateProviderCountObject(value, source) {
   validateCountObject(value, source)
   for (const provider of Object.keys(value)) {
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`${source} has unknown provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, source)
   }
 }
 
@@ -2377,9 +2373,9 @@ function validateProviderAccountAliasCountObject(value, source) {
   validateCountObject(value, source)
   for (const alias of Object.keys(value)) {
     const { provider } = parseProviderAccountAlias(alias)
-    if (!isKnownDrillProvider(provider)) {
-      throw new Error(`${source} has unknown provider account alias provider ${JSON.stringify(provider)}`)
-    }
+    validateDrillProvider(provider, source, {
+      label: "provider account alias provider",
+    })
   }
 }
 
