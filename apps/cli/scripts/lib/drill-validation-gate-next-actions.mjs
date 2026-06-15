@@ -39,6 +39,21 @@ export function validationGateNextActions(checks) {
       })
       countMissingRuntimeSignalActions(counts, missingRuntimeSignals, { target: "platform-bundle" })
     }
+    const missingRuntimeSignalOwners = checks.platformBundle.missingRuntimeSignalOwners ?? []
+    if (missingRuntimeSignalOwners.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: `provide a drill platform bundle covering runtime signal owners: ${missingRuntimeSignalOwners.join(", ")}`,
+      })
+      for (const owner of missingRuntimeSignalOwners) {
+        countDrillAggregateNextAction(counts, {
+          owner,
+          classification: "runtime-signal-coverage",
+          nextAction: `add runtime-signal contract coverage owned by ${owner} to the drill platform bundle`,
+        })
+      }
+    }
     const missingFailureClassifications = checks.platformBundle.missingFailureClassifications ?? []
     if (missingFailureClassifications.length > 0) {
       countDrillAggregateNextAction(counts, {

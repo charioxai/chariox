@@ -182,6 +182,7 @@ test("gates platform bundle runtime signal coverage", async () => {
     const pass = await runDrillValidationGate({
       platformBundleDir: bundleDir,
       requiredRuntimeSignals: ["session-authority,lease-health", "workspace-live-sync-state"],
+      requiredRuntimeSignalOwners: ["kernel-authority", "worker-kernel"],
     })
     assert.equal(pass.status, "passed")
     assert.deepEqual(pass.checks.platformBundle.requiredRuntimeSignals, [
@@ -190,9 +191,15 @@ test("gates platform bundle runtime signal coverage", async () => {
       "workspace-live-sync-state",
     ])
     assert.deepEqual(pass.checks.platformBundle.missingRuntimeSignals, [])
+    assert.deepEqual(pass.checks.platformBundle.requiredRuntimeSignalOwners, ["kernel-authority", "worker-kernel"])
+    assert.deepEqual(pass.checks.platformBundle.missingRuntimeSignalOwners, [])
     assert.match(
       formatDrillValidationGateSummary(pass),
       /platform_required_runtime_signals=lease-health,session-authority,workspace-live-sync-state missing=none/,
+    )
+    assert.match(
+      formatDrillValidationGateSummary(pass),
+      /platform_required_runtime_signal_owners=kernel-authority,worker-kernel missing=none/,
     )
 
     const fail = await runDrillValidationGate({
@@ -218,11 +225,40 @@ test("gates platform bundle runtime signal coverage", async () => {
       },
     ])
 
+    const ownerFail = await runDrillValidationGate({
+      requiredRuntimeSignalOwners: ["worker-kernel"],
+    })
+    assert.equal(ownerFail.status, "failed")
+    assert.deepEqual(ownerFail.checks.platformBundle.missingRuntimeSignalOwners, ["worker-kernel"])
+    assert.deepEqual(ownerFail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [
+      {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: "provide a drill platform bundle covering runtime signal owners: worker-kernel",
+      },
+      {
+        owner: "validation-harness",
+        classification: "platform-bundle",
+        nextAction: "rebuild the drill platform bundle and verify it before using collected artifacts as evidence",
+      },
+      {
+        owner: "worker-kernel",
+        classification: "runtime-signal-coverage",
+        nextAction: "add runtime-signal contract coverage owned by worker-kernel to the drill platform bundle",
+      },
+    ])
+
     await assert.rejects(
       () => runDrillValidationGate({
         requiredRuntimeSignals: ["workspace-live-synch-state"],
       }),
       /unknown required runtime signal: workspace-live-synch-state/,
+    )
+    await assert.rejects(
+      () => runDrillValidationGate({
+        requiredRuntimeSignalOwners: ["worker-kenrel"],
+      }),
+      /unknown required runtime signal owner: worker-kenrel/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -1239,6 +1275,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactCoverageAreas: {},
       requiredRuntimeSignals: {},
       missingRuntimeSignals: {},
+      requiredRuntimeSignalOwners: {},
+      missingRuntimeSignalOwners: {},
       requiredFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       missingFailureClassifications: { "kernel-authority": 1, "remote-extension-sync": 1, "workspace-live-sync-conflict": 1 },
       requiredArtifactSchemas: {},
@@ -1331,6 +1369,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
         missingCoverageAreas: ["runtime-fixtures"],
         requiredRuntimeSignals: [],
         missingRuntimeSignals: [],
+        requiredRuntimeSignalOwners: [],
+        missingRuntimeSignalOwners: [],
         requiredFailureClassifications: ["kernel-authority"],
         missingFailureClassifications: ["kernel-authority"],
       },
@@ -1339,6 +1379,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
         missingCoverageAreas: ["hosted-cloud-drills"],
         requiredRuntimeSignals: [],
         missingRuntimeSignals: [],
+        requiredRuntimeSignalOwners: [],
+        missingRuntimeSignalOwners: [],
         requiredFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
         missingFailureClassifications: ["remote-extension-sync", "workspace-live-sync-conflict"],
       },

@@ -8,11 +8,12 @@ export async function platformValidationGateCheck(
   {
     requiredCoverageAreas = [],
     requiredRuntimeSignals = [],
+    requiredRuntimeSignalOwners = [],
     requiredFailureClassifications = [],
   } = {},
 ) {
   if (!platformBundleDir) {
-    if (requiredCoverageAreas.length > 0 || requiredRuntimeSignals.length > 0 || requiredFailureClassifications.length > 0) {
+    if (requiredCoverageAreas.length > 0 || requiredRuntimeSignals.length > 0 || requiredRuntimeSignalOwners.length > 0 || requiredFailureClassifications.length > 0) {
       return {
         status: "failed",
         dir: null,
@@ -20,6 +21,8 @@ export async function platformValidationGateCheck(
         missingCoverageAreas: [...requiredCoverageAreas],
         requiredRuntimeSignals: [...requiredRuntimeSignals],
         missingRuntimeSignals: [...requiredRuntimeSignals],
+        requiredRuntimeSignalOwners: [...requiredRuntimeSignalOwners],
+        missingRuntimeSignalOwners: [...requiredRuntimeSignalOwners],
         requiredFailureClassifications: [...requiredFailureClassifications],
         missingFailureClassifications: [...requiredFailureClassifications],
         error: "no platform bundle provided",
@@ -32,6 +35,8 @@ export async function platformValidationGateCheck(
       missingCoverageAreas: [],
       requiredRuntimeSignals: [],
       missingRuntimeSignals: [],
+      requiredRuntimeSignalOwners: [],
+      missingRuntimeSignalOwners: [],
       requiredFailureClassifications: [],
       missingFailureClassifications: [],
     }
@@ -43,10 +48,12 @@ export async function platformValidationGateCheck(
     const failureTaxonomy = await readPlatformBundleFailureTaxonomy(platformBundleDir)
     const missingCoverageAreas = missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageAreas)
     const missingRuntimeSignals = missingRequiredRuntimeSignals(runtimeSignals, requiredRuntimeSignals)
+    const missingRuntimeSignalOwners = missingRequiredRuntimeSignalOwners(runtimeSignals, requiredRuntimeSignalOwners)
     const missingFailureClassifications = missingRequiredFailureClassifications(failureTaxonomy, requiredFailureClassifications)
     const errors = [
       ...(missingCoverageAreas.length > 0 ? [`missing platform coverage areas: ${missingCoverageAreas.join(", ")}`] : []),
       ...(missingRuntimeSignals.length > 0 ? [`missing runtime signals: ${missingRuntimeSignals.join(", ")}`] : []),
+      ...(missingRuntimeSignalOwners.length > 0 ? [`missing runtime signal owners: ${missingRuntimeSignalOwners.join(", ")}`] : []),
       ...(missingFailureClassifications.length > 0 ? [`missing failure classifications: ${missingFailureClassifications.join(", ")}`] : []),
     ]
     return {
@@ -56,6 +63,8 @@ export async function platformValidationGateCheck(
       missingCoverageAreas,
       requiredRuntimeSignals: [...requiredRuntimeSignals],
       missingRuntimeSignals,
+      requiredRuntimeSignalOwners: [...requiredRuntimeSignalOwners],
+      missingRuntimeSignalOwners,
       requiredFailureClassifications: [...requiredFailureClassifications],
       missingFailureClassifications,
       ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
@@ -77,6 +86,8 @@ export async function platformValidationGateCheck(
       missingCoverageAreas: [...requiredCoverageAreas],
       requiredRuntimeSignals: [...requiredRuntimeSignals],
       missingRuntimeSignals: [...requiredRuntimeSignals],
+      requiredRuntimeSignalOwners: [...requiredRuntimeSignalOwners],
+      missingRuntimeSignalOwners: [...requiredRuntimeSignalOwners],
       requiredFailureClassifications: [...requiredFailureClassifications],
       missingFailureClassifications: [...requiredFailureClassifications],
       error: error instanceof Error ? error.message : String(error),
@@ -168,6 +179,11 @@ function missingRequiredPlatformCoverageAreas(validationSuite, requiredCoverageA
 function missingRequiredRuntimeSignals(runtimeSignals, requiredRuntimeSignals) {
   const present = new Set((runtimeSignals ?? []).map((signal) => signal.id))
   return requiredRuntimeSignals.filter((signal) => !present.has(signal))
+}
+
+function missingRequiredRuntimeSignalOwners(runtimeSignals, requiredRuntimeSignalOwners) {
+  const present = new Set((runtimeSignals ?? []).map((signal) => signal.owner))
+  return requiredRuntimeSignalOwners.filter((owner) => !present.has(owner))
 }
 
 function missingRequiredFailureClassifications(failureTaxonomy, requiredFailureClassifications) {

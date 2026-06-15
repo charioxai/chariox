@@ -46,6 +46,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-runtime-signal", "lease-health"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-runtime-signal-owner=worker-kernel"], 0, options)
+  assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-matrix-runtime-signal=workspace-live-sync-state"], 0, options)
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-generated-evidence-kind", "matrix-report"], 0, options)
@@ -80,6 +82,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactExitCriterionStatuses: ["satisfied"],
     requiredArtifactIncompleteExitCriterionStatuses: ["dry-run"],
     requiredRuntimeSignals: ["lease-health"],
+    requiredRuntimeSignalOwners: ["worker-kernel"],
     requiredFailureClassifications: [],
     requiredMatrices: [],
     requiredMatrixClassifications: [],
@@ -140,6 +143,7 @@ test("parses requirement arguments without accepting a preset flag", () => {
   assert.equal(index, null)
   assert.deepEqual(options.presets, [])
   assert.deepEqual(options.requiredRuntimeSignals, ["session-authority"])
+  assert.deepEqual(options.requiredRuntimeSignalOwners, [])
 })
 
 test("rejects missing validation gate requirement values", () => {

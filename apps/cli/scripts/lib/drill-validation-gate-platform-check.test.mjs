@@ -17,6 +17,8 @@ test("skips platform bundle validation when no bundle or requirements are config
     missingCoverageAreas: [],
     requiredRuntimeSignals: [],
     missingRuntimeSignals: [],
+    requiredRuntimeSignalOwners: [],
+    missingRuntimeSignalOwners: [],
     requiredFailureClassifications: [],
     missingFailureClassifications: [],
   })
@@ -25,6 +27,7 @@ test("skips platform bundle validation when no bundle or requirements are config
 test("fails when platform evidence is required but no bundle is provided", async () => {
   const check = await platformValidationGateCheck(null, {
     requiredCoverageAreas: ["matrix-validation"],
+    requiredRuntimeSignalOwners: ["worker-kernel"],
     requiredFailureClassifications: ["kernel-authority"],
   })
 
@@ -35,6 +38,8 @@ test("fails when platform evidence is required but no bundle is provided", async
     missingCoverageAreas: ["matrix-validation"],
     requiredRuntimeSignals: [],
     missingRuntimeSignals: [],
+    requiredRuntimeSignalOwners: ["worker-kernel"],
+    missingRuntimeSignalOwners: ["worker-kernel"],
     requiredFailureClassifications: ["kernel-authority"],
     missingFailureClassifications: ["kernel-authority"],
     error: "no platform bundle provided",
@@ -49,6 +54,7 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
     const check = await platformValidationGateCheck(rootDir, {
     requiredCoverageAreas: ["matrix-validation"],
     requiredRuntimeSignals: ["lease-health", "session-authority"],
+    requiredRuntimeSignalOwners: ["kernel-authority", "worker-kernel"],
     requiredFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
   })
 
@@ -56,6 +62,7 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
     assert.equal(check.dir, rootDir)
     assert.deepEqual(check.missingCoverageAreas, [])
     assert.deepEqual(check.missingRuntimeSignals, [])
+    assert.deepEqual(check.missingRuntimeSignalOwners, [])
     assert.deepEqual(check.missingFailureClassifications, [])
     assert.equal(check.validationSuite.coverageAreas.some((area) => area.id === "matrix-validation"), true)
     assert.equal(check.runtimeSignals.some((signal) => signal.id === "lease-health"), true)
@@ -95,14 +102,17 @@ test("fails when platform bundle misses required coverage dimensions", async () 
     const check = await platformValidationGateCheck(rootDir, {
       requiredCoverageAreas: ["hosted-cloud-drills"],
       requiredRuntimeSignals: ["workspace-live-sync-state"],
+      requiredRuntimeSignalOwners: ["runtime-owner-that-does-not-exist"],
       requiredFailureClassifications: ["unknown-diagnostic-class"],
     })
 
     assert.equal(check.status, "failed")
     assert.deepEqual(check.missingCoverageAreas, ["hosted-cloud-drills"])
     assert.deepEqual(check.missingRuntimeSignals, [])
+    assert.deepEqual(check.missingRuntimeSignalOwners, ["runtime-owner-that-does-not-exist"])
     assert.deepEqual(check.missingFailureClassifications, ["unknown-diagnostic-class"])
     assert.match(check.error, /missing platform coverage areas: hosted-cloud-drills/)
+    assert.match(check.error, /missing runtime signal owners: runtime-owner-that-does-not-exist/)
     assert.match(check.error, /missing failure classifications: unknown-diagnostic-class/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })

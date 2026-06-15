@@ -287,6 +287,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredRuntimeSignals = [],
+  requiredRuntimeSignalOwners = [],
   requiredFailureClassifications,
   requiredMatrices,
   requiredMatrixClassifications,
@@ -318,6 +319,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
     requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
     requiredRuntimeSignals: [...requiredRuntimeSignals],
+    requiredRuntimeSignalOwners: [...requiredRuntimeSignalOwners],
     requiredFailureClassifications: [...requiredFailureClassifications],
     requiredMatrices: [...requiredMatrices],
     requiredMatrixClassifications: [...requiredMatrixClassifications],
@@ -350,6 +352,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactExitCriterionStatuses.push(...(preset.requiredArtifactExitCriterionStatuses ?? []))
     expanded.requiredArtifactIncompleteExitCriterionStatuses.push(...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
+    expanded.requiredRuntimeSignalOwners.push(...(preset.requiredRuntimeSignalOwners ?? []))
     expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
     expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
     expanded.requiredMatrixClassifications.push(...(preset.requiredMatrixClassifications ?? []))
@@ -554,6 +557,19 @@ export function normalizeRequiredArtifactRuntimeSignalOwners(requiredArtifactRun
   for (const owner of owners) {
     if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
       throw new Error(`unknown required artifact runtime signal owner: ${owner}`)
+    }
+  }
+  return owners
+}
+
+export function normalizeRequiredRuntimeSignalOwners(requiredRuntimeSignalOwners) {
+  const owners = normalizeCommaSeparatedStrings(requiredRuntimeSignalOwners, {
+    fieldName: "requiredRuntimeSignalOwners",
+    itemName: "owner",
+  })
+  for (const owner of owners) {
+    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
+      throw new Error(`unknown required runtime signal owner: ${owner}`)
     }
   }
   return owners

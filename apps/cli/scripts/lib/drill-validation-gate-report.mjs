@@ -75,6 +75,8 @@ function validatePlatformBundleCheck(check, source) {
   validateStringArray(check.missingCoverageAreas ?? [], `${source}.missingCoverageAreas`)
   validateRuntimeSignalArray(check.requiredRuntimeSignals ?? [], `${source}.requiredRuntimeSignals`)
   validateRuntimeSignalArray(check.missingRuntimeSignals ?? [], `${source}.missingRuntimeSignals`)
+  validateRuntimeSignalOwnerArray(check.requiredRuntimeSignalOwners ?? [], `${source}.requiredRuntimeSignalOwners`)
+  validateRuntimeSignalOwnerArray(check.missingRuntimeSignalOwners ?? [], `${source}.missingRuntimeSignalOwners`)
   validateFailureClassificationArray(check.requiredFailureClassifications ?? [], `${source}.requiredFailureClassifications`)
   validateFailureClassificationArray(check.missingFailureClassifications ?? [], `${source}.missingFailureClassifications`)
   if (check.status === "skipped") {
@@ -85,6 +87,8 @@ function validatePlatformBundleCheck(check, source) {
       || (check.missingCoverageAreas ?? []).length > 0
       || (check.requiredRuntimeSignals ?? []).length > 0
       || (check.missingRuntimeSignals ?? []).length > 0
+      || (check.requiredRuntimeSignalOwners ?? []).length > 0
+      || (check.missingRuntimeSignalOwners ?? []).length > 0
       || (check.requiredFailureClassifications ?? []).length > 0
       || (check.missingFailureClassifications ?? []).length > 0) {
       throw new Error(`${source} skipped check has invalid coverage requirements`)

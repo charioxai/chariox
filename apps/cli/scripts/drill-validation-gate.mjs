@@ -75,6 +75,8 @@ function printHelp() {
     "                         Fail when failure manifests are older than this many milliseconds",
     "  --require-runtime-signal ID[,ID]",
     "                         Fail when platform bundle lacks each distributed runtime signal; repeatable",
+    "  --require-runtime-signal-owner OWNER[,OWNER]",
+    "                         Fail when platform bundle lacks each distributed runtime signal owner; repeatable",
     "  --require-failure-classification KIND[,KIND]",
     "                         Fail when platform bundle failure taxonomy lacks each classification; repeatable",
     "  --require-matrix NAME[,NAME]",

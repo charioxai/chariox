@@ -282,6 +282,7 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactExitCriterionStatuses: [],
     requiredArtifactIncompleteExitCriterionStatuses: [],
     requiredRuntimeSignals: ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"],
+    requiredRuntimeSignalOwners: [],
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "worker-execution"],
     requiredMatrices: ["custom-matrix", "remote-home-extension-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict", "kernel-authority", "remote-extension-sync", "worker-execution"],
