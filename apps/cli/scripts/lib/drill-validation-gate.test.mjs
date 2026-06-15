@@ -1115,6 +1115,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       requiredScenarios: { local: 1, remote: 1 },
       missingScenarios: { remote: 1 },
       generatedEvidenceKinds: {},
+      generatedMatrixLimitations: {},
       requiredGeneratedEvidenceKinds: {},
       missingGeneratedEvidenceKinds: {},
     })

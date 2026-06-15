@@ -90,6 +90,7 @@ export function summarizeValidationGateReportAggregate(
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
     generatedEvidenceKinds: new Map(),
+    generatedMatrixLimitations: new Map(),
     requiredGeneratedEvidenceKinds: new Map(),
     missingGeneratedEvidenceKinds: new Map(),
   }
@@ -163,6 +164,10 @@ export function summarizeValidationGateReportAggregate(
     })
     const generatedEvidence = validationGateReportGeneratedEvidence(report)
     countStringValues(coverage.generatedEvidenceKinds, generatedEvidence?.kinds ?? [])
+    countStringValues(
+      coverage.generatedMatrixLimitations,
+      (generatedEvidence?.matrixReports?.limitations ?? []).map((limitation) => limitation.kind),
+    )
     return {
       source: sources[index] ?? null,
       status: report.status,
@@ -682,6 +687,7 @@ function formatValidationGateCoverageCounts(coverage) {
     requiredScenarios: countMapToObject(coverage.requiredScenarios),
     missingScenarios: countMapToObject(coverage.missingScenarios),
     generatedEvidenceKinds: countMapToObject(coverage.generatedEvidenceKinds),
+    generatedMatrixLimitations: countMapToObject(coverage.generatedMatrixLimitations),
     requiredGeneratedEvidenceKinds: countMapToObject(coverage.requiredGeneratedEvidenceKinds),
     missingGeneratedEvidenceKinds: countMapToObject(coverage.missingGeneratedEvidenceKinds),
   }
@@ -748,6 +754,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "required_scenarios", coverage.requiredScenarios)
   appendCoverageLine(lines, "missing_scenarios", coverage.missingScenarios)
   appendCoverageLine(lines, "generated_evidence_kinds", coverage.generatedEvidenceKinds)
+  appendCoverageLine(lines, "generated_matrix_limitations", coverage.generatedMatrixLimitations)
   appendCoverageLine(lines, "required_generated_evidence_kinds", coverage.requiredGeneratedEvidenceKinds)
   appendCoverageLine(lines, "missing_generated_evidence_kinds", coverage.missingGeneratedEvidenceKinds)
   return lines
@@ -843,6 +850,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
+  validateCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
   validateGeneratedEvidenceKindCountObject(coverage.requiredGeneratedEvidenceKinds ?? {}, `${source}.requiredGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.missingGeneratedEvidenceKinds ?? {}, `${source}.missingGeneratedEvidenceKinds`)
 }
@@ -941,6 +949,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     requiredScenarios: new Map(),
     missingScenarios: new Map(),
     generatedEvidenceKinds: new Map(),
+    generatedMatrixLimitations: new Map(),
     requiredGeneratedEvidenceKinds: new Map(),
     missingGeneratedEvidenceKinds: new Map(),
   }
@@ -1026,6 +1035,10 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.requiredScenarios, coverage.requiredScenarios ?? [])
     countStringValues(expected.missingScenarios, coverage.missingScenarios ?? [])
     countStringValues(expected.generatedEvidenceKinds, report.generatedEvidence?.kinds ?? [])
+    countStringValues(
+      expected.generatedMatrixLimitations,
+      (report.generatedEvidence?.matrixReports?.limitations ?? []).map((limitation) => limitation.kind),
+    )
   }
   countStringValues(expected.requiredGeneratedEvidenceKinds, aggregate.requiredGeneratedEvidenceKinds ?? [])
   countStringValues(expected.missingGeneratedEvidenceKinds, aggregate.missingGeneratedEvidenceKinds ?? [])

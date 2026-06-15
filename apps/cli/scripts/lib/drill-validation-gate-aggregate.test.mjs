@@ -671,6 +671,9 @@ test("aggregates generated evidence provenance from gate reports", () => {
     "matrix-report": 1,
     "validation-suite-run": 1,
   })
+  assert.deepEqual(aggregate.coverage.generatedMatrixLimitations, {
+    "dry-run-classification-coverage": 1,
+  })
   assert.deepEqual(aggregate.requiredGeneratedEvidenceKinds, ["matrix-report", "validation-suite-run"])
   assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, [])
   assert.deepEqual(aggregate.coverage.requiredGeneratedEvidenceKinds, {
@@ -693,7 +696,11 @@ test("aggregates generated evidence provenance from gate reports", () => {
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       dryRun: false,
       continueOnFailure: true,
-      limitations: [],
+      limitations: [{
+        kind: "dry-run-classification-coverage",
+        owner: "validation-harness",
+        nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before release",
+      }],
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
@@ -704,6 +711,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
     },
   })
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_evidence_kinds: matrix-report=1 validation-suite-run=1/)
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_matrix_limitations: dry-run-classification-coverage=1/)
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_evidence_kinds=matrix-report,validation-suite-run missing=none/)
 })
 
@@ -811,7 +819,11 @@ function generatedEvidenceFixture() {
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       dryRun: false,
       continueOnFailure: true,
-      limitations: [],
+      limitations: [{
+        kind: "dry-run-classification-coverage",
+        owner: "validation-harness",
+        nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before release",
+      }],
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
