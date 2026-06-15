@@ -75,6 +75,12 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   evidenceRepos: "evidence_repos",
   artifactCoverageInputSources: "artifact_coverage_input_sources",
 })
+const DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS = Object.freeze([
+  "generatedMatrixArtifactIndexes",
+  "generatedValidationSuiteFailureRoots",
+  "requiredGeneratedMatrixArtifactIndexes",
+  "missingGeneratedMatrixArtifactIndexes",
+])
 
 export async function prepareDrillArtifacts(rootDir) {
   const resolvedRootDir = resolvedDrillRootDir(rootDir)
@@ -565,6 +571,11 @@ function validateCountObject(value, source) {
 
 function validateDiagnosticCountObject(value, source, key) {
   validateCountObject(value, source)
+  if (DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS.includes(key)) {
+    for (const valueKey of Object.keys(value)) {
+      validateGeneratedEvidencePathText(valueKey, `${source}.${valueKey}`)
+    }
+  }
   if (key === "artifactKinds") {
     for (const kind of Object.keys(value)) {
       if (!isKnownDrillArtifactKind(kind)) {
@@ -892,6 +903,17 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
         throw new Error(`${source}.${key} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
       }
     }
+  }
+  for (const key of DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS) {
+    for (const [index, value] of metadataListFromMetadata(metadata, key).entries()) {
+      validateGeneratedEvidencePathText(value, `${source}.${key}[${index}]`)
+    }
+  }
+}
+
+function validateGeneratedEvidencePathText(value, source) {
+  if (redactDrillSecretText(value) !== value) {
+    throw new Error(`${source} includes secret-looking generated evidence path`)
   }
 }
 

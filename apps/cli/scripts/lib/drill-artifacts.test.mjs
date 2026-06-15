@@ -875,6 +875,13 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
     assert.throws(
       () => validateDrillArtifactIndexAggregate({
         ...aggregate,
+        generatedMatrixArtifactIndexes: { "/tmp/Bearer abcdefghijklmnop.json": 1 },
+      }),
+      /generatedMatrixArtifactIndexes\.\/tmp\/Bearer abcdefghijklmnop\.json includes secret-looking generated evidence path/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
         providerAccountAliases: { "cdoex=work": 1 },
       }),
       /providerAccountAliases has unknown provider account alias provider "cdoex"/,
@@ -964,6 +971,18 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       generatedEvidenceKinds: { "matrix-reprot": 1 },
     })),
     /generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      generatedValidationSuiteFailureRoots: { "/tmp/Bearer abcdefghijklmnop": 1 },
+    })),
+    /generatedValidationSuiteFailureRoots\.\/tmp\/Bearer abcdefghijklmnop includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      requiredGeneratedMatrixArtifactIndexes: { "/tmp/Bearer abcdefghijklmnop.json": 1 },
+    })),
+    /requiredGeneratedMatrixArtifactIndexes\.\/tmp\/Bearer abcdefghijklmnop\.json includes secret-looking generated evidence path/,
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
@@ -1065,6 +1084,21 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.evidenceRepos has unknown evidence repo "cluod"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { generatedValidationSuiteFailureRoots: "/tmp/Bearer abcdefghijklmnop" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: "arroba.drill.validation_gate.v1",
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedValidationSuiteFailureRoots\[0\] includes secret-looking generated evidence path/,
     )
     assert.throws(
       () => validateDrillArtifactIndex({
