@@ -233,19 +233,33 @@ impl ProviderOutputFanout {
                 .provider_run_id
                 .as_deref()
                 .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
+            let agent_id = entry.agent_id.clone().or_else(|| {
+                provider_run
+                    .as_ref()
+                    .and_then(|run| run.agent_instance_id().map(str::to_string))
+            });
+            let active_prompt = agent_id.as_deref().and_then(|agent_id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            });
+            let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
             let context = HistoryEventTurnContext {
                 session_id: Some(entry.session_id.clone()),
-                agent_id: entry.agent_id.clone().or_else(|| {
-                    provider_run
-                        .as_ref()
-                        .and_then(|run| run.agent_instance_id().map(str::to_string))
-                }),
+                agent_id,
                 provider: provider_run.as_ref().map(|run| run.provider().to_string()),
                 model: provider_run.as_ref().map(|run| run.model().to_string()),
+                turn_id: prompt_id.clone(),
+                prompt_id,
                 provider_run_id: entry.provider_run_id.clone(),
                 provider_session_id: provider_run
                     .as_ref()
                     .and_then(|run| run.provider_session_id().map(str::to_string)),
+                workflow_run_id: active_prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string)),
+                workflow_node_id: active_prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string)),
                 worktree_path: provider_run.as_ref().and_then(|run| {
                     run.working_directory()
                         .map(|path| path.display().to_string())

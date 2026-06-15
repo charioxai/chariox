@@ -158,7 +158,7 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         } else {
-            self.append_operational_history_entry(&entry);
+            self.append_operational_history_entry(&entry, None, None, None);
             self.history_projection.append(entry);
         }
     }
@@ -166,24 +166,61 @@ impl KernelRuntimeOwnedState {
     pub(super) fn append_operational_history_entry(
         &self,
         entry: &crate::history::SessionHistoryEntry,
+        prompt_id_override: Option<&str>,
+        workflow_run_id_override: Option<&str>,
+        workflow_node_run_id_override: Option<&str>,
     ) {
         let provider_run = entry
             .provider_run_id
             .as_deref()
             .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok());
+        let agent_id = entry.agent_id.clone().or_else(|| {
+            provider_run
+                .as_ref()
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        let session = self.session_store.get_session(&entry.session_id).ok();
+        let active_prompt = session.as_ref().and_then(|session| {
+            agent_id.as_deref().and_then(|agent_id| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(session, agent_id)
+            })
+        });
+        let active_turn = entry
+            .provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| self.active_turns.snapshot().remove(provider_run_id));
+        let prompt_id = prompt_id_override
+            .map(str::to_string)
+            .or_else(|| active_turn.as_ref().map(|turn| turn.prompt_id.clone()))
+            .or_else(|| active_prompt.as_ref().map(|prompt| prompt.id().to_string()));
+        let turn_id = active_turn
+            .as_ref()
+            .map(|turn| turn.trace_id.clone())
+            .or_else(|| prompt_id.clone());
         let context = crate::history::HistoryEventTurnContext {
             session_id: Some(entry.session_id.clone()),
-            agent_id: entry.agent_id.clone().or_else(|| {
-                provider_run
-                    .as_ref()
-                    .and_then(|run| run.agent_instance_id().map(str::to_string))
-            }),
+            agent_id,
             provider: provider_run.as_ref().map(|run| run.provider().to_string()),
             model: provider_run.as_ref().map(|run| run.model().to_string()),
+            turn_id,
+            prompt_id,
             provider_run_id: entry.provider_run_id.clone(),
             provider_session_id: provider_run
                 .as_ref()
                 .and_then(|run| run.provider_session_id().map(str::to_string)),
+            workflow_run_id: workflow_run_id_override.map(str::to_string).or_else(|| {
+                active_prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))
+            }),
+            workflow_node_id: workflow_node_run_id_override
+                .map(str::to_string)
+                .or_else(|| {
+                    active_prompt
+                        .as_ref()
+                        .and_then(|prompt| prompt.workflow_node_run_id().map(str::to_string))
+                }),
             worktree_path: provider_run.as_ref().and_then(|run| {
                 run.working_directory()
                     .map(|path| path.display().to_string())
@@ -225,6 +262,9 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
+        prompt_id: Option<&str>,
+        workflow_run_id: Option<&str>,
+        workflow_node_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let session = self.session_snapshot(session_id)?;
         let entry = crate::history::SessionHistoryEntry::user_prompt(
@@ -234,7 +274,12 @@ impl KernelRuntimeOwnedState {
             crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
         );
         self.history_store.append(&session, &entry)?;
-        self.append_operational_history_entry(&entry);
+        self.append_operational_history_entry(
+            &entry,
+            prompt_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
         self.history_projection.append(entry);
         Ok(())
     }

@@ -2,7 +2,8 @@
 
 use crate::error::DaemonError;
 use crate::history::{
-    HistoryEvent, HistoryEventKind, OperationalHistoryStore, SessionHistoryEntryKind,
+    HistoryEvent, HistoryEventKind, HistoryEventTurnContext, OperationalHistoryStore,
+    SessionHistoryEntry, SessionHistoryEntryKind,
 };
 use crate::local::{
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, LocalDaemonResponse,
@@ -101,6 +102,9 @@ fn load_agent_outline(
         agent_id,
         latest_prompt_count,
     )?;
+    if prompts.is_empty() {
+        return load_promptless_agent_outline(operational_history, session_id, agent_id);
+    }
     let mut turns = Vec::new();
     for (index, prompt) in prompts.iter().enumerate() {
         let sequence_end = prompts
@@ -125,6 +129,77 @@ fn load_agent_outline(
         turns,
         next_cursor,
     })
+}
+
+fn load_promptless_agent_outline(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<SessionHistoryOutlineAgent, DaemonError> {
+    let events = operational_history.load_session_events(session_id, Some(agent_id))?;
+    let Some(latest_event) = events.last() else {
+        return Ok(SessionHistoryOutlineAgent {
+            agent_id: agent_id.to_string(),
+            turns: Vec::new(),
+            next_cursor: None,
+        });
+    };
+    let latest_key = promptless_turn_group_key(latest_event);
+    let turn_events = events
+        .into_iter()
+        .filter(|event| promptless_turn_group_key(event) == latest_key)
+        .collect::<Vec<_>>();
+    let Some(first_event) = turn_events.first() else {
+        return Ok(SessionHistoryOutlineAgent {
+            agent_id: agent_id.to_string(),
+            turns: Vec::new(),
+            next_cursor: None,
+        });
+    };
+    let synthetic_prompt_entry = SessionHistoryEntry::user_prompt(
+        session_id,
+        "arroba-history",
+        agent_id,
+        "(no recorded prompt; showing recent agent activity)",
+    );
+    let synthetic_prompt = HistoryEvent::transcript(
+        first_event.sequence.saturating_sub(1),
+        &synthetic_prompt_entry,
+        HistoryEventTurnContext {
+            session_id: Some(session_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            turn_id: Some(latest_key),
+            provider_run_id: first_event.provider_run_id.clone(),
+            provider_session_id: first_event.provider_session_id.clone(),
+            provider: first_event.provider.clone(),
+            model: first_event.model.clone(),
+            workflow_id: first_event.workflow_id.clone(),
+            workflow_run_id: first_event.workflow_run_id.clone(),
+            workflow_node_id: first_event.workflow_node_id.clone(),
+            worktree_path: first_event.worktree_path.clone(),
+            ..HistoryEventTurnContext::default()
+        },
+    );
+    let mut events_with_prompt = Vec::with_capacity(turn_events.len() + 1);
+    events_with_prompt.push(synthetic_prompt.clone());
+    events_with_prompt.extend(turn_events);
+    let turns = outline_turn_from_events(&synthetic_prompt, events_with_prompt)
+        .into_iter()
+        .collect::<Vec<_>>();
+    Ok(SessionHistoryOutlineAgent {
+        agent_id: agent_id.to_string(),
+        turns,
+        next_cursor: None,
+    })
+}
+
+fn promptless_turn_group_key(event: &HistoryEvent) -> String {
+    event
+        .turn_id
+        .clone()
+        .or_else(|| event.prompt_id.clone())
+        .or_else(|| event.provider_run_id.clone())
+        .unwrap_or_else(|| event.event_id.clone())
 }
 
 fn outline_turn_from_events(
@@ -383,5 +458,67 @@ mod tests {
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("final assistant body")
         );
+    }
+
+    #[test]
+    fn agent_outline_synthesizes_turn_for_promptless_provider_activity() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-promptless-outline-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-5".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let tool = HistoryEvent::transcript(
+            1,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderTool,
+                Some("tool-1".to_string()),
+                r#"{"tool":"bash","status":"completed","input":{"command":"cargo test"}}"#,
+            ),
+            context,
+        );
+        store
+            .append(&tool)
+            .expect("promptless provider activity should append");
+
+        let outline =
+            load_agent_outline(&store, "session-1", "agent-1", 1).expect("outline should load");
+
+        assert_eq!(outline.turns.len(), 1);
+        assert_eq!(outline.turns[0].turn_id, "run-1");
+        assert!(
+            outline.turns[0]
+                .user_prompt
+                .entry
+                .text
+                .contains("no recorded prompt"),
+            "{:?}",
+            outline.turns[0].user_prompt
+        );
+        assert_eq!(outline.turns[0].blobs.len(), 1);
+        assert_eq!(
+            outline.turns[0].blobs[0].kind,
+            SessionHistoryEntryKind::ProviderTool
+        );
+        assert_eq!(outline.turns[0].blobs[0].summary, "$ cargo test");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }

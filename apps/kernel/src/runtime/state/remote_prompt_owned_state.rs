@@ -32,6 +32,9 @@ impl KernelRuntimeOwnedState {
             &target_agent_id,
             prepared.prompt.prompt(),
             prepared.prompt.attachments(),
+            Some(prepared.prompt.id()),
+            prepared.prompt.workflow_run_id(),
+            prepared.prompt.workflow_node_run_id(),
         )?;
         let session = self.session_store.get_session(&session_id)?;
         let outcome = self.prompt_state_owner.submit_prepared_prompt(
