@@ -10,7 +10,7 @@ import {
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
-import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -465,9 +465,9 @@ function sortedArtifactEvidenceRepoArray(value, source) {
 function sortedFailureClassificationArray(value, source) {
   const classifications = sortedStringArray(value, source)
   for (const [index, classification] of classifications.entries()) {
-    if (!isKnownDrillFailureClassification(classification)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown failure classification ${JSON.stringify(classification)}`)
-    }
+    validateDrillFailureClassification(classification, `validation suite preset ${source}[${index}]`, {
+      label: "failure classification",
+    })
   }
   return classifications
 }

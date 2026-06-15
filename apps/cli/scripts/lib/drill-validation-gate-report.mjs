@@ -3,7 +3,7 @@ import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactIndexAggregate } from "./drill-artifacts.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
-import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -709,9 +709,9 @@ function validateRuntimeSignalOwnerArray(value, source) {
 function validateFailureClassificationArray(value, source) {
   validateStringArray(value, source)
   for (const [index, classification] of value.entries()) {
-    if (!isKnownDrillFailureClassification(classification)) {
-      throw new Error(`${source}[${index}] has unknown failure classification ${JSON.stringify(classification)}`)
-    }
+    validateDrillFailureClassification(classification, `${source}[${index}]`, {
+      label: "failure classification",
+    })
   }
 }
 

@@ -6,7 +6,7 @@ import {
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
-import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -2203,9 +2203,9 @@ function validateRuntimeSignalOwnerArray(value, source) {
 function validateFailureClassificationArray(value, source) {
   validateStringArray(value, source)
   for (const [index, classification] of value.entries()) {
-    if (!isKnownDrillFailureClassification(classification)) {
-      throw new Error(`${source}[${index}] has unknown failure classification ${JSON.stringify(classification)}`)
-    }
+    validateDrillFailureClassification(classification, `${source}[${index}]`, {
+      label: "failure classification",
+    })
   }
 }
 
@@ -2335,9 +2335,9 @@ function validateRuntimeSignalOwnerCountObject(value, source) {
 function validateFailureClassificationCountObject(value, source) {
   validateCountObject(value, source)
   for (const classification of Object.keys(value)) {
-    if (!isKnownDrillFailureClassification(classification)) {
-      throw new Error(`${source} has unknown failure classification ${JSON.stringify(classification)}`)
-    }
+    validateDrillFailureClassification(classification, source, {
+      label: "failure classification",
+    })
   }
 }
 

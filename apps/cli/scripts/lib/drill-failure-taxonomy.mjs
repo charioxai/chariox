@@ -118,6 +118,19 @@ export function isKnownDrillFailureClassification(classification) {
     && Object.prototype.hasOwnProperty.call(FAILURE_CLASSIFICATIONS, classification)
 }
 
+export function validateDrillFailureClassification(
+  classification,
+  source,
+  { label = "classification", message } = {},
+) {
+  if (!isKnownDrillFailureClassification(classification)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(classification) : message)
+    }
+    throw new Error(`${source} has unknown ${label} ${JSON.stringify(classification)}`)
+  }
+}
+
 export function drillFailureOwnerForClassification(classification, { fallback = "drill-or-runtime" } = {}) {
   return FAILURE_CLASSIFICATIONS[classification]?.owner ?? fallback
 }

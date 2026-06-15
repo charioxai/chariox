@@ -8,6 +8,7 @@ import {
   drillFailureTaxonomyManifest,
   drillFailureOwnerForClassification,
   isKnownDrillFailureClassification,
+  validateDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 
 test("maps classifications to owners", () => {
@@ -41,6 +42,23 @@ test("exposes known classifications", () => {
   assert.deepEqual(DRILL_FAILURE_CLASSIFICATION_KINDS, [...DRILL_FAILURE_CLASSIFICATION_KINDS].sort())
   assert.equal(isKnownDrillFailureClassification("slice-runtime"), true)
   assert.equal(isKnownDrillFailureClassification("not-real"), false)
+  assert.doesNotThrow(() => validateDrillFailureClassification("slice-runtime", "scenario"))
+  assert.throws(
+    () => validateDrillFailureClassification("not-real", "scenario"),
+    /scenario has unknown classification "not-real"/,
+  )
+  assert.throws(
+    () => validateDrillFailureClassification("not-real", "preset.requiredFailureClassifications[0]", {
+      label: "failure classification",
+    }),
+    /preset\.requiredFailureClassifications\[0\] has unknown failure classification "not-real"/,
+  )
+  assert.throws(
+    () => validateDrillFailureClassification("not-real", "required failure classifications", {
+      message: (classification) => `unknown required failure classification: ${classification}`,
+    }),
+    /unknown required failure classification: not-real/,
+  )
 })
 
 test("formats target-specific next actions", () => {

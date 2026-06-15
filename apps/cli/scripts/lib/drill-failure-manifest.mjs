@@ -11,7 +11,7 @@ import {
   drillFailureClassificationForKind,
   drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
-  isKnownDrillFailureClassification,
+  validateDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import {
   isSensitiveDrillKey,
@@ -367,9 +367,7 @@ function validateDrillFailureAggregateEntry(failure, source) {
   if (!path.isAbsolute(failure.rootDir)) {
     throw new Error(`${source} has invalid rootDir`)
   }
-  if (!isKnownDrillFailureClassification(failure.classification)) {
-    throw new Error(`${source} has unknown classification ${JSON.stringify(failure.classification)}`)
-  }
+  validateDrillFailureClassification(failure.classification, source)
   const expectedOwner = drillFailureOwnerForClassification(failure.classification)
   if (failure.owner !== expectedOwner) {
     throw new Error(`${source} owner ${JSON.stringify(failure.owner)} does not match classification ${JSON.stringify(failure.classification)}`)

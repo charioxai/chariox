@@ -5,7 +5,7 @@ import {
 } from "./drill-distributed-runtime-evidence.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
-import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -779,9 +779,9 @@ export function normalizeRequiredFailureClassifications(requiredFailureClassific
   }
   const normalizedClassifications = [...new Set(classifications)].sort()
   for (const classification of normalizedClassifications) {
-    if (!isKnownDrillFailureClassification(classification)) {
-      throw new Error(`unknown required failure classification: ${classification}`)
-    }
+    validateDrillFailureClassification(classification, "required failure classifications", {
+      message: () => `unknown required failure classification: ${classification}`,
+    })
   }
   return normalizedClassifications
 }
@@ -819,9 +819,9 @@ export function normalizeRequiredMatrixClassifications(requiredMatrixClassificat
   }
   const normalizedClassifications = [...new Set(classifications)].sort()
   for (const classification of normalizedClassifications) {
-    if (!isKnownDrillFailureClassification(classification)) {
-      throw new Error(`unknown required matrix classification: ${classification}`)
-    }
+    validateDrillFailureClassification(classification, "required matrix classifications", {
+      message: () => `unknown required matrix classification: ${classification}`,
+    })
   }
   return normalizedClassifications
 }

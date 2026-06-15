@@ -8,7 +8,7 @@ import {
 import {
   drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
-  isKnownDrillFailureClassification,
+  validateDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import { drillRuntimeSignalOwnerCounts, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import {
@@ -565,8 +565,8 @@ function validateDrillMatrixScenario(scenario, source) {
   if (scenario.classification !== null && typeof scenario.classification !== "string") {
     throw new Error(`${source} has invalid classification`)
   }
-  if (nonEmptyString(scenario.classification) && !isKnownDrillFailureClassification(scenario.classification)) {
-    throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
+  if (nonEmptyString(scenario.classification)) {
+    validateDrillFailureClassification(scenario.classification, source)
   }
   if (scenario.owner !== undefined && scenario.owner !== null) {
     if (!nonEmptyString(scenario.owner)) {
@@ -766,9 +766,9 @@ function validatePlannedScenarioDiagnostics(scenario, source) {
   if (!nonEmptyString(scenario.plannedClassification)) {
     throw new Error(`${source} has invalid plannedClassification`)
   }
-  if (!isKnownDrillFailureClassification(scenario.plannedClassification)) {
-    throw new Error(`${source} has unknown plannedClassification ${JSON.stringify(scenario.plannedClassification)}`)
-  }
+  validateDrillFailureClassification(scenario.plannedClassification, source, {
+    label: "plannedClassification",
+  })
   const expectedOwner = drillFailureOwnerForClassification(scenario.plannedClassification)
   if (scenario.plannedOwner !== expectedOwner) {
     throw new Error(`${source} plannedOwner does not match plannedClassification`)
@@ -1114,9 +1114,7 @@ function validateOptionalCriterionDiagnostics(criterion, source) {
     if (!nonEmptyString(criterion.classification)) {
       throw new Error(`${source} has invalid classification`)
     }
-    if (!isKnownDrillFailureClassification(criterion.classification)) {
-      throw new Error(`${source} has unknown classification ${JSON.stringify(criterion.classification)}`)
-    }
+    validateDrillFailureClassification(criterion.classification, source)
     const expectedOwner = drillFailureOwnerForClassification(criterion.classification)
     if (criterion.owner !== expectedOwner) {
       throw new Error(`${source} owner does not match classification`)
@@ -1187,9 +1185,7 @@ function validateMatrixAggregateFailedScenario(scenario, source) {
   if (!nonEmptyString(scenario.classification)) {
     throw new Error(`${source} is missing classification`)
   }
-  if (!isKnownDrillFailureClassification(scenario.classification)) {
-    throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
-  }
+  validateDrillFailureClassification(scenario.classification, source)
   if (!nonEmptyString(scenario.owner)) {
     throw new Error(`${source} is missing owner`)
   }
@@ -1344,9 +1340,7 @@ function validateRuntimeSignalCountObject(value, source) {
 function validateFailureClassificationCountObject(value, source) {
   validateCountObject(value, source)
   for (const classification of Object.keys(value)) {
-    if (!isKnownDrillFailureClassification(classification)) {
-      throw new Error(`${source} has unknown classification ${JSON.stringify(classification)}`)
-    }
+    validateDrillFailureClassification(classification, source)
   }
 }
 

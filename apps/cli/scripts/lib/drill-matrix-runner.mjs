@@ -5,7 +5,7 @@ import { classifyDrillChildFailure } from "./drill-child-process.mjs"
 import {
   drillFailureNextActionForClassification,
   drillFailureOwnerForClassification,
-  isKnownDrillFailureClassification,
+  validateDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
@@ -253,9 +253,7 @@ export function validateDrillMatrixScenarioDefinitions(scenarios, { requireDescr
       if (!nonEmptyString(scenario.classification)) {
         throw new Error(`${source} has invalid classification`)
       }
-      if (!isKnownDrillFailureClassification(scenario.classification)) {
-        throw new Error(`${source} has unknown classification ${JSON.stringify(scenario.classification)}`)
-      }
+      validateDrillFailureClassification(scenario.classification, source)
     }
     if (scenario.runtimeSignals !== undefined) {
       validateRuntimeSignals(scenario.runtimeSignals, `${source}.runtimeSignals`)
