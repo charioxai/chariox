@@ -429,6 +429,9 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
         : {}),
       ...(plannedOwners.length > 0 ? { plannedOwners: plannedOwners.join(",") } : {}),
       ...(plannedClassifications.length > 0 ? { plannedClassifications: plannedClassifications.join(",") } : {}),
+      ...(nonSecretText(metadata.generatedMatrixNames) ? { generatedMatrixNames: metadata.generatedMatrixNames } : {}),
+      ...(nonSecretText(metadata.generatedMatrixRepos) ? { generatedMatrixRepos: metadata.generatedMatrixRepos } : {}),
+      ...(nonSecretText(metadata.generatedMatrixLimitations) ? { generatedMatrixLimitations: metadata.generatedMatrixLimitations } : {}),
     },
   })
   console.log(`[${matrixName}] report ${reportPath}`)

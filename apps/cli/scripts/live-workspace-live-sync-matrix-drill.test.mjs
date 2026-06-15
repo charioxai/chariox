@@ -75,11 +75,15 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     assert.equal(report.metadata.includeRemote, true)
     assert.equal(report.metadata.includeHetzner, true)
     assert.equal(report.metadata.includeOpencode, true)
+    assert.equal(report.metadata.generatedMatrixNames, "workspace-live-sync-matrix")
+    assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.match(stdout, /dry-run local-managed-codex classification=workspace-live-sync-conflict/)
     assert.match(stdout, /dry-run remote-tracked-restart-codex classification=relay-target-freshness/)
     assert.match(stdout, /dry-run remote-permission-opencode classification=kernel-authority/)
     assert.equal(artifactIndex.metadata.matrix, "workspace-live-sync-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
+    assert.equal(artifactIndex.metadata.generatedMatrixNames, "workspace-live-sync-matrix")
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

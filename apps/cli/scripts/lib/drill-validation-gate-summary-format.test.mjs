@@ -377,6 +377,14 @@ function artifactAggregateFixture() {
     missingGeneratedMatrixLimitations: {
       "dry-run-classification-coverage": 1,
     },
+    requiredGeneratedMatrixNames: {
+      "workspace-live-sync-matrix": 1,
+    },
+    missingGeneratedMatrixNames: {},
+    requiredGeneratedMatrixRepos: {
+      oss: 1,
+    },
+    missingGeneratedMatrixRepos: {},
     requiredGeneratedValidationSuiteArtifactIndexes: {
       "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
     },
@@ -481,6 +489,14 @@ function artifactAggregateFixture() {
       missingGeneratedMatrixLimitations: {
         "dry-run-classification-coverage": 1,
       },
+      requiredGeneratedMatrixNames: {
+        "workspace-live-sync-matrix": 1,
+      },
+      missingGeneratedMatrixNames: {},
+      requiredGeneratedMatrixRepos: {
+        oss: 1,
+      },
+      missingGeneratedMatrixRepos: {},
       requiredGeneratedValidationSuiteArtifactIndexes: {
         "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
       },

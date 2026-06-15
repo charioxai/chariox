@@ -301,6 +301,8 @@ async function main() {
       includeRemote: options.includeRemote,
       includeHetzner: options.includeHetzner,
       includeOpencode: options.includeOpencode,
+      generatedMatrixNames: 'workspace-live-sync-matrix',
+      generatedMatrixRepos: 'oss',
       ...providerMetadataFor(selected, options),
       ...drillDeploymentPresetMetadata([
         'local',

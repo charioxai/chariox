@@ -707,6 +707,10 @@ test("summarizes drill artifact indexes", async () => {
         missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
         requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
         missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
+        requiredGeneratedMatrixNames: "workspace-live-sync-matrix",
+        missingGeneratedMatrixNames: "missing-workspace-live-sync-matrix",
+        requiredGeneratedMatrixRepos: "oss",
+        missingGeneratedMatrixRepos: "cloud",
         providerAccountAliases: "codex=work,claude=team",
         evidenceRepos: "cloud,oss",
         artifactCoverageInputSources: "artifact metadata inputs",
@@ -821,6 +825,18 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
     })
+    assert.deepEqual(aggregate.requiredGeneratedMatrixNames, {
+      "workspace-live-sync-matrix": 1,
+    })
+    assert.deepEqual(aggregate.missingGeneratedMatrixNames, {
+      "missing-workspace-live-sync-matrix": 1,
+    })
+    assert.deepEqual(aggregate.requiredGeneratedMatrixRepos, {
+      oss: 1,
+    })
+    assert.deepEqual(aggregate.missingGeneratedMatrixRepos, {
+      cloud: 1,
+    })
     assert.deepEqual(aggregate.requiredGeneratedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
     })
@@ -889,6 +905,8 @@ test("summarizes drill artifact indexes", async () => {
       missingGeneratedEvidenceKinds: "matrix-report",
       missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
       missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
+      missingGeneratedMatrixNames: "missing-workspace-live-sync-matrix",
+      missingGeneratedMatrixRepos: "cloud",
       missingRuntimeSignalOwners: "runtime-network",
       missingRuntimeSignals: "relay-target-freshness",
       missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
@@ -899,6 +917,8 @@ test("summarizes drill artifact indexes", async () => {
       requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
       requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
+      requiredGeneratedMatrixNames: "workspace-live-sync-matrix",
+      requiredGeneratedMatrixRepos: "oss",
       requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
       requiredRuntimeSignalOwners: "kernel-authority,provider-runtime",
       requiredRuntimeSignals: "lease-health,provider-run-lifecycle,session-authority",
@@ -935,6 +955,10 @@ test("summarizes drill artifact indexes", async () => {
       "missingGeneratedMatrixArtifactIndexes",
       "requiredGeneratedMatrixLimitations",
       "missingGeneratedMatrixLimitations",
+      "requiredGeneratedMatrixNames",
+      "missingGeneratedMatrixNames",
+      "requiredGeneratedMatrixRepos",
+      "missingGeneratedMatrixRepos",
       "requiredGeneratedValidationSuiteArtifactIndexes",
       "missingGeneratedValidationSuiteArtifactIndexes",
       "providerAccountAliases",
@@ -1197,6 +1221,30 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      requiredGeneratedMatrixNames: { "Bearer abcdefghijklmnop": 1 },
+    })),
+    /requiredGeneratedMatrixNames\.Bearer abcdefghijklmnop includes secret-looking generated matrix name/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      missingGeneratedMatrixNames: { "Bearer abcdefghijklmnop": 1 },
+    })),
+    /missingGeneratedMatrixNames\.Bearer abcdefghijklmnop includes secret-looking generated matrix name/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      requiredGeneratedMatrixRepos: { osz: 1 },
+    })),
+    /requiredGeneratedMatrixRepos has unknown evidence repo "osz"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      missingGeneratedMatrixRepos: { osz: 1 },
+    })),
+    /missingGeneratedMatrixRepos has unknown evidence repo "osz"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       artifactKinds: { "validation-sutie": 1 },
     })),
     /artifactKinds has unknown artifact kind "validation-sutie"/,
@@ -1343,6 +1391,36 @@ test("rejects unsafe drill artifact index paths", async () => {
         schema: DRILL_ARTIFACT_INDEX_SCHEMA,
         rootDir: root,
         createdAt: new Date().toISOString(),
+        metadata: { requiredGeneratedMatrixRepos: "osz" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.requiredGeneratedMatrixRepos has unknown evidence repo "osz"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { missingGeneratedMatrixRepos: "osz" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.missingGeneratedMatrixRepos has unknown evidence repo "osz"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
         metadata: { generatedMatrixNames: "Bearer abcdefghijklmnop" },
         artifacts: [{
           path: "reports/gate.json",
@@ -1352,6 +1430,36 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.generatedMatrixNames\[0\] includes secret-looking generated matrix name/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { requiredGeneratedMatrixNames: "Bearer abcdefghijklmnop" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.requiredGeneratedMatrixNames\[0\] includes secret-looking generated matrix name/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { missingGeneratedMatrixNames: "Bearer abcdefghijklmnop" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.missingGeneratedMatrixNames\[0\] includes secret-looking generated matrix name/,
     )
     assert.throws(
       () => validateDrillArtifactIndex({

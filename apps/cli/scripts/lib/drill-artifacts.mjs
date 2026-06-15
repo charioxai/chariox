@@ -56,6 +56,10 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "missingGeneratedMatrixArtifactIndexes",
   "requiredGeneratedMatrixLimitations",
   "missingGeneratedMatrixLimitations",
+  "requiredGeneratedMatrixNames",
+  "missingGeneratedMatrixNames",
+  "requiredGeneratedMatrixRepos",
+  "missingGeneratedMatrixRepos",
   "requiredGeneratedValidationSuiteArtifactIndexes",
   "missingGeneratedValidationSuiteArtifactIndexes",
   "providerAccountAliases",
@@ -96,6 +100,10 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   missingGeneratedMatrixArtifactIndexes: "missing_generated_matrix_artifact_indexes",
   requiredGeneratedMatrixLimitations: "required_generated_matrix_limitations",
   missingGeneratedMatrixLimitations: "missing_generated_matrix_limitations",
+  requiredGeneratedMatrixNames: "required_generated_matrix_names",
+  missingGeneratedMatrixNames: "missing_generated_matrix_names",
+  requiredGeneratedMatrixRepos: "required_generated_matrix_repos",
+  missingGeneratedMatrixRepos: "missing_generated_matrix_repos",
   requiredGeneratedValidationSuiteArtifactIndexes: "required_generated_validation_suite_artifact_indexes",
   missingGeneratedValidationSuiteArtifactIndexes: "missing_generated_validation_suite_artifact_indexes",
   providerAccountAliases: "provider_account_aliases",
@@ -262,6 +270,10 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const missingGeneratedMatrixArtifactIndexes = new Map()
   const requiredGeneratedMatrixLimitations = new Map()
   const missingGeneratedMatrixLimitations = new Map()
+  const requiredGeneratedMatrixNames = new Map()
+  const missingGeneratedMatrixNames = new Map()
+  const requiredGeneratedMatrixRepos = new Map()
+  const missingGeneratedMatrixRepos = new Map()
   const requiredGeneratedValidationSuiteArtifactIndexes = new Map()
   const missingGeneratedValidationSuiteArtifactIndexes = new Map()
   const providerAccountAliases = new Map()
@@ -302,6 +314,10 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexMissingGeneratedMatrixArtifactIndexes = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixArtifactIndexes")
     const indexRequiredGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "requiredGeneratedMatrixLimitations")
     const indexMissingGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixLimitations")
+    const indexRequiredGeneratedMatrixNames = metadataListFromMetadata(index.metadata, "requiredGeneratedMatrixNames")
+    const indexMissingGeneratedMatrixNames = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixNames")
+    const indexRequiredGeneratedMatrixRepos = metadataListFromMetadata(index.metadata, "requiredGeneratedMatrixRepos")
+    const indexMissingGeneratedMatrixRepos = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixRepos")
     const indexRequiredGeneratedValidationSuiteArtifactIndexes = metadataListFromMetadata(index.metadata, "requiredGeneratedValidationSuiteArtifactIndexes")
     const indexMissingGeneratedValidationSuiteArtifactIndexes = metadataListFromMetadata(index.metadata, "missingGeneratedValidationSuiteArtifactIndexes")
     const indexProviderAccountAliases = metadataListFromMetadata(index.metadata, "providerAccountAliases")
@@ -335,6 +351,10 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexMissingGeneratedMatrixArtifactIndexes, missingGeneratedMatrixArtifactIndexes)
     countValues(indexRequiredGeneratedMatrixLimitations, requiredGeneratedMatrixLimitations)
     countValues(indexMissingGeneratedMatrixLimitations, missingGeneratedMatrixLimitations)
+    countValues(indexRequiredGeneratedMatrixNames, requiredGeneratedMatrixNames)
+    countValues(indexMissingGeneratedMatrixNames, missingGeneratedMatrixNames)
+    countValues(indexRequiredGeneratedMatrixRepos, requiredGeneratedMatrixRepos)
+    countValues(indexMissingGeneratedMatrixRepos, missingGeneratedMatrixRepos)
     countValues(indexRequiredGeneratedValidationSuiteArtifactIndexes, requiredGeneratedValidationSuiteArtifactIndexes)
     countValues(indexMissingGeneratedValidationSuiteArtifactIndexes, missingGeneratedValidationSuiteArtifactIndexes)
     countValues(indexProviderAccountAliases, providerAccountAliases)
@@ -382,6 +402,10 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       missingGeneratedMatrixArtifactIndexes: countValues(indexMissingGeneratedMatrixArtifactIndexes),
       requiredGeneratedMatrixLimitations: countValues(indexRequiredGeneratedMatrixLimitations),
       missingGeneratedMatrixLimitations: countValues(indexMissingGeneratedMatrixLimitations),
+      requiredGeneratedMatrixNames: countValues(indexRequiredGeneratedMatrixNames),
+      missingGeneratedMatrixNames: countValues(indexMissingGeneratedMatrixNames),
+      requiredGeneratedMatrixRepos: countValues(indexRequiredGeneratedMatrixRepos),
+      missingGeneratedMatrixRepos: countValues(indexMissingGeneratedMatrixRepos),
       requiredGeneratedValidationSuiteArtifactIndexes: countValues(indexRequiredGeneratedValidationSuiteArtifactIndexes),
       missingGeneratedValidationSuiteArtifactIndexes: countValues(indexMissingGeneratedValidationSuiteArtifactIndexes),
       providerAccountAliases: countValues(indexProviderAccountAliases),
@@ -421,6 +445,10 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     missingGeneratedMatrixArtifactIndexes: sortedCountObject(missingGeneratedMatrixArtifactIndexes),
     requiredGeneratedMatrixLimitations: sortedCountObject(requiredGeneratedMatrixLimitations),
     missingGeneratedMatrixLimitations: sortedCountObject(missingGeneratedMatrixLimitations),
+    requiredGeneratedMatrixNames: sortedCountObject(requiredGeneratedMatrixNames),
+    missingGeneratedMatrixNames: sortedCountObject(missingGeneratedMatrixNames),
+    requiredGeneratedMatrixRepos: sortedCountObject(requiredGeneratedMatrixRepos),
+    missingGeneratedMatrixRepos: sortedCountObject(missingGeneratedMatrixRepos),
     requiredGeneratedValidationSuiteArtifactIndexes: sortedCountObject(requiredGeneratedValidationSuiteArtifactIndexes),
     missingGeneratedValidationSuiteArtifactIndexes: sortedCountObject(missingGeneratedValidationSuiteArtifactIndexes),
     providerAccountAliases: sortedCountObject(providerAccountAliases),
@@ -731,6 +759,20 @@ function validateDiagnosticCountObject(value, source, key) {
     for (const limitation of Object.keys(value)) {
       if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
         throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
+      }
+    }
+  }
+  if (["generatedMatrixRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"].includes(key)) {
+    for (const repo of Object.keys(value)) {
+      if (!isKnownDrillArtifactEvidenceRepo(repo)) {
+        throw new Error(`${source} has unknown evidence repo ${JSON.stringify(repo)}`)
+      }
+    }
+  }
+  if (["generatedMatrixNames", "requiredGeneratedMatrixNames", "missingGeneratedMatrixNames"].includes(key)) {
+    for (const matrixName of Object.keys(value)) {
+      if (redactDrillSecretText(matrixName) !== matrixName) {
+        throw new Error(`${source}.${matrixName} includes secret-looking generated matrix name`)
       }
     }
   }
@@ -1119,14 +1161,18 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
       validateGeneratedEvidencePathText(value, `${source}.${key}[${index}]`)
     }
   }
-  for (const repo of metadataListFromMetadata(metadata, "generatedMatrixRepos")) {
-    if (!isKnownDrillArtifactEvidenceRepo(repo)) {
-      throw new Error(`${source}.generatedMatrixRepos has unknown evidence repo ${JSON.stringify(repo)}`)
+  for (const key of ["generatedMatrixRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"]) {
+    for (const repo of metadataListFromMetadata(metadata, key)) {
+      if (!isKnownDrillArtifactEvidenceRepo(repo)) {
+        throw new Error(`${source}.${key} has unknown evidence repo ${JSON.stringify(repo)}`)
+      }
     }
   }
-  for (const [index, matrixName] of metadataListFromMetadata(metadata, "generatedMatrixNames").entries()) {
-    if (redactDrillSecretText(matrixName) !== matrixName) {
-      throw new Error(`${source}.generatedMatrixNames[${index}] includes secret-looking generated matrix name`)
+  for (const key of ["generatedMatrixNames", "requiredGeneratedMatrixNames", "missingGeneratedMatrixNames"]) {
+    for (const [index, matrixName] of metadataListFromMetadata(metadata, key).entries()) {
+      if (redactDrillSecretText(matrixName) !== matrixName) {
+        throw new Error(`${source}.${key}[${index}] includes secret-looking generated matrix name`)
+      }
     }
   }
 }

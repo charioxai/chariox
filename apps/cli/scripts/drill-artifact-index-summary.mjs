@@ -24,6 +24,7 @@ import {
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
+import { isKnownDrillArtifactEvidenceRepo } from "./lib/drill-evidence-repos.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
@@ -50,6 +51,10 @@ function printHelp() {
     "                         Exit non-zero when generated evidence kind metadata is missing; repeatable",
     "  --require-generated-matrix-limitation KIND",
     "                         Exit non-zero when generated matrix limitation metadata is missing; repeatable",
+    "  --require-generated-matrix-name NAME",
+    "                         Exit non-zero when generated matrix name metadata is missing; repeatable",
+    "  --require-generated-matrix-repo REPO",
+    "                         Exit non-zero when generated matrix repo metadata is missing; repeatable",
     "  --require-generated-validation-suite-failure-root PATH",
     "                         Exit non-zero when generated validation-suite failure-root metadata is missing; repeatable",
     "  --require-generated-validation-suite-artifact-index PATH",
@@ -96,6 +101,8 @@ async function main() {
   }
   Object.assign(aggregate, generatedEvidenceKindDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedMatrixLimitationDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, generatedMatrixNameDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, generatedMatrixRepoDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedValidationSuiteArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options))
@@ -115,6 +122,8 @@ async function main() {
         ...artifactIndexSummaryOutputMetadataFor(aggregate),
         ...generatedEvidenceKindRequirementMetadataFor(aggregate),
         ...generatedMatrixLimitationRequirementMetadataFor(aggregate),
+        ...generatedMatrixNameRequirementMetadataFor(aggregate),
+        ...generatedMatrixRepoRequirementMetadataFor(aggregate),
         ...generatedValidationSuiteArtifactIndexRequirementMetadataFor(aggregate),
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
         ...generatedMatrixArtifactIndexRequirementMetadataFor(aggregate),
@@ -135,6 +144,8 @@ async function main() {
     || (aggregate.staleMatrixReports ?? []).length > 0
     || (aggregate.missingRequiredGeneratedEvidenceKinds ?? []).length > 0
     || (aggregate.missingRequiredGeneratedMatrixLimitations ?? []).length > 0
+    || (aggregate.missingRequiredGeneratedMatrixNames ?? []).length > 0
+    || (aggregate.missingRequiredGeneratedMatrixRepos ?? []).length > 0
     || (aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
     || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
@@ -161,6 +172,8 @@ function parseArgs(argv) {
     requiredArtifactMaxAgeMs: null,
     requiredGeneratedEvidenceKinds: [],
     requiredGeneratedMatrixLimitations: [],
+    requiredGeneratedMatrixNames: [],
+    requiredGeneratedMatrixRepos: [],
     requiredGeneratedValidationSuiteArtifactIndexes: [],
     requiredGeneratedValidationSuiteFailureRoots: [],
     requiredGeneratedMatrixArtifactIndexes: [],
@@ -228,6 +241,22 @@ function parseArgs(argv) {
       options.requiredGeneratedMatrixLimitations.push(parseGeneratedMatrixLimitationRequirement(
         arg.slice("--require-generated-matrix-limitation=".length),
         "--require-generated-matrix-limitation",
+      ))
+    } else if (arg === "--require-generated-matrix-name") {
+      options.requiredGeneratedMatrixNames.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-generated-matrix-name=")) {
+      options.requiredGeneratedMatrixNames.push(parseDiagnosticRequirementText(
+        arg.slice("--require-generated-matrix-name=".length),
+        "--require-generated-matrix-name",
+      ))
+    } else if (arg === "--require-generated-matrix-repo") {
+      options.requiredGeneratedMatrixRepos.push(parseGeneratedMatrixRepoRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-generated-matrix-repo=")) {
+      options.requiredGeneratedMatrixRepos.push(parseGeneratedMatrixRepoRequirement(
+        arg.slice("--require-generated-matrix-repo=".length),
+        "--require-generated-matrix-repo",
       ))
     } else if (arg === "--require-generated-validation-suite-failure-root") {
       options.requiredGeneratedValidationSuiteFailureRoots.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
@@ -377,6 +406,13 @@ function parseGeneratedMatrixLimitationRequirement(value, flag) {
   return value
 }
 
+function parseGeneratedMatrixRepoRequirement(value, flag) {
+  if (!isKnownDrillArtifactEvidenceRepo(value)) {
+    throw new Error(`${flag} has unknown generated matrix repo: ${value}`)
+  }
+  return value
+}
+
 function parseValidationPresetRequirement(value, flag) {
   if (!isKnownDrillArtifactValidationPreset(value)) {
     throw new Error(`${flag} has unknown validation preset: ${value}`)
@@ -493,8 +529,46 @@ function generatedMatrixLimitationRequirementMetadataFor(aggregate) {
   const required = aggregate.requiredGeneratedMatrixLimitationRequirements ?? []
   const missing = aggregate.missingRequiredGeneratedMatrixLimitations ?? []
   return {
-    ...(required.length > 0 ? { requiredGeneratedMatrixLimitationRequirements: required.join(",") } : {}),
-    ...(missing.length > 0 ? { missingRequiredGeneratedMatrixLimitations: missing.join(",") } : {}),
+    ...(required.length > 0 ? { requiredGeneratedMatrixLimitations: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingGeneratedMatrixLimitations: missing.join(",") } : {}),
+  }
+}
+
+function generatedMatrixNameDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredGeneratedMatrixNames)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.generatedMatrixNames ?? {}))
+  return {
+    requiredGeneratedMatrixNameRequirements: required,
+    missingRequiredGeneratedMatrixNames: required.filter((name) => !available.has(name)),
+  }
+}
+
+function generatedMatrixNameRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredGeneratedMatrixNameRequirements ?? []
+  const missing = aggregate.missingRequiredGeneratedMatrixNames ?? []
+  return {
+    ...(required.length > 0 ? { requiredGeneratedMatrixNames: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingGeneratedMatrixNames: missing.join(",") } : {}),
+  }
+}
+
+function generatedMatrixRepoDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredGeneratedMatrixRepos)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.generatedMatrixRepos ?? {}))
+  return {
+    requiredGeneratedMatrixRepoRequirements: required,
+    missingRequiredGeneratedMatrixRepos: required.filter((repo) => !available.has(repo)),
+  }
+}
+
+function generatedMatrixRepoRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredGeneratedMatrixRepoRequirements ?? []
+  const missing = aggregate.missingRequiredGeneratedMatrixRepos ?? []
+  return {
+    ...(required.length > 0 ? { requiredGeneratedMatrixRepos: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingGeneratedMatrixRepos: missing.join(",") } : {}),
   }
 }
 
@@ -675,6 +749,14 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingRequiredGeneratedMatrixLimitations ?? []
     lines.push(`generated_matrix_limitations_required=${aggregate.requiredGeneratedMatrixLimitationRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredGeneratedMatrixNameRequirements !== undefined) {
+    const missing = aggregate.missingRequiredGeneratedMatrixNames ?? []
+    lines.push(`generated_matrix_names_required=${aggregate.requiredGeneratedMatrixNameRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
+  if (aggregate.requiredGeneratedMatrixRepoRequirements !== undefined) {
+    const missing = aggregate.missingRequiredGeneratedMatrixRepos ?? []
+    lines.push(`generated_matrix_repos_required=${aggregate.requiredGeneratedMatrixRepoRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if (aggregate.requiredGeneratedValidationSuiteFailureRoots !== undefined) {
     const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
     lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRoots.join(",") || "none"} missing=${missing.join(",") || "none"}`)
@@ -728,6 +810,12 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingRequiredGeneratedMatrixLimitations ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record generated matrix limitations: ${aggregate.missingRequiredGeneratedMatrixLimitations.join(", ")}`)
+  }
+  if ((aggregate.missingRequiredGeneratedMatrixNames ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes that record generated matrix names: ${aggregate.missingRequiredGeneratedMatrixNames.join(", ")}`)
+  }
+  if ((aggregate.missingRequiredGeneratedMatrixRepos ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes that record generated matrix repos: ${aggregate.missingRequiredGeneratedMatrixRepos.join(", ")}`)
   }
   if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
     lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRoots.join(", ")}`)
@@ -784,6 +872,18 @@ function artifactIndexSummaryNextActions(aggregate) {
     aggregate.missingRequiredGeneratedMatrixLimitations,
     "generated-evidence",
     "include drill artifact indexes that record generated matrix limitations",
+  )
+  addMissingListActions(
+    nextActions,
+    aggregate.missingRequiredGeneratedMatrixNames,
+    "generated-evidence",
+    "include drill artifact indexes that record generated matrix names",
+  )
+  addMissingListActions(
+    nextActions,
+    aggregate.missingRequiredGeneratedMatrixRepos,
+    "generated-evidence",
+    "include drill artifact indexes that record generated matrix repos",
   )
   addMissingListActions(
     nextActions,

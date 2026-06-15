@@ -94,6 +94,12 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.deepEqual(stdoutAggregate.generatedMatrixArtifactIndexes, {
       "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json": 1,
     })
+    assert.deepEqual(stdoutAggregate.generatedMatrixNames, {
+      "workspace-live-sync-matrix": 1,
+    })
+    assert.deepEqual(stdoutAggregate.generatedMatrixRepos, {
+      oss: 1,
+    })
     assert.deepEqual(stdoutAggregate.generatedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
     })
@@ -144,6 +150,8 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.generatedMatrixArtifactIndexes, "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.generatedMatrixNames, "workspace-live-sync-matrix")
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
     assert.equal(artifactIndex.metadata.generatedValidationSuiteArtifactIndexes, "/tmp/generated-suite/arroba-drill-artifacts.json")
     assert.equal(artifactIndex.metadata.generatedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
     assert.equal(artifactIndex.metadata.requiredGeneratedEvidenceKinds, "matrix-report,validation-suite-run")
@@ -477,8 +485,8 @@ test("drill artifact index summary gates generated matrix limitations", async ()
 
     assert.deepEqual(aggregate.requiredGeneratedMatrixLimitationRequirements, ["dry-run-classification-coverage"])
     assert.deepEqual(aggregate.missingRequiredGeneratedMatrixLimitations, [])
-    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitationRequirements, "dry-run-classification-coverage")
-    assert.equal(artifactIndex.metadata.missingRequiredGeneratedMatrixLimitations, undefined)
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, undefined)
 
     await assert.rejects(
       execFile(process.execPath, [
@@ -505,6 +513,76 @@ test("drill artifact index summary gates generated matrix limitations", async ()
       (error) => {
         assert.equal(error.code, 1)
         assert.match(error.stderr, /--require-generated-matrix-limitation has unknown generated matrix limitation: dry-run-classification-covergae/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill artifact index summary gates generated matrix names and repos", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const matrixIndexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+    const validationIndexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      matrixIndexPath,
+      "--require-generated-matrix-name",
+      "workspace-live-sync-matrix",
+      "--require-generated-matrix-repo",
+      "oss",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredGeneratedMatrixNameRequirements, ["workspace-live-sync-matrix"])
+    assert.deepEqual(aggregate.missingRequiredGeneratedMatrixNames, [])
+    assert.deepEqual(aggregate.requiredGeneratedMatrixRepoRequirements, ["oss"])
+    assert.deepEqual(aggregate.missingRequiredGeneratedMatrixRepos, [])
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixNames, "workspace-live-sync-matrix")
+    assert.equal(artifactIndex.metadata.missingGeneratedMatrixNames, undefined)
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixRepos, "oss")
+    assert.equal(artifactIndex.metadata.missingGeneratedMatrixRepos, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        validationIndexPath,
+        "--require-generated-matrix-name=workspace-live-sync-matrix",
+        "--require-generated-matrix-repo=oss",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /generated_matrix_names_required=workspace-live-sync-matrix missing=workspace-live-sync-matrix/)
+        assert.match(error.stdout, /generated_matrix_repos_required=oss missing=oss/)
+        assert.match(error.stdout, /next: include drill artifact indexes that record generated matrix names: workspace-live-sync-matrix/)
+        assert.match(error.stdout, /next: include drill artifact indexes that record generated matrix repos: oss/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        matrixIndexPath,
+        "--require-generated-matrix-repo",
+        "osz",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-matrix-repo has unknown generated matrix repo: osz/)
         return true
       },
     )
@@ -1010,6 +1088,12 @@ async function writeIndexedReport(rootDir, name, schema) {
       generatedMatrixLimitations: name === "one"
         ? ""
         : "dry-run-classification-coverage",
+      generatedMatrixNames: name === "one"
+        ? ""
+        : "workspace-live-sync-matrix",
+      generatedMatrixRepos: name === "one"
+        ? ""
+        : "oss",
       generatedValidationSuiteArtifactIndexes: name === "one"
         ? "/tmp/generated-suite/arroba-drill-artifacts.json"
         : "",
