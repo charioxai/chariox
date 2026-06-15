@@ -1070,6 +1070,19 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
             ClientCapabilityLevel::InteractiveStructured,
         ))
         .expect("attachment should attach");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let trace_subscription = app.metaagent_trace_subscription_store().subscribe(
+        session.id(),
+        metaagent.id(),
+        agent.id(),
+        crate::runtime::metaagent_trace::MetaagentTraceMode::Compact,
+    );
     let prompt = app
         .submit_prompt(
             session.id(),
@@ -1121,6 +1134,27 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].agent_id.as_deref(), Some(agent.id()));
     assert_eq!(completions[0].message_id, "assistant-msg-1");
+
+    let trace_outputs = app
+        .terminal_mut()
+        .drain_output_records(session.id(), &trace_subscription.recipient_attachment_id);
+    assert_eq!(trace_outputs.len(), 1);
+    assert_eq!(trace_outputs[0].agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(trace_outputs[0].bytes, b"remote output".to_vec());
+
+    let trace_notices = app
+        .terminal_mut()
+        .drain_notice_records(session.id(), &trace_subscription.recipient_attachment_id);
+    assert_eq!(trace_notices.len(), 1);
+    assert_eq!(trace_notices[0].agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(trace_notices[0].message, "remote notice");
+
+    let trace_completions = app
+        .terminal_mut()
+        .drain_completion_records(session.id(), &trace_subscription.recipient_attachment_id);
+    assert_eq!(trace_completions.len(), 1);
+    assert_eq!(trace_completions[0].agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(trace_completions[0].message_id, "assistant-msg-1");
 
     let projected = app
         .session_state_projection_store()

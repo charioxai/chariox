@@ -206,16 +206,9 @@ impl<'a> KernelAgentService<'a> {
         message_id: &str,
         completed_at_ms: u64,
     ) {
-        let agent_id = self
-            .app
-            .providers
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string));
-        self.app.terminal.record_assistant_message_completion(
+        self.app.record_assistant_message_completion(
             session_id,
             provider_run_id,
-            agent_id.as_deref(),
             recipient_attachment_ids,
             message_id,
             completed_at_ms,

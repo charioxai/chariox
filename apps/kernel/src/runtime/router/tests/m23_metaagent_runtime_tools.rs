@@ -348,6 +348,87 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
 }
 
 #[tokio::test]
+async fn remote_runtime_projection_records_metaagent_turn_completion_event() {
+    let env = TestMetaRuntimeEnv::new("remote-projection-completion-event");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, worker) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let submitted = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(worker.id()),
+            "remote worker prompt",
+            Vec::new(),
+        )
+        .expect("worker prompt should submit");
+    assert!(matches!(
+        submitted,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    router
+        .runtime_state
+        .project_relay_remote_runtime_projection(
+            session.id(),
+            worker.id(),
+            "remote:worker:provider-run-1",
+            None,
+            Vec::new(),
+            vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                merge_key: Some("assistant-1".to_string()),
+                bytes: b"remote output".to_vec(),
+            }],
+            Vec::new(),
+            vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                message_id: "assistant-msg-1".to_string(),
+                completed_at_ms: 1234,
+            }],
+        )
+        .await
+        .expect("runtime projection should succeed");
+
+    let events = app.lock().await.metaagent_event_store().list(
+        metaagent.id(),
+        Some("agent.turn.completed"),
+        None,
+        10,
+    );
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].source_agent_id.as_deref(), Some(worker.id()));
+    assert_eq!(
+        events[0]
+            .detail
+            .get("completed_agent_id")
+            .and_then(serde_json::Value::as_str),
+        Some(worker.id())
+    );
+}
+
+#[tokio::test]
 async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
     let env = TestMetaRuntimeEnv::new("task-artifacts");
     let workspace = env.root.join("workspace");

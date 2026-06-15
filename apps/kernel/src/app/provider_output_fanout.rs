@@ -57,17 +57,35 @@ impl ProviderOutputFanout {
         let agent_id = provider_run
             .as_ref()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-            session_id,
-            agent_id.as_deref(),
-            recipient_attachment_ids,
-        );
-        let record = self.terminal.fan_out_output(
+        self.fan_out_for_agent(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
+            kind,
+            merge_key,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
+    pub(crate) fn fan_out_for_agent(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids =
+            self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
+        let record = self.terminal.fan_out_output(
+            session_id,
+            provider_run_id,
+            agent_id,
             kind.clone(),
             merge_key.clone(),
             recipient_attachment_ids,
@@ -76,7 +94,7 @@ impl ProviderOutputFanout {
         if kind != TerminalOutputKind::PromptEcho {
             let text = String::from_utf8_lossy(bytes).into_owned();
             if kind == TerminalOutputKind::ProviderReasoning {
-                if let Some(agent_id) = agent_id.as_deref() {
+                if let Some(agent_id) = agent_id {
                     self.record_workflow_thinking_trace(
                         session_id,
                         provider_run_id,
@@ -90,7 +108,7 @@ impl ProviderOutputFanout {
                 SessionHistoryEntry::provider_output(
                     session_id,
                     provider_run_id,
-                    agent_id.as_deref(),
+                    agent_id,
                     kind,
                     merge_key,
                     text,
@@ -155,23 +173,38 @@ impl ProviderOutputFanout {
                 .ok()
                 .and_then(|run| run.agent_instance_id().map(str::to_string))
         });
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-            session_id,
-            agent_id.as_deref(),
-            recipient_attachment_ids,
-        );
-        let record = self.terminal.record_notice(
+        self.record_notice_for_agent(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
+            recipient_attachment_ids,
+            message,
+        )
+    }
+
+    pub(crate) fn record_notice_for_agent(
+        &self,
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message: impl Into<String>,
+    ) -> RuntimeNoticeRecord {
+        let message = message.into();
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids =
+            self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
+        let record = self.terminal.record_notice(
+            session_id,
+            provider_run_id,
+            agent_id,
             recipient_attachment_ids,
             message.clone(),
         );
         self.append_history_entry(
             session_id,
-            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id.as_deref(), message),
+            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message),
         );
         record
     }
@@ -189,12 +222,33 @@ impl ProviderOutputFanout {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        self.terminal.record_assistant_message_completion(
+        self.record_assistant_message_completion_for_agent(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
+        );
+    }
+
+    pub(crate) fn record_assistant_message_completion_for_agent(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) {
+        let recipient_attachment_ids =
+            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids =
+            self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
+        self.terminal.record_assistant_message_completion(
+            session_id,
+            provider_run_id,
+            agent_id,
             recipient_attachment_ids,
             message_id,
             completed_at_ms,

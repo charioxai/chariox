@@ -396,18 +396,26 @@ impl KernelRuntimeState {
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
-        self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
-                &session_id,
-                &agent_id,
-                &provider_run_id,
-                provider_run,
-                prompts,
-                output_chunks,
-                notices,
-                completions,
-            )
-        })
-        .await
+        let projection_session_id = session_id.clone();
+        let projection_agent_id = agent_id.clone();
+        let projection_provider_run_id = provider_run_id.clone();
+        let outcome = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
+                    &projection_session_id,
+                    &projection_agent_id,
+                    &projection_provider_run_id,
+                    provider_run,
+                    prompts,
+                    output_chunks,
+                    notices,
+                    completions,
+                )
+            })
+            .await?;
+        for completion in outcome.completions {
+            self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
+        }
+        Ok(())
     }
 }

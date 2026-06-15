@@ -65,6 +65,27 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn fan_out_output_for_agent(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: TerminalOutputKind,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        ProviderOutputFanout::new(self).fan_out_for_agent(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            merge_key,
+            recipient_attachment_ids,
+            bytes,
+        )
+    }
+
     pub(crate) fn record_notice(
         &mut self,
         session_id: &str,
@@ -72,25 +93,65 @@ impl DaemonApp {
         recipient_attachment_ids: Vec<String>,
         message: impl Into<String>,
     ) -> RuntimeNoticeRecord {
-        let message = message.into();
-        let agent_id = provider_run_id.and_then(|run_id| {
-            self.providers
-                .get_run(run_id)
-                .ok()
-                .and_then(|run| run.agent_instance_id().map(str::to_string))
-        });
-        let record = self.terminal.record_notice(
+        ProviderOutputFanout::new(self).record_notice(
             session_id,
             provider_run_id,
-            agent_id.as_deref(),
             recipient_attachment_ids,
-            message.clone(),
-        );
-        self.append_history_entry(
+            message,
+        )
+    }
+
+    pub(crate) fn record_notice_for_agent(
+        &mut self,
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message: impl Into<String>,
+    ) -> RuntimeNoticeRecord {
+        ProviderOutputFanout::new(self).record_notice_for_agent(
             session_id,
-            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id.as_deref(), message),
+            provider_run_id,
+            agent_id,
+            recipient_attachment_ids,
+            message,
+        )
+    }
+
+    pub(crate) fn record_assistant_message_completion(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) {
+        ProviderOutputFanout::new(self).record_assistant_message_completion(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
         );
-        record
+    }
+
+    pub(crate) fn record_assistant_message_completion_for_agent(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+        message_id: &str,
+        completed_at_ms: u64,
+    ) {
+        ProviderOutputFanout::new(self).record_assistant_message_completion_for_agent(
+            session_id,
+            provider_run_id,
+            agent_id,
+            recipient_attachment_ids,
+            message_id,
+            completed_at_ms,
+        );
     }
 
     pub(crate) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {

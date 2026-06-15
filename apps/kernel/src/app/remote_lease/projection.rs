@@ -1,8 +1,8 @@
 use crate::app::provider_output;
 use crate::error::DaemonError;
 use crate::execution_lease::LeasedAgent;
-use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
-use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
+use crate::history::SessionHistoryEntryKind;
+use crate::session::{PromptCompletion, PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 use crate::terminal::TerminalOutputKind;
 use crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout;
 use crate::transport::relay_peer::{
@@ -15,6 +15,11 @@ use super::RemoteLeaseRuntime;
 
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
+
+#[derive(Debug, Default)]
+pub(crate) struct RemoteRuntimeProjectionOutcome {
+    pub(crate) completions: Vec<PromptCompletion>,
+}
 
 impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn drain_leased_runtime_projection(
@@ -475,8 +480,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         output_chunks: Vec<RelayProjectedOutputChunk>,
         notices: Vec<String>,
         completions: Vec<RelayProjectedCompletion>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<RemoteRuntimeProjectionOutcome, DaemonError> {
         let _ = self.app.sessions.get_session(session_id)?;
+        let mut outcome = RemoteRuntimeProjectionOutcome::default();
         if let Some(provider_run) = provider_run {
             let leased_agent_id = self
                 .app
@@ -534,7 +540,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )?;
         }
         for chunk in output_chunks {
-            self.app.terminal.fan_out_output(
+            self.app.fan_out_output_for_agent(
                 session_id,
                 provider_run_id,
                 Some(agent_id),
@@ -543,40 +549,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 recipient_attachment_ids.clone(),
                 &chunk.bytes,
             );
-            if chunk.kind != TerminalOutputKind::PromptEcho {
-                self.app.append_history_entry(
-                    session_id,
-                    SessionHistoryEntry::provider_output(
-                        session_id,
-                        provider_run_id,
-                        Some(agent_id),
-                        chunk.kind,
-                        chunk.merge_key,
-                        String::from_utf8_lossy(&chunk.bytes).into_owned(),
-                    ),
-                );
-            }
         }
         for notice in notices {
-            self.app.terminal.record_notice(
+            self.app.record_notice_for_agent(
                 session_id,
                 Some(provider_run_id),
                 Some(agent_id),
                 recipient_attachment_ids.clone(),
                 notice.clone(),
             );
-            self.app.append_history_entry(
-                session_id,
-                SessionHistoryEntry::notice(
-                    session_id,
-                    Some(provider_run_id),
-                    Some(agent_id),
-                    notice,
-                ),
-            );
         }
         for completion in completions {
-            self.app.terminal.record_assistant_message_completion(
+            self.app.record_assistant_message_completion_for_agent(
                 session_id,
                 provider_run_id,
                 Some(agent_id),
@@ -608,7 +592,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     Some(provider_run_id),
                 );
             if !saw_completion && !workflow_output_ready {
-                return Ok(());
+                return Ok(outcome);
             }
             if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
@@ -667,11 +651,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     );
                     let _ = crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id);
-                    let _ = self
+                    let completed = self
                         .app
                         .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
+                    outcome.completions.push(PromptCompletion {
+                        completed,
+                        started_next: None,
+                    });
                 }
-                return Ok(());
+                return Ok(outcome);
             }
             let completed = self
                 .app
@@ -709,10 +697,24 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     if started_next.is_none() {
                         self.app.sync_focused_provider_run_if_idle(session_id)?;
                     }
+                    outcome.completions.push(PromptCompletion {
+                        completed,
+                        started_next,
+                    });
+                } else {
+                    outcome.completions.push(PromptCompletion {
+                        completed,
+                        started_next: None,
+                    });
                 }
+            } else {
+                outcome.completions.push(PromptCompletion {
+                    completed,
+                    started_next: None,
+                });
             }
         }
-        Ok(())
+        Ok(outcome)
     }
 
     fn project_remote_native_prompt_started(

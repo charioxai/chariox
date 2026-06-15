@@ -16,12 +16,15 @@ const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_TRACE_POLL_EFFORT ?? 'medium
 const TRACE_PHRASE = 'TRACE_POLL_DRILL_WORKER_VISIBLE'
 
 function buildUserPrompt(options) {
+  const workerPlacementInstruction = options.workerPlacement === 'new-headless-slice'
+    ? 'Place the worker in a new headless slice using the agent spawn slice option.'
+    : 'Keep the worker in this current session worktree; do not place it in a slice, remote kernel, separate directory, or new worktree.'
   const launchInstruction = options.workerProvider || options.workerModel || options.workerEffort
     ? [
         'Spawn one regular worker agent for a tiny supervision check.',
         `Use provider ${options.workerProvider}, model ${options.workerModel}, and variant/effort ${options.workerEffort} for the worker.`,
         'Do not use the session default launch profile for the worker.',
-        'Keep the worker in this current session worktree; do not place it in a slice, remote kernel, separate directory, or new worktree.',
+        workerPlacementInstruction,
       ]
     : [
         'Spawn one regular worker agent for a tiny supervision check.',
@@ -46,6 +49,7 @@ function parseArgs(argv) {
     workerProvider: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_PROVIDER ?? '',
     workerModel: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_MODEL ?? '',
     workerEffort: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_EFFORT ?? '',
+    workerPlacement: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_PLACEMENT ?? 'current-worktree',
     accountProfile: 'default',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
@@ -61,6 +65,7 @@ function parseArgs(argv) {
     else if (arg === '--worker-provider') options.workerProvider = String(argv[++index] ?? '').trim()
     else if (arg === '--worker-model') options.workerModel = String(argv[++index] ?? '').trim()
     else if (arg === '--worker-effort' || arg === '--worker-variant') options.workerEffort = String(argv[++index] ?? '').trim()
+    else if (arg === '--worker-placement') options.workerPlacement = String(argv[++index] ?? '').trim()
     else if (arg === '--account-profile') options.accountProfile = String(argv[++index] ?? '').trim()
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++index])
@@ -85,6 +90,9 @@ function parseArgs(argv) {
   const workerProfileParts = [options.workerProvider, options.workerModel, options.workerEffort].filter(Boolean).length
   if (workerProfileParts > 0 && workerProfileParts < 3) {
     throw new Error('--worker-provider, --worker-model, and --worker-effort must be provided together')
+  }
+  if (!['current-worktree', 'new-headless-slice'].includes(options.workerPlacement)) {
+    throw new Error('--worker-placement must be current-worktree or new-headless-slice')
   }
   return options
 }
@@ -266,8 +274,14 @@ async function terminateChild(child, signal = 'SIGTERM') {
 function workerMatchesProfile(agent, options) {
   if (!options.workerProvider) return true
   return agent.provider === options.workerProvider
-    && agent.model === options.workerModel
+    && modelMatches(agent.model, options.workerModel, options.workerProvider)
     && agent.effort === options.workerEffort
+}
+
+function modelMatches(actual, expected, provider) {
+  if (actual === expected) return true
+  if (!actual || !expected || !provider) return false
+  return actual === `${provider}/${expected}`
 }
 
 async function observe({ client, requests, sessionId, metaagentId, historyDir, beforeAgentIds, timeoutMs, pollMs, options }) {
@@ -494,6 +508,7 @@ async function main() {
       workerProvider: options.workerProvider || null,
       workerModel: options.workerModel || null,
       workerEffort: options.workerEffort || null,
+      workerPlacement: options.workerPlacement,
       promptCount: 1,
       workers: observed.workers.map((agent) => ({
         id: agent.id,
