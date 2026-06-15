@@ -42,6 +42,8 @@ function printHelp() {
     "                         Exit non-zero when generated matrix limitation metadata is missing; repeatable",
     "  --require-generated-validation-suite-failure-root PATH",
     "                         Exit non-zero when generated validation-suite failure-root metadata is missing; repeatable",
+    "  --require-generated-validation-suite-artifact-index PATH",
+    "                         Exit non-zero when generated validation-suite artifact-index metadata is missing; repeatable",
     "  --require-generated-matrix-artifact-index PATH",
     "                         Exit non-zero when generated matrix artifact-index metadata is missing; repeatable",
     "  --require-provider-account-alias P=A",
@@ -76,6 +78,7 @@ async function main() {
   }
   Object.assign(aggregate, generatedEvidenceKindDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedMatrixLimitationDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, generatedValidationSuiteArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
@@ -91,6 +94,7 @@ async function main() {
         ...artifactIndexSummaryOutputMetadataFor(aggregate),
         ...generatedEvidenceKindRequirementMetadataFor(aggregate),
         ...generatedMatrixLimitationRequirementMetadataFor(aggregate),
+        ...generatedValidationSuiteArtifactIndexRequirementMetadataFor(aggregate),
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
         ...generatedMatrixArtifactIndexRequirementMetadataFor(aggregate),
         ...providerAccountAliasRequirementMetadataFor(aggregate),
@@ -108,6 +112,7 @@ async function main() {
     || (aggregate.staleMatrixReports ?? []).length > 0
     || (aggregate.missingRequiredGeneratedEvidenceKinds ?? []).length > 0
     || (aggregate.missingRequiredGeneratedMatrixLimitations ?? []).length > 0
+    || (aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
     || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
@@ -129,6 +134,7 @@ function parseArgs(argv) {
     requiredArtifactMaxAgeMs: null,
     requiredGeneratedEvidenceKinds: [],
     requiredGeneratedMatrixLimitations: [],
+    requiredGeneratedValidationSuiteArtifactIndexes: [],
     requiredGeneratedValidationSuiteFailureRoots: [],
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredMatrixMaxAgeMs: null,
@@ -199,6 +205,14 @@ function parseArgs(argv) {
       options.requiredGeneratedValidationSuiteFailureRoots.push(parseDiagnosticRequirementText(
         arg.slice("--require-generated-validation-suite-failure-root=".length),
         "--require-generated-validation-suite-failure-root",
+      ))
+    } else if (arg === "--require-generated-validation-suite-artifact-index") {
+      options.requiredGeneratedValidationSuiteArtifactIndexes.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-generated-validation-suite-artifact-index=")) {
+      options.requiredGeneratedValidationSuiteArtifactIndexes.push(parseDiagnosticRequirementText(
+        arg.slice("--require-generated-validation-suite-artifact-index=".length),
+        "--require-generated-validation-suite-artifact-index",
       ))
     } else if (arg === "--require-generated-matrix-artifact-index") {
       options.requiredGeneratedMatrixArtifactIndexes.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
@@ -414,6 +428,25 @@ function generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate) {
   }
 }
 
+function generatedValidationSuiteArtifactIndexDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredGeneratedValidationSuiteArtifactIndexes)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.generatedValidationSuiteArtifactIndexes ?? {}))
+  return {
+    requiredGeneratedValidationSuiteArtifactIndexPaths: required,
+    missingGeneratedValidationSuiteArtifactIndexPaths: required.filter((indexPath) => !available.has(indexPath)),
+  }
+}
+
+function generatedValidationSuiteArtifactIndexRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredGeneratedValidationSuiteArtifactIndexPaths ?? []
+  const missing = aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []
+  return {
+    ...(required.length > 0 ? { requiredGeneratedValidationSuiteArtifactIndexes: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingGeneratedValidationSuiteArtifactIndexes: missing.join(",") } : {}),
+  }
+}
+
 function generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options) {
   const required = [...new Set(options.requiredGeneratedMatrixArtifactIndexes)].sort()
   if (required.length === 0) return {}
@@ -497,6 +530,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
     lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRoots.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredGeneratedValidationSuiteArtifactIndexPaths !== undefined) {
+    const missing = aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []
+    lines.push(`generated_validation_suite_artifact_indexes_required=${aggregate.requiredGeneratedValidationSuiteArtifactIndexPaths.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if (aggregate.requiredGeneratedMatrixArtifactIndexPaths !== undefined) {
     const missing = aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []
     lines.push(`generated_matrix_artifact_indexes_required=${aggregate.requiredGeneratedMatrixArtifactIndexPaths.join(",") || "none"} missing=${missing.join(",") || "none"}`)
@@ -523,6 +560,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
     lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRoots.join(", ")}`)
+  }
+  if ((aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []).length > 0) {
+    lines.push(`next: rerun generated validation suites with artifact indexes or include the artifact index that records generated validation-suite artifact indexes: ${aggregate.missingGeneratedValidationSuiteArtifactIndexPaths.join(", ")}`)
   }
   if ((aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0) {
     lines.push(`next: rerun generated matrix drills with artifact indexes or include the artifact index that records generated matrix artifact indexes: ${aggregate.missingGeneratedMatrixArtifactIndexPaths.join(", ")}`)
