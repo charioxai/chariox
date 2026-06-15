@@ -882,6 +882,9 @@ function validateMatrixAggregateReport(report, source) {
   if ((report.scenarioIds ?? []).length !== report.scenarioCount) {
     throw new Error(`${source} scenarioIds do not match scenarioCount`)
   }
+  if (report.runtimeSignalScenarios !== undefined) {
+    assertRuntimeSignalEvidenceScenarioIds(`${source}.runtimeSignalScenarios`, report.scenarioIds ?? [], report.runtimeSignalScenarios)
+  }
   const expectedStatus = report.counts.failed > 0
     ? "failed"
     : report.scenarioCount > 0 && report.counts.dryRun === report.scenarioCount
@@ -1161,6 +1164,17 @@ function assertRuntimeSignalEvidenceCounts(label, counts, evidence) {
     .sort(([left], [right]) => left.localeCompare(right)))
   if (JSON.stringify(counts) !== JSON.stringify(expected)) {
     throw new Error(`${label} do not match runtimeSignalScenarios`)
+  }
+}
+
+function assertRuntimeSignalEvidenceScenarioIds(label, scenarioIds, evidence) {
+  const knownScenarioIds = new Set(scenarioIds)
+  for (const scenarios of Object.values(evidence)) {
+    for (const scenario of scenarios) {
+      if (!knownScenarioIds.has(scenario.id)) {
+        throw new Error(`${label} references unknown scenario ${JSON.stringify(scenario.id)}`)
+      }
+    }
   }
 }
 

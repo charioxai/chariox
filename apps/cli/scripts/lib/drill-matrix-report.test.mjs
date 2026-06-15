@@ -558,6 +558,18 @@ test("rejects inconsistent matrix aggregates", () => {
     ...aggregate,
     reports: [{
       ...aggregate.reports[0],
+      runtimeSignalScenarios: {
+        "provider-run-lifecycle": [{
+          id: "other",
+          status: "failed",
+        }],
+      },
+    }],
+  }), /reports\[0\]\.runtimeSignalScenarios references unknown scenario "other"/)
+  assert.throws(() => formatDrillMatrixAggregateSummary({
+    ...aggregate,
+    reports: [{
+      ...aggregate.reports[0],
       scenarioIds: [],
     }],
   }), /reports\[0\] scenarioIds do not match scenarioCount/)
