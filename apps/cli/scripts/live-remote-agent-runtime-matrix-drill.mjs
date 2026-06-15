@@ -163,12 +163,13 @@ const MATRIX = [
     },
     requires: ["hosted-cloud"],
     classification: "relay-runtime",
-    runtimeSignals: ["agent-lifecycle", "lease-health", "provider-run-lifecycle", "relay-target-freshness"],
+    runtimeSignals: ["agent-lifecycle", "home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "relay-target-freshness"],
     deployment: "hosted-cloud",
     provider: "dev-stub",
     exitCriteria: [
       "Cloud-issued relay credentials connect home and worker kernels",
       "hosted second-kernel remote agent completes a provider turn",
+      "home-owned script, MCP, and connector tools execute on home and stale calls are blocked after revoke",
     ],
   },
   {
@@ -182,12 +183,13 @@ const MATRIX = [
     },
     requires: ["hosted-cloud"],
     classification: "kernel-authority",
-    runtimeSignals: ["lease-health", "session-authority"],
+    runtimeSignals: ["home-extension-manifest-sync", "lease-health", "session-authority"],
     deployment: "hosted-cloud",
     provider: "dev-stub",
     exitCriteria: [
       "second Cloud user joins through session-scoped relay credentials",
       "collab remote agent authority stays owned by the home kernel",
+      "collaborator cannot grant, revoke, request, or inspect home-owned extension credentials",
     ],
   },
 ]
