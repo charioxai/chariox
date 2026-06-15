@@ -118,6 +118,52 @@ test("validates optional generated evidence provenance", () => {
       generatedEvidence: {
         ...generatedEvidence(),
         matrixReports: {
+          ...generatedEvidence().matrixReports,
+          commands: [{
+            ...generatedEvidence().matrixReports.commands[0],
+            matrix: "workspace-live-synch-matrix",
+          }],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.commands\[0\]\.matrix has unknown generated matrix name "workspace-live-synch-matrix"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          ...generatedEvidence().matrixReports,
+          commands: [{
+            ...generatedEvidence().matrixReports.commands[0],
+            repo: "osz",
+          }],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.commands\[0\]\.repo has unknown evidence repo "osz"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          ...generatedEvidence().matrixReports,
+          commands: [{
+            ...generatedEvidence().matrixReports.commands[0],
+            matrix: "cloud-slice-runtime-matrix",
+            repo: "oss",
+          }],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.commands\[0\]\.repo does not match generated matrix "cloud-slice-runtime-matrix"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
           enabled: true,
           artifactIndexes: [],
           roots: [],
