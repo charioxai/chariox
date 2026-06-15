@@ -85,6 +85,9 @@ pub const META_SESSION_OVERVIEW_TOOL: &str = "arroba.meta.session_overview";
 pub const META_SEARCH_COMMANDS_TOOL: &str = "arroba.meta.search_commands";
 pub const META_LIST_COMMANDS_TOOL: &str = "arroba.meta.list_commands";
 pub const META_COMMAND_DOCS_TOOL: &str = "arroba.meta.command_docs";
+pub const META_SEARCH_GUIDES_TOOL: &str = "arroba.meta.search_guides";
+pub const META_LIST_GUIDES_TOOL: &str = "arroba.meta.list_guides";
+pub const META_READ_GUIDE_TOOL: &str = "arroba.meta.read_guide";
 pub const META_RUN_COMMAND_TOOL: &str = "arroba.meta.run_command";
 pub const META_LIST_EVENTS_TOOL: &str = "arroba.meta.list_events";
 pub const META_READ_EVENT_TOOL: &str = "arroba.meta.read_event";
@@ -347,6 +350,33 @@ pub struct MetaCommandListArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaCommandDocsArgs {
     pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaGuideSearchArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaGuideListArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaReadGuideArgs {
+    pub guide: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -949,6 +979,45 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_SEARCH_GUIDES_TOOL.to_string(),
+            description: "Search concise Arroba operational guides for workflows, agent apps, events, supervision, and common failures.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "tag": {"type": "string"},
+                    "command": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_LIST_GUIDES_TOOL.to_string(),
+            description: "List concise Arroba operational guides, optionally filtered by tag or command reference.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tag": {"type": "string"},
+                    "command": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_READ_GUIDE_TOOL.to_string(),
+            description: "Read one Arroba operational guide by id or exact title, including its Markdown body.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["guide"],
+                "properties": {
+                    "guide": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RUN_COMMAND_TOOL.to_string(),
             description: "Run one allowed Arroba command inside this session as the metaagent. Session creation, cross-session targeting, and self-approval are denied.".to_string(),
             input_schema: serde_json::json!({
@@ -1169,6 +1238,18 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_meta_command_docs"
         | "mcp__arroba__meta_command_docs"
         | "mcp__arroba__arroba_meta_command_docs" => Some(META_COMMAND_DOCS_TOOL),
+        META_SEARCH_GUIDES_TOOL
+        | "arroba_meta_search_guides"
+        | "mcp__arroba__meta_search_guides"
+        | "mcp__arroba__arroba_meta_search_guides" => Some(META_SEARCH_GUIDES_TOOL),
+        META_LIST_GUIDES_TOOL
+        | "arroba_meta_list_guides"
+        | "mcp__arroba__meta_list_guides"
+        | "mcp__arroba__arroba_meta_list_guides" => Some(META_LIST_GUIDES_TOOL),
+        META_READ_GUIDE_TOOL
+        | "arroba_meta_read_guide"
+        | "mcp__arroba__meta_read_guide"
+        | "mcp__arroba__arroba_meta_read_guide" => Some(META_READ_GUIDE_TOOL),
         META_RUN_COMMAND_TOOL
         | "arroba_meta_run_command"
         | "mcp__arroba__meta_run_command"

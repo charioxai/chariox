@@ -92,6 +92,20 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
+    fn meta_specs_expose_guide_tools() {
+        let specs = meta_runtime_tool_specs();
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_SEARCH_GUIDES_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == META_LIST_GUIDES_TOOL));
+        assert!(specs.iter().any(|spec| spec.name == META_READ_GUIDE_TOOL));
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__arroba_meta_read_guide"),
+            Some(META_READ_GUIDE_TOOL)
+        );
+    }
+
+    #[test]
     fn slice_specs_expose_screen_input_and_ocr_tools() {
         let specs = slice_runtime_tool_specs();
         assert!(specs

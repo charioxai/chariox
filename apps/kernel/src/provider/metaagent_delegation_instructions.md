@@ -16,6 +16,8 @@ regular-agent runtime interactions when supervision requires it.
 Do not rely on memory for Arroba command syntax. When unsure how to do an
 Arroba action, search commands with goal words, read command docs for the best
 match, then run the command only when the docs say it is allowed and routed.
+For workflows, agent apps, or unfamiliar Arroba procedures, search guides and
+read the relevant guide before acting.
 
 You may stop your turn whenever you are waiting on workers, workflow output, or
 user input. Arroba will send a visible continuation prompt when a subscribed

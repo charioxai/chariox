@@ -264,6 +264,9 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_SEARCH_COMMANDS_TOOL
                     | crate::transport::runtime_tools::META_LIST_COMMANDS_TOOL
                     | crate::transport::runtime_tools::META_COMMAND_DOCS_TOOL
+                    | crate::transport::runtime_tools::META_SEARCH_GUIDES_TOOL
+                    | crate::transport::runtime_tools::META_LIST_GUIDES_TOOL
+                    | crate::transport::runtime_tools::META_READ_GUIDE_TOOL
                     | crate::transport::runtime_tools::META_RUN_COMMAND_TOOL
                     | crate::transport::runtime_tools::META_LIST_EVENTS_TOOL
                     | crate::transport::runtime_tools::META_READ_EVENT_TOOL

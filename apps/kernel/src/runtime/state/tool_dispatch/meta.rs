@@ -2,16 +2,18 @@ use super::*;
 
 use crate::transport::runtime_tools::{
     MetaAckEventArgs, MetaCommandListArgs, MetaCommandSearchArgs, MetaCompleteTaskArgs,
-    MetaListEventsArgs, MetaMarkBlockedArgs, MetaReadEventArgs, MetaReadPlanArgs, MetaReadTaskArgs,
+    MetaGuideListArgs, MetaGuideSearchArgs, MetaListEventsArgs, MetaMarkBlockedArgs,
+    MetaReadEventArgs, MetaReadGuideArgs, MetaReadPlanArgs, MetaReadTaskArgs,
     MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
     MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, MetaUpdatePlanArgs,
     MetaUpdateTaskArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
     META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
-    META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_READ_EVENT_TOOL,
-    META_READ_PLAN_TOOL, META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL,
-    META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL,
-    META_SUBSCRIBE_EVENTS_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
-    META_UNSUBSCRIBE_EVENTS_TOOL, META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL,
+    META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
+    META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL, META_READ_TASK_TOOL,
+    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
+    META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
+    META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL,
+    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL,
 };
 
 impl KernelRuntimeState {
@@ -135,6 +137,58 @@ impl KernelRuntimeState {
                             ok: false,
                             payload: serde_json::json!({
                                 "error": format!("unknown metaagent command `{command_for_error}`")
+                            }),
+                        },
+                    },
+                )
+            }
+            META_SEARCH_GUIDES_TOOL => {
+                let args = serde_json::from_value::<MetaGuideSearchArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "guides": crate::runtime::metaagent_guides::search_guides(
+                            crate::runtime::metaagent_guides::MetaagentGuideSearchArgs {
+                                query: args.query,
+                                tag: args.tag,
+                                command: args.command,
+                                limit: args.limit,
+                            }
+                        ),
+                    }),
+                })
+            }
+            META_LIST_GUIDES_TOOL => {
+                let args = serde_json::from_value::<MetaGuideListArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "guides": crate::runtime::metaagent_guides::list_guides(
+                            crate::runtime::metaagent_guides::MetaagentGuideSearchArgs {
+                                query: None,
+                                tag: args.tag,
+                                command: args.command,
+                                limit: args.limit,
+                            }
+                        ),
+                    }),
+                })
+            }
+            META_READ_GUIDE_TOOL => {
+                let args = serde_json::from_value::<MetaReadGuideArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(
+                    match crate::runtime::metaagent_guides::read_guide(&args.guide) {
+                        Some(guide) => RuntimeToolResult {
+                            ok: true,
+                            payload: guide,
+                        },
+                        None => RuntimeToolResult {
+                            ok: false,
+                            payload: serde_json::json!({
+                                "error": format!("unknown metaagent guide `{}`", args.guide)
                             }),
                         },
                     },

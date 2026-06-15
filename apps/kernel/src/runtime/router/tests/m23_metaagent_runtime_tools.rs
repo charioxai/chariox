@@ -1142,6 +1142,76 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
             .and_then(serde_json::Value::as_str),
         Some("deny")
     );
+
+    let guide_search = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_SEARCH_GUIDES_TOOL,
+            serde_json::json!({
+                "query": "create endpoint run workflow",
+                "tag": "workflow",
+                "limit": 5
+            }),
+        )
+        .await
+        .expect("meta guide search should dispatch");
+    assert!(guide_search.ok);
+    let guides = guide_search
+        .payload
+        .get("guides")
+        .and_then(serde_json::Value::as_array)
+        .expect("guide search should return guides");
+    assert!(guides.iter().any(|guide| {
+        guide.get("id").and_then(serde_json::Value::as_str) == Some("workflows/basic-components")
+    }));
+    assert!(guides.iter().all(|guide| guide.get("body").is_none()));
+
+    let listed_guides = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_GUIDES_TOOL,
+            serde_json::json!({
+                "command": "workflow run",
+                "limit": 10
+            }),
+        )
+        .await
+        .expect("meta guide list should dispatch");
+    assert!(listed_guides.ok);
+    assert!(listed_guides
+        .payload
+        .get("guides")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|guides| guides.iter().any(|guide| {
+            guide
+                .get("commands")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|commands| {
+                    commands
+                        .iter()
+                        .any(|command| command.as_str() == Some("workflow run"))
+                })
+        })));
+
+    let guide = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_READ_GUIDE_TOOL,
+            serde_json::json!({
+                "guide": "agent-apps/generate-app"
+            }),
+        )
+        .await
+        .expect("meta guide read should dispatch");
+    assert!(guide.ok);
+    assert!(guide
+        .payload
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|body| body.contains("Do not implement directly")));
 }
 
 #[tokio::test]
