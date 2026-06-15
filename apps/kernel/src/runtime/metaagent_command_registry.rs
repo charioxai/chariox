@@ -298,6 +298,27 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         description: "Control whether a node may emit intermediate workflow output while the run continues.",
     },
     MetaCommandDoc {
+        name: "workflow node intermediate-output-schema",
+        aliases: &[
+            "workflow node intermediate-output-schema",
+            "workflow node intermediate schema",
+        ],
+        usage: "workflow node intermediate-output-schema <workflow-ref> <node-id> <schema-ref|none>",
+        examples: &[],
+        tags: &["workflow", "node", "schema", "output", "orchestration"],
+        intents: &[
+            "set intermediate output schema",
+            "validate partial workflow output",
+            "clear intermediate output schema",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: false,
+        description: "Documented workflow capability, not routed through metaagent run_command yet. Use worker instructions and available workflow output tools unless schema routing is explicitly added.",
+    },
+    MetaCommandDoc {
         name: "workflow node max-turns",
         aliases: &["workflow node max-turns", "workflow node turn limit"],
         usage: "workflow node max-turns <workflow-ref> <node-id> <number|none>",
@@ -338,6 +359,38 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         authority: "session workflow policy",
         routed: true,
         description: "Assign or update a human-readable alias for a workflow endpoint.",
+    },
+    MetaCommandDoc {
+        name: "workflow endpoint bind",
+        aliases: &["workflow endpoint bind"],
+        usage: "workflow endpoint bind <workflow-ref> <endpoint-ref> <queue-ref>",
+        examples: &[],
+        tags: &["workflow", "endpoint", "queue", "orchestration"],
+        intents: &[
+            "bind workflow endpoint",
+            "connect endpoint to queue",
+            "attach workflow endpoint",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: false,
+        description: "Documented daemon capability, not routed through metaagent run_command yet. For ordinary metaagent workflow runs, create an endpoint and invoke it directly with `workflow run`.",
+    },
+    MetaCommandDoc {
+        name: "workflow endpoint remove",
+        aliases: &["workflow endpoint remove", "workflow endpoint delete"],
+        usage: "workflow endpoint remove <workflow-ref> <endpoint-ref>",
+        examples: &[],
+        tags: &["workflow", "endpoint", "remove", "orchestration"],
+        intents: &["remove workflow endpoint", "delete workflow endpoint"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "not implemented",
+        routed: false,
+        description: "Documented as unavailable for metaagents: endpoint removal is not currently exposed through the kernel command router. Prefer aliasing or creating a new endpoint.",
     },
     MetaCommandDoc {
         name: "workflow edge add",
@@ -463,6 +516,80 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         authority: "documentation only",
         routed: false,
         description: "Basic workflow sequence: create the workflow, spawn regular agents, add each agent as a node, resolve the workflow to get node ids, connect nodes with edges when work should flow between them, create an endpoint on the entry node, run the endpoint with the task prompt, then inspect runs or a specific run. Workflow nodes use agent aliases; node ids come from workflow resolve/list output.",
+    },
+    MetaCommandDoc {
+        name: "workflow run-output-schema",
+        aliases: &["workflow run-output-schema", "workflow output schema"],
+        usage: "workflow run-output-schema <workflow-ref> <schema-ref|none>",
+        examples: &[],
+        tags: &["workflow", "schema", "output", "orchestration"],
+        intents: &[
+            "set workflow final output schema",
+            "validate workflow output",
+            "clear workflow output schema",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: false,
+        description: "Documented workflow capability, not routed through metaagent run_command yet. Use workflow guides and worker output validation until schema routing is added.",
+    },
+    MetaCommandDoc {
+        name: "workflow max-turns",
+        aliases: &["workflow max-turns", "workflow turn limit"],
+        usage: "workflow max-turns <workflow-ref> <number|none>",
+        examples: &[],
+        tags: &["workflow", "limit", "orchestration"],
+        intents: &["set workflow turn limit", "limit workflow turns", "clear workflow turn limit"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "not implemented",
+        routed: false,
+        description: "Workflow-level max-turns is not currently exposed as a metaagent command. Use `workflow node max-turns` for per-node limits.",
+    },
+    MetaCommandDoc {
+        name: "workflow node extensions",
+        aliases: &["workflow node extensions", "workflow node grant", "workflow node revoke"],
+        usage: "workflow node extensions ...",
+        examples: &[],
+        tags: &["workflow", "node", "extension", "capability"],
+        intents: &[
+            "grant tool to workflow node",
+            "revoke tool from workflow node",
+            "configure node extensions",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: false,
+        description: "Workflow-node extension commands are not routed directly. Grant MCPs or skills to the owned regular agent with `mcp grant` or `skill grant`; the workflow node inherits the agent capability.",
+    },
+    MetaCommandDoc {
+        name: "workflow pane",
+        aliases: &[
+            "workflow pane",
+            "workflow log",
+            "workflow trace",
+            "workflow edit",
+        ],
+        usage: "workflow <pane|log|trace|edit> ...",
+        examples: &[],
+        tags: &["workflow", "ui", "inspect", "cli-only"],
+        intents: &[
+            "open workflow pane",
+            "view workflow log",
+            "inspect workflow trace",
+            "edit workflow visually",
+        ],
+        scope: "session",
+        mutates: false,
+        policy: MetaCommandPolicy::Deny,
+        authority: "denied",
+        routed: false,
+        description: "CLI/TUI workflow UI commands are not available to metaagents. Use `workflow resolve`, `workflow runs`, `workflow get-run`, events, and turn_overview instead.",
     },
     MetaCommandDoc {
         name: "workflow cancel",
@@ -1167,9 +1294,15 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             {
                 Some(MetaCommandExecutionPolicy::Routed)
             }
-            _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow node add/remove/instructions/can-complete/intermediate-output/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
-            }),
+            _ => {
+                if let Some(documented) = documented_workflow_command(tokens) {
+                    Some(policy_for_documented_command(documented))
+                } else {
+                    Some(MetaCommandExecutionPolicy::NotRouted {
+                        message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow node add/remove/instructions/can-complete/intermediate-output/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
+                    })
+                }
+            }
         },
         "mcp" => match tokens.get(1).map(String::as_str) {
             Some(
@@ -1209,6 +1342,44 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         _ => None,
+    }
+}
+
+fn documented_workflow_command(tokens: &[String]) -> Option<&'static MetaCommandDoc> {
+    let first = tokens.first()?;
+    if first != "workflow" {
+        return None;
+    }
+    let candidates = [
+        tokens
+            .get(1)
+            .map(|subcommand| format!("workflow {}", subcommand.to_lowercase())),
+        tokens.get(2).map(|nested| {
+            format!(
+                "workflow {} {}",
+                tokens.get(1).map(String::as_str).unwrap_or_default(),
+                nested.to_lowercase()
+            )
+        }),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| find_exact_command(&candidate))
+}
+
+fn policy_for_documented_command(command: &'static MetaCommandDoc) -> MetaCommandExecutionPolicy {
+    match command.policy {
+        MetaCommandPolicy::Deny => MetaCommandExecutionPolicy::Denied {
+            message: command.description,
+        },
+        _ if command.routed => MetaCommandExecutionPolicy::Routed,
+        _ => MetaCommandExecutionPolicy::NotRouted {
+            message: format!(
+                "`{}` is documented in the metaagent command registry but is not routed for execution yet: {}",
+                command.name, command.description
+            ),
+        },
     }
 }
 
@@ -1295,6 +1466,13 @@ fn find_command(command: &str) -> Option<&'static MetaCommandDoc> {
         })
         .max_by_key(|(len, _)| *len)
         .map(|(_, command)| command)
+}
+
+fn find_exact_command(command: &str) -> Option<&'static MetaCommandDoc> {
+    let normalized = command.to_lowercase();
+    META_COMMANDS.iter().find(|candidate| {
+        candidate.name == normalized || candidate.aliases.iter().any(|alias| *alias == normalized)
+    })
 }
 
 fn command_match_len(command: &MetaCommandDoc, normalized: &str) -> Option<usize> {
@@ -1682,6 +1860,76 @@ mod tests {
             docs.get("routed").and_then(serde_json::Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn workflow_command_catalog_includes_unrouted_workflow_capabilities() {
+        let required = [
+            "workflow node intermediate-output-schema",
+            "workflow endpoint bind",
+            "workflow endpoint remove",
+            "workflow run-output-schema",
+            "workflow max-turns",
+            "workflow node extensions",
+            "workflow pane",
+        ];
+
+        for command in required {
+            let docs = command_docs(MetaCommandDocsArgs {
+                command: command.to_string(),
+            })
+            .unwrap_or_else(|| panic!("missing docs for `{command}`"));
+            assert_eq!(
+                docs.get("routed").and_then(serde_json::Value::as_bool),
+                Some(false),
+                "`{command}` should be documented but not routed"
+            );
+        }
+    }
+
+    #[test]
+    fn documented_unrouted_workflow_commands_return_specific_policy_errors() {
+        let cases = [
+            "workflow endpoint bind qa-flow default queue-1",
+            "workflow run-output-schema qa-flow schema-1",
+            "workflow edit qa-flow",
+        ];
+
+        for command in cases {
+            let tokens = tokenize_command(command).expect("command should tokenize");
+            let documented = documented_workflow_command(&tokens).unwrap_or_else(|| {
+                panic!("`{command}` should resolve to documented workflow docs")
+            });
+            assert!(
+                !documented.routed,
+                "`{command}` should resolve to unrouted docs `{}`",
+                documented.name
+            );
+            let policy = execution_policy(&tokens);
+            match policy {
+                MetaCommandExecutionPolicy::NotRouted { message } => {
+                    assert!(
+                        message.contains("not routed")
+                            || message.contains("not available")
+                            || message.contains("not currently exposed")
+                            || message.contains("not implemented"),
+                        "`{command}` should produce a specific documented error: {message}"
+                    );
+                }
+                MetaCommandExecutionPolicy::Denied { message } => {
+                    assert!(
+                        message.contains("not routed")
+                            || message.contains("not available")
+                            || message.contains("not currently exposed")
+                            || message.contains("not implemented"),
+                        "`{command}` should produce a specific documented error: {message}"
+                    );
+                }
+                MetaCommandExecutionPolicy::Routed => {
+                    panic!("`{command}` should not be routed");
+                }
+            }
+        }
     }
 
     #[test]
