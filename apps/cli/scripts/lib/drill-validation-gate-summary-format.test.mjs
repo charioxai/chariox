@@ -137,6 +137,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_missing_generated_evidence_kinds=matrix-report:1/)
   assert.match(text, /artifact_required_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_missing_generated_matrix_limitations=dry-run-classification-coverage:1/)
+  assert.match(text, /artifact_provider_account_aliases=codex=work:1,opencode=zen:1/)
   assert.match(text, /artifact_evidence_repos=cloud:1,oss:1/)
   assert.match(text, /artifact_coverage_input_sources=artifact metadata inputs:1/)
   assert.match(text, /matrix_status=passed failed=0 skipped=1 dry_run=2/)
@@ -334,6 +335,10 @@ function artifactAggregateFixture() {
     missingGeneratedMatrixLimitations: {
       "dry-run-classification-coverage": 1,
     },
+    providerAccountAliases: {
+      "codex=work": 1,
+      "opencode=zen": 1,
+    },
     evidenceRepos: {
       cloud: 1,
       oss: 1,
@@ -396,6 +401,10 @@ function artifactAggregateFixture() {
       },
       missingGeneratedMatrixLimitations: {
         "dry-run-classification-coverage": 1,
+      },
+      providerAccountAliases: {
+        "codex=work": 1,
+        "opencode=zen": 1,
       },
       evidenceRepos: {
         cloud: 1,

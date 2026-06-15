@@ -89,6 +89,13 @@ function matrixReportArtifact(overrides = {}) {
   }
 }
 
+function emptyDrillArtifactDiagnosticDimensions(overrides = {}) {
+  return {
+    ...Object.fromEntries(DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS.map((key) => [key, {}])),
+    ...overrides,
+  }
+}
+
 test("drill artifacts are removed after a passing run", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-pass-"))
   await prepareDrillArtifacts(root)
@@ -556,6 +563,7 @@ test("summarizes drill artifact indexes", async () => {
         generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
         requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
         missingGeneratedEvidenceKinds: "matrix-report",
+        providerAccountAliases: "codex=work,opencode=zen",
         evidenceRepos: "oss",
       },
     })
@@ -575,6 +583,7 @@ test("summarizes drill artifact indexes", async () => {
         requiredGeneratedEvidenceKinds: "matrix-report",
         requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
         missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
+        providerAccountAliases: "codex=work,claude=team",
         evidenceRepos: "cloud,oss",
         artifactCoverageInputSources: "artifact metadata inputs",
       },
@@ -644,6 +653,11 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
     })
+    assert.deepEqual(aggregate.providerAccountAliases, {
+      "claude=team": 1,
+      "codex=work": 2,
+      "opencode=zen": 1,
+    })
     assert.deepEqual(aggregate.evidenceRepos, {
       cloud: 1,
       oss: 2,
@@ -697,6 +711,7 @@ test("summarizes drill artifact indexes", async () => {
       missingGeneratedEvidenceKinds: "matrix-report",
       missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
       owners: "runtime-network,validation-harness",
+      providerAccountAliases: "claude=team,codex=work,opencode=zen",
       requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
       requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
@@ -718,6 +733,7 @@ test("summarizes drill artifact indexes", async () => {
       "missingGeneratedEvidenceKinds",
       "requiredGeneratedMatrixLimitations",
       "missingGeneratedMatrixLimitations",
+      "providerAccountAliases",
       "evidenceRepos",
       "artifactCoverageInputSources",
     ])
@@ -738,6 +754,7 @@ test("summarizes drill artifact indexes", async () => {
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /exit_criterion_statuses: dry-run=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /incomplete_exit_criterion_statuses: dry-run=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /provider_account_aliases: claude=team=1 codex=work=2 opencode=zen=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /artifact_coverage_input_count=1/)
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
@@ -778,6 +795,13 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
         generatedEvidenceKinds: { "matrix-report": 1 },
       }),
       /generatedEvidenceKinds do not match indexes/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        providerAccountAliases: { "cdoex=work": 1 },
+      }),
+      /providerAccountAliases has unknown provider account alias provider "cdoex"/,
     )
     assert.throws(
       () => validateDrillArtifactIndexAggregate({
@@ -830,223 +854,76 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
     /missing generatedEvidenceKinds/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       evidenceRepos: { oss: -1 },
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /evidenceRepos has invalid count/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       runtimeSignalOwners: { "kernel-authority": 1 },
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /drill artifact diagnostics\.runtimeSignalOwners must match runtimeSignals/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       runtimeSignals: { "workspace-live-synch-state": 1 },
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /runtimeSignals has unknown runtime signal "workspace-live-synch-state"/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       exitCriterionStatuses: { satisifed: 1 },
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /exitCriterionStatuses has unknown exit criterion status "satisifed"/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       evidenceRepos: { cluod: 1 },
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /evidenceRepos has unknown evidence repo "cluod"/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       generatedEvidenceKinds: { "matrix-reprot": 1 },
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       generatedMatrixLimitations: { "dry-run-classification-covergae": 1 },
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /generatedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       requiredGeneratedMatrixLimitations: { "dry-run-classification-covergae": 1 },
-      missingGeneratedMatrixLimitations: {},
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /requiredGeneratedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
-      artifactKinds: {},
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       missingGeneratedMatrixLimitations: { "dry-run-classification-covergae": 1 },
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /missingGeneratedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
   assert.throws(
-    () => validateDrillArtifactDiagnosticDimensions({
-      runtimeSignals: {},
-      runtimeSignalOwners: {},
-      coverageAreas: {},
-      owners: {},
-      classifications: {},
-      exitCriterionStatuses: {},
-      incompleteExitCriterionStatuses: {},
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       artifactKinds: { "validation-sutie": 1 },
-      generatedEvidenceKinds: {},
-      generatedMatrixLimitations: {},
-      generatedValidationSuiteFailureRoots: {},
-      requiredGeneratedEvidenceKinds: {},
-      missingGeneratedEvidenceKinds: {},
-      requiredGeneratedMatrixLimitations: {},
-      missingGeneratedMatrixLimitations: {},
-      evidenceRepos: {},
-      artifactCoverageInputSources: {},
-    }),
+    })),
     /artifactKinds has unknown artifact kind "validation-sutie"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      providerAccountAliases: { "cdoex=work": 1 },
+    })),
+    /providerAccountAliases has unknown provider account alias provider "cdoex"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      providerAccountAliases: { "codex=sk-secretsecretsecretsecret": 1 },
+    })),
+    /provider account alias must be a non-secret label/,
   )
 })
 

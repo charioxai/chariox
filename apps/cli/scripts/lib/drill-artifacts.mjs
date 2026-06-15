@@ -11,6 +11,10 @@ import {
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
+import {
+  isKnownDrillProvider,
+  parseProviderAccountAlias,
+} from "./drill-provider-profiles.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
   drillRuntimeSignalOwnersFor,
@@ -36,6 +40,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "missingGeneratedEvidenceKinds",
   "requiredGeneratedMatrixLimitations",
   "missingGeneratedMatrixLimitations",
+  "providerAccountAliases",
   "evidenceRepos",
   "artifactCoverageInputSources",
 ])
@@ -60,6 +65,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   missingGeneratedEvidenceKinds: "missing_generated_evidence_kinds",
   requiredGeneratedMatrixLimitations: "required_generated_matrix_limitations",
   missingGeneratedMatrixLimitations: "missing_generated_matrix_limitations",
+  providerAccountAliases: "provider_account_aliases",
   evidenceRepos: "evidence_repos",
   artifactCoverageInputSources: "artifact_coverage_input_sources",
 })
@@ -194,6 +200,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const missingGeneratedEvidenceKinds = new Map()
   const requiredGeneratedMatrixLimitations = new Map()
   const missingGeneratedMatrixLimitations = new Map()
+  const providerAccountAliases = new Map()
   const evidenceRepos = new Map()
   const artifactCoverageInputSources = new Map()
   const summaries = indexes.map((index, indexPosition) => {
@@ -218,6 +225,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexMissingGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "missingGeneratedEvidenceKinds")
     const indexRequiredGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "requiredGeneratedMatrixLimitations")
     const indexMissingGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixLimitations")
+    const indexProviderAccountAliases = metadataListFromMetadata(index.metadata, "providerAccountAliases")
     const indexEvidenceRepos = metadataListFromMetadata(index.metadata, "evidenceRepos")
     const indexArtifactCoverageInputSources = metadataListFromMetadata(index.metadata, "artifactCoverageInputSources")
     countValues(indexRuntimeSignals, runtimeSignals)
@@ -235,6 +243,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexMissingGeneratedEvidenceKinds, missingGeneratedEvidenceKinds)
     countValues(indexRequiredGeneratedMatrixLimitations, requiredGeneratedMatrixLimitations)
     countValues(indexMissingGeneratedMatrixLimitations, missingGeneratedMatrixLimitations)
+    countValues(indexProviderAccountAliases, providerAccountAliases)
     countValues(indexEvidenceRepos, evidenceRepos)
     countValues(indexArtifactCoverageInputSources, artifactCoverageInputSources)
     for (const artifact of index.artifacts) {
@@ -266,6 +275,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       missingGeneratedEvidenceKinds: countValues(indexMissingGeneratedEvidenceKinds),
       requiredGeneratedMatrixLimitations: countValues(indexRequiredGeneratedMatrixLimitations),
       missingGeneratedMatrixLimitations: countValues(indexMissingGeneratedMatrixLimitations),
+      providerAccountAliases: countValues(indexProviderAccountAliases),
       evidenceRepos: countValues(indexEvidenceRepos),
       artifactCoverageInputSources: countValues(indexArtifactCoverageInputSources),
     }
@@ -289,6 +299,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     missingGeneratedEvidenceKinds: sortedCountObject(missingGeneratedEvidenceKinds),
     requiredGeneratedMatrixLimitations: sortedCountObject(requiredGeneratedMatrixLimitations),
     missingGeneratedMatrixLimitations: sortedCountObject(missingGeneratedMatrixLimitations),
+    providerAccountAliases: sortedCountObject(providerAccountAliases),
     evidenceRepos: sortedCountObject(evidenceRepos),
     artifactCoverageInputSources: sortedCountObject(artifactCoverageInputSources),
     indexes: summaries,
@@ -368,6 +379,7 @@ export function validateDrillArtifactIndex(index, source = "drill artifact index
   validateDrillArtifactIndexKindMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexGeneratedEvidenceMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexEvidenceRepoMetadata(index.metadata, `${source}.metadata`)
+  validateDrillArtifactIndexProviderAccountAliasMetadata(index.metadata, `${source}.metadata`)
   validateDrillArtifactIndexRuntimeSignalOwnerMetadata(index.metadata, `${source}.metadata`)
   if (!Array.isArray(index.artifacts) || index.artifacts.length === 0) {
     throw new Error(`${source} has invalid artifacts`)
@@ -568,6 +580,11 @@ function validateDiagnosticCountObject(value, source, key) {
       if (!isKnownDrillArtifactEvidenceRepo(repo)) {
         throw new Error(`${source} has unknown evidence repo ${JSON.stringify(repo)}`)
       }
+    }
+  }
+  if (key === "providerAccountAliases") {
+    for (const accountAlias of Object.keys(value)) {
+      validateProviderAccountAliasEntry(accountAlias, source)
     }
   }
 }
@@ -804,6 +821,19 @@ function validateDrillArtifactIndexEvidenceRepoMetadata(metadata, source) {
     if (!isKnownDrillArtifactEvidenceRepo(repo)) {
       throw new Error(`${source}.evidenceRepos has unknown evidence repo ${JSON.stringify(repo)}`)
     }
+  }
+}
+
+function validateDrillArtifactIndexProviderAccountAliasMetadata(metadata, source) {
+  for (const accountAlias of metadataListFromMetadata(metadata, "providerAccountAliases")) {
+    validateProviderAccountAliasEntry(accountAlias, `${source}.providerAccountAliases`)
+  }
+}
+
+function validateProviderAccountAliasEntry(accountAlias, source) {
+  const { provider } = parseProviderAccountAlias(accountAlias)
+  if (!isKnownDrillProvider(provider)) {
+    throw new Error(`${source} has unknown provider account alias provider ${JSON.stringify(provider)}`)
   }
 }
 
