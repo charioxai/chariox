@@ -4,6 +4,7 @@ import path from "node:path"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import {
   redactDrillSecretText,
@@ -484,6 +485,13 @@ function validateDiagnosticCountObject(value, source, key) {
       }
     }
   }
+  if (key === "generatedMatrixLimitations") {
+    for (const limitation of Object.keys(value)) {
+      if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+        throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
+      }
+    }
+  }
   if (key === "runtimeSignals") {
     for (const signal of Object.keys(value)) {
       if (!isKnownDrillRuntimeSignal(signal)) {
@@ -745,6 +753,11 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
       if (!isKnownDrillGeneratedEvidenceKind(kind)) {
         throw new Error(`${source}.${key} has unknown generated evidence kind ${JSON.stringify(kind)}`)
       }
+    }
+  }
+  for (const limitation of metadataListFromMetadata(metadata, "generatedMatrixLimitations")) {
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+      throw new Error(`${source}.generatedMatrixLimitations has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
     }
   }
 }

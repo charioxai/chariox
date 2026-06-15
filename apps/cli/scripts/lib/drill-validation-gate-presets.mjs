@@ -3,6 +3,7 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -359,10 +360,16 @@ export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenc
 }
 
 export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMatrixLimitations) {
-  return normalizeCommaSeparatedStrings(requiredGeneratedMatrixLimitations, {
+  const limitations = normalizeCommaSeparatedStrings(requiredGeneratedMatrixLimitations, {
     fieldName: "requiredGeneratedMatrixLimitations",
     itemName: "limitation",
   })
+  for (const limitation of limitations) {
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+      throw new Error(`unknown required generated matrix limitation: ${limitation}`)
+    }
+  }
+  return limitations
 }
 
 export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifactGeneratedEvidenceKinds) {

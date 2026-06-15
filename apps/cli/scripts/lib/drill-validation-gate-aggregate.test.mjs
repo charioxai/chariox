@@ -226,6 +226,75 @@ test("rejects unknown generated evidence kind labels in aggregate reports", () =
   )
 })
 
+test("rejects unknown generated matrix limitation labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture({
+    generatedEvidence: {
+      kinds: ["matrix-report"],
+      validationSuites: {
+        enabled: false,
+        artifactIndexes: [],
+        outputRoots: [],
+      },
+      matrixReports: {
+        enabled: true,
+        roots: ["/tmp/generated-matrix"],
+        commands: [{
+          artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+          args: ["--dry-run"],
+          cwd: "/repo/arroba",
+          reportPath: "/tmp/generated-matrix/workspace-live-sync-matrix.json",
+          scriptPath: "/repo/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
+        }],
+        dryRun: true,
+        continueOnFailure: false,
+        limitations: [{
+          kind: "dry-run-classification-coverage",
+          owner: "validation-harness",
+          nextAction: "rerun generated matrix reports without --dry-run before release",
+        }],
+      },
+    },
+  })], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredGeneratedMatrixLimitations: ["dry-run-classification-covergae"],
+    }),
+    /requiredGeneratedMatrixLimitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        generatedMatrixLimitations: { "dry-run-classification-covergae": 1 },
+      },
+    }),
+    /coverage\.generatedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        generatedEvidence: {
+          ...aggregate.reports[0].generatedEvidence,
+          matrixReports: {
+            ...aggregate.reports[0].generatedEvidence.matrixReports,
+            limitations: [{
+              kind: "dry-run-classification-covergae",
+              owner: "validation-harness",
+              nextAction: "rerun generated matrix reports without --dry-run before release",
+            }],
+          },
+        },
+      }],
+    }),
+    /reports\[0\]\.generatedEvidence\.matrixReports\.limitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
+})
+
 test("rejects unknown artifact kind labels in aggregate reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
 

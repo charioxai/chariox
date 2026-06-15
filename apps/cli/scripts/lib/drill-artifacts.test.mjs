@@ -874,6 +874,22 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: {},
+      generatedMatrixLimitations: { "dry-run-classification-covergae": 1 },
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      evidenceRepos: {},
+    }),
+    /generatedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
       artifactKinds: { "validation-sutie": 1 },
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
@@ -940,6 +956,21 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { generatedMatrixLimitations: "dry-run-classification-covergae" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
     )
     assert.throws(
       () => validateDrillArtifactIndex({

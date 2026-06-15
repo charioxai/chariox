@@ -17,6 +17,7 @@ import {
   normalizeRequiredArtifactSchemas,
   normalizeRequiredFailureClassifications,
   normalizeRequiredGeneratedEvidenceKinds,
+  normalizeRequiredGeneratedMatrixLimitations,
   normalizeRequiredMatrices,
   normalizeRequiredMatrixClassifications,
   normalizeRequiredMatrixRuntimeSignals,
@@ -304,6 +305,7 @@ test("normalizes validation gate requirements", () => {
     "matrix-report",
     "validation-suite-run",
   ])
+  assert.deepEqual(normalizeRequiredGeneratedMatrixLimitations(["dry-run-classification-coverage"]), ["dry-run-classification-coverage"])
   assert.deepEqual(normalizeRequiredArtifactEvidenceRepos(["oss,cloud", "cloud"]), [
     "cloud",
     "oss",
@@ -398,5 +400,9 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredGeneratedEvidenceKinds(["not-generated"]),
     /unknown required generated evidence kind: not-generated/,
+  )
+  assert.throws(
+    () => normalizeRequiredGeneratedMatrixLimitations(["dry-run-classification-covergae"]),
+    /unknown required generated matrix limitation: dry-run-classification-covergae/,
   )
 })

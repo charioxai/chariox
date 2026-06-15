@@ -149,6 +149,18 @@ test("validates optional generated evidence provenance", () => {
     })),
     /generatedEvidence\.matrixReports\.limitations\[0\] has invalid owner/,
   )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          ...generatedEvidence().matrixReports,
+          limitations: [{ kind: "dry-run-classification-covergae", owner: "validation-harness", nextAction: "rerun live matrix reports" }],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.limitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
 })
 
 test("validates platform bundle summary evidence", () => {

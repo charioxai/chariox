@@ -8,6 +8,7 @@ import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
 import {
@@ -385,8 +386,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingScenarios ?? [], `${source}.missingScenarios`)
   validateGeneratedEvidenceKindArray(aggregate.requiredGeneratedEvidenceKinds ?? [], `${source}.requiredGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(aggregate.missingGeneratedEvidenceKinds ?? [], `${source}.missingGeneratedEvidenceKinds`)
-  validateStringArray(aggregate.requiredGeneratedMatrixLimitations ?? [], `${source}.requiredGeneratedMatrixLimitations`)
-  validateStringArray(aggregate.missingGeneratedMatrixLimitations ?? [], `${source}.missingGeneratedMatrixLimitations`)
+  validateGeneratedMatrixLimitationArray(aggregate.requiredGeneratedMatrixLimitations ?? [], `${source}.requiredGeneratedMatrixLimitations`)
+  validateGeneratedMatrixLimitationArray(aggregate.missingGeneratedMatrixLimitations ?? [], `${source}.missingGeneratedMatrixLimitations`)
   for (const [index, action] of aggregate.nextActions.entries()) {
     validateDrillAggregateNextAction(action, `${source}.nextActions[${index}]`)
   }
@@ -873,11 +874,11 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.requiredScenarios ?? {}, `${source}.requiredScenarios`)
   validateCountObject(coverage.missingScenarios ?? {}, `${source}.missingScenarios`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
-  validateCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
+  validateGeneratedMatrixLimitationCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
   validateGeneratedEvidenceKindCountObject(coverage.requiredGeneratedEvidenceKinds ?? {}, `${source}.requiredGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.missingGeneratedEvidenceKinds ?? {}, `${source}.missingGeneratedEvidenceKinds`)
-  validateCountObject(coverage.requiredGeneratedMatrixLimitations ?? {}, `${source}.requiredGeneratedMatrixLimitations`)
-  validateCountObject(coverage.missingGeneratedMatrixLimitations ?? {}, `${source}.missingGeneratedMatrixLimitations`)
+  validateGeneratedMatrixLimitationCountObject(coverage.requiredGeneratedMatrixLimitations ?? {}, `${source}.requiredGeneratedMatrixLimitations`)
+  validateGeneratedMatrixLimitationCountObject(coverage.missingGeneratedMatrixLimitations ?? {}, `${source}.missingGeneratedMatrixLimitations`)
 }
 
 function validateValidationGateMatrixCoverage(coverage, source) {
@@ -1242,6 +1243,9 @@ function validateGeneratedMatrixLimitations(limitations, source) {
         throw new Error(`${limitationSource} has invalid ${key}`)
       }
     }
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation.kind)) {
+      throw new Error(`${limitationSource} has unknown generated matrix limitation ${JSON.stringify(limitation.kind)}`)
+    }
   }
 }
 
@@ -1465,6 +1469,15 @@ function validateGeneratedEvidenceKindArray(value, source) {
   }
 }
 
+function validateGeneratedMatrixLimitationArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, limitation] of value.entries()) {
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+      throw new Error(`${source}[${index}] has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
+    }
+  }
+}
+
 function validateStringArray(value, source) {
   if (!Array.isArray(value)) {
     throw new Error(`${source} is not an array`)
@@ -1553,6 +1566,15 @@ function validateGeneratedEvidenceKindCountObject(value, source) {
   for (const kind of Object.keys(value)) {
     if (!isKnownDrillGeneratedEvidenceKind(kind)) {
       throw new Error(`${source} has unknown generated evidence kind ${JSON.stringify(kind)}`)
+    }
+  }
+}
+
+function validateGeneratedMatrixLimitationCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const limitation of Object.keys(value)) {
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+      throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
     }
   }
 }

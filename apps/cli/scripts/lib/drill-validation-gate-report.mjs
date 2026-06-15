@@ -6,6 +6,7 @@ import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { validateDrillFailureManifestAggregate } from "./drill-failure-manifest.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
@@ -355,6 +356,9 @@ function validateGeneratedMatrixLimitations(limitations, source) {
       if (!nonEmptyString(limitation[key])) {
         throw new Error(`${limitationSource} has invalid ${key}`)
       }
+    }
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation.kind)) {
+      throw new Error(`${limitationSource} has unknown generated matrix limitation ${JSON.stringify(limitation.kind)}`)
     }
   }
 }
