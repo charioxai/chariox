@@ -112,11 +112,18 @@ export function validationGateNextActions(checks) {
       })
     }
     if (checks.matrices.requireComplete && (checks.matrices.aggregate?.incompleteExitCriteria?.length ?? 0) > 0) {
-      countDrillAggregateNextAction(counts, {
-        owner: "validation-harness",
-        classification: "incomplete-matrix",
-        nextAction: "run or reconcile incomplete matrix exit criteria before treating this validation set as complete",
-      })
+      const criteriaWithoutSpecificAction = countIncompleteExitCriterionNextActions(
+        counts,
+        checks.matrices.aggregate.incompleteExitCriteria,
+      )
+      if (criteriaWithoutSpecificAction > 0) {
+        countDrillAggregateNextAction(counts, {
+          owner: "validation-harness",
+          classification: "incomplete-matrix",
+          nextAction: "run or reconcile incomplete matrix exit criteria before treating this validation set as complete",
+          count: criteriaWithoutSpecificAction,
+        })
+      }
     }
     const missingMatrices = checks.matrices.missingMatrices ?? []
     if (missingMatrices.length > 0) {
@@ -180,4 +187,20 @@ export function validationGateNextActions(checks) {
     }
   }
   return formatDrillAggregateNextActionCounts(counts)
+}
+
+function countIncompleteExitCriterionNextActions(counts, criteria) {
+  let missingSpecificActionCount = 0
+  for (const criterion of criteria) {
+    if (criterion?.owner && criterion?.classification && criterion?.nextAction) {
+      countDrillAggregateNextAction(counts, {
+        owner: criterion.owner,
+        classification: criterion.classification,
+        nextAction: criterion.nextAction,
+      })
+    } else {
+      missingSpecificActionCount += 1
+    }
+  }
+  return missingSpecificActionCount
 }
