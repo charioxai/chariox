@@ -305,6 +305,11 @@ export function formatDrillArtifactIndexAggregateSummary(aggregate) {
       lines.push(`${DRILL_ARTIFACT_DIAGNOSTIC_LABELS[key]}: ${entries.map(([name, count]) => `${name}=${count}`).join(" ")}`)
     }
   }
+  const artifactCoverageInputCount = Object.values(aggregate.artifactCoverageInputSources ?? {})
+    .reduce((sum, count) => sum + count, 0)
+  if (artifactCoverageInputCount > 0) {
+    lines.push(`artifact_coverage_input_count=${artifactCoverageInputCount}`)
+  }
   lines.push("next: verify indexed artifacts before using them as validation evidence")
   return lines.join("\n")
 }
