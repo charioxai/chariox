@@ -90,6 +90,8 @@ node apps/cli/scripts/drill-validation-gate-summary.mjs \
 
 When the evidence is consumed through artifact indexes instead of validation-gate reports, gate the same provenance at the artifact layer with `--require-artifact-generated-evidence-kind validation-suite-run --require-artifact-generated-evidence-kind matrix-report`.
 
+Provider-account profile evidence is non-secret metadata. When a matrix or staging run is expected to use a specific account profile, pass `--provider-account PROVIDER=ALIAS` to the matrix/staging command and require the resulting artifact metadata with `--require-artifact-provider-account-alias PROVIDER=ALIAS` on validation gates, or `--require-provider-account-alias PROVIDER=ALIAS` on `drill-artifact-index-summary.mjs`. Missing aliases fail with a next action that points operators to the artifact indexes that need to be regenerated or included.
+
 ## Cleanup
 
 Live drills should own their daemon/session/port/artifact lifecycle and clean up generated files on success. If a drill supports `--keep-artifacts-on-failure`, only leave artifacts behind on failure for debugging.
