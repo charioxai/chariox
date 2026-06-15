@@ -20,6 +20,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactPlannedOwners = [],
+  requiredArtifactPlannedClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredArtifactMaxAgeMs = null,
@@ -39,6 +41,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       || requiredArtifactRuntimeSignalOwners.length > 0
       || requiredArtifactOwners.length > 0
       || requiredArtifactClassifications.length > 0
+      || requiredArtifactPlannedOwners.length > 0
+      || requiredArtifactPlannedClassifications.length > 0
       || requiredArtifactExitCriterionStatuses.length > 0
       || requiredArtifactIncompleteExitCriterionStatuses.length > 0
       || requiredArtifactMaxAgeMs !== null) {
@@ -75,6 +79,10 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactOwners: [...requiredArtifactOwners],
         requiredArtifactClassifications: [...requiredArtifactClassifications],
         missingArtifactClassifications: [...requiredArtifactClassifications],
+        requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+        missingArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+        requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
+        missingArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
         requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
         missingArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
         requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
@@ -93,6 +101,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactRuntimeSignalOwners: requiredArtifactRuntimeSignalOwners,
           missingArtifactOwners: requiredArtifactOwners,
           missingArtifactClassifications: requiredArtifactClassifications,
+          missingArtifactPlannedOwners: requiredArtifactPlannedOwners,
+          missingArtifactPlannedClassifications: requiredArtifactPlannedClassifications,
           missingArtifactExitCriterionStatuses: requiredArtifactExitCriterionStatuses,
           missingArtifactIncompleteExitCriterionStatuses: requiredArtifactIncompleteExitCriterionStatuses,
           staleArtifactIndexes: requiredArtifactMaxAgeMs !== null ? [] : undefined,
@@ -132,6 +142,10 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactOwners: [],
       requiredArtifactClassifications: [],
       missingArtifactClassifications: [],
+      requiredArtifactPlannedOwners: [],
+      missingArtifactPlannedOwners: [],
+      requiredArtifactPlannedClassifications: [],
+      missingArtifactPlannedClassifications: [],
       requiredArtifactExitCriterionStatuses: [],
       missingArtifactExitCriterionStatuses: [],
       requiredArtifactIncompleteExitCriterionStatuses: [],
@@ -177,6 +191,10 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactOwners: [...requiredArtifactOwners],
         requiredArtifactClassifications: [...requiredArtifactClassifications],
         missingArtifactClassifications: [...requiredArtifactClassifications],
+        requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+        missingArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+        requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
+        missingArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
         requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
         missingArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
         requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
@@ -203,6 +221,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactRuntimeSignalOwners = requiredArtifactRuntimeSignalOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignalOwners ?? {}, owner))
     const missingArtifactOwners = requiredArtifactOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.owners ?? {}, owner))
     const missingArtifactClassifications = requiredArtifactClassifications.filter((classification) => !Object.prototype.hasOwnProperty.call(aggregate.classifications ?? {}, classification))
+    const missingArtifactPlannedOwners = requiredArtifactPlannedOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.plannedOwners ?? {}, owner))
+    const missingArtifactPlannedClassifications = requiredArtifactPlannedClassifications.filter((classification) => !Object.prototype.hasOwnProperty.call(aggregate.plannedClassifications ?? {}, classification))
     const missingArtifactExitCriterionStatuses = requiredArtifactExitCriterionStatuses.filter((status) => !Object.prototype.hasOwnProperty.call(aggregate.exitCriterionStatuses ?? {}, status))
     const missingArtifactIncompleteExitCriterionStatuses = requiredArtifactIncompleteExitCriterionStatuses.filter((status) => !Object.prototype.hasOwnProperty.call(aggregate.incompleteExitCriterionStatuses ?? {}, status))
     const missingRequirements = missingArtifactCoverageAreas.length
@@ -218,6 +238,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       + missingArtifactRuntimeSignalOwners.length
       + missingArtifactOwners.length
       + missingArtifactClassifications.length
+      + missingArtifactPlannedOwners.length
+      + missingArtifactPlannedClassifications.length
       + missingArtifactExitCriterionStatuses.length
       + missingArtifactIncompleteExitCriterionStatuses.length
       + staleArtifactIndexes.length
@@ -254,6 +276,10 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactOwners,
       requiredArtifactClassifications: [...requiredArtifactClassifications],
       missingArtifactClassifications,
+      requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+      missingArtifactPlannedOwners,
+      requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
+      missingArtifactPlannedClassifications,
       requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
       missingArtifactExitCriterionStatuses,
       requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
@@ -275,6 +301,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactRuntimeSignalOwners,
             missingArtifactOwners,
             missingArtifactClassifications,
+            missingArtifactPlannedOwners,
+            missingArtifactPlannedClassifications,
             missingArtifactExitCriterionStatuses,
             missingArtifactIncompleteExitCriterionStatuses,
             staleArtifactIndexes,
@@ -316,6 +344,10 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactOwners: [...requiredArtifactOwners],
       requiredArtifactClassifications: [...requiredArtifactClassifications],
       missingArtifactClassifications: [...requiredArtifactClassifications],
+      requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+      missingArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+      requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
+      missingArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
       requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
       missingArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
       requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
@@ -339,6 +371,8 @@ function artifactRequirementError({
   missingArtifactRuntimeSignalOwners,
   missingArtifactOwners,
   missingArtifactClassifications,
+  missingArtifactPlannedOwners,
+  missingArtifactPlannedClassifications,
   missingArtifactExitCriterionStatuses,
   missingArtifactIncompleteExitCriterionStatuses,
   staleArtifactIndexes,
@@ -382,6 +416,12 @@ function artifactRequirementError({
   }
   if (missingArtifactClassifications.length > 0) {
     messages.push(`missing required artifact classifications: ${missingArtifactClassifications.join(", ")}`)
+  }
+  if (missingArtifactPlannedOwners.length > 0) {
+    messages.push(`missing required artifact planned owners: ${missingArtifactPlannedOwners.join(", ")}`)
+  }
+  if (missingArtifactPlannedClassifications.length > 0) {
+    messages.push(`missing required artifact planned classifications: ${missingArtifactPlannedClassifications.join(", ")}`)
   }
   if (missingArtifactExitCriterionStatuses.length > 0) {
     messages.push(`missing required artifact exit criterion statuses: ${missingArtifactExitCriterionStatuses.join(", ")}`)

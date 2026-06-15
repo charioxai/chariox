@@ -34,6 +34,8 @@ import {
   normalizeRequiredArtifactIncompleteExitCriterionStatuses,
   normalizeRequiredArtifactKinds,
   normalizeRequiredArtifactOwners,
+  normalizeRequiredArtifactPlannedClassifications,
+  normalizeRequiredArtifactPlannedOwners,
   normalizeRequiredArtifactRuntimeSignalOwners,
   normalizeRequiredArtifactRuntimeSignals,
   normalizeRequiredArtifactSchemas,
@@ -119,6 +121,8 @@ export async function runDrillValidationGate({
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactPlannedOwners = [],
+  requiredArtifactPlannedClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredArtifactMaxAgeMs = null,
@@ -152,6 +156,8 @@ export async function runDrillValidationGate({
     requiredArtifactRuntimeSignalOwners,
     requiredArtifactOwners,
     requiredArtifactClassifications,
+    requiredArtifactPlannedOwners,
+    requiredArtifactPlannedClassifications,
     requiredArtifactExitCriterionStatuses,
     requiredArtifactIncompleteExitCriterionStatuses,
     requiredRuntimeSignals,
@@ -181,6 +187,8 @@ export async function runDrillValidationGate({
   const normalizedRequiredArtifactRuntimeSignalOwners = normalizeRequiredArtifactRuntimeSignalOwners(expandedRequirements.requiredArtifactRuntimeSignalOwners)
   const normalizedRequiredArtifactOwners = normalizeRequiredArtifactOwners(expandedRequirements.requiredArtifactOwners)
   const normalizedRequiredArtifactClassifications = normalizeRequiredArtifactClassifications(expandedRequirements.requiredArtifactClassifications)
+  const normalizedRequiredArtifactPlannedOwners = normalizeRequiredArtifactPlannedOwners(expandedRequirements.requiredArtifactPlannedOwners)
+  const normalizedRequiredArtifactPlannedClassifications = normalizeRequiredArtifactPlannedClassifications(expandedRequirements.requiredArtifactPlannedClassifications)
   const normalizedRequiredArtifactExitCriterionStatuses = normalizeRequiredArtifactExitCriterionStatuses(expandedRequirements.requiredArtifactExitCriterionStatuses)
   const normalizedRequiredArtifactIncompleteExitCriterionStatuses = normalizeRequiredArtifactIncompleteExitCriterionStatuses(expandedRequirements.requiredArtifactIncompleteExitCriterionStatuses)
   const normalizedRequiredRuntimeSignals = normalizeRequiredRuntimeSignals(expandedRequirements.requiredRuntimeSignals)
@@ -215,6 +223,8 @@ export async function runDrillValidationGate({
       requiredArtifactRuntimeSignalOwners: normalizedRequiredArtifactRuntimeSignalOwners,
       requiredArtifactOwners: normalizedRequiredArtifactOwners,
       requiredArtifactClassifications: normalizedRequiredArtifactClassifications,
+      requiredArtifactPlannedOwners: normalizedRequiredArtifactPlannedOwners,
+      requiredArtifactPlannedClassifications: normalizedRequiredArtifactPlannedClassifications,
       requiredArtifactExitCriterionStatuses: normalizedRequiredArtifactExitCriterionStatuses,
       requiredArtifactIncompleteExitCriterionStatuses: normalizedRequiredArtifactIncompleteExitCriterionStatuses,
       requiredArtifactMaxAgeMs,
@@ -251,6 +261,8 @@ export async function runDrillValidationGate({
       requiredArtifactRuntimeSignalOwners: normalizedRequiredArtifactRuntimeSignalOwners,
       requiredArtifactOwners: normalizedRequiredArtifactOwners,
       requiredArtifactClassifications: normalizedRequiredArtifactClassifications,
+      requiredArtifactPlannedOwners: normalizedRequiredArtifactPlannedOwners,
+      requiredArtifactPlannedClassifications: normalizedRequiredArtifactPlannedClassifications,
       requiredArtifactExitCriterionStatuses: normalizedRequiredArtifactExitCriterionStatuses,
       requiredArtifactIncompleteExitCriterionStatuses: normalizedRequiredArtifactIncompleteExitCriterionStatuses,
       requiredArtifactMaxAgeMs,
@@ -318,6 +330,8 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredArtifactRuntimeSignalOwners: normalizeRequiredArtifactRuntimeSignalOwners(options.requiredArtifactRuntimeSignalOwners ?? []),
     requiredArtifactOwners: normalizeRequiredArtifactOwners(options.requiredArtifactOwners ?? []),
     requiredArtifactClassifications: normalizeRequiredArtifactClassifications(options.requiredArtifactClassifications ?? []),
+    requiredArtifactPlannedOwners: normalizeRequiredArtifactPlannedOwners(options.requiredArtifactPlannedOwners ?? []),
+    requiredArtifactPlannedClassifications: normalizeRequiredArtifactPlannedClassifications(options.requiredArtifactPlannedClassifications ?? []),
     requiredArtifactExitCriterionStatuses: normalizeRequiredArtifactExitCriterionStatuses(options.requiredArtifactExitCriterionStatuses ?? []),
     requiredArtifactIncompleteExitCriterionStatuses: normalizeRequiredArtifactIncompleteExitCriterionStatuses(options.requiredArtifactIncompleteExitCriterionStatuses ?? []),
     requiredRuntimeSignals: normalizeRequiredRuntimeSignals(options.requiredRuntimeSignals ?? []),

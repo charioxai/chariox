@@ -250,6 +250,8 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
       requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
       requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
+      requiredArtifactPlannedOwners: [...(preset.requiredArtifactPlannedOwners ?? [])],
+      requiredArtifactPlannedClassifications: [...(preset.requiredArtifactPlannedClassifications ?? [])],
       requiredArtifactExitCriterionStatuses: [...(preset.requiredArtifactExitCriterionStatuses ?? [])],
       requiredArtifactIncompleteExitCriterionStatuses: [...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? [])],
       requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
@@ -286,6 +288,8 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactPlannedOwners = [],
+  requiredArtifactPlannedClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredRuntimeSignals = [],
@@ -318,6 +322,8 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
     requiredArtifactOwners: [...requiredArtifactOwners],
     requiredArtifactClassifications: [...requiredArtifactClassifications],
+    requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+    requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
     requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
     requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
     requiredRuntimeSignals: [...requiredRuntimeSignals],
@@ -351,6 +357,8 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
     expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
     expanded.requiredArtifactClassifications.push(...(preset.requiredArtifactClassifications ?? []))
+    expanded.requiredArtifactPlannedOwners.push(...(preset.requiredArtifactPlannedOwners ?? []))
+    expanded.requiredArtifactPlannedClassifications.push(...(preset.requiredArtifactPlannedClassifications ?? []))
     expanded.requiredArtifactExitCriterionStatuses.push(...(preset.requiredArtifactExitCriterionStatuses ?? []))
     expanded.requiredArtifactIncompleteExitCriterionStatuses.push(...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? []))
     expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
@@ -594,6 +602,20 @@ export function normalizeRequiredArtifactOwners(requiredArtifactOwners) {
 export function normalizeRequiredArtifactClassifications(requiredArtifactClassifications) {
   return normalizeCommaSeparatedStrings(requiredArtifactClassifications, {
     fieldName: "requiredArtifactClassifications",
+    itemName: "classification",
+  })
+}
+
+export function normalizeRequiredArtifactPlannedOwners(requiredArtifactPlannedOwners) {
+  return normalizeDiagnosticTextRequirements(requiredArtifactPlannedOwners, {
+    fieldName: "requiredArtifactPlannedOwners",
+    itemName: "owner",
+  })
+}
+
+export function normalizeRequiredArtifactPlannedClassifications(requiredArtifactPlannedClassifications) {
+  return normalizeDiagnosticTextRequirements(requiredArtifactPlannedClassifications, {
+    fieldName: "requiredArtifactPlannedClassifications",
     itemName: "classification",
   })
 }
@@ -857,6 +879,16 @@ function normalizeGeneratedEvidencePathRequirements(values, { fieldName, itemNam
     }
   }
   return paths
+}
+
+function normalizeDiagnosticTextRequirements(values, { fieldName, itemName }) {
+  const texts = normalizeCommaSeparatedStrings(values, { fieldName, itemName })
+  for (const [index, text] of texts.entries()) {
+    if (redactDrillSecretText(text) !== text) {
+      throw new Error(`${fieldName}[${index}] includes secret-looking diagnostic text`)
+    }
+  }
+  return texts
 }
 
 function validateExitCriterionStatuses(statuses, fieldName) {

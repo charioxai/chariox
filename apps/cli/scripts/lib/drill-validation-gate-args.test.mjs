@@ -38,6 +38,10 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-classification=validation-gate"], 0, options)
   assert.equal(index, 0)
+  index = parseValidationGateRequirementArg(["--require-artifact-planned-owner", "validation-harness"], 0, options)
+  assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-planned-classification=matrix-coverage"], 0, options)
+  assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-artifact-exit-criterion-status=satisfied"], 0, options)
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-artifact-incomplete-exit-criterion-status", "dry-run"], 0, options)
@@ -79,6 +83,8 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactRuntimeSignalOwners: ["kernel-authority"],
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-gate"],
+    requiredArtifactPlannedOwners: ["validation-harness"],
+    requiredArtifactPlannedClassifications: ["matrix-coverage"],
     requiredArtifactExitCriterionStatuses: ["satisfied"],
     requiredArtifactIncompleteExitCriterionStatuses: ["dry-run"],
     requiredRuntimeSignals: ["lease-health"],
@@ -118,6 +124,8 @@ test("parses aggregate preset requirements with custom key", () => {
 test("rejects secret-looking generated path requirements", () => {
   for (const flag of [
     "--require-artifact-generated-matrix-artifact-index",
+    "--require-artifact-planned-owner",
+    "--require-artifact-planned-classification",
     "--require-generated-matrix-artifact-index",
     "--require-generated-validation-suite-artifact-index",
     "--require-generated-validation-suite-failure-root",

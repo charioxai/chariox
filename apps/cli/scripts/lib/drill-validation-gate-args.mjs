@@ -2,6 +2,8 @@ import { redactDrillSecretText } from "./drill-secrets.mjs"
 
 const SECRET_SENSITIVE_REQUIREMENT_KEYS = new Set([
   "requiredArtifactGeneratedMatrixArtifactIndexes",
+  "requiredArtifactPlannedClassifications",
+  "requiredArtifactPlannedOwners",
   "requiredGeneratedMatrixArtifactIndexes",
   "requiredGeneratedValidationSuiteArtifactIndexes",
   "requiredGeneratedValidationSuiteFailureRoots",
@@ -22,6 +24,8 @@ const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-artifact-runtime-signal-owner", "requiredArtifactRuntimeSignalOwners"],
   ["--require-artifact-owner", "requiredArtifactOwners"],
   ["--require-artifact-classification", "requiredArtifactClassifications"],
+  ["--require-artifact-planned-owner", "requiredArtifactPlannedOwners"],
+  ["--require-artifact-planned-classification", "requiredArtifactPlannedClassifications"],
   ["--require-artifact-exit-criterion-status", "requiredArtifactExitCriterionStatuses"],
   ["--require-artifact-incomplete-exit-criterion-status", "requiredArtifactIncompleteExitCriterionStatuses"],
   ["--require-runtime-signal", "requiredRuntimeSignals"],
@@ -57,6 +61,8 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
     requiredArtifactRuntimeSignalOwners: [],
     requiredArtifactOwners: [],
     requiredArtifactClassifications: [],
+    requiredArtifactPlannedOwners: [],
+    requiredArtifactPlannedClassifications: [],
     requiredArtifactExitCriterionStatuses: [],
     requiredArtifactIncompleteExitCriterionStatuses: [],
     requiredRuntimeSignals: [],

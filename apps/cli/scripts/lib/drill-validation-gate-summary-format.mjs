@@ -113,6 +113,16 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactClassifications.length > 0) {
     lines.push(`artifact_required_classifications=${requiredArtifactClassifications.join(",")} missing=${missingArtifactClassifications.join(",") || "none"}`)
   }
+  const requiredArtifactPlannedOwners = artifacts.requiredArtifactPlannedOwners ?? []
+  const missingArtifactPlannedOwners = artifacts.missingArtifactPlannedOwners ?? []
+  if (requiredArtifactPlannedOwners.length > 0) {
+    lines.push(`artifact_required_planned_owners=${requiredArtifactPlannedOwners.join(",")} missing=${missingArtifactPlannedOwners.join(",") || "none"}`)
+  }
+  const requiredArtifactPlannedClassifications = artifacts.requiredArtifactPlannedClassifications ?? []
+  const missingArtifactPlannedClassifications = artifacts.missingArtifactPlannedClassifications ?? []
+  if (requiredArtifactPlannedClassifications.length > 0) {
+    lines.push(`artifact_required_planned_classifications=${requiredArtifactPlannedClassifications.join(",")} missing=${missingArtifactPlannedClassifications.join(",") || "none"}`)
+  }
   if (artifacts.requiredArtifactMaxAgeMs !== undefined && artifacts.requiredArtifactMaxAgeMs !== null) {
     lines.push(`artifact_required_max_age_ms=${artifacts.requiredArtifactMaxAgeMs} stale_indexes=${(artifacts.staleArtifactIndexes ?? []).length}`)
     for (const staleIndex of artifacts.staleArtifactIndexes ?? []) {
