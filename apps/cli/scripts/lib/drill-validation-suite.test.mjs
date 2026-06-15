@@ -118,8 +118,10 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixArtifactIndexes: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
+      requiredArtifactProviderAccountAliases: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -134,6 +136,10 @@ test("builds shared drill validation suite manifest", () => {
       requiredDeploymentPresets: [],
       requiredProviders: [],
       requiredScenarios: [],
+      requiredGeneratedEvidenceKinds: [],
+      requiredGeneratedMatrixArtifactIndexes: [],
+      requiredGeneratedMatrixLimitations: [],
+      requiredGeneratedValidationSuiteFailureRoots: [],
     }],
     testPaths: ["one.test.mjs", "two words.test.mjs"],
   })
@@ -191,8 +197,10 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run", "validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["matrix-report", "matrix-report"],
+    requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage", "dry-run-classification-coverage"],
     requiredArtifactEvidenceRepos: ["oss", "cloud", "oss"],
+    requiredArtifactProviderAccountAliases: ["codex=work", "codex=work", "opencode=zen"],
     requiredArtifactRuntimeSignals: ["workspace-live-sync-state", "session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
@@ -202,6 +210,10 @@ test("normalizes validation suite preset contracts", () => {
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
     requiredDeploymentPresets: ["local", "hetzner", "local"],
     requiredProviders: ["opencode", "codex", "codex"],
+    requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run", "matrix-report"],
+    requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
+    requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage", "dry-run-classification-coverage"],
+    requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run", "/tmp/generated-suite/failed-run"],
   }]), [{
     name: "workspace-live-sync",
     description: "Workspace Live Sync",
@@ -210,8 +222,10 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["matrix-report"],
+    requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactEvidenceRepos: ["cloud", "oss"],
+    requiredArtifactProviderAccountAliases: ["codex=work", "opencode=zen"],
     requiredArtifactRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
@@ -226,6 +240,10 @@ test("normalizes validation suite preset contracts", () => {
     requiredDeploymentPresets: ["hetzner", "local"],
     requiredProviders: ["codex", "opencode"],
     requiredScenarios: [],
+    requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
+    requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
+    requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   }])
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad",
@@ -272,6 +290,21 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad generated matrix limitation",
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-covergae"],
   }]), /requiredArtifactGeneratedMatrixLimitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-generated-evidence-kind",
+    description: "bad generated evidence kind",
+    requiredGeneratedEvidenceKinds: ["matrix-reprot"],
+  }]), /requiredGeneratedEvidenceKinds\[0\] has unknown generated evidence kind "matrix-reprot"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-required-generated-matrix-limitation",
+    description: "bad generated matrix limitation",
+    requiredGeneratedMatrixLimitations: ["dry-run-classification-covergae"],
+  }]), /requiredGeneratedMatrixLimitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-provider-account-alias",
+    description: "bad provider account alias",
+    requiredArtifactProviderAccountAliases: ["codx=work"],
+  }]), /requiredArtifactProviderAccountAliases\[0\] has unknown provider "codx"/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-artifact-evidence-repo",
     description: "bad artifact evidence repo",

@@ -1,5 +1,6 @@
 export const DRILL_ARTIFACT_KINDS = Object.freeze([
   "artifact-index",
+  "generated-matrix-artifact-index",
   "generated-matrix-root",
   "generated-validation-suite-root",
   "matrix-report",

@@ -13,7 +13,10 @@ import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
-import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
+import {
+  isKnownDrillProvider,
+  parseProviderAccountAlias,
+} from "./drill-provider-profiles.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -317,8 +320,10 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
     requiredArtifactKinds: sortedArtifactKindArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
     requiredArtifactGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
+    requiredArtifactGeneratedMatrixArtifactIndexes: sortedStringArray(preset.requiredArtifactGeneratedMatrixArtifactIndexes, `${preset.name}.requiredArtifactGeneratedMatrixArtifactIndexes`),
     requiredArtifactGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredArtifactGeneratedMatrixLimitations, `${preset.name}.requiredArtifactGeneratedMatrixLimitations`),
     requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
+    requiredArtifactProviderAccountAliases: sortedProviderAccountAliasArray(preset.requiredArtifactProviderAccountAliases, `${preset.name}.requiredArtifactProviderAccountAliases`),
     requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
     requiredArtifactRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
@@ -333,6 +338,10 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredDeploymentPresets: sortedDeploymentPresetArray(preset.requiredDeploymentPresets, `${preset.name}.requiredDeploymentPresets`),
     requiredProviders: sortedProviderArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
     requiredScenarios: sortedStringArray(preset.requiredScenarios, `${preset.name}.requiredScenarios`),
+    requiredGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredGeneratedEvidenceKinds, `${preset.name}.requiredGeneratedEvidenceKinds`),
+    requiredGeneratedMatrixArtifactIndexes: sortedStringArray(preset.requiredGeneratedMatrixArtifactIndexes, `${preset.name}.requiredGeneratedMatrixArtifactIndexes`),
+    requiredGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredGeneratedMatrixLimitations, `${preset.name}.requiredGeneratedMatrixLimitations`),
+    requiredGeneratedValidationSuiteFailureRoots: sortedStringArray(preset.requiredGeneratedValidationSuiteFailureRoots, `${preset.name}.requiredGeneratedValidationSuiteFailureRoots`),
   }
 }
 
@@ -437,6 +446,17 @@ function sortedProviderArray(value, source) {
     }
   }
   return providers
+}
+
+function sortedProviderAccountAliasArray(value, source) {
+  const aliases = sortedStringArray(value, source)
+  for (const [index, entry] of aliases.entries()) {
+    const { provider } = parseProviderAccountAlias(entry)
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown provider ${JSON.stringify(provider)}`)
+    }
+  }
+  return aliases
 }
 
 function sortedRuntimeSignalOwnerArray(value, source) {

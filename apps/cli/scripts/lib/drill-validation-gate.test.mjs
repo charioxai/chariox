@@ -1501,10 +1501,11 @@ function platformValidationPresetSummaries() {
     requiredArtifactCoverageAreas: preset.requiredArtifactCoverageAreas,
     requiredArtifactSchemas: preset.requiredArtifactSchemas,
     requiredArtifactKinds: preset.requiredArtifactKinds,
+    requiredArtifactGeneratedEvidenceKinds: preset.requiredArtifactGeneratedEvidenceKinds,
+    requiredArtifactGeneratedMatrixArtifactIndexes: preset.requiredArtifactGeneratedMatrixArtifactIndexes,
+    requiredArtifactGeneratedMatrixLimitations: preset.requiredArtifactGeneratedMatrixLimitations,
     requiredArtifactEvidenceRepos: preset.requiredArtifactEvidenceRepos,
-    ...(preset.requiredArtifactProviderAccountAliases
-      ? { requiredArtifactProviderAccountAliases: preset.requiredArtifactProviderAccountAliases }
-      : {}),
+    requiredArtifactProviderAccountAliases: preset.requiredArtifactProviderAccountAliases,
     requiredArtifactExitCriterionStatuses: preset.requiredArtifactExitCriterionStatuses,
     requiredArtifactIncompleteExitCriterionStatuses: preset.requiredArtifactIncompleteExitCriterionStatuses,
     requiredMatrices: preset.requiredMatrices,
@@ -1514,6 +1515,10 @@ function platformValidationPresetSummaries() {
     requiredDeploymentPresets: preset.requiredDeploymentPresets,
     requiredProviders: preset.requiredProviders,
     requiredScenarios: preset.requiredScenarios,
+    requiredGeneratedEvidenceKinds: preset.requiredGeneratedEvidenceKinds,
+    requiredGeneratedMatrixArtifactIndexes: preset.requiredGeneratedMatrixArtifactIndexes,
+    requiredGeneratedMatrixLimitations: preset.requiredGeneratedMatrixLimitations,
+    requiredGeneratedValidationSuiteFailureRoots: preset.requiredGeneratedValidationSuiteFailureRoots,
   }))
 }
 
