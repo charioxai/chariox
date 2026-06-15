@@ -184,6 +184,13 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
         assert.equal(error.code, 1)
         const missing = JSON.parse(error.stdout)
         assert.deepEqual(missing.missingGeneratedValidationSuiteFailureRoots, ["/tmp/generated-validation-suite/missing-run"])
+        assert(
+          missing.nextActions.some((action) =>
+            action.classification === "generated-evidence"
+            && action.nextAction.includes("generated validation-suite failure roots")
+            && action.nextAction.includes("/tmp/generated-validation-suite/missing-run"),
+          ),
+        )
         return true
       },
     )
