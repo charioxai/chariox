@@ -19,6 +19,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
       requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredArtifactEvidenceRepos: ["oss"],
       requiredArtifactProviderAccountAliases: ["codex=work"],
+      requiredArtifactValidationPresets: ["distributed-runtime"],
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -76,6 +77,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactProviderAccountAliases, {
     "codex=work": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactValidationPresets, {
+    "distributed-runtime": 1,
+  })
   assert.deepEqual(aggregate.coverage.artifactCoverageInputSources, {
     "artifact metadata inputs": 1,
   })
@@ -106,11 +110,13 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.missingArtifactKinds, [])
   assert.deepEqual(aggregate.missingArtifactEvidenceRepos, [])
   assert.deepEqual(aggregate.missingArtifactProviderAccountAliases, [])
+  assert.deepEqual(aggregate.missingArtifactValidationPresets, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactKinds, ["validation-suite-run"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactEvidenceRepos, ["oss"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactProviderAccountAliases, ["codex=work"])
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactValidationPresets, ["distributed-runtime"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeSignals, {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
@@ -143,6 +149,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.reports[0].artifactCoverage.providerAccountAliases, {
     "codex=work": 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.validationPresets, {
+    "distributed-runtime": 1,
+  })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.artifactCoverageInputSources, {
     "artifact metadata inputs": 1,
   })
@@ -165,6 +174,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /required_artifact_schemas=arroba\.drill\.validation_suite_run\.v1 missing=none/)
   assert.match(text, /required_artifact_kinds=validation-suite-run missing=none/)
   assert.match(text, /required_artifact_evidence_repos=oss missing=none/)
+  assert.match(text, /required_artifact_validation_presets=distributed-runtime missing=none/)
   assert.match(text, /- artifact_schemas: arroba.drill.validation_suite_run.v1=1/)
   assert.match(text, /- artifact_runtime_signals: session-authority=2 workspace-live-sync-state=1/)
   assert.match(text, /- artifact_runtime_signal_owners: kernel-authority=1 runtime-state=1/)
@@ -175,6 +185,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /- artifact_kinds: validation-suite-run=1/)
   assert.match(text, /- artifact_generated_validation_suite_failure_roots: \/tmp\/generated-suite\/failed-run=1/)
   assert.match(text, /- artifact_evidence_repos: oss=1/)
+  assert.match(text, /- artifact_validation_presets: distributed-runtime=1/)
   assert.match(text, /- matrix_runtime_signals: workspace-live-sync-state=1/)
   assert.match(text, /- matrix_runtime_signal_owners: runtime-state=1/)
   assert.match(text, /- matrix_owners: runtime-state=1/)
@@ -340,6 +351,41 @@ test("rejects unknown artifact provider account alias labels in aggregate report
       }],
     }),
     /reports\[0\]\.artifactCoverage\.providerAccountAliases has unknown provider account alias provider "cdoex"/,
+  )
+})
+
+test("rejects unknown artifact validation preset labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      requiredArtifactValidationPresets: ["distributed-runtmie"],
+    }),
+    /requiredArtifactValidationPresets\[0\] has unknown artifact validation preset "distributed-runtmie"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        artifactValidationPresets: { "distributed-runtmie": 1 },
+      },
+    }),
+    /coverage\.artifactValidationPresets has unknown artifact validation preset "distributed-runtmie"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          validationPresets: { "distributed-runtmie": 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.validationPresets has unknown artifact validation preset "distributed-runtmie"/,
   )
 })
 
@@ -1345,6 +1391,8 @@ function reportFixture(overrides = {}) {
         missingArtifactEvidenceRepos: [],
         requiredArtifactProviderAccountAliases: ["codex=work"],
         missingArtifactProviderAccountAliases: [],
+        requiredArtifactValidationPresets: ["distributed-runtime"],
+        missingArtifactValidationPresets: [],
         aggregate: {
           schemas: {
             "arroba.drill.validation_suite_run.v1": 1,
@@ -1383,6 +1431,9 @@ function reportFixture(overrides = {}) {
           },
           providerAccountAliases: {
             "codex=work": 1,
+          },
+          validationPresets: {
+            "distributed-runtime": 1,
           },
           artifactCoverageInputSources: {
             "artifact metadata inputs": 1,

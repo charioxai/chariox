@@ -1819,6 +1819,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateArtifactEvidenceRepoArray(coverage.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateProviderAccountAliasArray(coverage.requiredArtifactProviderAccountAliases ?? [], `${source}.requiredArtifactProviderAccountAliases`)
   validateProviderAccountAliasArray(coverage.missingArtifactProviderAccountAliases ?? [], `${source}.missingArtifactProviderAccountAliases`)
+  validateArtifactValidationPresetArray(coverage.requiredArtifactValidationPresets ?? [], `${source}.requiredArtifactValidationPresets`)
+  validateArtifactValidationPresetArray(coverage.missingArtifactValidationPresets ?? [], `${source}.missingArtifactValidationPresets`)
   validateRuntimeSignalArray(coverage.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
   validateRuntimeSignalArray(coverage.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateRuntimeSignalOwnerArray(coverage.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -1846,6 +1848,7 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateGeneratedEvidencePathCountObject(coverage.generatedValidationSuiteFailureRoots ?? {}, `${source}.generatedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoCountObject(coverage.evidenceRepos ?? {}, `${source}.evidenceRepos`)
   validateProviderAccountAliasCountObject(coverage.providerAccountAliases ?? {}, `${source}.providerAccountAliases`)
+  validateArtifactValidationPresetCountObject(coverage.validationPresets ?? {}, `${source}.validationPresets`)
   validateCountObject(coverage.artifactCoverageInputSources ?? {}, `${source}.artifactCoverageInputSources`)
 }
 
