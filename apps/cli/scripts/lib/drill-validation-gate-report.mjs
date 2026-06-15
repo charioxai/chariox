@@ -19,6 +19,7 @@ import {
 } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
+  isKnownDrillRuntimeSignal,
   validateDrillRuntimeSignals,
 } from "./drill-runtime-signals.mjs"
 
@@ -205,6 +206,13 @@ function validateMatrixCheck(check, source) {
   validateFailureClassificationArray(check.missingMatrixClassifications ?? [], `${source}.missingMatrixClassifications`)
   validateRuntimeSignalArray(check.requiredMatrixRuntimeSignals ?? [], `${source}.requiredMatrixRuntimeSignals`)
   validateRuntimeSignalArray(check.missingMatrixRuntimeSignals ?? [], `${source}.missingMatrixRuntimeSignals`)
+  if (check.requiredMatrixRuntimeSignalScenarios !== undefined) {
+    validateRequiredMatrixRuntimeSignalScenarios(
+      check.requiredMatrixRuntimeSignalScenarios,
+      `${source}.requiredMatrixRuntimeSignalScenarios`,
+      check.requiredMatrixRuntimeSignals ?? [],
+    )
+  }
   validateDeploymentPresetArray(check.requiredDeploymentPresets ?? [], `${source}.requiredDeploymentPresets`)
   validateDeploymentPresetArray(check.missingDeploymentPresets ?? [], `${source}.missingDeploymentPresets`)
   validateProviderArray(check.requiredProviders ?? [], `${source}.requiredProviders`)
@@ -232,6 +240,47 @@ function validateMatrixCheck(check, source) {
       const message = String(error.message ?? error).replace(/^aggregate\s+/, "")
       throw new Error(`${source}.aggregate ${message}`)
     }
+  }
+}
+
+function validateRequiredMatrixRuntimeSignalScenarios(value, source, requiredMatrixRuntimeSignals) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const signal of Object.keys(value)) {
+    if (!isKnownDrillRuntimeSignal(signal)) {
+      throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+    }
+  }
+  for (const signal of requiredMatrixRuntimeSignals) {
+    if (!Object.prototype.hasOwnProperty.call(value, signal)) {
+      throw new Error(`${source} is missing required signal ${JSON.stringify(signal)}`)
+    }
+  }
+  for (const [signal, scenarios] of Object.entries(value)) {
+    if (!Array.isArray(scenarios)) {
+      throw new Error(`${source}.${signal} is not an array`)
+    }
+    for (const [index, scenario] of scenarios.entries()) {
+      validateRequiredMatrixRuntimeSignalScenario(scenario, `${source}.${signal}[${index}]`)
+    }
+  }
+}
+
+function validateRequiredMatrixRuntimeSignalScenario(scenario, source) {
+  if (!scenario || typeof scenario !== "object" || Array.isArray(scenario)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const field of ["matrix", "id", "status"]) {
+    if (!nonEmptyString(scenario[field])) {
+      throw new Error(`${source} has invalid ${field}`)
+    }
+  }
+  if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
+  }
+  if (scenario.source !== null && scenario.source !== undefined && !nonEmptyString(scenario.source)) {
+    throw new Error(`${source} has invalid source`)
   }
 }
 

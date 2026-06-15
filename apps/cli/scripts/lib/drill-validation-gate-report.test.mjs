@@ -580,6 +580,46 @@ test("rejects unknown runtime signal and classification labels in report checks"
     })),
     /checks\.matrices\.requiredMatrixRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/,
   )
+  assert.doesNotThrow(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: matrixCheck({
+          requiredMatrixRuntimeSignals: ["session-authority"],
+          requiredMatrixRuntimeSignalScenarios: {
+            "session-authority": [{
+              matrix: "remote-agent-runtime-matrix",
+              source: "/tmp/matrix.json",
+              id: "single-user-remote-agent",
+              status: "passed",
+            }],
+          },
+        }),
+      },
+    })),
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: matrixCheck({
+          requiredMatrixRuntimeSignals: ["session-authority"],
+          requiredMatrixRuntimeSignalScenarios: {},
+        }),
+      },
+    })),
+    /checks\.matrices\.requiredMatrixRuntimeSignalScenarios is missing required signal "session-authority"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: matrixCheck({
+          requiredMatrixRuntimeSignalScenarios: {
+            "workspace-live-synch-state": [],
+          },
+        }),
+      },
+    })),
+    /checks\.matrices\.requiredMatrixRuntimeSignalScenarios has unknown runtime signal "workspace-live-synch-state"/,
+  )
 })
 
 function report(overrides = {}) {
@@ -670,6 +710,9 @@ function matrixCheck(overrides = {}) {
     missingMatrices: [],
     requiredMatrixClassifications: [],
     missingMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    missingMatrixRuntimeSignals: [],
+    requiredMatrixRuntimeSignalScenarios: {},
     requiredDeploymentPresets: [],
     missingDeploymentPresets: [],
     requiredProviders: [],

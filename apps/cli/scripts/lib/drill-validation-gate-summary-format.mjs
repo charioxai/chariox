@@ -223,7 +223,11 @@ export function formatDrillValidationGateSummary(report) {
   const missingMatrixRuntimeSignals = matrices.missingMatrixRuntimeSignals ?? []
   if (requiredMatrixRuntimeSignals.length > 0) {
     lines.push(`matrix_required_runtime_signals=${requiredMatrixRuntimeSignals.join(",")} missing=${missingMatrixRuntimeSignals.join(",") || "none"}`)
-    appendMatrixRuntimeSignalSources(lines, matrices.aggregate?.runtimeSignalScenarios, requiredMatrixRuntimeSignals)
+    appendMatrixRuntimeSignalSources(
+      lines,
+      matrices.requiredMatrixRuntimeSignalScenarios ?? matrices.aggregate?.runtimeSignalScenarios,
+      requiredMatrixRuntimeSignals,
+    )
   }
   const requiredDeploymentPresets = matrices.requiredDeploymentPresets ?? []
   const missingDeploymentPresets = matrices.missingDeploymentPresets ?? []

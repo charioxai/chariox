@@ -42,6 +42,7 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
       missingMatrixClassifications: [],
       requiredMatrixRuntimeSignals: [],
       missingMatrixRuntimeSignals: [],
+      requiredMatrixRuntimeSignalScenarios: {},
       requiredDeploymentPresets: [],
       missingDeploymentPresets: [],
       requiredProviders: [],
@@ -70,6 +71,7 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
         missingMatrixClassifications: [...requiredMatrixClassifications],
         requiredMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
         missingMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+        requiredMatrixRuntimeSignalScenarios: requiredRuntimeSignalScenarioEvidence(null, requiredMatrixRuntimeSignals),
         requiredDeploymentPresets: [...requiredDeploymentPresets],
         missingDeploymentPresets: [...requiredDeploymentPresets],
         requiredProviders: [...requiredProviders],
@@ -91,6 +93,7 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
     const missingMatrices = missingRequiredMatrices(aggregate, requiredMatrices)
     const missingMatrixClassifications = missingRequiredMatrixClassifications(aggregate, requiredMatrixClassifications)
     const missingMatrixRuntimeSignals = missingRequiredMatrixRuntimeSignals(aggregate, requiredMatrixRuntimeSignals)
+    const requiredMatrixRuntimeSignalScenarios = requiredRuntimeSignalScenarioEvidence(aggregate, requiredMatrixRuntimeSignals)
     const missingDeploymentPresets = missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets)
     const missingProviders = missingRequiredProviders(aggregate, requiredProviders)
     const missingScenarios = missingRequiredScenarios(aggregate, requiredScenarios)
@@ -117,6 +120,7 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
       missingMatrixClassifications,
       requiredMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
       missingMatrixRuntimeSignals,
+      requiredMatrixRuntimeSignalScenarios,
       requiredDeploymentPresets: [...requiredDeploymentPresets],
       missingDeploymentPresets,
       requiredProviders: [...requiredProviders],
@@ -140,6 +144,7 @@ export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, 
       missingMatrixClassifications: [...requiredMatrixClassifications],
       requiredMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
       missingMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+      requiredMatrixRuntimeSignalScenarios: requiredRuntimeSignalScenarioEvidence(null, requiredMatrixRuntimeSignals),
       requiredDeploymentPresets: [...requiredDeploymentPresets],
       missingDeploymentPresets: [...requiredDeploymentPresets],
       requiredProviders: [...requiredProviders],
@@ -179,6 +184,16 @@ function missingRequiredMatrixClassifications(aggregate, requiredMatrixClassific
 function missingRequiredMatrixRuntimeSignals(aggregate, requiredMatrixRuntimeSignals) {
   const present = new Set(Object.keys(aggregate.runtimeSignals ?? {}))
   return requiredMatrixRuntimeSignals.filter((signal) => !present.has(signal))
+}
+
+function requiredRuntimeSignalScenarioEvidence(aggregate, requiredMatrixRuntimeSignals) {
+  const evidence = aggregate?.runtimeSignalScenarios && typeof aggregate.runtimeSignalScenarios === "object"
+    ? aggregate.runtimeSignalScenarios
+    : {}
+  return Object.fromEntries(requiredMatrixRuntimeSignals.map((signal) => [
+    signal,
+    Array.isArray(evidence[signal]) ? evidence[signal] : [],
+  ]))
 }
 
 function staleMatrixReportsFor(reports, sources, { nowMs, requiredMatrixMaxAgeMs }) {

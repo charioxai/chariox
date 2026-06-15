@@ -26,6 +26,7 @@ test("skips matrix validation when no matrix evidence or requirements are config
     missingMatrixClassifications: [],
     requiredMatrixRuntimeSignals: [],
     missingMatrixRuntimeSignals: [],
+    requiredMatrixRuntimeSignalScenarios: {},
     requiredDeploymentPresets: [],
     missingDeploymentPresets: [],
     requiredProviders: [],
@@ -88,6 +89,20 @@ test("passes with matrix, classification, deployment, provider, and scenario cov
     assert.deepEqual(check.missingMatrices, [])
     assert.deepEqual(check.missingMatrixClassifications, [])
     assert.deepEqual(check.missingMatrixRuntimeSignals, [])
+    assert.deepEqual(check.requiredMatrixRuntimeSignalScenarios, {
+      "session-authority": [{
+        matrix: "workspace-live-sync-matrix",
+        source: reportPath,
+        id: "permission",
+        status: "passed",
+      }],
+      "workspace-live-sync-state": [{
+        matrix: "workspace-live-sync-matrix",
+        source: reportPath,
+        id: "managed",
+        status: "passed",
+      }],
+    })
     assert.deepEqual(check.missingDeploymentPresets, [])
     assert.deepEqual(check.missingProviders, [])
     assert.deepEqual(check.missingScenarios, [])
@@ -233,6 +248,7 @@ test("reports missing matrix coverage dimensions from otherwise valid evidence",
     assert.deepEqual(check.missingMatrices, ["workspace-live-sync-matrix"])
     assert.deepEqual(check.missingMatrixClassifications, ["workspace-live-sync-conflict"])
     assert.deepEqual(check.missingMatrixRuntimeSignals, ["workspace-live-sync-state"])
+    assert.deepEqual(check.requiredMatrixRuntimeSignalScenarios, { "workspace-live-sync-state": [] })
     assert.deepEqual(check.missingDeploymentPresets, ["hosted-cloud"])
     assert.deepEqual(check.missingProviders, ["claude"])
     assert.deepEqual(check.missingScenarios, ["tracked"])
