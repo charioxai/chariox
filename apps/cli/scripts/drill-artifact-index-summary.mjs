@@ -21,6 +21,7 @@ import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 import {
+  drillRuntimeSignalOwnersFor,
   drillRuntimeSignalNextAction,
   isKnownDrillRuntimeSignal,
 } from "./lib/drill-runtime-signals.mjs"
@@ -548,9 +549,13 @@ function runtimeSignalDiagnosticsFor(aggregate, options) {
 function runtimeSignalRequirementMetadataFor(aggregate) {
   const required = aggregate.requiredRuntimeSignalRequirements ?? []
   const missing = aggregate.missingRuntimeSignalRequirements ?? []
+  const requiredOwners = drillRuntimeSignalOwnersFor(required)
+  const missingOwners = drillRuntimeSignalOwnersFor(missing)
   return {
     ...(required.length > 0 ? { requiredRuntimeSignals: required.join(",") } : {}),
+    ...(requiredOwners.length > 0 ? { requiredRuntimeSignalOwners: requiredOwners.join(",") } : {}),
     ...(missing.length > 0 ? { missingRuntimeSignals: missing.join(",") } : {}),
+    ...(missingOwners.length > 0 ? { missingRuntimeSignalOwners: missingOwners.join(",") } : {}),
   }
 }
 

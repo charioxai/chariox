@@ -26,11 +26,15 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
     ...platformRuntimeSignalOwners(report),
     ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignalOwners ?? {}),
   ])
+  const requiredSignalOwners = new Set(drillRuntimeSignalOwnersFor([...requiredSignals]))
+  const missingSignalOwners = new Set(drillRuntimeSignalOwnersFor([...missingSignals]))
   return signals.size > 0 || requiredSignals.size > 0 || missingSignals.size > 0
     ? {
       ...(signals.size > 0 ? { runtimeSignals: [...signals].sort().join(",") } : {}),
       ...(requiredSignals.size > 0 ? { requiredRuntimeSignals: [...requiredSignals].sort().join(",") } : {}),
+      ...(requiredSignalOwners.size > 0 ? { requiredRuntimeSignalOwners: [...requiredSignalOwners].sort().join(",") } : {}),
       ...(missingSignals.size > 0 ? { missingRuntimeSignals: [...missingSignals].sort().join(",") } : {}),
+      ...(missingSignalOwners.size > 0 ? { missingRuntimeSignalOwners: [...missingSignalOwners].sort().join(",") } : {}),
       ...(signalOwners.size > 0 ? { runtimeSignalOwners: [...signalOwners].sort().join(",") } : {}),
     }
     : {}
@@ -109,11 +113,15 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.failureRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.matrixRuntimeSignalOwners ?? {}),
   ])
+  const requiredSignalOwners = new Set(drillRuntimeSignalOwnersFor([...requiredSignals]))
+  const missingSignalOwners = new Set(drillRuntimeSignalOwnersFor([...missingSignals]))
   return signals.size > 0 || requiredSignals.size > 0 || missingSignals.size > 0
     ? {
       ...(signals.size > 0 ? { runtimeSignals: [...signals].sort().join(",") } : {}),
       ...(requiredSignals.size > 0 ? { requiredRuntimeSignals: [...requiredSignals].sort().join(",") } : {}),
+      ...(requiredSignalOwners.size > 0 ? { requiredRuntimeSignalOwners: [...requiredSignalOwners].sort().join(",") } : {}),
       ...(missingSignals.size > 0 ? { missingRuntimeSignals: [...missingSignals].sort().join(",") } : {}),
+      ...(missingSignalOwners.size > 0 ? { missingRuntimeSignalOwners: [...missingSignalOwners].sort().join(",") } : {}),
       ...(signalOwners.size > 0 ? { runtimeSignalOwners: [...signalOwners].sort().join(",") } : {}),
     }
     : {}

@@ -137,6 +137,22 @@ export function formatDrillValidationGateSummary(report) {
     if (runtimeSignalOwners.length > 0) {
       lines.push(`artifact_runtime_signal_owners=${runtimeSignalOwners.map(([owner, count]) => `${owner}:${count}`).join(",")}`)
     }
+    const requiredRuntimeSignals = Object.entries(artifacts.aggregate.requiredRuntimeSignals ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (requiredRuntimeSignals.length > 0) {
+      lines.push(`artifact_required_runtime_signals=${requiredRuntimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)
+    }
+    const requiredRuntimeSignalOwners = Object.entries(artifacts.aggregate.requiredRuntimeSignalOwners ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (requiredRuntimeSignalOwners.length > 0) {
+      lines.push(`artifact_required_runtime_signal_owners=${requiredRuntimeSignalOwners.map(([owner, count]) => `${owner}:${count}`).join(",")}`)
+    }
+    const missingRuntimeSignals = Object.entries(artifacts.aggregate.missingRuntimeSignals ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (missingRuntimeSignals.length > 0) {
+      lines.push(`artifact_missing_runtime_signals=${missingRuntimeSignals.map(([signal, count]) => `${signal}:${count}`).join(",")}`)
+    }
+    const missingRuntimeSignalOwners = Object.entries(artifacts.aggregate.missingRuntimeSignalOwners ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (missingRuntimeSignalOwners.length > 0) {
+      lines.push(`artifact_missing_runtime_signal_owners=${missingRuntimeSignalOwners.map(([owner, count]) => `${owner}:${count}`).join(",")}`)
+    }
     const owners = Object.entries(artifacts.aggregate.owners ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (owners.length > 0) {
       lines.push(`artifact_owners=${owners.map(([owner, count]) => `${owner}:${count}`).join(",")}`)

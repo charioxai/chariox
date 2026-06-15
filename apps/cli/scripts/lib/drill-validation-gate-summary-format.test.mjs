@@ -127,6 +127,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_schemas=arroba\.drill\.matrix\.v1:2,arroba\.drill\.validation_suite_run\.v1:1/)
   assert.match(text, /artifact_runtime_signals=session-authority:2,workspace-live-sync-state:1/)
   assert.match(text, /artifact_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
+  assert.match(text, /artifact_required_runtime_signals=session-authority:2,workspace-live-sync-state:1/)
+  assert.match(text, /artifact_required_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
   assert.match(text, /artifact_owners=validation-platform:1/)
   assert.match(text, /artifact_classifications=cloud-validation-suite:1/)
   assert.match(text, /artifact_kinds=artifact-index:1,matrix-report:1,validation-suite-run:1/)
@@ -307,7 +309,12 @@ function artifactAggregateFixture() {
       "session-authority": 2,
       "workspace-live-sync-state": 1,
     },
+    requiredRuntimeSignalOwners: {
+      "kernel-authority": 1,
+      "runtime-state": 1,
+    },
     missingRuntimeSignals: {},
+    missingRuntimeSignalOwners: {},
     coverageAreas: {
       "distributed-observability": 1,
     },
@@ -394,7 +401,12 @@ function artifactAggregateFixture() {
         "session-authority": 2,
         "workspace-live-sync-state": 1,
       },
+      requiredRuntimeSignalOwners: {
+        "kernel-authority": 1,
+        "runtime-state": 1,
+      },
       missingRuntimeSignals: {},
+      missingRuntimeSignalOwners: {},
       coverageAreas: {
         "distributed-observability": 1,
       },

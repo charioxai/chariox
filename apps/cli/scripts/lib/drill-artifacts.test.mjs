@@ -617,7 +617,9 @@ test("summarizes drill artifact indexes", async () => {
         runtimeSignals: "session-authority,provider-run-lifecycle",
         runtimeSignalOwners: "kernel-authority,provider-runtime",
         requiredRuntimeSignals: "provider-run-lifecycle,session-authority",
+        requiredRuntimeSignalOwners: "kernel-authority,provider-runtime",
         missingRuntimeSignals: "relay-target-freshness",
+        missingRuntimeSignalOwners: "runtime-network",
         validationPresets: "distributed-runtime,workspace-live-sync",
         artifactKinds: "validation-gate,validation-suite-run",
         generatedEvidenceKinds: "validation-suite-run",
@@ -642,6 +644,7 @@ test("summarizes drill artifact indexes", async () => {
         runtimeSignals: "session-authority,lease-health",
         runtimeSignalOwners: "kernel-authority",
         requiredRuntimeSignals: "lease-health,session-authority",
+        requiredRuntimeSignalOwners: "kernel-authority",
         validationPresets: "distributed-runtime,slice-runtime",
         artifactKinds: "matrix-report",
         generatedEvidenceKinds: "matrix-report",
@@ -684,8 +687,15 @@ test("summarizes drill artifact indexes", async () => {
       "provider-run-lifecycle": 1,
       "session-authority": 2,
     })
+    assert.deepEqual(aggregate.requiredRuntimeSignalOwners, {
+      "kernel-authority": 2,
+      "provider-runtime": 1,
+    })
     assert.deepEqual(aggregate.missingRuntimeSignals, {
       "relay-target-freshness": 1,
+    })
+    assert.deepEqual(aggregate.missingRuntimeSignalOwners, {
+      "runtime-network": 1,
     })
     assert.deepEqual(aggregate.validationPresets, {
       "distributed-runtime": 2,
@@ -813,6 +823,7 @@ test("summarizes drill artifact indexes", async () => {
       missingGeneratedEvidenceKinds: "matrix-report",
       missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
       missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
+      missingRuntimeSignalOwners: "runtime-network",
       missingRuntimeSignals: "relay-target-freshness",
       missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
       owners: "runtime-network,validation-harness",
@@ -821,6 +832,7 @@ test("summarizes drill artifact indexes", async () => {
       requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
       requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+      requiredRuntimeSignalOwners: "kernel-authority,provider-runtime",
       requiredRuntimeSignals: "lease-health,provider-run-lifecycle,session-authority",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
@@ -830,7 +842,9 @@ test("summarizes drill artifact indexes", async () => {
       "runtimeSignals",
       "runtimeSignalOwners",
       "requiredRuntimeSignals",
+      "requiredRuntimeSignalOwners",
       "missingRuntimeSignals",
+      "missingRuntimeSignalOwners",
       "coverageAreas",
       "validationPresets",
       "owners",
@@ -1008,9 +1022,22 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      requiredRuntimeSignalOwners: { "kernel-authority": 1 },
+    })),
+    /drill artifact diagnostics\.requiredRuntimeSignalOwners must match requiredRuntimeSignals/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       missingRuntimeSignals: { "workspace-live-synch-state": 1 },
     })),
     /missingRuntimeSignals has unknown runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      missingRuntimeSignals: { "provider-run-lifecycle": 1 },
+      missingRuntimeSignalOwners: { "kernel-authority": 1 },
+    })),
+    /drill artifact diagnostics\.missingRuntimeSignalOwners must match missingRuntimeSignals/,
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({

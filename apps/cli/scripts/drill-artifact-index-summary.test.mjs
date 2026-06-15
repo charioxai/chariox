@@ -712,7 +712,9 @@ test("drill artifact index summary gates runtime signals with owner-routed next 
     assert.deepEqual(aggregate.requiredRuntimeSignalRequirements, ["lease-health", "session-authority"])
     assert.deepEqual(aggregate.missingRuntimeSignalRequirements, [])
     assert.equal(artifactIndex.metadata.requiredRuntimeSignals, "lease-health,session-authority")
+    assert.equal(artifactIndex.metadata.requiredRuntimeSignalOwners, "kernel-authority")
     assert.equal(artifactIndex.metadata.missingRuntimeSignals, undefined)
+    assert.equal(artifactIndex.metadata.missingRuntimeSignalOwners, undefined)
 
     await assert.rejects(
       execFile(process.execPath, [

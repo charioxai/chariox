@@ -30,7 +30,9 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "runtimeSignals",
   "runtimeSignalOwners",
   "requiredRuntimeSignals",
+  "requiredRuntimeSignalOwners",
   "missingRuntimeSignals",
+  "missingRuntimeSignalOwners",
   "coverageAreas",
   "validationPresets",
   "owners",
@@ -64,7 +66,9 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   runtimeSignals: "runtime_signals",
   runtimeSignalOwners: "runtime_signal_owners",
   requiredRuntimeSignals: "required_runtime_signals",
+  requiredRuntimeSignalOwners: "required_runtime_signal_owners",
   missingRuntimeSignals: "missing_runtime_signals",
+  missingRuntimeSignalOwners: "missing_runtime_signal_owners",
   coverageAreas: "coverage_areas",
   validationPresets: "validation_presets",
   owners: "owners",
@@ -224,7 +228,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const runtimeSignals = new Map()
   const runtimeSignalOwners = new Map()
   const requiredRuntimeSignals = new Map()
+  const requiredRuntimeSignalOwners = new Map()
   const missingRuntimeSignals = new Map()
+  const missingRuntimeSignalOwners = new Map()
   const coverageAreas = new Map()
   const validationPresets = new Map()
   const owners = new Map()
@@ -258,7 +264,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexRuntimeSignals = runtimeSignalsFromMetadata(index.metadata)
     const indexRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRuntimeSignals)
     const indexRequiredRuntimeSignals = metadataListFromMetadata(index.metadata, "requiredRuntimeSignals")
+    const indexRequiredRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRequiredRuntimeSignals)
     const indexMissingRuntimeSignals = metadataListFromMetadata(index.metadata, "missingRuntimeSignals")
+    const indexMissingRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexMissingRuntimeSignals)
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
@@ -285,7 +293,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexRuntimeSignals, runtimeSignals)
     countValues(indexRuntimeSignalOwners, runtimeSignalOwners)
     countValues(indexRequiredRuntimeSignals, requiredRuntimeSignals)
+    countValues(indexRequiredRuntimeSignalOwners, requiredRuntimeSignalOwners)
     countValues(indexMissingRuntimeSignals, missingRuntimeSignals)
+    countValues(indexMissingRuntimeSignalOwners, missingRuntimeSignalOwners)
     countValues(indexCoverageAreas, coverageAreas)
     countValues(indexValidationPresets, validationPresets)
     countValues(indexOwners, owners)
@@ -326,7 +336,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       runtimeSignals: countValues(indexRuntimeSignals),
       runtimeSignalOwners: countValues(indexRuntimeSignalOwners),
       requiredRuntimeSignals: countValues(indexRequiredRuntimeSignals),
+      requiredRuntimeSignalOwners: countValues(indexRequiredRuntimeSignalOwners),
       missingRuntimeSignals: countValues(indexMissingRuntimeSignals),
+      missingRuntimeSignalOwners: countValues(indexMissingRuntimeSignalOwners),
       coverageAreas: countValues(indexCoverageAreas),
       validationPresets: countValues(indexValidationPresets),
       owners: countValues(indexOwners),
@@ -359,7 +371,9 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     runtimeSignals: sortedCountObject(runtimeSignals),
     runtimeSignalOwners: sortedCountObject(runtimeSignalOwners),
     requiredRuntimeSignals: sortedCountObject(requiredRuntimeSignals),
+    requiredRuntimeSignalOwners: sortedCountObject(requiredRuntimeSignalOwners),
     missingRuntimeSignals: sortedCountObject(missingRuntimeSignals),
+    missingRuntimeSignalOwners: sortedCountObject(missingRuntimeSignalOwners),
     coverageAreas: sortedCountObject(coverageAreas),
     validationPresets: sortedCountObject(validationPresets),
     owners: sortedCountObject(owners),
@@ -438,6 +452,20 @@ export function validateDrillArtifactDiagnosticDimensions(value, source = "drill
     validateDiagnosticCountObject(value[key], `${source}.${key}`, key)
   }
   validateRuntimeSignalOwnerKeysMatch(value.runtimeSignals, value.runtimeSignalOwners, source)
+  validateRuntimeSignalOwnerKeysMatch(
+    value.requiredRuntimeSignals,
+    value.requiredRuntimeSignalOwners,
+    source,
+    "requiredRuntimeSignalOwners",
+    "requiredRuntimeSignals",
+  )
+  validateRuntimeSignalOwnerKeysMatch(
+    value.missingRuntimeSignals,
+    value.missingRuntimeSignalOwners,
+    source,
+    "missingRuntimeSignalOwners",
+    "missingRuntimeSignals",
+  )
 }
 
 export function validateDrillArtifactIndex(index, source = "drill artifact index") {
@@ -603,6 +631,20 @@ function validateArtifactIndexSummary(summary, source) {
     validateDiagnosticCountObject(summary[key], `${source}.${key}`, key)
   }
   validateRuntimeSignalOwnerCountsMatch(summary.runtimeSignals, summary.runtimeSignalOwners, source)
+  validateRuntimeSignalOwnerCountsMatch(
+    summary.requiredRuntimeSignals,
+    summary.requiredRuntimeSignalOwners,
+    source,
+    "requiredRuntimeSignalOwners",
+    "requiredRuntimeSignals",
+  )
+  validateRuntimeSignalOwnerCountsMatch(
+    summary.missingRuntimeSignals,
+    summary.missingRuntimeSignalOwners,
+    source,
+    "missingRuntimeSignalOwners",
+    "missingRuntimeSignals",
+  )
 }
 
 function validateCountObject(value, source) {
@@ -687,22 +729,34 @@ function validateDiagnosticCountObject(value, source, key) {
   }
 }
 
-function validateRuntimeSignalOwnerCountsMatch(runtimeSignals, runtimeSignalOwners, source) {
+function validateRuntimeSignalOwnerCountsMatch(
+  runtimeSignals,
+  runtimeSignalOwners,
+  source,
+  ownerKey = "runtimeSignalOwners",
+  signalKey = "runtimeSignals",
+) {
   const expectedOwners = Object.fromEntries(
     drillRuntimeSignalOwnersFor(Object.keys(runtimeSignals ?? {})).map((owner) => [owner, 1]),
   )
   if (JSON.stringify(runtimeSignalOwners ?? {}) !== JSON.stringify(expectedOwners)) {
-    throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+    throw new Error(`${source}.${ownerKey} must match ${signalKey}`)
   }
 }
 
-function validateRuntimeSignalOwnerKeysMatch(runtimeSignals, runtimeSignalOwners, source) {
-  validateDiagnosticCountObject(runtimeSignals ?? {}, `${source}.runtimeSignals`, "runtimeSignals")
-  validateCountObject(runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
+function validateRuntimeSignalOwnerKeysMatch(
+  runtimeSignals,
+  runtimeSignalOwners,
+  source,
+  ownerKey = "runtimeSignalOwners",
+  signalKey = "runtimeSignals",
+) {
+  validateDiagnosticCountObject(runtimeSignals ?? {}, `${source}.${signalKey}`, signalKey)
+  validateCountObject(runtimeSignalOwners ?? {}, `${source}.${ownerKey}`)
   const actualOwners = Object.keys(runtimeSignalOwners ?? {}).sort()
   const expectedOwners = drillRuntimeSignalOwnersFor(Object.keys(runtimeSignals ?? {})).sort()
   if (JSON.stringify(actualOwners) !== JSON.stringify(expectedOwners)) {
-    throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+    throw new Error(`${source}.${ownerKey} must match ${signalKey}`)
   }
 }
 
@@ -903,15 +957,43 @@ function runtimeSignalOwnersFromRuntimeSignals(runtimeSignals) {
 function validateDrillArtifactIndexRuntimeSignalOwnerMetadata(metadata, source) {
   const runtimeSignals = runtimeSignalsFromMetadata(metadata)
   const runtimeSignalOwners = metadataListFromMetadata(metadata, "runtimeSignalOwners")
-  validateDrillRuntimeSignals(metadataListFromMetadata(metadata, "requiredRuntimeSignals"), `${source}.requiredRuntimeSignals`)
-  validateDrillRuntimeSignals(metadataListFromMetadata(metadata, "missingRuntimeSignals"), `${source}.missingRuntimeSignals`)
-  if (runtimeSignals.length === 0 && runtimeSignalOwners.length === 0) return
-  const expectedRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(runtimeSignals)
-  if (runtimeSignals.length === 0) {
-    throw new Error(`${source}.runtimeSignalOwners requires runtimeSignals`)
+  const requiredRuntimeSignals = metadataListFromMetadata(metadata, "requiredRuntimeSignals")
+  const requiredRuntimeSignalOwners = metadataListFromMetadata(metadata, "requiredRuntimeSignalOwners")
+  const missingRuntimeSignals = metadataListFromMetadata(metadata, "missingRuntimeSignals")
+  const missingRuntimeSignalOwners = metadataListFromMetadata(metadata, "missingRuntimeSignalOwners")
+  validateDrillRuntimeSignals(requiredRuntimeSignals, `${source}.requiredRuntimeSignals`)
+  validateDrillRuntimeSignals(missingRuntimeSignals, `${source}.missingRuntimeSignals`)
+  if (runtimeSignals.length > 0 || runtimeSignalOwners.length > 0) {
+    const expectedRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(runtimeSignals)
+    if (runtimeSignals.length === 0) {
+      throw new Error(`${source}.runtimeSignalOwners requires runtimeSignals`)
+    }
+    if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expectedRuntimeSignalOwners)) {
+      throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+    }
   }
+  validateOptionalRuntimeSignalOwners(
+    requiredRuntimeSignals,
+    requiredRuntimeSignalOwners,
+    `${source}.requiredRuntimeSignalOwners`,
+    "requiredRuntimeSignals",
+  )
+  validateOptionalRuntimeSignalOwners(
+    missingRuntimeSignals,
+    missingRuntimeSignalOwners,
+    `${source}.missingRuntimeSignalOwners`,
+    "missingRuntimeSignals",
+  )
+}
+
+function validateOptionalRuntimeSignalOwners(runtimeSignals, runtimeSignalOwners, source, signalKey) {
+  if (runtimeSignals.length === 0 && runtimeSignalOwners.length === 0) return
+  if (runtimeSignals.length === 0) {
+    throw new Error(`${source} requires ${signalKey}`)
+  }
+  const expectedRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(runtimeSignals)
   if (JSON.stringify(runtimeSignalOwners) !== JSON.stringify(expectedRuntimeSignalOwners)) {
-    throw new Error(`${source}.runtimeSignalOwners must match runtimeSignals`)
+    throw new Error(`${source} must match ${signalKey}`)
   }
 }
 
