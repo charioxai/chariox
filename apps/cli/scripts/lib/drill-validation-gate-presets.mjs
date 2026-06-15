@@ -3,7 +3,7 @@ import {
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
 } from "./drill-distributed-runtime-evidence.mjs"
-import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
+import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
@@ -865,9 +865,9 @@ export function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {
   }
   const normalizedPresets = [...new Set(presets)].sort()
   for (const preset of normalizedPresets) {
-    if (!DRILL_DEPLOYMENT_PRESETS.includes(preset)) {
-      throw new Error(`unknown required deployment preset: ${preset}`)
-    }
+    validateDrillDeploymentPreset(preset, "required deployment presets", {
+      message: () => `unknown required deployment preset: ${preset}`,
+    })
   }
   return normalizedPresets
 }

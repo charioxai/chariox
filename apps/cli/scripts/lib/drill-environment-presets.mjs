@@ -87,13 +87,20 @@ export function isKnownDrillDeploymentPreset(preset) {
   return DRILL_DEPLOYMENT_PRESETS.includes(preset)
 }
 
+export function validateDrillDeploymentPreset(preset, source, { message } = {}) {
+  if (!isKnownDrillDeploymentPreset(preset)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(preset) : message)
+    }
+    throw new Error(`${source} has unknown deployment preset ${JSON.stringify(preset)}`)
+  }
+}
+
 export function validateDrillDeploymentPresets(presets, source) {
   if (!Array.isArray(presets) || !presets.every((preset) => typeof preset === "string" && preset.length > 0)) {
     throw new Error(`${source} has invalid deployment presets`)
   }
   for (const [index, preset] of presets.entries()) {
-    if (!isKnownDrillDeploymentPreset(preset)) {
-      throw new Error(`${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillDeploymentPreset(preset, `${source}[${index}]`)
   }
 }

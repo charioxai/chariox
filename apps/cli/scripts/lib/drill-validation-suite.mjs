@@ -8,7 +8,7 @@ import {
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
-import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
+import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
@@ -473,9 +473,7 @@ function sortedFailureClassificationArray(value, source) {
 function sortedDeploymentPresetArray(value, source) {
   const presets = sortedStringArray(value, source)
   for (const [index, preset] of presets.entries()) {
-    if (!DRILL_DEPLOYMENT_PRESETS.includes(preset)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillDeploymentPreset(preset, `validation suite preset ${source}[${index}]`)
   }
   return presets
 }

@@ -8,6 +8,7 @@ import {
   hetznerPassthroughMetadata,
   isKnownDrillDeploymentPreset,
   parseHetznerPassthroughArg,
+  validateDrillDeploymentPreset,
   validateDrillDeploymentPresets,
 } from "./drill-environment-presets.mjs"
 
@@ -58,6 +59,17 @@ test("summarizes deployment presets without leaking machine details", () => {
   ])
   assert.equal(isKnownDrillDeploymentPreset("local"), true)
   assert.equal(isKnownDrillDeploymentPreset("same-host-remtoe"), false)
+  assert.doesNotThrow(() => validateDrillDeploymentPreset("same-host-remote", "preset"))
+  assert.throws(
+    () => validateDrillDeploymentPreset("same-host-remtoe", "preset"),
+    /preset has unknown deployment preset "same-host-remtoe"/,
+  )
+  assert.throws(
+    () => validateDrillDeploymentPreset("same-host-remtoe", "required deployment presets", {
+      message: (preset) => `unknown required deployment preset: ${preset}`,
+    }),
+    /unknown required deployment preset: same-host-remtoe/,
+  )
   assert.doesNotThrow(() => validateDrillDeploymentPresets(["local", "same-host-remote"], "test presets"))
   assert.throws(
     () => validateDrillDeploymentPresets(["same-host-remtoe"], "test presets"),

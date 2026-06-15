@@ -5,7 +5,7 @@ import {
 } from "./drill-aggregate-actions.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
-import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
+import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -2257,9 +2257,7 @@ function validatePresetArray(value, source) {
 function validateDeploymentPresetArray(value, source) {
   validateStringArray(value, source)
   for (const [index, preset] of value.entries()) {
-    if (!isKnownDrillDeploymentPreset(preset)) {
-      throw new Error(`${source}[${index}] has unknown deployment preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillDeploymentPreset(preset, `${source}[${index}]`)
   }
 }
 
@@ -2394,9 +2392,7 @@ function validatePresetCountObject(value, source) {
 function validateDeploymentPresetCountObject(value, source) {
   validateCountObject(value, source)
   for (const preset of Object.keys(value)) {
-    if (!isKnownDrillDeploymentPreset(preset)) {
-      throw new Error(`${source} has unknown deployment preset ${JSON.stringify(preset)}`)
-    }
+    validateDrillDeploymentPreset(preset, source)
   }
 }
 
