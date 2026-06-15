@@ -9,6 +9,7 @@ import {
   redactDrillSecretText,
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
+import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
   drillRuntimeSignalOwnersFor,
@@ -577,6 +578,29 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
     }
+  }
+  if (parsed?.schema === "arroba.drill.matrix.v1") {
+    validateDrillMatrixReport(parsed, artifactPath)
+    validateMatrixArtifactMetadata(parsed, artifactPath, metadata)
+  }
+}
+
+function validateMatrixArtifactMetadata(report, artifactPath, metadata) {
+  const artifactKinds = metadataListFromMetadata(metadata, "artifactKinds")
+  if (artifactKinds.length > 0 && !artifactKinds.includes("matrix-report")) {
+    throw new Error(`drill artifact ${artifactPath} metadata.artifactKinds must include matrix-report`)
+  }
+  if (metadata?.matrix !== undefined && metadata.matrix !== report.matrix) {
+    throw new Error(`drill artifact ${artifactPath} metadata.matrix must match artifact matrix`)
+  }
+  if (metadata?.status !== undefined && metadata.status !== report.status) {
+    throw new Error(`drill artifact ${artifactPath} metadata.status must match artifact status`)
+  }
+  if (metadata?.dryRun !== undefined && metadata.dryRun !== report.dryRun) {
+    throw new Error(`drill artifact ${artifactPath} metadata.dryRun must match artifact dryRun`)
+  }
+  if (metadata?.scenarios !== undefined && metadata.scenarios !== report.scenarios.length) {
+    throw new Error(`drill artifact ${artifactPath} metadata.scenarios must match artifact scenarios`)
   }
 }
 

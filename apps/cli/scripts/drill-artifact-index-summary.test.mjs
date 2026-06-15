@@ -163,7 +163,9 @@ test("drill artifact index summary rejects tampered artifacts", async () => {
 async function writeIndexedReport(rootDir, name, schema) {
   const drillRoot = path.join(rootDir, name)
   await mkdir(path.join(drillRoot, "reports"), { recursive: true })
-  await writeFile(path.join(drillRoot, "reports", "report.json"), `${JSON.stringify({ schema })}\n`, "utf8")
+  await writeFile(path.join(drillRoot, "reports", "report.json"), `${JSON.stringify(
+    schema === "arroba.drill.matrix.v1" ? matrixReportArtifact() : { schema },
+  )}\n`, "utf8")
   const runtimeSignals = name === "one"
     ? ["session-authority", "lease-health"]
     : ["session-authority", "workspace-live-sync-state"]
@@ -197,4 +199,35 @@ async function writeIndexedReport(rootDir, name, schema) {
     },
   })
   return path.join(drillRoot, "arroba-drill-artifacts.json")
+}
+
+function matrixReportArtifact() {
+  return {
+    schema: "arroba.drill.matrix.v1",
+    matrix: "artifact-index-summary-matrix",
+    status: "passed",
+    dryRun: false,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    durationMs: 1000,
+    metadata: {},
+    scenarios: [{
+      id: "summary",
+      description: "summary scenario",
+      requires: [],
+      exitCriteria: [],
+      exitCriteriaEvidence: [],
+      runtimeSignals: ["session-authority"],
+      status: "passed",
+      expectedFailure: false,
+      classification: null,
+      owner: null,
+      nextAction: null,
+      durationMs: 1,
+      reason: null,
+      command: "node",
+      args: ["--version"],
+      artifactHints: [],
+    }],
+  }
 }

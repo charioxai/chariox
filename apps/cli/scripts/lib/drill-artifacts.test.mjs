@@ -56,6 +56,39 @@ function validationSuiteManifestArtifact(overrides = {}) {
   }
 }
 
+function matrixReportArtifact(overrides = {}) {
+  const scenarios = overrides.scenarios ?? [{
+    id: "local",
+    description: "local scenario",
+    requires: [],
+    exitCriteria: [],
+    exitCriteriaEvidence: [],
+    runtimeSignals: ["session-authority"],
+    status: "passed",
+    expectedFailure: false,
+    classification: null,
+    owner: null,
+    nextAction: null,
+    durationMs: 1,
+    reason: null,
+    command: "node",
+    args: ["--version"],
+    artifactHints: [],
+  }]
+  return {
+    schema: "arroba.drill.matrix.v1",
+    matrix: "test-matrix",
+    status: "passed",
+    dryRun: false,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    durationMs: 1000,
+    metadata: {},
+    scenarios,
+    ...overrides,
+  }
+}
+
 test("drill artifacts are removed after a passing run", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-pass-"))
   await prepareDrillArtifacts(root)
@@ -338,6 +371,55 @@ test("rejects validation suite run artifacts with stale metadata", async () => {
     await assert.rejects(
       verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
       /suite-run\.json metadata\.status must match artifact status/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects malformed matrix report artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-matrix-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "matrix.json"), `${JSON.stringify({
+      schema: "arroba.drill.matrix.v1",
+    }, null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/matrix.json"],
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /matrix\.json is missing matrix/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects matrix report artifacts with stale metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-matrix-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "matrix.json"), `${JSON.stringify(matrixReportArtifact(), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/matrix.json"],
+      metadata: {
+        artifactKinds: "matrix-report",
+        matrix: "other-matrix",
+        status: "passed",
+        dryRun: false,
+        scenarios: 1,
+      },
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /matrix\.json metadata\.matrix must match artifact matrix/,
     )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
