@@ -132,6 +132,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_kinds=artifact-index:1,matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_evidence_kinds=matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_matrix_limitations=dry-run-classification-coverage:1/)
+  assert.match(text, /artifact_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/failed-run:1/)
   assert.match(text, /artifact_required_generated_evidence_kinds=matrix-report:2,validation-suite-run:1/)
   assert.match(text, /artifact_missing_generated_evidence_kinds=matrix-report:1/)
   assert.match(text, /artifact_required_generated_matrix_limitations=dry-run-classification-coverage:1/)
@@ -317,6 +318,9 @@ function artifactAggregateFixture() {
     generatedMatrixLimitations: {
       "dry-run-classification-coverage": 1,
     },
+    generatedValidationSuiteFailureRoots: {
+      "/tmp/generated-suite/failed-run": 1,
+    },
     requiredGeneratedEvidenceKinds: {
       "matrix-report": 2,
       "validation-suite-run": 1,
@@ -376,6 +380,9 @@ function artifactAggregateFixture() {
       },
       generatedMatrixLimitations: {
         "dry-run-classification-coverage": 1,
+      },
+      generatedValidationSuiteFailureRoots: {
+        "/tmp/generated-suite/failed-run": 1,
       },
       requiredGeneratedEvidenceKinds: {
         "matrix-report": 2,

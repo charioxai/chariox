@@ -31,6 +31,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "artifactKinds",
   "generatedEvidenceKinds",
   "generatedMatrixLimitations",
+  "generatedValidationSuiteFailureRoots",
   "requiredGeneratedEvidenceKinds",
   "missingGeneratedEvidenceKinds",
   "requiredGeneratedMatrixLimitations",
@@ -54,6 +55,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   artifactKinds: "artifact_kinds",
   generatedEvidenceKinds: "generated_evidence_kinds",
   generatedMatrixLimitations: "generated_matrix_limitations",
+  generatedValidationSuiteFailureRoots: "generated_validation_suite_failure_roots",
   requiredGeneratedEvidenceKinds: "required_generated_evidence_kinds",
   missingGeneratedEvidenceKinds: "missing_generated_evidence_kinds",
   requiredGeneratedMatrixLimitations: "required_generated_matrix_limitations",
@@ -187,6 +189,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const artifactKinds = new Map()
   const generatedEvidenceKinds = new Map()
   const generatedMatrixLimitations = new Map()
+  const generatedValidationSuiteFailureRoots = new Map()
   const requiredGeneratedEvidenceKinds = new Map()
   const missingGeneratedEvidenceKinds = new Map()
   const requiredGeneratedMatrixLimitations = new Map()
@@ -210,6 +213,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexArtifactKinds = metadataListFromMetadata(index.metadata, "artifactKinds")
     const indexGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "generatedEvidenceKinds")
     const indexGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "generatedMatrixLimitations")
+    const indexGeneratedValidationSuiteFailureRoots = metadataListFromMetadata(index.metadata, "generatedValidationSuiteFailureRoots")
     const indexRequiredGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "requiredGeneratedEvidenceKinds")
     const indexMissingGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "missingGeneratedEvidenceKinds")
     const indexRequiredGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "requiredGeneratedMatrixLimitations")
@@ -226,6 +230,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexArtifactKinds, artifactKinds)
     countValues(indexGeneratedEvidenceKinds, generatedEvidenceKinds)
     countValues(indexGeneratedMatrixLimitations, generatedMatrixLimitations)
+    countValues(indexGeneratedValidationSuiteFailureRoots, generatedValidationSuiteFailureRoots)
     countValues(indexRequiredGeneratedEvidenceKinds, requiredGeneratedEvidenceKinds)
     countValues(indexMissingGeneratedEvidenceKinds, missingGeneratedEvidenceKinds)
     countValues(indexRequiredGeneratedMatrixLimitations, requiredGeneratedMatrixLimitations)
@@ -256,6 +261,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       artifactKinds: countValues(indexArtifactKinds),
       generatedEvidenceKinds: countValues(indexGeneratedEvidenceKinds),
       generatedMatrixLimitations: countValues(indexGeneratedMatrixLimitations),
+      generatedValidationSuiteFailureRoots: countValues(indexGeneratedValidationSuiteFailureRoots),
       requiredGeneratedEvidenceKinds: countValues(indexRequiredGeneratedEvidenceKinds),
       missingGeneratedEvidenceKinds: countValues(indexMissingGeneratedEvidenceKinds),
       requiredGeneratedMatrixLimitations: countValues(indexRequiredGeneratedMatrixLimitations),
@@ -278,6 +284,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     artifactKinds: sortedCountObject(artifactKinds),
     generatedEvidenceKinds: sortedCountObject(generatedEvidenceKinds),
     generatedMatrixLimitations: sortedCountObject(generatedMatrixLimitations),
+    generatedValidationSuiteFailureRoots: sortedCountObject(generatedValidationSuiteFailureRoots),
     requiredGeneratedEvidenceKinds: sortedCountObject(requiredGeneratedEvidenceKinds),
     missingGeneratedEvidenceKinds: sortedCountObject(missingGeneratedEvidenceKinds),
     requiredGeneratedMatrixLimitations: sortedCountObject(requiredGeneratedMatrixLimitations),

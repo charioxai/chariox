@@ -77,6 +77,9 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.deepEqual(stdoutAggregate.generatedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
     })
+    assert.deepEqual(stdoutAggregate.generatedValidationSuiteFailureRoots, {
+      "/tmp/generated-suite/failed-run": 1,
+    })
     assert.deepEqual(stdoutAggregate.requiredGeneratedEvidenceKinds, {
       "matrix-report": 2,
       "validation-suite-run": 1,
@@ -105,6 +108,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,matrix-report,validation-gate")
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.generatedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
     assert.equal(artifactIndex.metadata.requiredGeneratedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.missingGeneratedEvidenceKinds, "matrix-report")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
@@ -312,6 +316,9 @@ async function writeIndexedReport(rootDir, name, schema) {
       generatedMatrixLimitations: name === "one"
         ? ""
         : "dry-run-classification-coverage",
+      generatedValidationSuiteFailureRoots: name === "one"
+        ? "/tmp/generated-suite/failed-run"
+        : "",
       requiredGeneratedEvidenceKinds: name === "one"
         ? "validation-suite-run,matrix-report"
         : "matrix-report",
