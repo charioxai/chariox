@@ -56,7 +56,7 @@ test("formats failed and skipped scenarios with next actions", () => {
         classification: "provider-account",
         reason: "insufficient balance",
         exitCriteria: ["remote worker executes the selected provider turn", "home observes completion"],
-        artifactHints: ["/tmp/arroba-drill-remote"],
+        artifactHints: ["/tmp/arroba-drill-remote", { kind: "manifest", path: ".artifacts/remote.json" }],
         runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
       scenario("cloud", "failed", { classification: "cloud-runtime", reason: "deployment did not become ready" }),
@@ -73,7 +73,7 @@ test("formats failed and skipped scenarios with next actions", () => {
   assert.match(text, /runtime_signal_owners: kernel-authority=1 provider-runtime=1/)
   assert.match(text, /- remote classification=provider-account owner=provider-account reason=insufficient balance/)
   assert.match(text, /criteria: remote worker executes the selected provider turn; home observes completion/)
-  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
+  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote, manifest:\.artifacts\/remote\.json/)
   assert.match(text, /next: check provider quota or billing/)
   assert.match(text, /- cloud classification=cloud-runtime owner=cloud-deployment reason=deployment did not become ready/)
   assert.match(text, /next: inspect Cloud deployment\/control-plane status/)
@@ -84,12 +84,16 @@ test("formats dry-run reports without failures", () => {
   const report = matrixReport({
     status: "dry-run",
     dryRun: true,
-    scenarios: [scenario("local", "dry-run", { exitCriteria: ["local runtime path is selected"] })],
+    scenarios: [scenario("local", "dry-run", {
+      exitCriteria: ["local runtime path is selected"],
+      owner: "cloud-web",
+    })],
   })
 
   const text = formatDrillMatrixReportSummary(report)
 
   assert.match(text, /status=dry-run/)
+  assert.equal(report.scenarios[0].owner, "cloud-web")
   assert.match(text, /selected scenario criteria:/)
   assert.match(text, /- local: local runtime path is selected/)
   assert.match(text, /incomplete exit criteria:/)
@@ -170,7 +174,7 @@ test("aggregates multiple matrix reports for CI", () => {
       scenario("remote", "failed", {
         classification: "provider-auth",
         reason: "expired token",
-        artifactHints: ["/tmp/arroba-drill-remote"],
+        artifactHints: ["/tmp/arroba-drill-remote", { kind: "manifest", path: ".artifacts/remote.json" }],
         runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
       scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
@@ -291,7 +295,7 @@ test("aggregates multiple matrix reports for CI", () => {
     classification: "provider-auth",
     owner: "provider-account",
     reason: "expired token",
-    artifactHints: ["/tmp/arroba-drill-remote"],
+    artifactHints: ["/tmp/arroba-drill-remote", "manifest:.artifacts/remote.json"],
     nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
   }])
   assert.deepEqual(aggregate.skippedScenarios, [{
@@ -321,7 +325,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /matrix aggregate:/)
   assert.match(text, /status=failed reports=2 scenarios=4 passed=1 failed=1 skipped=1 dry_run=1/)
   assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token source=\/tmp\/remote-matrix.json/)
-  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote/)
+  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote, manifest:\.artifacts\/remote\.json/)
   assert.match(text, /owners: provider-account=1/)
   assert.match(text, /matrix_names: remote=1 workspace=1/)
   assert.match(text, /deployment_presets: hetzner=1 hosted-cloud=1 local=1 self-hosted-relay=1/)
@@ -711,6 +715,11 @@ test("rejects malformed matrix reports", () => {
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
     scenarios: [{ ...scenario("broken", "passed"), artifactHints: ["/tmp/arroba-drill-sk-this-should-not-persist"] }],
+  }), /scenarios\[0\] includes secret-looking artifactHints/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport(),
+    scenarios: [{ ...scenario("broken", "passed"), artifactHints: [{ kind: "manifest", path: "Bearer abcdefghijklmnopqrstuvwxyz" }] }],
   }), /scenarios\[0\] includes secret-looking artifactHints/)
 
   assert.throws(() => validateDrillMatrixReport({

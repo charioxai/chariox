@@ -488,11 +488,14 @@ function validateDrillMatrixScenario(scenario, source) {
       throw new Error(`${source} has invalid owner`)
     }
     if (!nonEmptyString(scenario.classification)) {
-      throw new Error(`${source} owner requires classification`)
-    }
-    const expectedOwner = drillFailureOwnerForClassification(scenario.classification)
-    if (scenario.owner !== expectedOwner) {
-      throw new Error(`${source} owner does not match classification`)
+      if (scenario.status !== "dry-run") {
+        throw new Error(`${source} owner requires classification`)
+      }
+    } else {
+      const expectedOwner = drillFailureOwnerForClassification(scenario.classification)
+      if (scenario.owner !== expectedOwner) {
+        throw new Error(`${source} owner does not match classification`)
+      }
     }
   }
   if (scenario.nextAction !== undefined && scenario.nextAction !== null) {
@@ -521,11 +524,11 @@ function validateDrillMatrixScenario(scenario, source) {
   }
   if (scenario.artifactHints !== undefined && (
     !Array.isArray(scenario.artifactHints)
-    || !scenario.artifactHints.every((value) => typeof value === "string")
+    || !scenario.artifactHints.every(isValidArtifactHint)
   )) {
     throw new Error(`${source} has invalid artifactHints`)
   }
-  if (scenario.artifactHints?.some((value) => looksLikeDrillSecretValue(value))) {
+  if (scenario.artifactHints?.some(artifactHintLooksSecret)) {
     throw new Error(`${source} includes secret-looking artifactHints`)
   }
   if (scenario.runtimeSignals !== undefined) {
@@ -910,11 +913,11 @@ function validateMatrixAggregateScenario(scenario, source) {
   }
   if (scenario.artifactHints !== undefined && (
     !Array.isArray(scenario.artifactHints)
-    || !scenario.artifactHints.every((value) => typeof value === "string")
+    || !scenario.artifactHints.every(isValidArtifactHint)
   )) {
     throw new Error(`${source} has invalid artifactHints`)
   }
-  if (scenario.artifactHints?.some((value) => looksLikeDrillSecretValue(value))) {
+  if (scenario.artifactHints?.some(artifactHintLooksSecret)) {
     throw new Error(`${source} includes secret-looking artifactHints`)
   }
 }
@@ -1323,8 +1326,27 @@ function exitCriteriaForScenario(scenario) {
 
 function artifactHintsForScenario(scenario) {
   return Array.isArray(scenario.artifactHints)
-    ? scenario.artifactHints.filter((hint) => typeof hint === "string" && hint.trim().length > 0)
+    ? scenario.artifactHints.filter(isValidArtifactHint).map(formatArtifactHint)
     : []
+}
+
+function isValidArtifactHint(hint) {
+  if (typeof hint === "string") return hint.trim().length > 0
+  return Boolean(hint)
+    && typeof hint === "object"
+    && !Array.isArray(hint)
+    && nonEmptyString(hint.kind)
+    && nonEmptyString(hint.path)
+}
+
+function artifactHintLooksSecret(hint) {
+  if (typeof hint === "string") return looksLikeDrillSecretValue(hint)
+  return looksLikeDrillSecretValue(hint?.kind) || looksLikeDrillSecretValue(hint?.path)
+}
+
+function formatArtifactHint(hint) {
+  if (typeof hint === "string") return hint
+  return `${hint.kind}:${hint.path}`
 }
 
 function runtimeSignalsForScenario(scenario) {
