@@ -261,10 +261,18 @@ function appendGeneratedEvidenceSummary(lines, generatedEvidence) {
   if (validationSuites && typeof validationSuites === "object" && !Array.isArray(validationSuites)) {
     const outputRoots = stringArrayForSummary(validationSuites.outputRoots)
     const artifactIndexes = stringArrayForSummary(validationSuites.artifactIndexes)
+    const commands = Array.isArray(validationSuites.commands) ? validationSuites.commands.length : 0
+    const failureRoots = Array.isArray(validationSuites.commands)
+      ? validationSuites.commands
+        .map((command) => command?.failureRoot)
+        .filter((failureRoot) => typeof failureRoot === "string" && failureRoot.length > 0)
+      : []
     lines.push([
       `generated_validation_suites=${validationSuites.enabled === true ? "enabled" : "disabled"}`,
       `output_roots=${outputRoots.join(",") || "none"}`,
       `artifact_indexes=${artifactIndexes.join(",") || "none"}`,
+      `commands=${commands}`,
+      `failure_roots=${failureRoots.join(",") || "none"}`,
     ].join(" "))
   }
   const matrixReports = generatedEvidence.matrixReports

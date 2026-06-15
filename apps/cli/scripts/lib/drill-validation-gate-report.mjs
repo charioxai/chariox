@@ -410,12 +410,30 @@ function validateGeneratedValidationSuites(validationSuites, source) {
   }
   validateStringArray(validationSuites.artifactIndexes, `${source}.artifactIndexes`)
   validateStringArray(validationSuites.outputRoots, `${source}.outputRoots`)
-  if (validationSuites.enabled && (validationSuites.artifactIndexes.length === 0 || validationSuites.outputRoots.length === 0)) {
+  if (!Array.isArray(validationSuites.commands)) {
+    throw new Error(`${source}.commands is not an array`)
+  }
+  for (const [index, command] of validationSuites.commands.entries()) {
+    validateGeneratedValidationSuiteCommand(command, `${source}.commands[${index}]`)
+  }
+  if (validationSuites.enabled && (validationSuites.artifactIndexes.length === 0 || validationSuites.outputRoots.length === 0 || validationSuites.commands.length === 0)) {
     throw new Error(`${source} enabled evidence is missing paths`)
   }
-  if (!validationSuites.enabled && (validationSuites.artifactIndexes.length > 0 || validationSuites.outputRoots.length > 0)) {
+  if (!validationSuites.enabled && (validationSuites.artifactIndexes.length > 0 || validationSuites.outputRoots.length > 0 || validationSuites.commands.length > 0)) {
     throw new Error(`${source} disabled evidence has paths`)
   }
+}
+
+function validateGeneratedValidationSuiteCommand(command, source) {
+  if (!command || typeof command !== "object" || Array.isArray(command)) {
+    throw new Error(`${source} is not an object`)
+  }
+  for (const key of ["artifactIndexPath", "cwd", "failureRoot", "reportPath", "scriptPath"]) {
+    if (!nonEmptyString(command[key])) {
+      throw new Error(`${source} has invalid ${key}`)
+    }
+  }
+  validateStringArray(command.args, `${source}.args`)
 }
 
 function validateGeneratedMatrixReports(matrixReports, source) {

@@ -195,6 +195,8 @@ test("drill validation suite writes failing run report before exiting nonzero", 
   const testPath = path.join(rootDir, "failing.test.mjs")
   const outputPath = path.join(rootDir, "suite-run.json")
   const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const failureRoot = path.join(rootDir, "failed-run")
+  const failureManifestPath = path.join(failureRoot, "arroba-drill-failure.json")
   try {
     await writeFile(testPath, [
       'import test from "node:test"',
@@ -214,6 +216,8 @@ test("drill validation suite writes failing run report before exiting nonzero", 
         outputPath,
         "--output-artifact-index",
         artifactIndexPath,
+        "--preserve-failure-root",
+        failureRoot,
       ])
     } catch (error) {
       rejected = error
@@ -223,6 +227,7 @@ test("drill validation suite writes failing run report before exiting nonzero", 
     const stdoutReport = JSON.parse(rejected.stdout)
     const fileReport = JSON.parse(await readFile(outputPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+    const failureManifest = JSON.parse(await readFile(failureManifestPath, "utf8"))
 
     assert.deepEqual(fileReport, stdoutReport)
     assert.equal(fileReport.schema, "arroba.drill.validation_suite_run.v1")
@@ -231,6 +236,13 @@ test("drill validation suite writes failing run report before exiting nonzero", 
     assert.equal(fileReport.exitCode, 1)
     assert.equal(artifactIndex.metadata.status, "failed")
     assert.equal(artifactIndex.metadata.exitCriterionStatuses, "failed")
+    assert.equal(failureManifest.schema, "arroba.drill.failure.v1")
+    assert.equal(failureManifest.rootDir, failureRoot)
+    assert.equal(failureManifest.metadata.drill, "validation-suite")
+    assert.equal(failureManifest.metadata.status, "failed")
+    assert.equal(failureManifest.metadata.owners, "validation-platform")
+    assert.equal(failureManifest.metadata.classifications, "validation-suite")
+    assert.match(failureManifest.error.message, /Validation suite failed with exit code 1/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -242,6 +254,22 @@ test("drill validation suite rejects output artifact index without output", asyn
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
+      return true
+    },
+  )
+})
+
+test("drill validation suite rejects failure preservation outside run-json", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [
+      scriptPath,
+      "--json",
+      "--preserve-failure-root",
+      "/tmp/arroba-validation-suite-failed",
+    ]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--preserve-failure-root requires --run-json/)
       return true
     },
   )

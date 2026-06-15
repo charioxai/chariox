@@ -9,7 +9,10 @@ import {
   findMissingDrillValidationSuitePaths,
   findUnlistedDrillValidationSuitePaths,
 } from "./lib/drill-validation-suite.mjs"
-import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
+import {
+  finalizeDrillArtifacts,
+  writeDrillJsonArtifactOutput,
+} from "./lib/drill-artifacts.mjs"
 
 function printHelp() {
   console.log([
@@ -28,6 +31,8 @@ function printHelp() {
     "             Write the --json manifest or --run-json report to PATH",
     "  --output-artifact-index PATH",
     "             Write an artifact index for --output",
+    "  --preserve-failure-root PATH",
+    "             Write an arroba.drill.failure.v1 manifest here when --run-json fails",
     "  --list     Print test files included in the suite",
     "  --command  Print the node --test command without running it",
   ].join("\n"))
@@ -63,12 +68,21 @@ async function main() {
   }
   if (options.runJson) {
     const report = await runDrillValidationSuiteReport({ testPaths })
+    const metadata = drillValidationSuiteArtifactMetadata(report)
     if (options.outputPath) {
       await writeDrillJsonArtifactOutput({
         outputPath: options.outputPath,
         artifactIndexPath: options.outputArtifactIndexPath,
         value: report,
-        metadata: drillValidationSuiteArtifactMetadata(report),
+        metadata,
+      })
+    }
+    if (!report.ok && options.preserveFailureRoot) {
+      await finalizeDrillArtifacts({
+        rootDir: options.preserveFailureRoot,
+        passed: false,
+        failure: report.error ?? `Validation suite failed with exit code ${report.exitCode ?? "unknown"}`,
+        metadata,
       })
     }
     console.log(JSON.stringify(report, null, 2))
@@ -181,6 +195,7 @@ function parseArgs(argv) {
     list: false,
     outputArtifactIndexPath: null,
     outputPath: null,
+    preserveFailureRoot: null,
     runJson: false,
     testPaths: [],
   }
@@ -215,10 +230,21 @@ function parseArgs(argv) {
     } else if (arg.startsWith("--output-artifact-index=")) {
       options.outputArtifactIndexPath = arg.slice("--output-artifact-index=".length)
     }
+    else if (arg === "--preserve-failure-root") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--preserve-failure-root requires a value")
+      options.preserveFailureRoot = value
+      index += 1
+    } else if (arg.startsWith("--preserve-failure-root=")) {
+      options.preserveFailureRoot = arg.slice("--preserve-failure-root=".length)
+    }
     else throw new Error(`unknown argument: ${arg}`)
   }
   if (options.outputArtifactIndexPath && !options.outputPath) {
     throw new Error("--output-artifact-index requires --output")
+  }
+  if (options.preserveFailureRoot && !options.runJson) {
+    throw new Error("--preserve-failure-root requires --run-json")
   }
   const modes = [options.check, options.command, options.json, options.list, options.runJson].filter(Boolean).length
   if (modes > 1) throw new Error("choose only one of --list, --command, --check, --json, or --run-json")

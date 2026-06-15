@@ -8,6 +8,7 @@ import {
   distributedRuntimeGeneratedEvidenceSummaryFor,
   distributedRuntimeMatrixCommandsFor,
   distributedRuntimeMatrixOutputDirFor,
+  distributedRuntimeValidationSuiteCommandsFor,
   distributedRuntimeValidationSuiteOutputDirFor,
   runDistributedRuntimeMatrixReportCommand,
   runDistributedRuntimeValidationSuiteCommand,
@@ -104,6 +105,32 @@ test("builds distributed runtime generated evidence output directories", () => {
   )
 })
 
+test("builds distributed runtime validation suite command contracts", () => {
+  const commands = distributedRuntimeValidationSuiteCommandsFor({
+    cloudOutputDir: "/tmp/suites/cloud",
+    cloudRoot: "/repo/arroba-cloud",
+    ossOutputDir: "/tmp/suites/oss",
+    ossRoot: "/repo/arroba",
+  })
+
+  assert.deepEqual(commands, [
+    {
+      cwd: "/repo/arroba",
+      outputDir: "/tmp/suites/oss",
+      preserveFailureRoot: path.join("/tmp/suites/oss", "failed-run"),
+      reportFileName: "drill-validation-suite-run.json",
+      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+    },
+    {
+      cwd: "/repo/arroba-cloud",
+      outputDir: "/tmp/suites/cloud",
+      preserveFailureRoot: path.join("/tmp/suites/cloud", "failed-run"),
+      reportFileName: "cloud-validation-suite-run.json",
+      scriptPath: path.join("/repo/arroba-cloud", "scripts", "cloud-validation-suite.mjs"),
+    },
+  ])
+})
+
 test("builds distributed runtime generated evidence summary", () => {
   const options = {
     cloudRoot: "/repo/arroba-cloud",
@@ -146,6 +173,24 @@ test("builds distributed runtime generated evidence summary", () => {
       "/tmp/suites/cloud/arroba-drill-artifacts.json",
       "/tmp/suites/oss/arroba-drill-artifacts.json",
     ],
+    commands: [
+      {
+        artifactIndexPath: path.join("/tmp/suites/oss", "arroba-drill-artifacts.json"),
+        args: ["--run-json", "--preserve-failure-root", path.join("/tmp/suites/oss", "failed-run")],
+        cwd: "/repo/arroba",
+        failureRoot: path.join("/tmp/suites/oss", "failed-run"),
+        reportPath: path.join("/tmp/suites/oss", "drill-validation-suite-run.json"),
+        scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+      },
+      {
+        artifactIndexPath: path.join("/tmp/suites/cloud", "arroba-drill-artifacts.json"),
+        args: ["--run-json", "--preserve-failure-root", path.join("/tmp/suites/cloud", "failed-run")],
+        cwd: "/repo/arroba-cloud",
+        failureRoot: path.join("/tmp/suites/cloud", "failed-run"),
+        reportPath: path.join("/tmp/suites/cloud", "cloud-validation-suite-run.json"),
+        scriptPath: path.join("/repo/arroba-cloud", "scripts", "cloud-validation-suite.mjs"),
+      },
+    ],
     enabled: true,
     outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
   })
@@ -172,6 +217,7 @@ test("builds empty generated evidence summary when generation is disabled", () =
     },
     validationSuites: {
       artifactIndexes: [],
+      commands: [],
       enabled: false,
       outputRoots: [],
     },
@@ -218,15 +264,17 @@ test("validation suite child failures include generated evidence context", async
       runDistributedRuntimeValidationSuiteCommand({
         cwd: rootDir,
         outputDir: path.join(rootDir, "out"),
+        preserveFailureRoot: path.join(rootDir, "out", "failed-run"),
         reportFileName: "suite.json",
         scriptPath,
       }),
       (error) => {
         assert.match(error.message, /validation suite failed:/)
         assert.match(error.message, new RegExp(`cwd: ${escapeRegExp(rootDir)}`))
-        assert.match(error.message, /args: .*--run-json .*--output .*suite\.json .*--output-artifact-index .*arroba-drill-artifacts\.json/)
+        assert.match(error.message, /args: .*--run-json .*--output .*suite\.json .*--output-artifact-index .*arroba-drill-artifacts\.json .*--preserve-failure-root .*failed-run/)
         assert.match(error.message, /report: .*suite\.json/)
         assert.match(error.message, /artifact-index: .*arroba-drill-artifacts\.json/)
+        assert.match(error.message, /failure-root: .*failed-run/)
         assert.match(error.message, /stderr:\nsuite failed/)
         return true
       },

@@ -537,6 +537,14 @@ function generatedEvidence() {
     validationSuites: {
       enabled: true,
       artifactIndexes: ["/tmp/generated-validation-suite/arroba-drill-artifacts.json"],
+      commands: [{
+        artifactIndexPath: "/tmp/generated-validation-suite/arroba-drill-artifacts.json",
+        args: ["--run-json", "--preserve-failure-root", "/tmp/generated-validation-suite/failed-run"],
+        cwd: "/tmp/arroba",
+        failureRoot: "/tmp/generated-validation-suite/failed-run",
+        reportPath: "/tmp/generated-validation-suite/drill-validation-suite-run.json",
+        scriptPath: "/tmp/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+      }],
       outputRoots: ["/tmp/generated-validation-suite"],
     },
     matrixReports: {

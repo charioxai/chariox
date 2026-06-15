@@ -52,6 +52,14 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
     validationSuites: {
       enabled: options.runValidationSuites === true,
       artifactIndexes: [...validationSuiteArtifactIndexes].map((item) => path.resolve(item)).sort(),
+      commands: options.runValidationSuites === true
+        ? distributedRuntimeValidationSuiteCommandsFor({
+          cloudOutputDir: distributedRuntimeValidationSuiteOutputDirFor(options, "cloud"),
+          cloudRoot: options.cloudRoot,
+          ossOutputDir: distributedRuntimeValidationSuiteOutputDirFor(options, "oss"),
+          ossRoot: options.ossRoot,
+        }).map(distributedRuntimeValidationSuiteCommandSummary)
+        : [],
       outputRoots: options.runValidationSuites === true
         ? [
           distributedRuntimeValidationSuiteOutputDirFor(options, "cloud"),
@@ -185,19 +193,16 @@ export async function runDistributedRuntimeValidationSuitesFor(options) {
   if (!options.runValidationSuites) return []
   const ossOutputDir = distributedRuntimeValidationSuiteOutputDirFor(options, "oss")
   const cloudOutputDir = distributedRuntimeValidationSuiteOutputDirFor(options, "cloud")
-  const ossArtifactIndex = await runDistributedRuntimeValidationSuiteCommand({
-    cwd: options.ossRoot,
-    outputDir: ossOutputDir,
-    reportFileName: "drill-validation-suite-run.json",
-    scriptPath: path.join(options.ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
-  })
-  const cloudArtifactIndex = await runDistributedRuntimeValidationSuiteCommand({
-    cwd: options.cloudRoot,
-    outputDir: cloudOutputDir,
-    reportFileName: "cloud-validation-suite-run.json",
-    scriptPath: path.join(options.cloudRoot, "scripts", "cloud-validation-suite.mjs"),
-  })
-  return [ossArtifactIndex, cloudArtifactIndex]
+  const artifactIndexes = []
+  for (const command of distributedRuntimeValidationSuiteCommandsFor({
+    cloudOutputDir,
+    cloudRoot: options.cloudRoot,
+    ossOutputDir,
+    ossRoot: options.ossRoot,
+  })) {
+    artifactIndexes.push(await runDistributedRuntimeValidationSuiteCommand(command))
+  }
+  return artifactIndexes
 }
 
 export function distributedRuntimeValidationSuiteOutputDirFor(options, repo) {
@@ -213,6 +218,7 @@ export function distributedRuntimeValidationSuiteOutputDirFor(options, repo) {
 export async function runDistributedRuntimeValidationSuiteCommand({
   cwd,
   outputDir,
+  preserveFailureRoot = null,
   reportFileName,
   scriptPath,
 }) {
@@ -225,6 +231,7 @@ export async function runDistributedRuntimeValidationSuiteCommand({
     outputPath,
     "--output-artifact-index",
     artifactIndexPath,
+    ...(preserveFailureRoot ? ["--preserve-failure-root", preserveFailureRoot] : []),
   ]
   try {
     await execFile(process.execPath, args, { cwd, maxBuffer: 1024 * 1024 * 20 })
@@ -233,16 +240,53 @@ export async function runDistributedRuntimeValidationSuiteCommand({
       args,
       artifactIndexPath,
       cwd,
+      failureRoot: preserveFailureRoot,
       reportPath: outputPath,
     })}${childProcessOutputFor(error)}`)
   }
   return artifactIndexPath
 }
 
+export function distributedRuntimeValidationSuiteCommandsFor({
+  cloudOutputDir,
+  cloudRoot,
+  ossOutputDir,
+  ossRoot,
+}) {
+  return [
+    {
+      cwd: ossRoot,
+      outputDir: ossOutputDir,
+      preserveFailureRoot: path.join(ossOutputDir, "failed-run"),
+      reportFileName: "drill-validation-suite-run.json",
+      scriptPath: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+    },
+    {
+      cwd: cloudRoot,
+      outputDir: cloudOutputDir,
+      preserveFailureRoot: path.join(cloudOutputDir, "failed-run"),
+      reportFileName: "cloud-validation-suite-run.json",
+      scriptPath: path.join(cloudRoot, "scripts", "cloud-validation-suite.mjs"),
+    },
+  ]
+}
+
+export function distributedRuntimeValidationSuiteCommandSummary(command) {
+  return {
+    artifactIndexPath: path.join(command.outputDir, "arroba-drill-artifacts.json"),
+    args: ["--run-json", "--preserve-failure-root", command.preserveFailureRoot],
+    cwd: command.cwd,
+    failureRoot: command.preserveFailureRoot,
+    reportPath: path.join(command.outputDir, command.reportFileName),
+    scriptPath: command.scriptPath,
+  }
+}
+
 function childCommandContextFor({
   args,
   artifactIndexPath,
   cwd,
+  failureRoot = null,
   reportPath,
 }) {
   return [
@@ -250,6 +294,7 @@ function childCommandContextFor({
     `\nargs: ${args.join(" ")}`,
     `\nreport: ${reportPath}`,
     `\nartifact-index: ${artifactIndexPath}`,
+    ...(failureRoot ? [`\nfailure-root: ${failureRoot}`] : []),
   ].join("")
 }
 

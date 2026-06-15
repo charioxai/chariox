@@ -60,6 +60,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       },
       validationSuites: {
         artifactIndexes: [],
+        commands: [],
         enabled: false,
         outputRoots: [],
       },
@@ -251,6 +252,32 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
     assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 2)
     assert.deepEqual(report.generatedEvidence.validationSuites, {
       artifactIndexes: expectedArtifactIndexes.sort(),
+      commands: [
+        {
+          artifactIndexPath: path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+          args: [
+            "--run-json",
+            "--preserve-failure-root",
+            path.join(validationSuiteOutputRoot, "oss", "failed-run"),
+          ],
+          cwd: ossRoot,
+          failureRoot: path.join(validationSuiteOutputRoot, "oss", "failed-run"),
+          reportPath: path.join(validationSuiteOutputRoot, "oss", "drill-validation-suite-run.json"),
+          scriptPath: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+        },
+        {
+          artifactIndexPath: path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
+          args: [
+            "--run-json",
+            "--preserve-failure-root",
+            path.join(validationSuiteOutputRoot, "cloud", "failed-run"),
+          ],
+          cwd: cloudRoot,
+          failureRoot: path.join(validationSuiteOutputRoot, "cloud", "failed-run"),
+          reportPath: path.join(validationSuiteOutputRoot, "cloud", "cloud-validation-suite-run.json"),
+          scriptPath: path.join(cloudRoot, "scripts", "cloud-validation-suite.mjs"),
+        },
+      ],
       enabled: true,
       outputRoots: [
         path.join(validationSuiteOutputRoot, "cloud"),

@@ -917,6 +917,24 @@ test("aggregates generated evidence provenance from gate reports", () => {
         "/tmp/suites/cloud/arroba-drill-artifacts.json",
         "/tmp/suites/oss/arroba-drill-artifacts.json",
       ],
+      commands: [
+        {
+          artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
+          args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
+          cwd: "/repo/arroba",
+          failureRoot: "/tmp/suites/oss/failed-run",
+          reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
+          scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+        },
+        {
+          artifactIndexPath: "/tmp/suites/cloud/arroba-drill-artifacts.json",
+          args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
+          cwd: "/repo/arroba-cloud",
+          failureRoot: "/tmp/suites/cloud/failed-run",
+          reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
+          scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
+        },
+      ],
       outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
     },
     matrixReports: {
@@ -1104,6 +1122,24 @@ function generatedEvidenceFixture() {
       artifactIndexes: [
         "/tmp/suites/cloud/arroba-drill-artifacts.json",
         "/tmp/suites/oss/arroba-drill-artifacts.json",
+      ],
+      commands: [
+        {
+          artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
+          args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
+          cwd: "/repo/arroba",
+          failureRoot: "/tmp/suites/oss/failed-run",
+          reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
+          scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+        },
+        {
+          artifactIndexPath: "/tmp/suites/cloud/arroba-drill-artifacts.json",
+          args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
+          cwd: "/repo/arroba-cloud",
+          failureRoot: "/tmp/suites/cloud/failed-run",
+          reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
+          scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
+        },
       ],
       outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
     },

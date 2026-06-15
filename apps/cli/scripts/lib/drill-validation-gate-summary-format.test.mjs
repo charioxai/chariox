@@ -162,6 +162,24 @@ test("formats generated evidence provenance when present", () => {
           "/tmp/suites/cloud/arroba-drill-artifacts.json",
           "/tmp/suites/oss/arroba-drill-artifacts.json",
         ],
+        commands: [
+          {
+            artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
+            args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
+            cwd: "/repo/arroba",
+            failureRoot: "/tmp/suites/oss/failed-run",
+            reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
+            scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+          },
+          {
+            artifactIndexPath: "/tmp/suites/cloud/arroba-drill-artifacts.json",
+            args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
+            cwd: "/repo/arroba-cloud",
+            failureRoot: "/tmp/suites/cloud/failed-run",
+            reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
+            scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
+          },
+        ],
       },
       matrixReports: {
         enabled: true,
@@ -193,7 +211,7 @@ test("formats generated evidence provenance when present", () => {
     },
   }))
 
-  assert.match(text, /generated_validation_suites=enabled output_roots=\/tmp\/suites\/cloud,\/tmp\/suites\/oss artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json/)
+  assert.match(text, /generated_validation_suites=enabled output_roots=\/tmp\/suites\/cloud,\/tmp\/suites\/oss artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json commands=2 failure_roots=\/tmp\/suites\/oss\/failed-run,\/tmp\/suites\/cloud\/failed-run/)
   assert.match(text, /generated_matrices=enabled roots=\/tmp\/matrices\/cloud,\/tmp\/matrices\/oss commands=2 dry_run=false continue_on_failure=true/)
   assert.match(text, /generated_matrix_limitations:/)
   assert.match(text, /- kind=dry-run-classification-coverage owner=validation-harness: rerun distributed runtime matrix reports without --matrix-dry-run before release/)
