@@ -49,7 +49,9 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
         scenario("ui-projection", "ui-client-projection", ["client-projection-health", "runtime-projection-health"], { providers: ["claude", "codex", "opencode"] }),
       ],
     })
-    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
+      metadata: { providerAccountAliases: "codex=work" },
+    })
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -66,6 +68,8 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       "slice-auth-state",
       "--require-matrix-runtime-signal",
       "slice-auth-state",
+      "--require-artifact-provider-account-alias",
+      "codex=work",
       "--require-complete",
       "--json",
       "--output",
@@ -81,6 +85,9 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.equal(report.status, "passed")
     assert.equal(report.checks.artifacts.status, "passed")
     assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
+    assert.deepEqual(report.checks.artifacts.requiredArtifactProviderAccountAliases, ["codex=work"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactProviderAccountAliases, [])
+    assert.deepEqual(report.checks.artifacts.aggregate.providerAccountAliases, { "codex=work": 1 })
     assert.deepEqual(report.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
       path.join(".artifacts", "validation-suite"),
     ])
@@ -121,6 +128,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.equal(artifactIndex.metadata.drill, "cross-repo-validation-gate")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
+    assert.equal(artifactIndex.metadata.providerAccountAliases, "codex=work")
     assert.equal(artifactIndex.metadata.matrixEvidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.artifactEvidenceRepos, "cloud")
     assertMetadataIncludes(artifactIndex.metadata.runtimeSignals, [
