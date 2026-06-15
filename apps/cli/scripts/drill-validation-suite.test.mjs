@@ -89,7 +89,7 @@ test("drill validation suite prints coverage manifest", async () => {
   )
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "remote-agent-runtime").requiredScenarios,
-    ["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
+    ["collab-remote-agent", "hetzner-collab-remote-agent", "hetzner-single-user-remote-agent", "hosted-collab-remote-agent", "hosted-single-user-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
   )
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "slice-runtime").requiredScenarios,

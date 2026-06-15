@@ -113,7 +113,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       report.checks.matrices.aggregate.reports.find((entry) => entry.matrix === "cloud-slice-runtime-matrix").providers,
       ["claude", "codex", "opencode"],
     )
-    assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 1)
+    assert.equal(report.checks.matrices.aggregate.deploymentPresets["hosted-cloud"], 2)
     assert.equal(artifactIndex.metadata.drill, "distributed-runtime-gate")
     assert.equal(artifactIndex.metadata.preset, "distributed-runtime")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
@@ -418,6 +418,16 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "--provider-account",
       "opencode=zen",
       "--include-hetzner",
+    ])
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[1].args, [
+      "--provider-account",
+      "claude=work_claude",
+      "--provider-account",
+      "codex=work_codex",
+      "--provider-account",
+      "opencode=zen",
+      "--include-hetzner",
+      "--include-hosted-cloud",
     ])
     assert.deepEqual(report.generatedEvidence.matrixReports.commands[2].args, ["--include-hetzner"])
     assert.deepEqual(report.generatedEvidence.matrixReports.commands[4].args, [
@@ -732,7 +742,7 @@ test("distributed runtime gate reports missing hosted Cloud evidence", async () 
         assert.equal(error.code, 1)
         assert.equal(report.status, "failed")
         assert.deepEqual(report.checks.matrices.missingDeploymentPresets, ["hosted-cloud"])
-        assert.deepEqual(report.checks.matrices.missingScenarios, ["ui-projection"])
+        assert.deepEqual(report.checks.matrices.missingScenarios, ["hosted-collab-remote-agent", "hosted-single-user-remote-agent", "ui-projection"])
         assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
           { owner: "validation-harness", classification: "matrix-coverage" },
           { owner: "validation-harness", classification: "matrix-coverage" },
@@ -838,11 +848,21 @@ async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeClou
   await writeMatrixReport(path.join(ossMatrixRoot, "remote-agent-runtime.json"), {
     matrix: "remote-agent-runtime-matrix",
     metadata: {
-      deploymentPresets: "hetzner,same-host-remote,self-hosted-relay",
+      deploymentPresets: includeCloud
+        ? "hetzner,hosted-cloud,same-host-remote,self-hosted-relay"
+        : "hetzner,same-host-remote,self-hosted-relay",
       providers: "claude,codex,opencode",
     },
     scenarios: [
       scenario("collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+      scenario("hetzner-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+      scenario("hetzner-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "session-authority"]),
+      ...(includeCloud
+        ? [
+          scenario("hosted-collab-remote-agent", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+          scenario("hosted-single-user-remote-agent", "relay-runtime", ["agent-lifecycle", "home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "relay-target-freshness"]),
+        ]
+        : []),
       scenario("lease-reconnect", "relay-target-freshness", ["lease-health", "relay-target-freshness"]),
       scenario("provider-run-binding", "worker-execution", ["lease-health", "provider-run-lifecycle"]),
       scenario("remote-prompt-dispatch", "relay-runtime", ["agent-lifecycle", "provider-run-lifecycle"]),
@@ -1065,6 +1085,10 @@ async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossRoot }) 
       },
       scenarios: [
         scenario("collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+        scenario("hetzner-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+        scenario("hetzner-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "session-authority"]),
+        scenario("hosted-collab-remote-agent", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+        scenario("hosted-single-user-remote-agent", "relay-runtime", ["agent-lifecycle", "home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "relay-target-freshness"]),
         scenario("lease-reconnect", "relay-target-freshness", ["lease-health", "relay-target-freshness"]),
         scenario("provider-run-binding", "worker-execution", ["lease-health", "provider-run-lifecycle"]),
         scenario("remote-prompt-dispatch", "relay-runtime", ["agent-lifecycle", "provider-run-lifecycle"]),
