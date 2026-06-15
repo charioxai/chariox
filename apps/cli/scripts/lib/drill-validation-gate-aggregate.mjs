@@ -12,7 +12,7 @@ import {
   validateDrillGeneratedEvidencePath,
 } from "./drill-generated-evidence-metadata.mjs"
 import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-matrix-command-metadata.mjs"
-import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
+import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
@@ -2006,9 +2006,7 @@ function validateGeneratedMatrixLimitations(limitations, source) {
         throw new Error(`${limitationSource} has invalid ${key}`)
       }
     }
-    if (!isKnownDrillGeneratedMatrixLimitation(limitation.kind)) {
-      throw new Error(`${limitationSource} has unknown generated matrix limitation ${JSON.stringify(limitation.kind)}`)
-    }
+    validateDrillGeneratedMatrixLimitation(limitation.kind, limitationSource)
   }
 }
 
@@ -2285,9 +2283,7 @@ function validateGeneratedEvidenceKindArray(value, source) {
 function validateGeneratedMatrixLimitationArray(value, source) {
   validateStringArray(value, source)
   for (const [index, limitation] of value.entries()) {
-    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
-      throw new Error(`${source}[${index}] has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
-    }
+    validateDrillGeneratedMatrixLimitation(limitation, `${source}[${index}]`)
   }
 }
 
@@ -2432,9 +2428,7 @@ function validateGeneratedEvidenceKindCountObject(value, source) {
 function validateGeneratedMatrixLimitationCountObject(value, source) {
   validateCountObject(value, source)
   for (const limitation of Object.keys(value)) {
-    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
-      throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
-    }
+    validateDrillGeneratedMatrixLimitation(limitation, source)
   }
 }
 

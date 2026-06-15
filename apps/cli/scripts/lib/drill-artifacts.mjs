@@ -13,7 +13,7 @@ import {
   validateDrillGeneratedMatrixNameRepoCounts,
   validateDrillGeneratedMatrixNameRepoMetadata,
 } from "./drill-generated-matrix-metadata.mjs"
-import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
+import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import {
   redactDrillSecretText,
@@ -766,9 +766,7 @@ function validateDiagnosticCountObject(value, source, key) {
     "missingGeneratedMatrixLimitations",
   ].includes(key)) {
     for (const limitation of Object.keys(value)) {
-      if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
-        throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
-      }
+      validateDrillGeneratedMatrixLimitation(limitation, source)
     }
   }
   if (["generatedMatrixRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"].includes(key)) {
@@ -1153,15 +1151,11 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
     }
   }
   for (const limitation of metadataListFromMetadata(metadata, "generatedMatrixLimitations")) {
-    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
-      throw new Error(`${source}.generatedMatrixLimitations has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
-    }
+    validateDrillGeneratedMatrixLimitation(limitation, `${source}.generatedMatrixLimitations`)
   }
   for (const key of ["requiredGeneratedMatrixLimitations", "missingGeneratedMatrixLimitations"]) {
     for (const limitation of metadataListFromMetadata(metadata, key)) {
-      if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
-        throw new Error(`${source}.${key} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
-      }
+      validateDrillGeneratedMatrixLimitation(limitation, `${source}.${key}`)
     }
   }
   for (const key of DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS) {

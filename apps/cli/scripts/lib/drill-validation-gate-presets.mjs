@@ -11,7 +11,7 @@ import {
   validateDrillGeneratedEvidencePath,
 } from "./drill-generated-evidence-metadata.mjs"
 import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
-import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
+import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
@@ -472,7 +472,9 @@ export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMat
     itemName: "limitation",
   })
   for (const limitation of limitations) {
-    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+    try {
+      validateDrillGeneratedMatrixLimitation(limitation, "requiredGeneratedMatrixLimitations")
+    } catch {
       throw new Error(`unknown required generated matrix limitation: ${limitation}`)
     }
   }
@@ -528,7 +530,9 @@ export function normalizeRequiredArtifactGeneratedMatrixLimitations(requiredArti
     itemName: "limitation",
   })
   for (const limitation of limitations) {
-    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+    try {
+      validateDrillGeneratedMatrixLimitation(limitation, "requiredArtifactGeneratedMatrixLimitations")
+    } catch {
       throw new Error(`unknown required artifact generated matrix limitation: ${limitation}`)
     }
   }

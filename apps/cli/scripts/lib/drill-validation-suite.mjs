@@ -16,7 +16,7 @@ import {
   validateDrillGeneratedEvidencePath,
 } from "./drill-generated-evidence-metadata.mjs"
 import { validateDrillGeneratedMatrixName } from "./drill-generated-matrix-metadata.mjs"
-import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
+import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
@@ -44,6 +44,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
+  "apps/cli/scripts/lib/drill-generated-matrix-limitations.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-metadata.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-names.test.mjs",
   "apps/cli/scripts/lib/drill-history-outline.test.mjs",
@@ -101,6 +102,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
       "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
+      "apps/cli/scripts/lib/drill-generated-matrix-limitations.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-names.test.mjs",
       "apps/cli/scripts/lib/drill-json-discovery.test.mjs",
@@ -422,9 +424,7 @@ function sortedGeneratedEvidencePathArray(value, source) {
 function sortedGeneratedMatrixLimitationArray(value, source) {
   const limitations = sortedStringArray(value, source)
   for (const [index, limitation] of limitations.entries()) {
-    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
-    }
+    validateDrillGeneratedMatrixLimitation(limitation, `validation suite preset ${source}[${index}]`)
   }
   return limitations
 }
