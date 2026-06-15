@@ -23,6 +23,7 @@ test("drill platform bundle writes shared contract artifacts", async () => {
     const validationSuite = JSON.parse(await readFile(path.join(outputDir, "validation-suite.json"), "utf8"))
     const scenarioTaxonomy = JSON.parse(await readFile(path.join(outputDir, "failure-taxonomy-scenario.json"), "utf8"))
     const drillTaxonomy = JSON.parse(await readFile(path.join(outputDir, "failure-taxonomy-drill.json"), "utf8"))
+    const generatedMatrixLimitations = JSON.parse(await readFile(path.join(outputDir, "generated-matrix-limitations.json"), "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(path.join(outputDir, "arroba-drill-artifacts.json"))
 
     assert.deepEqual(indexBundle, stdoutBundle)
@@ -41,6 +42,10 @@ test("drill platform bundle writes shared contract artifacts", async () => {
         schema: "arroba.drill.failure_taxonomy.v1",
       },
       {
+        path: "generated-matrix-limitations.json",
+        schema: "arroba.drill.generated_matrix_limitations.v1",
+      },
+      {
         path: "runtime-signals.json",
         schema: "arroba.drill.runtime_signals.v1",
       },
@@ -55,10 +60,12 @@ test("drill platform bundle writes shared contract artifacts", async () => {
     assert.equal(validationSuite.schema, "arroba.drill.validation_suite.v1")
     assert.equal(scenarioTaxonomy.target, "scenario")
     assert.equal(drillTaxonomy.target, "drill")
+    assert.equal(generatedMatrixLimitations.schema, "arroba.drill.generated_matrix_limitations.v1")
     assert.equal(artifactIndex.metadata.drill, "platform-bundle")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => artifact.path), [
       "failure-taxonomy-drill.json",
       "failure-taxonomy-scenario.json",
+      "generated-matrix-limitations.json",
       "index.json",
       "runtime-signals.json",
       "validation-suite.json",
@@ -77,7 +84,7 @@ test("drill platform bundle verifies written artifacts", async () => {
     const verified = JSON.parse(stdout)
 
     assert.equal(verified.schema, "arroba.drill.platform_bundle.v1")
-    assert.equal(verified.artifacts.length, 4)
+    assert.equal(verified.artifacts.length, 5)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

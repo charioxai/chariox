@@ -9,6 +9,10 @@ import {
   drillFailureTaxonomyManifest,
 } from "./drill-failure-taxonomy.mjs"
 import {
+  drillGeneratedMatrixLimitationsManifest,
+  validateDrillGeneratedMatrixLimitationsManifest,
+} from "./drill-generated-matrix-limitations.mjs"
+import {
   drillRuntimeSignalsManifest,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
@@ -28,6 +32,10 @@ export const DRILL_PLATFORM_BUNDLE_ARTIFACTS = Object.freeze([
   {
     path: "failure-taxonomy-scenario.json",
     schema: "arroba.drill.failure_taxonomy.v1",
+  },
+  {
+    path: "generated-matrix-limitations.json",
+    schema: "arroba.drill.generated_matrix_limitations.v1",
   },
   {
     path: "runtime-signals.json",
@@ -53,6 +61,10 @@ export async function writeDrillPlatformBundle(outputDir) {
     {
       path: "failure-taxonomy-drill.json",
       contents: drillFailureTaxonomyManifest({ target: "drill" }),
+    },
+    {
+      path: "generated-matrix-limitations.json",
+      contents: drillGeneratedMatrixLimitationsManifest(),
     },
     {
       path: "runtime-signals.json",
@@ -149,6 +161,10 @@ function validateBundleArtifactContents(artifactPath, contents) {
   }
   if (artifactPath === "runtime-signals.json") {
     validateDrillRuntimeSignalsManifest(contents, "runtime-signals.json")
+    return
+  }
+  if (artifactPath === "generated-matrix-limitations.json") {
+    validateDrillGeneratedMatrixLimitationsManifest(contents, "generated-matrix-limitations.json")
   }
 }
 

@@ -25,6 +25,10 @@ test("defines stable drill platform bundle artifacts", () => {
       schema: "arroba.drill.failure_taxonomy.v1",
     },
     {
+      path: "generated-matrix-limitations.json",
+      schema: "arroba.drill.generated_matrix_limitations.v1",
+    },
+    {
       path: "runtime-signals.json",
       schema: "arroba.drill.runtime_signals.v1",
     },
@@ -41,11 +45,14 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     const bundle = await writeDrillPlatformBundle(rootDir)
     const verified = await verifyDrillPlatformBundle(rootDir)
     const artifactIndex = await verifyDrillArtifactIndex(path.join(rootDir, "arroba-drill-artifacts.json"))
+    const generatedMatrixLimitations = JSON.parse(await readFile(path.join(rootDir, "generated-matrix-limitations.json"), "utf8"))
     const validationSuite = JSON.parse(await readFile(path.join(rootDir, "validation-suite.json"), "utf8"))
 
     assert.equal(bundle.schema, DRILL_PLATFORM_BUNDLE_SCHEMA)
     assert.deepEqual(verified, bundle)
     assert.equal(artifactIndex.metadata.drill, "platform-bundle")
+    assert.equal(generatedMatrixLimitations.schema, "arroba.drill.generated_matrix_limitations.v1")
+    assert.deepEqual(generatedMatrixLimitations.limitations.map((limitation) => limitation.kind), ["dry-run-classification-coverage"])
     assert.equal(validationSuite.coverage.length, 6)
     assert.deepEqual(validationSuite.coverage.map((area) => area.id), [
       "distributed-observability",
@@ -110,6 +117,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       {
         path: "failure-taxonomy-scenario.json",
         schema: "arroba.drill.failure_taxonomy.v1",
+      },
+      {
+        path: "generated-matrix-limitations.json",
+        schema: "arroba.drill.generated_matrix_limitations.v1",
       },
       {
         path: "index.json",
@@ -379,6 +390,29 @@ test("rejects failure taxonomy target drift", async () => {
     await assert.rejects(
       verifyDrillPlatformBundle(rootDir),
       /target mismatch/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects generated matrix limitation taxonomy drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  try {
+    await writeDrillPlatformBundle(rootDir)
+    const limitationsPath = path.join(rootDir, "generated-matrix-limitations.json")
+    const limitations = JSON.parse(await readFile(limitationsPath, "utf8"))
+    await replaceBundleArtifact(rootDir, "generated-matrix-limitations.json", {
+      ...limitations,
+      limitations: limitations.limitations.map((limitation) => ({
+        ...limitation,
+        kind: "dry-run-classification-covergae",
+      })),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /limitations do not match generated matrix limitation taxonomy/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
