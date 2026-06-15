@@ -78,6 +78,12 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.deepEqual(stdoutAggregate.incompleteExitCriterionStatuses, {
       "dry-run": 1,
     })
+    assert.deepEqual(stdoutAggregate.plannedOwners, {
+      "validation-harness": 1,
+    })
+    assert.deepEqual(stdoutAggregate.plannedClassifications, {
+      "matrix-coverage": 1,
+    })
     assert.deepEqual(stdoutAggregate.generatedEvidenceKinds, {
       "matrix-report": 1,
       "validation-suite-run": 1,
@@ -130,6 +136,8 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime,workspace-live-sync")
     assert.equal(artifactIndex.metadata.owners, "runtime-network,validation-harness")
     assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
+    assert.equal(artifactIndex.metadata.plannedOwners, "validation-harness")
+    assert.equal(artifactIndex.metadata.plannedClassifications, "matrix-coverage")
     assert.equal(artifactIndex.metadata.exitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,artifact-index-aggregate,matrix-report,validation-gate")
@@ -626,6 +634,76 @@ test("drill artifact index summary gates provider account aliases", async () => 
   }
 })
 
+test("drill artifact index summary gates planned dry-run diagnostics", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-planned-owner",
+      "validation-harness",
+      "--require-planned-classification",
+      "matrix-coverage",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredPlannedOwners, ["validation-harness"])
+    assert.deepEqual(aggregate.missingPlannedOwners, [])
+    assert.deepEqual(aggregate.requiredPlannedClassifications, ["matrix-coverage"])
+    assert.deepEqual(aggregate.missingPlannedClassifications, [])
+    assert.equal(artifactIndex.metadata.requiredPlannedOwners, "validation-harness")
+    assert.equal(artifactIndex.metadata.requiredPlannedClassifications, "matrix-coverage")
+    assert.equal(artifactIndex.metadata.missingPlannedOwners, undefined)
+    assert.equal(artifactIndex.metadata.missingPlannedClassifications, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-planned-owner=kernel-authority",
+        "--require-planned-classification=workspace-live-sync-conflict",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /planned_owners_required=kernel-authority missing=kernel-authority/)
+        assert.match(error.stdout, /planned_classifications_required=workspace-live-sync-conflict missing=workspace-live-sync-conflict/)
+        assert.match(error.stdout, /next: include dry-run drill matrix artifact indexes with planned owner coverage: kernel-authority/)
+        assert.match(error.stdout, /next: include dry-run drill matrix artifact indexes with planned classification coverage: workspace-live-sync-conflict/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-planned-owner",
+        "Bearer abcdefghijklmnop",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-planned-owner includes secret-looking diagnostic text/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary gates validation presets", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
@@ -852,6 +930,12 @@ async function writeIndexedReport(rootDir, name, schema) {
       owners: name === "one"
         ? "validation-harness"
         : "runtime-network",
+      plannedClassifications: name === "one"
+        ? ""
+        : "matrix-coverage",
+      plannedOwners: name === "one"
+        ? ""
+        : "validation-harness",
       exitCriterionStatuses: name === "one"
         ? ""
         : "dry-run",
@@ -946,8 +1030,8 @@ function matrixReportArtifact() {
   return {
     schema: "arroba.drill.matrix.v1",
     matrix: "artifact-index-summary-matrix",
-    status: "passed",
-    dryRun: false,
+    status: "dry-run",
+    dryRun: true,
     startedAt: "2026-01-01T00:00:00.000Z",
     completedAt: "2026-01-01T00:00:01.000Z",
     durationMs: 1000,
@@ -964,12 +1048,15 @@ function matrixReportArtifact() {
         reason: "scenario command was selected but not executed",
       }],
       runtimeSignals: ["session-authority"],
-      status: "passed",
+      status: "dry-run",
       expectedFailure: false,
       classification: null,
       owner: null,
+      plannedClassification: "matrix-coverage",
+      plannedOwner: "validation-harness",
+      plannedNextAction: "run the missing deployment preset scenario, then rerun the matrix",
       nextAction: null,
-      durationMs: 1,
+      durationMs: 0,
       reason: null,
       command: "node",
       args: ["--version"],

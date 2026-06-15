@@ -54,6 +54,10 @@ function printHelp() {
     "                         Exit non-zero when generated matrix artifact-index metadata is missing; repeatable",
     "  --require-provider-account-alias P=A",
     "                         Exit non-zero when provider account alias metadata is missing; repeatable",
+    "  --require-planned-owner OWNER",
+    "                         Exit non-zero when dry-run planned owner metadata is missing; repeatable",
+    "  --require-planned-classification CLASS",
+    "                         Exit non-zero when dry-run planned classification metadata is missing; repeatable",
     "  --require-validation-preset PRESET",
     "                         Exit non-zero when validation preset metadata is missing; repeatable",
     "  --require-runtime-signal ID[,ID]",
@@ -92,6 +96,7 @@ async function main() {
   Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, plannedDiagnosticRequirementDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, validationPresetDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, runtimeSignalDiagnosticsFor(aggregate, options))
   if (options.outputPath) {
@@ -109,6 +114,7 @@ async function main() {
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
         ...generatedMatrixArtifactIndexRequirementMetadataFor(aggregate),
         ...providerAccountAliasRequirementMetadataFor(aggregate),
+        ...plannedDiagnosticRequirementMetadataFor(aggregate),
         ...validationPresetRequirementMetadataFor(aggregate),
         ...runtimeSignalRequirementMetadataFor(aggregate),
       },
@@ -128,6 +134,8 @@ async function main() {
     || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
     || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
+    || (aggregate.missingPlannedOwners ?? []).length > 0
+    || (aggregate.missingPlannedClassifications ?? []).length > 0
     || (aggregate.missingValidationPresets ?? []).length > 0
     || (aggregate.missingRuntimeSignalRequirements ?? []).length > 0
     || (aggregate.missingRuntimeSignalOwnerRequirements ?? []).length > 0
@@ -152,6 +160,8 @@ function parseArgs(argv) {
     requiredGeneratedValidationSuiteFailureRoots: [],
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredMatrixMaxAgeMs: null,
+    requiredPlannedClassifications: [],
+    requiredPlannedOwners: [],
     requiredProviderAccountAliases: [],
     requiredRuntimeSignalOwners: [],
     requiredRuntimeSignals: [],
@@ -245,6 +255,22 @@ function parseArgs(argv) {
       options.requiredProviderAccountAliases.push(parseProviderAccountAliasRequirement(
         arg.slice("--require-provider-account-alias=".length),
         "--require-provider-account-alias",
+      ))
+    } else if (arg === "--require-planned-owner") {
+      options.requiredPlannedOwners.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-planned-owner=")) {
+      options.requiredPlannedOwners.push(parseDiagnosticRequirementText(
+        arg.slice("--require-planned-owner=".length),
+        "--require-planned-owner",
+      ))
+    } else if (arg === "--require-planned-classification") {
+      options.requiredPlannedClassifications.push(parseDiagnosticRequirementText(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-planned-classification=")) {
+      options.requiredPlannedClassifications.push(parseDiagnosticRequirementText(
+        arg.slice("--require-planned-classification=".length),
+        "--require-planned-classification",
       ))
     } else if (arg === "--require-validation-preset") {
       options.requiredValidationPresets.push(parseValidationPresetRequirement(readValue(argv, index, arg), arg))
@@ -543,6 +569,33 @@ function providerAccountAliasRequirementMetadataFor(aggregate) {
   }
 }
 
+function plannedDiagnosticRequirementDiagnosticsFor(aggregate, options) {
+  const requiredOwners = [...new Set(options.requiredPlannedOwners)].sort()
+  const requiredClassifications = [...new Set(options.requiredPlannedClassifications)].sort()
+  if (requiredOwners.length === 0 && requiredClassifications.length === 0) return {}
+  const availableOwners = new Set(Object.keys(aggregate.plannedOwners ?? {}))
+  const availableClassifications = new Set(Object.keys(aggregate.plannedClassifications ?? {}))
+  return {
+    requiredPlannedOwners: requiredOwners,
+    missingPlannedOwners: requiredOwners.filter((owner) => !availableOwners.has(owner)),
+    requiredPlannedClassifications: requiredClassifications,
+    missingPlannedClassifications: requiredClassifications.filter((classification) => !availableClassifications.has(classification)),
+  }
+}
+
+function plannedDiagnosticRequirementMetadataFor(aggregate) {
+  const requiredOwners = aggregate.requiredPlannedOwners ?? []
+  const missingOwners = aggregate.missingPlannedOwners ?? []
+  const requiredClassifications = aggregate.requiredPlannedClassifications ?? []
+  const missingClassifications = aggregate.missingPlannedClassifications ?? []
+  return {
+    ...(requiredOwners.length > 0 ? { requiredPlannedOwners: requiredOwners.join(",") } : {}),
+    ...(missingOwners.length > 0 ? { missingPlannedOwners: missingOwners.join(",") } : {}),
+    ...(requiredClassifications.length > 0 ? { requiredPlannedClassifications: requiredClassifications.join(",") } : {}),
+    ...(missingClassifications.length > 0 ? { missingPlannedClassifications: missingClassifications.join(",") } : {}),
+  }
+}
+
 function validationPresetDiagnosticsFor(aggregate, options) {
   const required = [...new Set(options.requiredValidationPresets)].sort()
   if (required.length === 0) return {}
@@ -633,6 +686,14 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingProviderAccountAliases ?? []
     lines.push(`provider_account_aliases_required=${aggregate.requiredProviderAccountAliases.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredPlannedOwners !== undefined) {
+    const missing = aggregate.missingPlannedOwners ?? []
+    lines.push(`planned_owners_required=${aggregate.requiredPlannedOwners.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
+  if (aggregate.requiredPlannedClassifications !== undefined) {
+    const missing = aggregate.missingPlannedClassifications ?? []
+    lines.push(`planned_classifications_required=${aggregate.requiredPlannedClassifications.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if (aggregate.requiredValidationPresets !== undefined) {
     const missing = aggregate.missingValidationPresets ?? []
     lines.push(`validation_presets_required=${aggregate.requiredValidationPresets.join(",") || "none"} missing=${missing.join(",") || "none"}`)
@@ -668,6 +729,12 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingProviderAccountAliases ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record provider account aliases: ${aggregate.missingProviderAccountAliases.join(", ")}`)
+  }
+  if ((aggregate.missingPlannedOwners ?? []).length > 0) {
+    lines.push(`next: include dry-run drill matrix artifact indexes with planned owner coverage: ${aggregate.missingPlannedOwners.join(", ")}`)
+  }
+  if ((aggregate.missingPlannedClassifications ?? []).length > 0) {
+    lines.push(`next: include dry-run drill matrix artifact indexes with planned classification coverage: ${aggregate.missingPlannedClassifications.join(", ")}`)
   }
   if ((aggregate.missingValidationPresets ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record validation presets: ${aggregate.missingValidationPresets.join(", ")}`)
