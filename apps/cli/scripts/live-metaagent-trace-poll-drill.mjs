@@ -36,10 +36,11 @@ function buildUserPrompt(options) {
   if (options.supervisionMode === 'event-continuation') {
     return [
       ...launchInstruction,
-      'Give the worker a slightly longer repository inspection task: inspect the README, git status, recent commit, and file list, then summarize what kind of fixture this repo is.',
+      'Give the worker a repository inspection task that stays active for at least 15 seconds before its final response: inspect the README, git status, recent commit, and file list, then summarize what kind of fixture this repo is.',
       `The worker response must include the exact phrase ${TRACE_PHRASE}.`,
       'Do not call subscribe_trace, wait_trace, or poll_trace for this task.',
-      'After you have spawned and prompted the worker, stop this turn without marking the task complete.',
+      'After you have spawned and prompted the worker, immediately stop this turn without marking the task complete.',
+      'Do not wait, poll, explain, summarize, or call any more tools in that turn.',
       'Arroba will send you a continuation prompt when the worker turn completes.',
       'On that continuation, review the worker output using the event and turn/history tools available to you, then complete this metaagent task with a concise summary of the worker result and the evidence you reviewed.',
     ].join('\n')
@@ -277,7 +278,7 @@ async function waitForProviderRun(client, requests, providerRunId, timeoutMs, po
   let last = null
   while (Date.now() < deadline) {
     last = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
-    if (last?.state === 'Running' || last?.state === 'Active' || last?.runtime_mcp_server_url) return last
+    if (last?.state === 'Running' || last?.state === 'Active') return last
     if (last?.state === 'Ended') throw new Error(`provider run ended before active: ${JSON.stringify(last)}`)
     await sleep(pollMs)
   }
@@ -310,6 +311,22 @@ function workerMatchesProfile(agent, options) {
     && agent.effort === options.workerEffort
 }
 
+function agentActivePrompt(session, agentId) {
+  return session.prompt_states?.[agentId]?.active_prompt
+    ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
+}
+
+function agentIsIdle(session, agent) {
+  if (!agent) return false
+  return !agentActivePrompt(session, agent.id)
+    && agent.state !== 'Working'
+    && agent.is_processing !== true
+}
+
+function workerCompletionWasWakeup(status) {
+  return status === 'submitted' || status === 'delivered'
+}
+
 function modelMatches(actual, expected, provider) {
   if (actual === expected) return true
   if (!actual || !expected || !provider) return false
@@ -327,6 +344,8 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
   let sawWorkerPrompt = false
   let sawWorkerCompletionEvent = false
   let sawInjectedContinuationPrompt = false
+  let sawMetaagentYieldedBeforeWorkerEvent = false
+  let workerCompletionDeliveryStatus = null
   let sawReviewTool = false
   let sawPostEventReview = false
   let sawCompleteBeforeEvent = false
@@ -335,6 +354,7 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
   while (Date.now() < deadline) {
     const session = await getSession(client, requests, sessionId)
     finalTask = (session.metaagent_tasks ?? []).find((entry) => entry.metaagent_id === metaagentId) ?? null
+    const metaagent = (session.agents ?? []).find((agent) => agent.id === metaagentId)
     workers = (session.agents ?? []).filter((agent) => !beforeAgentIds.has(agent.id) && agent.id !== metaagentId && agent.role !== 'meta')
     if (workers.length > 0) {
       log('workers-observed', workers.map((agent) => ({
@@ -380,6 +400,15 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
       }
     }
     if (options.supervisionMode === 'event-continuation') {
+      if (sawWorkerPrompt && !sawWorkerCompletionEvent && !sawMetaagentYieldedBeforeWorkerEvent && agentIsIdle(session, metaagent)) {
+        sawMetaagentYieldedBeforeWorkerEvent = true
+        log('metaagent-yielded-before-worker-event', {
+          metaagentId,
+          state: metaagent?.state ?? null,
+          isProcessing: metaagent?.is_processing ?? null,
+          activePrompt: agentActivePrompt(session, metaagentId)?.id ?? null,
+        })
+      }
       const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
       const events = eventsPayload.events ?? []
       const workerIds = new Set(workers.map((agent) => agent.id))
@@ -396,8 +425,12 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
         }
         if (event.kind === 'agent.turn.completed' && workerIds.has(event.source_agent_id)) {
           sawWorkerCompletionEvent = true
+          workerCompletionDeliveryStatus = event.prompt_delivery_status ?? null
           if (event.injected_prompt_id) sawInjectedContinuationPrompt = true
           if (sawReviewTool) sawPostEventReview = true
+          if (workerCompletionDeliveryStatus === 'steered') {
+            throw new Error('worker completion event was steered into an active metaagent turn; expected a submitted continuation after yield')
+          }
         }
       }
     }
@@ -418,8 +451,10 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
         && workers.length > 0
         && profileMatched
         && sawWorkerPrompt
+        && sawMetaagentYieldedBeforeWorkerEvent
         && sawWorkerCompletionEvent
         && sawInjectedContinuationPrompt
+        && workerCompletionWasWakeup(workerCompletionDeliveryStatus)
         && sawPostEventReview
         && (finalTask.completion_summary ?? '').includes(TRACE_PHRASE)) {
         return {
@@ -429,8 +464,10 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
           sawTraceWait,
           sawTracePhrase,
           sawWorkerPrompt,
+          sawMetaagentYieldedBeforeWorkerEvent,
           sawWorkerCompletionEvent,
           sawInjectedContinuationPrompt,
+          workerCompletionDeliveryStatus,
           sawPostEventReview,
         }
       }
@@ -450,8 +487,10 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
           } : null,
           profileMatched,
           sawWorkerPrompt,
+          sawMetaagentYieldedBeforeWorkerEvent,
           sawWorkerCompletionEvent,
           sawInjectedContinuationPrompt,
+          workerCompletionDeliveryStatus,
           sawPostEventReview,
           summary: finalTask.completion_summary ?? null,
         }, null, 2)}`)
@@ -503,8 +542,10 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
     sawTraceWait,
     sawTracePhrase,
     sawWorkerPrompt,
+    sawMetaagentYieldedBeforeWorkerEvent,
     sawWorkerCompletionEvent,
     sawInjectedContinuationPrompt,
+    workerCompletionDeliveryStatus,
     sawPostEventReview,
     sawForbiddenTraceTool,
   }, null, 2)}`)
@@ -662,8 +703,10 @@ async function main() {
       sawTraceWait: observed.sawTraceWait,
       sawTracePhrase: observed.sawTracePhrase,
       sawWorkerPrompt: observed.sawWorkerPrompt ?? null,
+      sawMetaagentYieldedBeforeWorkerEvent: observed.sawMetaagentYieldedBeforeWorkerEvent ?? null,
       sawWorkerCompletionEvent: observed.sawWorkerCompletionEvent ?? null,
       sawInjectedContinuationPrompt: observed.sawInjectedContinuationPrompt ?? null,
+      workerCompletionDeliveryStatus: observed.workerCompletionDeliveryStatus ?? null,
       sawPostEventReview: observed.sawPostEventReview ?? null,
     }, null, 2))
     succeeded = true
