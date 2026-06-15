@@ -17,8 +17,11 @@ export function isKnownDrillGeneratedMatrixLimitation(limitation) {
   return DRILL_GENERATED_MATRIX_LIMITATIONS.includes(limitation)
 }
 
-export function validateDrillGeneratedMatrixLimitation(limitation, source) {
+export function validateDrillGeneratedMatrixLimitation(limitation, source, { message } = {}) {
   if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(limitation) : message)
+    }
     throw new Error(`${source} has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
   }
 }

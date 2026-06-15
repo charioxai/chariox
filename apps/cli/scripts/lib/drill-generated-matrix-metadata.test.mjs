@@ -26,6 +26,14 @@ test("validates generated matrix names with caller-owned sources", () => {
     }),
     /field has unknown generated matrix name "workspace-live-synch-matrix"/,
   )
+  assert.throws(
+    () => validateDrillGeneratedMatrixName("workspace-live-synch-matrix", {
+      secretSource: "field[0]",
+      unknownSource: "requiredArtifactGeneratedMatrixNames",
+      message: (matrixName) => `unknown required artifact generated matrix name: ${matrixName}`,
+    }),
+    /unknown required artifact generated matrix name: workspace-live-synch-matrix/,
+  )
 })
 
 test("validates generated matrix name repo coverage", () => {

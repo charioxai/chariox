@@ -15,6 +15,12 @@ test("validates generated matrix limitation metadata", () => {
     () => validateDrillGeneratedMatrixLimitation("dry-run-classification-covergae", "field[0]"),
     /field\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
+  assert.throws(
+    () => validateDrillGeneratedMatrixLimitation("dry-run-classification-covergae", "requiredGeneratedMatrixLimitations", {
+      message: (limitation) => `unknown required generated matrix limitation: ${limitation}`,
+    }),
+    /unknown required generated matrix limitation: dry-run-classification-covergae/,
+  )
 })
 
 test("builds stable generated matrix limitation manifest", () => {

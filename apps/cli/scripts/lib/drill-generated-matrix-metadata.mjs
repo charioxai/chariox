@@ -8,11 +8,15 @@ export function validateDrillGeneratedMatrixName(matrixName, {
   secretDescription = "generated matrix name",
   secretSource,
   unknownSource,
+  message,
 }) {
   if (redactDrillSecretText(matrixName) !== matrixName) {
     throw new Error(`${secretSource} includes secret-looking ${secretDescription}`)
   }
   if (!isKnownDrillGeneratedMatrixName(matrixName)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(matrixName) : message)
+    }
     throw new Error(`${unknownSource} has unknown generated matrix name ${JSON.stringify(matrixName)}`)
   }
 }

@@ -10,7 +10,7 @@ import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
 } from "./drill-generated-evidence-metadata.mjs"
-import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
+import { validateDrillGeneratedMatrixName } from "./drill-generated-matrix-metadata.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   parseProviderAccountAlias,
@@ -457,11 +457,9 @@ export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenc
     itemName: "kind",
   })
   for (const kind of kinds) {
-    try {
-      validateDrillGeneratedEvidenceKind(kind, "requiredGeneratedEvidenceKinds")
-    } catch {
-      throw new Error(`unknown required generated evidence kind: ${kind}`)
-    }
+    validateDrillGeneratedEvidenceKind(kind, "requiredGeneratedEvidenceKinds", {
+      message: () => `unknown required generated evidence kind: ${kind}`,
+    })
   }
   return kinds
 }
@@ -472,11 +470,9 @@ export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMat
     itemName: "limitation",
   })
   for (const limitation of limitations) {
-    try {
-      validateDrillGeneratedMatrixLimitation(limitation, "requiredGeneratedMatrixLimitations")
-    } catch {
-      throw new Error(`unknown required generated matrix limitation: ${limitation}`)
-    }
+    validateDrillGeneratedMatrixLimitation(limitation, "requiredGeneratedMatrixLimitations", {
+      message: () => `unknown required generated matrix limitation: ${limitation}`,
+    })
   }
   return limitations
 }
@@ -515,11 +511,9 @@ export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifact
     itemName: "kind",
   })
   for (const kind of kinds) {
-    try {
-      validateDrillGeneratedEvidenceKind(kind, "requiredArtifactGeneratedEvidenceKinds")
-    } catch {
-      throw new Error(`unknown required artifact generated evidence kind: ${kind}`)
-    }
+    validateDrillGeneratedEvidenceKind(kind, "requiredArtifactGeneratedEvidenceKinds", {
+      message: () => `unknown required artifact generated evidence kind: ${kind}`,
+    })
   }
   return kinds
 }
@@ -530,11 +524,9 @@ export function normalizeRequiredArtifactGeneratedMatrixLimitations(requiredArti
     itemName: "limitation",
   })
   for (const limitation of limitations) {
-    try {
-      validateDrillGeneratedMatrixLimitation(limitation, "requiredArtifactGeneratedMatrixLimitations")
-    } catch {
-      throw new Error(`unknown required artifact generated matrix limitation: ${limitation}`)
-    }
+    validateDrillGeneratedMatrixLimitation(limitation, "requiredArtifactGeneratedMatrixLimitations", {
+      message: () => `unknown required artifact generated matrix limitation: ${limitation}`,
+    })
   }
   return limitations
 }
@@ -545,9 +537,11 @@ export function normalizeRequiredArtifactGeneratedMatrixNames(requiredArtifactGe
     itemName: "matrix",
   })
   for (const matrixName of matrixNames) {
-    if (!isKnownDrillGeneratedMatrixName(matrixName)) {
-      throw new Error(`unknown required artifact generated matrix name: ${matrixName}`)
-    }
+    validateDrillGeneratedMatrixName(matrixName, {
+      secretSource: "requiredArtifactGeneratedMatrixNames",
+      unknownSource: "requiredArtifactGeneratedMatrixNames",
+      message: () => `unknown required artifact generated matrix name: ${matrixName}`,
+    })
   }
   return matrixNames
 }
