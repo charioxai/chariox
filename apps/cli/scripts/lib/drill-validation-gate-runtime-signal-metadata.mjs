@@ -22,7 +22,7 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
     ...(report.checks?.matrices?.missingMatrixRuntimeSignals ?? []),
   ].filter(nonEmptyString))
   const signalOwners = new Set([
-    ...drillRuntimeSignalOwnersFor([...signals, ...requiredSignals, ...missingSignals]),
+    ...drillRuntimeSignalOwnersFor([...signals]),
     ...platformRuntimeSignalOwners(report),
     ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignalOwners ?? {}),
   ])
@@ -104,7 +104,7 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.missingMatrixRuntimeSignals ?? []),
   ].filter(nonEmptyString))
   const signalOwners = new Set([
-    ...drillRuntimeSignalOwnersFor([...signals, ...requiredSignals, ...missingSignals]),
+    ...drillRuntimeSignalOwnersFor([...signals]),
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.failureRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.matrixRuntimeSignalOwners ?? {}),

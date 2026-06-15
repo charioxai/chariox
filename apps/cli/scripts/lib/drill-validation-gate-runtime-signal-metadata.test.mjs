@@ -46,7 +46,7 @@ test("builds runtime signal metadata for validation gate reports", () => {
   assert.deepEqual(metadata, {
     missingRuntimeSignals: "client-projection-health,lease-health,relay-target-freshness,slice-auth-state",
     requiredRuntimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-projection-health,session-authority,workspace-live-sync-state",
-    runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
   })
 })
@@ -150,7 +150,7 @@ test("builds owner and classification metadata for validation gate reports", () 
     owners: "kernel-authority,provider-account,runtime-network,ui-client,validation-harness,validation-platform",
     providerAccountAliases: "codex=work",
     requiredRuntimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
-    runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
     runtimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })
@@ -193,7 +193,7 @@ test("builds runtime signal metadata for validation gate aggregates", () => {
   assert.deepEqual(metadata, {
     missingRuntimeSignals: "agent-lifecycle,client-projection-health,lease-health,permission-interaction,relay-target-freshness,slice-auth-state",
     requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
-    runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
   })
 })
@@ -319,7 +319,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
     requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/required-artifacts.json",
     requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
     requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
-    runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
   })
 })
