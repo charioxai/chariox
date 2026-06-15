@@ -85,10 +85,11 @@ To reject stale or discovered-only bundles, summarize the generated gate report 
 node apps/cli/scripts/drill-validation-gate-summary.mjs \
   --gate-report .artifacts/validation-gates/distributed-runtime-gate.json \
   --require-generated-evidence-kind validation-suite-run \
-  --require-generated-evidence-kind matrix-report
+  --require-generated-evidence-kind matrix-report \
+  --require-generated-validation-suite-artifact-index .artifacts/validation-suite/distributed-runtime-gate/arroba-drill-artifacts.json
 ```
 
-When the evidence is consumed through artifact indexes instead of validation-gate reports, gate the same provenance at the artifact layer with `--require-artifact-generated-evidence-kind validation-suite-run --require-artifact-generated-evidence-kind matrix-report`.
+When the evidence is consumed through artifact indexes instead of validation-gate reports, gate the same provenance at the artifact layer with `--require-artifact-generated-evidence-kind validation-suite-run --require-artifact-generated-evidence-kind matrix-report`. Use `drill-artifact-index-summary.mjs --require-generated-validation-suite-artifact-index PATH` when the artifact-index bundle must also prove which generated validation-suite artifact index was preserved.
 
 Provider-account profile evidence is non-secret metadata. When a matrix or staging run is expected to use a specific account profile, pass `--provider-account PROVIDER=ALIAS` to the matrix/staging command and require the resulting artifact metadata with `--require-artifact-provider-account-alias PROVIDER=ALIAS` on validation gates, or `--require-provider-account-alias PROVIDER=ALIAS` on `drill-artifact-index-summary.mjs`. Missing aliases fail with a next action that points operators to the artifact indexes that need to be regenerated or included.
 
