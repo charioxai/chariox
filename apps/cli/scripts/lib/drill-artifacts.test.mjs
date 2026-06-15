@@ -1239,6 +1239,13 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      generatedMatrixNames: { "cloud-slice-runtime-matrix": 1 },
+      generatedMatrixRepos: { oss: 1 },
+    })),
+    /generated matrix "cloud-slice-runtime-matrix" without generated matrix repo "cloud"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       requiredGeneratedMatrixRepos: { osz: 1 },
     })),
     /requiredGeneratedMatrixRepos has unknown evidence repo "osz"/,
@@ -1481,6 +1488,24 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.generatedMatrixNames has unknown generated matrix name "workspace-live-synch-matrix"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: {
+          generatedMatrixNames: "cloud-slice-runtime-matrix",
+          generatedMatrixRepos: "oss",
+        },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedMatrixNames has generated matrix "cloud-slice-runtime-matrix" without generated matrix repo "cloud"/,
     )
     assert.throws(
       () => validateDrillArtifactIndex({

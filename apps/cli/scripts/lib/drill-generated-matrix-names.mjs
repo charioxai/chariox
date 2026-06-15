@@ -34,6 +34,10 @@ export function isKnownDrillGeneratedMatrixName(matrixName) {
   return DRILL_GENERATED_MATRIX_NAMES.includes(matrixName)
 }
 
+export function drillGeneratedMatrixRepoForName(matrixName) {
+  return repoForGeneratedMatrixName(matrixName)
+}
+
 export function validateDrillGeneratedMatrixNamesManifest(manifest, source = "generated matrix names manifest") {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${source} is not an object`)

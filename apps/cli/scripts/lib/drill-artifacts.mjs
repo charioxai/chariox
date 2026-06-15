@@ -5,7 +5,10 @@ import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
-import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
+import {
+  drillGeneratedMatrixRepoForName,
+  isKnownDrillGeneratedMatrixName,
+} from "./drill-generated-matrix-names.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import {
@@ -509,6 +512,7 @@ export function validateDrillArtifactDiagnosticDimensions(value, source = "drill
     }
     validateDiagnosticCountObject(value[key], `${source}.${key}`, key)
   }
+  validateGeneratedMatrixNameRepoCounts(value.generatedMatrixNames, value.generatedMatrixRepos, source)
   validateRuntimeSignalOwnerKeysMatch(value.runtimeSignals, value.runtimeSignalOwners, source)
   validateRuntimeSignalOwnerKeysMatch(
     value.requiredRuntimeSignals,
@@ -582,6 +586,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
     }
     validateDiagnosticCountObject(aggregate[key], `${source}.${key}`, key)
   }
+  validateGeneratedMatrixNameRepoCounts(aggregate.generatedMatrixNames, aggregate.generatedMatrixRepos, source)
   if (!Array.isArray(aggregate.indexes)) {
     throw new Error(`${source} has invalid indexes`)
   }
@@ -699,6 +704,7 @@ function validateArtifactIndexSummary(summary, source) {
     }
     validateDiagnosticCountObject(summary[key], `${source}.${key}`, key)
   }
+  validateGeneratedMatrixNameRepoCounts(summary.generatedMatrixNames, summary.generatedMatrixRepos, source)
   validateRuntimeSignalOwnerCountsMatch(summary.runtimeSignals, summary.runtimeSignalOwners, source)
   validateRuntimeSignalOwnerCountsMatch(
     summary.requiredRuntimeSignals,
@@ -1180,6 +1186,30 @@ function validateDrillArtifactIndexGeneratedEvidenceMetadata(metadata, source) {
       if (!isKnownDrillGeneratedMatrixName(matrixName)) {
         throw new Error(`${source}.${key} has unknown generated matrix name ${JSON.stringify(matrixName)}`)
       }
+    }
+  }
+  validateGeneratedMatrixNameRepoMetadata(metadata, source)
+}
+
+function validateGeneratedMatrixNameRepoCounts(generatedMatrixNames, generatedMatrixRepos, source) {
+  if (!generatedMatrixNames || typeof generatedMatrixNames !== "object" || Array.isArray(generatedMatrixNames)) return
+  if (!generatedMatrixRepos || typeof generatedMatrixRepos !== "object" || Array.isArray(generatedMatrixRepos)) return
+  for (const matrixName of Object.keys(generatedMatrixNames)) {
+    const expectedRepo = drillGeneratedMatrixRepoForName(matrixName)
+    if (expectedRepo && !Object.prototype.hasOwnProperty.call(generatedMatrixRepos, expectedRepo)) {
+      throw new Error(`${source} has generated matrix ${JSON.stringify(matrixName)} without generated matrix repo ${JSON.stringify(expectedRepo)}`)
+    }
+  }
+}
+
+function validateGeneratedMatrixNameRepoMetadata(metadata, source) {
+  const matrixNames = metadataListFromMetadata(metadata, "generatedMatrixNames")
+  const matrixRepos = new Set(metadataListFromMetadata(metadata, "generatedMatrixRepos"))
+  if (matrixNames.length === 0 || matrixRepos.size === 0) return
+  for (const matrixName of matrixNames) {
+    const expectedRepo = drillGeneratedMatrixRepoForName(matrixName)
+    if (expectedRepo && !matrixRepos.has(expectedRepo)) {
+      throw new Error(`${source}.generatedMatrixNames has generated matrix ${JSON.stringify(matrixName)} without generated matrix repo ${JSON.stringify(expectedRepo)}`)
     }
   }
 }
