@@ -1,3 +1,11 @@
+import { redactDrillSecretText } from "./drill-secrets.mjs"
+
+const SECRET_SENSITIVE_REQUIREMENT_KEYS = new Set([
+  "requiredArtifactGeneratedMatrixArtifactIndexes",
+  "requiredGeneratedMatrixArtifactIndexes",
+  "requiredGeneratedValidationSuiteFailureRoots",
+])
+
 const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-platform-coverage-area", "requiredPlatformCoverageAreas"],
   ["--require-artifact-coverage-area", "requiredArtifactCoverageAreas"],
@@ -78,11 +86,11 @@ export function parseValidationGateRequirementArg(
   }
   for (const [flag, key] of REQUIREMENT_FLAGS) {
     if (arg === flag) {
-      options[key].push(requiredArgValue(argv, index, flag))
+      options[key].push(normalizedRequirementValue(requiredArgValue(argv, index, flag), flag, key))
       return index + 1
     }
     if (arg.startsWith(`${flag}=`)) {
-      options[key].push(arg.slice(`${flag}=`.length))
+      options[key].push(normalizedRequirementValue(arg.slice(`${flag}=`.length), flag, key))
       return index
     }
   }
@@ -92,5 +100,16 @@ export function parseValidationGateRequirementArg(
 function requiredArgValue(argv, index, flag) {
   const value = argv[index + 1]
   if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`)
+  return value
+}
+
+function normalizedRequirementValue(value, flag, key) {
+  if (!SECRET_SENSITIVE_REQUIREMENT_KEYS.has(key)) return value
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${flag} requires a value`)
+  }
+  if (redactDrillSecretText(value) !== value) {
+    throw new Error(`${flag} includes secret-looking diagnostic text`)
+  }
   return value
 }

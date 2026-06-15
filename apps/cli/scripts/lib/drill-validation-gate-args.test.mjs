@@ -106,6 +106,20 @@ test("parses aggregate preset requirements with custom key", () => {
   assert.deepEqual(options.requiredProviders, [])
 })
 
+test("rejects secret-looking generated path requirements", () => {
+  for (const flag of [
+    "--require-artifact-generated-matrix-artifact-index",
+    "--require-generated-matrix-artifact-index",
+    "--require-generated-validation-suite-failure-root",
+  ]) {
+    const options = validationGateRequirementOptionDefaults()
+    assert.throws(
+      () => parseValidationGateRequirementArg([flag, "/tmp/generated/Bearer abcdefghijklmnop"], 0, options),
+      new RegExp(`${flag} includes secret-looking diagnostic text`),
+    )
+  }
+})
+
 test("parses requirement arguments without accepting a preset flag", () => {
   const options = validationGateRequirementOptionDefaults()
   let index = parseValidationGateRequirementArg(

@@ -224,6 +224,36 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
         return true
       },
     )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-generated-matrix-artifact-index",
+        "/tmp/generated-matrix/Bearer abcdefghijklmnop.json",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-matrix-artifact-index includes secret-looking diagnostic text/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-generated-validation-suite-failure-root",
+        "/tmp/generated-validation-suite/Bearer abcdefghijklmnop",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-validation-suite-failure-root includes secret-looking diagnostic text/)
+        return true
+      },
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
