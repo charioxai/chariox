@@ -27,6 +27,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "classifications",
   "artifactKinds",
   "generatedEvidenceKinds",
+  "generatedMatrixLimitations",
   "requiredGeneratedEvidenceKinds",
   "missingGeneratedEvidenceKinds",
   "evidenceRepos",
@@ -44,6 +45,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   classifications: "classifications",
   artifactKinds: "artifact_kinds",
   generatedEvidenceKinds: "generated_evidence_kinds",
+  generatedMatrixLimitations: "generated_matrix_limitations",
   requiredGeneratedEvidenceKinds: "required_generated_evidence_kinds",
   missingGeneratedEvidenceKinds: "missing_generated_evidence_kinds",
   evidenceRepos: "evidence_repos",
@@ -171,6 +173,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const classifications = new Map()
   const artifactKinds = new Map()
   const generatedEvidenceKinds = new Map()
+  const generatedMatrixLimitations = new Map()
   const requiredGeneratedEvidenceKinds = new Map()
   const missingGeneratedEvidenceKinds = new Map()
   const evidenceRepos = new Map()
@@ -188,6 +191,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
     const indexArtifactKinds = metadataListFromMetadata(index.metadata, "artifactKinds")
     const indexGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "generatedEvidenceKinds")
+    const indexGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "generatedMatrixLimitations")
     const indexRequiredGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "requiredGeneratedEvidenceKinds")
     const indexMissingGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "missingGeneratedEvidenceKinds")
     const indexEvidenceRepos = metadataListFromMetadata(index.metadata, "evidenceRepos")
@@ -198,6 +202,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexClassifications, classifications)
     countValues(indexArtifactKinds, artifactKinds)
     countValues(indexGeneratedEvidenceKinds, generatedEvidenceKinds)
+    countValues(indexGeneratedMatrixLimitations, generatedMatrixLimitations)
     countValues(indexRequiredGeneratedEvidenceKinds, requiredGeneratedEvidenceKinds)
     countValues(indexMissingGeneratedEvidenceKinds, missingGeneratedEvidenceKinds)
     countValues(indexEvidenceRepos, evidenceRepos)
@@ -222,6 +227,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       classifications: countValues(indexClassifications),
       artifactKinds: countValues(indexArtifactKinds),
       generatedEvidenceKinds: countValues(indexGeneratedEvidenceKinds),
+      generatedMatrixLimitations: countValues(indexGeneratedMatrixLimitations),
       requiredGeneratedEvidenceKinds: countValues(indexRequiredGeneratedEvidenceKinds),
       missingGeneratedEvidenceKinds: countValues(indexMissingGeneratedEvidenceKinds),
       evidenceRepos: countValues(indexEvidenceRepos),
@@ -238,6 +244,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     classifications: sortedCountObject(classifications),
     artifactKinds: sortedCountObject(artifactKinds),
     generatedEvidenceKinds: sortedCountObject(generatedEvidenceKinds),
+    generatedMatrixLimitations: sortedCountObject(generatedMatrixLimitations),
     requiredGeneratedEvidenceKinds: sortedCountObject(requiredGeneratedEvidenceKinds),
     missingGeneratedEvidenceKinds: sortedCountObject(missingGeneratedEvidenceKinds),
     evidenceRepos: sortedCountObject(evidenceRepos),
