@@ -57,6 +57,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactClassifications, {
     "cloud-validation-suite": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactExitCriterionStatuses, {
+    "dry-run": 1,
+  })
+  assert.deepEqual(aggregate.coverage.artifactIncompleteExitCriterionStatuses, {
+    "dry-run": 1,
+  })
   assert.deepEqual(aggregate.coverage.artifactKinds, {
     "validation-suite-run": 1,
   })
@@ -110,6 +116,12 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.reports[0].artifactCoverage.classifications, {
     "cloud-validation-suite": 1,
   })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.exitCriterionStatuses, {
+    "dry-run": 1,
+  })
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.incompleteExitCriterionStatuses, {
+    "dry-run": 1,
+  })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.artifactKinds, {
     "validation-suite-run": 1,
   })
@@ -143,6 +155,8 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.match(text, /- artifact_runtime_signal_owners: kernel-authority=1 runtime-state=1/)
   assert.match(text, /- artifact_owners: validation-platform=1/)
   assert.match(text, /- artifact_classifications: cloud-validation-suite=1/)
+  assert.match(text, /- artifact_exit_criterion_statuses: dry-run=1/)
+  assert.match(text, /- artifact_incomplete_exit_criterion_statuses: dry-run=1/)
   assert.match(text, /- artifact_kinds: validation-suite-run=1/)
   assert.match(text, /- artifact_evidence_repos: oss=1/)
   assert.match(text, /- matrix_runtime_signals: workspace-live-sync-state=1/)
@@ -340,6 +354,34 @@ test("rejects unknown artifact kind labels in aggregate reports", () => {
       }],
     }),
     /reports\[0\]\.artifactCoverage\.artifactKinds has unknown artifact kind "validation-sutie"/,
+  )
+})
+
+test("rejects unknown artifact exit criterion status labels in aggregate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
+
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        artifactExitCriterionStatuses: { satisifed: 1 },
+      },
+    }),
+    /coverage\.artifactExitCriterionStatuses has unknown exit criterion status "satisifed"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          incompleteExitCriterionStatuses: { pending: 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.incompleteExitCriterionStatuses has unknown exit criterion status "pending"/,
   )
 })
 
@@ -997,6 +1039,12 @@ function reportFixture(overrides = {}) {
           },
           classifications: {
             "cloud-validation-suite": 1,
+          },
+          exitCriterionStatuses: {
+            "dry-run": 1,
+          },
+          incompleteExitCriterionStatuses: {
+            "dry-run": 1,
           },
           artifactKinds: {
             "validation-suite-run": 1,

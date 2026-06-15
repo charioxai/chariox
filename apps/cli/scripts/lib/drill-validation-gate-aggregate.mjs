@@ -71,6 +71,8 @@ export function summarizeValidationGateReportAggregate(
     artifactRuntimeSignalOwners: new Map(),
     artifactOwners: new Map(),
     artifactClassifications: new Map(),
+    artifactExitCriterionStatuses: new Map(),
+    artifactIncompleteExitCriterionStatuses: new Map(),
     artifactKinds: new Map(),
     artifactGeneratedEvidenceKinds: new Map(),
     artifactGeneratedMatrixLimitations: new Map(),
@@ -496,6 +498,8 @@ function validationGateReportArtifactCoverage(report) {
     runtimeSignalOwners: { ...(report.checks.artifacts.aggregate?.runtimeSignalOwners ?? {}) },
     owners: { ...(report.checks.artifacts.aggregate?.owners ?? {}) },
     classifications: { ...(report.checks.artifacts.aggregate?.classifications ?? {}) },
+    exitCriterionStatuses: { ...(report.checks.artifacts.aggregate?.exitCriterionStatuses ?? {}) },
+    incompleteExitCriterionStatuses: { ...(report.checks.artifacts.aggregate?.incompleteExitCriterionStatuses ?? {}) },
     artifactKinds: { ...(report.checks.artifacts.aggregate?.artifactKinds ?? {}) },
     generatedEvidenceKinds: { ...(report.checks.artifacts.aggregate?.generatedEvidenceKinds ?? {}) },
     generatedMatrixLimitations: { ...(report.checks.artifacts.aggregate?.generatedMatrixLimitations ?? {}) },
@@ -531,6 +535,8 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countObjectValues(coverage.artifactRuntimeSignalOwners, artifactCoverage.runtimeSignalOwners)
   countObjectValues(coverage.artifactOwners, artifactCoverage.owners)
   countObjectValues(coverage.artifactClassifications, artifactCoverage.classifications)
+  countObjectValues(coverage.artifactExitCriterionStatuses, artifactCoverage.exitCriterionStatuses)
+  countObjectValues(coverage.artifactIncompleteExitCriterionStatuses, artifactCoverage.incompleteExitCriterionStatuses)
   countObjectValues(coverage.artifactKinds, artifactCoverage.artifactKinds)
   countObjectValues(coverage.artifactGeneratedEvidenceKinds, artifactCoverage.generatedEvidenceKinds)
   countObjectValues(coverage.artifactGeneratedMatrixLimitations, artifactCoverage.generatedMatrixLimitations)
@@ -737,6 +743,8 @@ function formatValidationGateCoverageCounts(coverage) {
     artifactRuntimeSignalOwners: countMapToObject(coverage.artifactRuntimeSignalOwners),
     artifactOwners: countMapToObject(coverage.artifactOwners),
     artifactClassifications: countMapToObject(coverage.artifactClassifications),
+    artifactExitCriterionStatuses: countMapToObject(coverage.artifactExitCriterionStatuses),
+    artifactIncompleteExitCriterionStatuses: countMapToObject(coverage.artifactIncompleteExitCriterionStatuses),
     artifactKinds: countMapToObject(coverage.artifactKinds),
     artifactGeneratedEvidenceKinds: countMapToObject(coverage.artifactGeneratedEvidenceKinds),
     artifactGeneratedMatrixLimitations: countMapToObject(coverage.artifactGeneratedMatrixLimitations),
@@ -810,6 +818,8 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "artifact_runtime_signal_owners", coverage.artifactRuntimeSignalOwners)
   appendCoverageLine(lines, "artifact_owners", coverage.artifactOwners)
   appendCoverageLine(lines, "artifact_classifications", coverage.artifactClassifications)
+  appendCoverageLine(lines, "artifact_exit_criterion_statuses", coverage.artifactExitCriterionStatuses)
+  appendCoverageLine(lines, "artifact_incomplete_exit_criterion_statuses", coverage.artifactIncompleteExitCriterionStatuses)
   appendCoverageLine(lines, "artifact_kinds", coverage.artifactKinds)
   appendCoverageLine(lines, "artifact_generated_evidence_kinds", coverage.artifactGeneratedEvidenceKinds)
   appendCoverageLine(lines, "artifact_generated_matrix_limitations", coverage.artifactGeneratedMatrixLimitations)
@@ -912,6 +922,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateRuntimeSignalOwnerCountObject(coverage.artifactRuntimeSignalOwners ?? {}, `${source}.artifactRuntimeSignalOwners`)
   validateCountObject(coverage.artifactOwners ?? {}, `${source}.artifactOwners`)
   validateCountObject(coverage.artifactClassifications ?? {}, `${source}.artifactClassifications`)
+  validateExitCriterionStatusCountObject(coverage.artifactExitCriterionStatuses ?? {}, `${source}.artifactExitCriterionStatuses`)
+  validateExitCriterionStatusCountObject(coverage.artifactIncompleteExitCriterionStatuses ?? {}, `${source}.artifactIncompleteExitCriterionStatuses`)
   validateArtifactKindCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.artifactGeneratedEvidenceKinds ?? {}, `${source}.artifactGeneratedEvidenceKinds`)
   validateGeneratedMatrixLimitationCountObject(coverage.artifactGeneratedMatrixLimitations ?? {}, `${source}.artifactGeneratedMatrixLimitations`)
@@ -1017,6 +1029,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     artifactRuntimeSignalOwners: new Map(),
     artifactOwners: new Map(),
     artifactClassifications: new Map(),
+    artifactExitCriterionStatuses: new Map(),
+    artifactIncompleteExitCriterionStatuses: new Map(),
     artifactKinds: new Map(),
     artifactGeneratedEvidenceKinds: new Map(),
     artifactGeneratedMatrixLimitations: new Map(),
@@ -1091,6 +1105,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactRuntimeSignalOwners, report.artifactCoverage?.runtimeSignalOwners)
     countObjectValues(expected.artifactOwners, report.artifactCoverage?.owners)
     countObjectValues(expected.artifactClassifications, report.artifactCoverage?.classifications)
+    countObjectValues(expected.artifactExitCriterionStatuses, report.artifactCoverage?.exitCriterionStatuses)
+    countObjectValues(expected.artifactIncompleteExitCriterionStatuses, report.artifactCoverage?.incompleteExitCriterionStatuses)
     countObjectValues(expected.artifactKinds, report.artifactCoverage?.artifactKinds)
     countObjectValues(expected.artifactGeneratedEvidenceKinds, report.artifactCoverage?.generatedEvidenceKinds)
     countObjectValues(expected.artifactGeneratedMatrixLimitations, report.artifactCoverage?.generatedMatrixLimitations)
@@ -1167,6 +1183,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactRuntimeSignalOwners, input.artifactCoverage?.runtimeSignalOwners)
     countObjectValues(expected.artifactOwners, input.artifactCoverage?.owners)
     countObjectValues(expected.artifactClassifications, input.artifactCoverage?.classifications)
+    countObjectValues(expected.artifactExitCriterionStatuses, input.artifactCoverage?.exitCriterionStatuses)
+    countObjectValues(expected.artifactIncompleteExitCriterionStatuses, input.artifactCoverage?.incompleteExitCriterionStatuses)
     countObjectValues(expected.artifactKinds, input.artifactCoverage?.artifactKinds)
     countObjectValues(expected.artifactGeneratedEvidenceKinds, input.artifactCoverage?.generatedEvidenceKinds)
     countObjectValues(expected.artifactGeneratedMatrixLimitations, input.artifactCoverage?.generatedMatrixLimitations)
@@ -1406,6 +1424,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateRuntimeSignalOwnerCountObject(coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(coverage.owners ?? {}, `${source}.owners`)
   validateCountObject(coverage.classifications ?? {}, `${source}.classifications`)
+  validateExitCriterionStatusCountObject(coverage.exitCriterionStatuses ?? {}, `${source}.exitCriterionStatuses`)
+  validateExitCriterionStatusCountObject(coverage.incompleteExitCriterionStatuses ?? {}, `${source}.incompleteExitCriterionStatuses`)
   validateArtifactKindCountObject(coverage.artifactKinds ?? {}, `${source}.artifactKinds`)
   validateGeneratedEvidenceKindCountObject(coverage.generatedEvidenceKinds ?? {}, `${source}.generatedEvidenceKinds`)
   validateGeneratedMatrixLimitationCountObject(coverage.generatedMatrixLimitations ?? {}, `${source}.generatedMatrixLimitations`)
@@ -1649,6 +1669,15 @@ function validateArtifactKindCountObject(value, source) {
   for (const kind of Object.keys(value)) {
     if (!isKnownDrillArtifactKind(kind)) {
       throw new Error(`${source} has unknown artifact kind ${JSON.stringify(kind)}`)
+    }
+  }
+}
+
+function validateExitCriterionStatusCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const status of Object.keys(value)) {
+    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
+      throw new Error(`${source} has unknown exit criterion status ${JSON.stringify(status)}`)
     }
   }
 }
