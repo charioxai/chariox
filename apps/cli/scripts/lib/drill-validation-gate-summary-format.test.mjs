@@ -281,6 +281,8 @@ function artifactAggregateFixture() {
     classifications: {
       "cloud-validation-suite": 1,
     },
+    exitCriterionStatuses: {},
+    incompleteExitCriterionStatuses: {},
     artifactKinds: {
       "artifact-index": 1,
       "matrix-report": 1,
@@ -339,6 +341,8 @@ function artifactAggregateFixture() {
       classifications: {
         "cloud-validation-suite": 1,
       },
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {
         "artifact-index": 1,
         "matrix-report": 1,

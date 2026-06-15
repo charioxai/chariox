@@ -57,6 +57,10 @@ async function main() {
   if (options.outputPath) {
     const runtimeSignals = Object.keys(aggregate.runtimeSignals).sort()
     const runtimeSignalOwners = Object.keys(aggregate.runtimeSignalOwners).sort()
+    const exitCriterionStatuses = Object.keys(aggregate.exitCriteria ?? {}).sort()
+    const incompleteExitCriterionStatuses = [...new Set((aggregate.incompleteExitCriteria ?? [])
+      .map((criterion) => criterion.status))]
+      .sort()
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
       artifactIndexPath: options.outputArtifactIndexPath,
@@ -66,6 +70,8 @@ async function main() {
         status: aggregate.status,
         owners: Object.keys(aggregate.owners).join(","),
         classifications: Object.keys(aggregate.classifications).join(","),
+        exitCriterionStatuses: exitCriterionStatuses.join(","),
+        incompleteExitCriterionStatuses: incompleteExitCriterionStatuses.join(","),
         runtimeSignals: runtimeSignals.join(","),
         runtimeSignalOwners: runtimeSignalOwners.join(","),
       },

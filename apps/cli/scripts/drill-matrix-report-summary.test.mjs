@@ -63,6 +63,8 @@ test("matrix report summary writes artifact index for output", async () => {
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.owners, "")
     assert.equal(artifactIndex.metadata.classifications, "")
+    assert.equal(artifactIndex.metadata.exitCriterionStatuses, "")
+    assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "")
     assert.equal(artifactIndex.metadata.runtimeSignals, "")
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
@@ -72,6 +74,65 @@ test("matrix report summary writes artifact index for output", async () => {
       path: "aggregate.json",
       schema: "arroba.drill.matrix.aggregate.v1",
     }])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("matrix report summary indexes exit criterion status metadata", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  try {
+    const reportPath = path.join(dir, "matrix.json")
+    const outputPath = path.join(dir, "aggregate.json")
+    const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+    await writeReport(reportPath, matrixReport({
+      matrix: "criteria",
+      status: "dry-run",
+      dryRun: true,
+      durationMs: 0,
+      completedAt: "2026-06-13T00:00:00.000Z",
+      scenarios: [{
+        id: "remote",
+        description: "remote scenario",
+        requires: [],
+        exitCriteria: ["remote projection is visible"],
+        exitCriteriaEvidence: [{
+          id: "remote:exit-01",
+          criterion: "remote projection is visible",
+          status: "dry-run",
+          reason: "scenario command was selected but not executed",
+        }],
+        status: "dry-run",
+        expectedFailure: false,
+        classification: null,
+        durationMs: 0,
+        reason: null,
+        command: "node",
+        args: ["remote.mjs"],
+        artifactHints: [],
+      }],
+    }))
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--json",
+        "--require-complete",
+        "--output",
+        outputPath,
+        "--output-artifact-index",
+        artifactIndexPath,
+        reportPath,
+      ]),
+      (error) => {
+        assert.equal(error.code, 2)
+        return true
+      },
+    )
+
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+    assert.equal(artifactIndex.metadata.exitCriterionStatuses, "dry-run")
+    assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

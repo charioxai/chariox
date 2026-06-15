@@ -64,6 +64,12 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.deepEqual(stdoutAggregate.artifactCoverageInputSources, {
       "artifact metadata inputs": 1,
     })
+    assert.deepEqual(stdoutAggregate.exitCriterionStatuses, {
+      "dry-run": 1,
+    })
+    assert.deepEqual(stdoutAggregate.incompleteExitCriterionStatuses, {
+      "dry-run": 1,
+    })
     assert.deepEqual(stdoutAggregate.generatedEvidenceKinds, {
       "matrix-report": 1,
       "validation-suite-run": 1,
@@ -94,6 +100,8 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,runtime-state")
     assert.equal(artifactIndex.metadata.owners, "runtime-network,validation-harness")
     assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
+    assert.equal(artifactIndex.metadata.exitCriterionStatuses, "dry-run")
+    assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,matrix-report,validation-gate")
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
@@ -215,6 +223,12 @@ async function writeIndexedReport(rootDir, name, schema) {
       owners: name === "one"
         ? "validation-harness"
         : "runtime-network",
+      exitCriterionStatuses: name === "one"
+        ? ""
+        : "dry-run",
+      incompleteExitCriterionStatuses: name === "one"
+        ? ""
+        : "dry-run",
       runtimeSignals: runtimeSignals.join(","),
       runtimeSignalOwners: drillRuntimeSignalOwnersFor(runtimeSignals).join(","),
       artifactKinds: name === "one"
@@ -263,8 +277,13 @@ function matrixReportArtifact() {
       id: "summary",
       description: "summary scenario",
       requires: [],
-      exitCriteria: [],
-      exitCriteriaEvidence: [],
+      exitCriteria: ["summary aggregate records incomplete exit criterion status"],
+      exitCriteriaEvidence: [{
+        id: "summary:exit-01",
+        criterion: "summary aggregate records incomplete exit criterion status",
+        status: "dry-run",
+        reason: "scenario command was selected but not executed",
+      }],
       runtimeSignals: ["session-authority"],
       status: "passed",
       expectedFailure: false,

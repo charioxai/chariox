@@ -26,6 +26,8 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "coverageAreas",
   "owners",
   "classifications",
+  "exitCriterionStatuses",
+  "incompleteExitCriterionStatuses",
   "artifactKinds",
   "generatedEvidenceKinds",
   "generatedMatrixLimitations",
@@ -47,6 +49,8 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   coverageAreas: "coverage_areas",
   owners: "owners",
   classifications: "classifications",
+  exitCriterionStatuses: "exit_criterion_statuses",
+  incompleteExitCriterionStatuses: "incomplete_exit_criterion_statuses",
   artifactKinds: "artifact_kinds",
   generatedEvidenceKinds: "generated_evidence_kinds",
   generatedMatrixLimitations: "generated_matrix_limitations",
@@ -178,6 +182,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const coverageAreas = new Map()
   const owners = new Map()
   const classifications = new Map()
+  const exitCriterionStatuses = new Map()
+  const incompleteExitCriterionStatuses = new Map()
   const artifactKinds = new Map()
   const generatedEvidenceKinds = new Map()
   const generatedMatrixLimitations = new Map()
@@ -199,6 +205,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
+    const indexExitCriterionStatuses = metadataListFromMetadata(index.metadata, "exitCriterionStatuses")
+    const indexIncompleteExitCriterionStatuses = metadataListFromMetadata(index.metadata, "incompleteExitCriterionStatuses")
     const indexArtifactKinds = metadataListFromMetadata(index.metadata, "artifactKinds")
     const indexGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "generatedEvidenceKinds")
     const indexGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "generatedMatrixLimitations")
@@ -213,6 +221,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexCoverageAreas, coverageAreas)
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
+    countValues(indexExitCriterionStatuses, exitCriterionStatuses)
+    countValues(indexIncompleteExitCriterionStatuses, incompleteExitCriterionStatuses)
     countValues(indexArtifactKinds, artifactKinds)
     countValues(indexGeneratedEvidenceKinds, generatedEvidenceKinds)
     countValues(indexGeneratedMatrixLimitations, generatedMatrixLimitations)
@@ -241,6 +251,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       coverageAreas: countValues(indexCoverageAreas),
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
+      exitCriterionStatuses: countValues(indexExitCriterionStatuses),
+      incompleteExitCriterionStatuses: countValues(indexIncompleteExitCriterionStatuses),
       artifactKinds: countValues(indexArtifactKinds),
       generatedEvidenceKinds: countValues(indexGeneratedEvidenceKinds),
       generatedMatrixLimitations: countValues(indexGeneratedMatrixLimitations),
@@ -261,6 +273,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     coverageAreas: sortedCountObject(coverageAreas),
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
+    exitCriterionStatuses: sortedCountObject(exitCriterionStatuses),
+    incompleteExitCriterionStatuses: sortedCountObject(incompleteExitCriterionStatuses),
     artifactKinds: sortedCountObject(artifactKinds),
     generatedEvidenceKinds: sortedCountObject(generatedEvidenceKinds),
     generatedMatrixLimitations: sortedCountObject(generatedMatrixLimitations),
@@ -532,6 +546,13 @@ function validateDiagnosticCountObject(value, source, key) {
     for (const signal of Object.keys(value)) {
       if (!isKnownDrillRuntimeSignal(signal)) {
         throw new Error(`${source} has unknown runtime signal ${JSON.stringify(signal)}`)
+      }
+    }
+  }
+  if (key === "exitCriterionStatuses" || key === "incompleteExitCriterionStatuses") {
+    for (const status of Object.keys(value)) {
+      if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
+        throw new Error(`${source} has unknown exit criterion status ${JSON.stringify(status)}`)
       }
     }
   }

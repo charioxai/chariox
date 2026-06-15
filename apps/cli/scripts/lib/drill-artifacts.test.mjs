@@ -564,6 +564,8 @@ test("summarizes drill artifact indexes", async () => {
       metadata: {
         classifications: "matrix-coverage",
         owners: "validation-harness,runtime-network",
+        exitCriterionStatuses: "dry-run",
+        incompleteExitCriterionStatuses: "dry-run",
         runtimeSignals: "session-authority,lease-health",
         runtimeSignalOwners: "kernel-authority",
         artifactKinds: "matrix-report",
@@ -606,6 +608,12 @@ test("summarizes drill artifact indexes", async () => {
       "artifact-coverage": 1,
       "matrix-coverage": 1,
       "validation-gate": 1,
+    })
+    assert.deepEqual(aggregate.exitCriterionStatuses, {
+      "dry-run": 1,
+    })
+    assert.deepEqual(aggregate.incompleteExitCriterionStatuses, {
+      "dry-run": 1,
     })
     assert.deepEqual(aggregate.artifactKinds, {
       "matrix-report": 1,
@@ -676,6 +684,8 @@ test("summarizes drill artifact indexes", async () => {
       artifactCoverageInputCount: "1",
       artifactCoverageInputSources: "artifact metadata inputs",
       classifications: "artifact-coverage,matrix-coverage,validation-gate",
+      exitCriterionStatuses: "dry-run",
+      incompleteExitCriterionStatuses: "dry-run",
       evidenceRepos: "cloud,oss",
       generatedEvidenceKinds: "matrix-report,validation-suite-run",
       generatedMatrixLimitations: "dry-run-classification-coverage",
@@ -693,6 +703,8 @@ test("summarizes drill artifact indexes", async () => {
       "coverageAreas",
       "owners",
       "classifications",
+      "exitCriterionStatuses",
+      "incompleteExitCriterionStatuses",
       "artifactKinds",
       "generatedEvidenceKinds",
       "generatedMatrixLimitations",
@@ -718,6 +730,8 @@ test("summarizes drill artifact indexes", async () => {
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signal_owners: kernel-authority=2 provider-runtime=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /owners: runtime-network=1 validation-harness=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /exit_criterion_statuses: dry-run=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /incomplete_exit_criterion_statuses: dry-run=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /artifact_coverage_input_count=1/)
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
@@ -803,6 +817,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
     }),
     /missing generatedEvidenceKinds/,
@@ -814,6 +830,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
@@ -833,6 +851,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
@@ -852,6 +872,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
@@ -871,6 +893,29 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: { satisifed: 1 },
+      incompleteExitCriterionStatuses: {},
+      artifactKinds: {},
+      generatedEvidenceKinds: {},
+      generatedMatrixLimitations: {},
+      requiredGeneratedEvidenceKinds: {},
+      missingGeneratedEvidenceKinds: {},
+      requiredGeneratedMatrixLimitations: {},
+      missingGeneratedMatrixLimitations: {},
+      evidenceRepos: {},
+      artifactCoverageInputSources: {},
+    }),
+    /exitCriterionStatuses has unknown exit criterion status "satisifed"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions({
+      runtimeSignals: {},
+      runtimeSignalOwners: {},
+      coverageAreas: {},
+      owners: {},
+      classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
@@ -890,6 +935,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: { "matrix-reprot": 1 },
       generatedMatrixLimitations: {},
@@ -909,6 +956,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: { "dry-run-classification-covergae": 1 },
@@ -928,6 +977,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
@@ -947,6 +998,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: {},
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
@@ -966,6 +1019,8 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       coverageAreas: {},
       owners: {},
       classifications: {},
+      exitCriterionStatuses: {},
+      incompleteExitCriterionStatuses: {},
       artifactKinds: { "validation-sutie": 1 },
       generatedEvidenceKinds: {},
       generatedMatrixLimitations: {},
