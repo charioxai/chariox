@@ -101,6 +101,67 @@ test("explains missing executable validation suite artifacts", () => {
   ])
 })
 
+test("routes missing artifact diagnostic coverage to owning subsystems", () => {
+  const actions = validationGateNextActions(checks({
+    artifacts: {
+      status: "failed",
+      missingArtifactGeneratedEvidenceKinds: ["matrix-report"],
+      missingArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+      missingArtifactProviderAccountAliases: ["codex=work"],
+      missingArtifactRuntimeSignals: ["workspace-live-sync-state"],
+      missingArtifactRuntimeSignalOwners: ["runtime-state"],
+      missingArtifactOwners: ["kernel-authority"],
+      missingArtifactClassifications: ["remote-extension-sync"],
+      missingArtifactPlannedOwners: ["runtime-state"],
+      missingArtifactPlannedClassifications: ["workspace-live-sync-conflict"],
+      missingArtifactExitCriterionStatuses: ["satisfied"],
+      missingArtifactIncompleteExitCriterionStatuses: ["dry-run"],
+    },
+  }))
+
+  assert.equal(actions.length, 14)
+  assertAction(actions, {
+    owner: "provider-account",
+    classification: "provider-account",
+    nextAction: "include non-secret provider account alias metadata in artifact indexes: codex=work",
+  })
+  assertAction(actions, {
+    owner: "runtime-state",
+    classification: "runtime-signal-coverage",
+    nextAction: "include drill artifact indexes proving workspace-live-sync-state owned by runtime-state: Workspace Live Sync mode, included paths, ignored paths, conflict/reconcile status, and peer propagation state.",
+  })
+  assertAction(actions, {
+    owner: "runtime-state",
+    classification: "matrix-coverage",
+    nextAction: "include dry-run matrix artifact indexes with planned owner coverage: runtime-state",
+  })
+  assertAction(actions, {
+    owner: "runtime-state",
+    classification: "workspace-live-sync-conflict",
+    nextAction: "include dry-run matrix artifact indexes with planned classification coverage: workspace-live-sync-conflict",
+  })
+  assertAction(actions, {
+    owner: "kernel-authority",
+    classification: "remote-extension-sync",
+    nextAction: "collect artifact evidence covering failure classification: remote-extension-sync",
+  })
+  assertAction(actions, {
+    owner: "kernel-authority",
+    classification: "artifact-coverage",
+    nextAction: "collect artifact evidence owned by kernel-authority",
+  })
+  assertAction(actions, {
+    owner: "validation-harness",
+    classification: "artifact-coverage",
+    nextAction: "collect artifact evidence with incomplete exit criterion statuses: dry-run",
+  })
+  assertAction(actions, {
+    owner: "validation-harness",
+    classification: "generated-evidence",
+    nextAction: "provide generated drill evidence with kinds: matrix-report",
+  })
+})
+
 test("explains matrix errors, incomplete scenarios, missing coverage, and aggregate actions", () => {
   const actions = validationGateNextActions(checks({
     matrices: {
@@ -273,4 +334,13 @@ function checks(overrides = {}) {
     failures: { status: "skipped" },
     ...overrides,
   }
+}
+
+function assertAction(actions, expected) {
+  assert(actions.some((action) => (
+    action.owner === expected.owner
+    && action.classification === expected.classification
+    && action.nextAction === expected.nextAction
+    && action.count === (expected.count ?? 1)
+  )), `missing action ${JSON.stringify(expected)}`)
 }

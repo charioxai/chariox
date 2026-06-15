@@ -3,6 +3,9 @@ import {
   formatDrillAggregateNextActionCounts,
 } from "./drill-aggregate-actions.mjs"
 import {
+  drillFailureOwnerForClassification,
+} from "./drill-failure-taxonomy.mjs"
+import {
   drillRuntimeSignalNextAction,
   drillRuntimeSignalOwner,
 } from "./drill-runtime-signals.mjs"
@@ -104,6 +107,14 @@ export function validationGateNextActions(checks) {
         nextAction: `produce artifact evidence with kinds: ${missingArtifactKinds.join(", ")}`,
       })
     }
+    const missingArtifactGeneratedEvidenceKinds = checks.artifacts.missingArtifactGeneratedEvidenceKinds ?? []
+    if (missingArtifactGeneratedEvidenceKinds.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "generated-evidence",
+        nextAction: `provide generated drill evidence with kinds: ${missingArtifactGeneratedEvidenceKinds.join(", ")}`,
+      })
+    }
     const missingArtifactGeneratedMatrixArtifactIndexes = checks.artifacts.missingArtifactGeneratedMatrixArtifactIndexes ?? []
     if (missingArtifactGeneratedMatrixArtifactIndexes.length > 0) {
       countDrillAggregateNextAction(counts, {
@@ -112,12 +123,108 @@ export function validationGateNextActions(checks) {
         nextAction: `provide artifact metadata with generated matrix artifact indexes: ${missingArtifactGeneratedMatrixArtifactIndexes.join(", ")}`,
       })
     }
+    const missingArtifactGeneratedMatrixLimitations = checks.artifacts.missingArtifactGeneratedMatrixLimitations ?? []
+    if (missingArtifactGeneratedMatrixLimitations.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "generated-evidence",
+        nextAction: `provide artifact metadata with generated matrix limitations: ${missingArtifactGeneratedMatrixLimitations.join(", ")}`,
+      })
+    }
     const missingArtifactEvidenceRepos = checks.artifacts.missingArtifactEvidenceRepos ?? []
     if (missingArtifactEvidenceRepos.length > 0) {
       countDrillAggregateNextAction(counts, {
         owner: "validation-harness",
         classification: "artifact-coverage",
         nextAction: `collect artifact evidence from repos: ${missingArtifactEvidenceRepos.join(", ")}`,
+      })
+    }
+    const missingArtifactProviderAccountAliases = checks.artifacts.missingArtifactProviderAccountAliases ?? []
+    if (missingArtifactProviderAccountAliases.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "provider-account",
+        classification: "provider-account",
+        nextAction: `include non-secret provider account alias metadata in artifact indexes: ${missingArtifactProviderAccountAliases.join(", ")}`,
+      })
+    }
+    const missingArtifactValidationPresets = checks.artifacts.missingArtifactValidationPresets ?? []
+    if (missingArtifactValidationPresets.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence for validation presets: ${missingArtifactValidationPresets.join(", ")}`,
+      })
+    }
+    const missingArtifactRuntimeSignals = checks.artifacts.missingArtifactRuntimeSignals ?? []
+    if (missingArtifactRuntimeSignals.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence covering runtime signals: ${missingArtifactRuntimeSignals.join(", ")}`,
+      })
+      countMissingRuntimeSignalActions(counts, missingArtifactRuntimeSignals, { target: "artifact-index" })
+    }
+    const missingArtifactRuntimeSignalOwners = checks.artifacts.missingArtifactRuntimeSignalOwners ?? []
+    if (missingArtifactRuntimeSignalOwners.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence covering runtime signal owners: ${missingArtifactRuntimeSignalOwners.join(", ")}`,
+      })
+      for (const owner of missingArtifactRuntimeSignalOwners) {
+        countDrillAggregateNextAction(counts, {
+          owner,
+          classification: "runtime-signal-coverage",
+          nextAction: `include drill artifact indexes proving runtime-signal coverage owned by ${owner}`,
+        })
+      }
+    }
+    const missingArtifactOwners = checks.artifacts.missingArtifactOwners ?? []
+    for (const owner of missingArtifactOwners) {
+      countDrillAggregateNextAction(counts, {
+        owner,
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence owned by ${owner}`,
+      })
+    }
+    const missingArtifactClassifications = checks.artifacts.missingArtifactClassifications ?? []
+    for (const classification of missingArtifactClassifications) {
+      countDrillAggregateNextAction(counts, {
+        owner: drillFailureOwnerForClassification(classification),
+        classification,
+        nextAction: `collect artifact evidence covering failure classification: ${classification}`,
+      })
+    }
+    const missingArtifactPlannedOwners = checks.artifacts.missingArtifactPlannedOwners ?? []
+    for (const owner of missingArtifactPlannedOwners) {
+      countDrillAggregateNextAction(counts, {
+        owner,
+        classification: "matrix-coverage",
+        nextAction: `include dry-run matrix artifact indexes with planned owner coverage: ${owner}`,
+      })
+    }
+    const missingArtifactPlannedClassifications = checks.artifacts.missingArtifactPlannedClassifications ?? []
+    for (const classification of missingArtifactPlannedClassifications) {
+      countDrillAggregateNextAction(counts, {
+        owner: drillFailureOwnerForClassification(classification),
+        classification,
+        nextAction: `include dry-run matrix artifact indexes with planned classification coverage: ${classification}`,
+      })
+    }
+    const missingArtifactExitCriterionStatuses = checks.artifacts.missingArtifactExitCriterionStatuses ?? []
+    if (missingArtifactExitCriterionStatuses.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence with exit criterion statuses: ${missingArtifactExitCriterionStatuses.join(", ")}`,
+      })
+    }
+    const missingArtifactIncompleteExitCriterionStatuses = checks.artifacts.missingArtifactIncompleteExitCriterionStatuses ?? []
+    if (missingArtifactIncompleteExitCriterionStatuses.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence with incomplete exit criterion statuses: ${missingArtifactIncompleteExitCriterionStatuses.join(", ")}`,
       })
     }
     if ((checks.artifacts.staleArtifactIndexes ?? []).length > 0) {
