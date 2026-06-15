@@ -23,6 +23,7 @@ import {
   applyProviderAccountAlias,
   isKnownDrillProvider,
 } from "./lib/drill-provider-profiles.mjs"
+import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import {
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
@@ -277,15 +278,21 @@ function parseArgs(argv) {
     } else if (arg.startsWith("--failure-root=")) {
       options.failureRoots.push(arg.slice("--failure-root=".length))
     } else if (arg === "--validation-suite-output-root") {
-      options.validationSuiteOutputRoot = path.resolve(readValue(argv, index, arg))
+      options.validationSuiteOutputRoot = parseGeneratedOutputRoot(readValue(argv, index, arg), arg)
       index += 1
     } else if (arg.startsWith("--validation-suite-output-root=")) {
-      options.validationSuiteOutputRoot = path.resolve(arg.slice("--validation-suite-output-root=".length))
+      options.validationSuiteOutputRoot = parseGeneratedOutputRoot(
+        arg.slice("--validation-suite-output-root=".length),
+        "--validation-suite-output-root",
+      )
     } else if (arg === "--matrix-output-root") {
-      options.matrixOutputRoot = path.resolve(readValue(argv, index, arg))
+      options.matrixOutputRoot = parseGeneratedOutputRoot(readValue(argv, index, arg), arg)
       index += 1
     } else if (arg.startsWith("--matrix-output-root=")) {
-      options.matrixOutputRoot = path.resolve(arg.slice("--matrix-output-root=".length))
+      options.matrixOutputRoot = parseGeneratedOutputRoot(
+        arg.slice("--matrix-output-root=".length),
+        "--matrix-output-root",
+      )
     } else if (arg === "--provider-account") {
       applyProviderAccountAliasRequirement(options.providerAccounts, readValue(argv, index, arg), arg)
       index += 1
@@ -367,6 +374,16 @@ function readValue(argv, index, flag) {
   const value = argv[index + 1]
   if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`)
   return value
+}
+
+function parseGeneratedOutputRoot(value, flag) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${flag} requires a value`)
+  }
+  if (redactDrillSecretText(value) !== value) {
+    throw new Error(`${flag} includes secret-looking generated evidence path`)
+  }
+  return path.resolve(value)
 }
 
 function applyProviderAccountAliasRequirement(providerAccounts, value, flag) {

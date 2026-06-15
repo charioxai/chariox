@@ -795,6 +795,21 @@ test("distributed runtime gate rejects aggregate-only generated evidence require
   )
 })
 
+test("distributed runtime gate rejects secret-looking generated output roots", async () => {
+  for (const flag of ["--validation-suite-output-root", "--matrix-output-root"]) {
+    await assert.rejects(
+      execFile(process.execPath, [scriptPath, flag, "/tmp/Bearer abcdefghijklmnop", "--json"]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, new RegExp(`${flag} includes secret-looking generated evidence path`))
+        assert.doesNotMatch(error.stderr, /Bearer abcdefghijklmnop/)
+        assert.doesNotMatch(error.stdout, /Bearer abcdefghijklmnop/)
+        return true
+      },
+    )
+  }
+})
+
 async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud }) {
   const ossMatrixRoot = path.join(ossRoot, ".artifacts", "drill-matrices")
   await writeMatrixReport(path.join(ossMatrixRoot, "native-provider-tui.json"), {
