@@ -10,6 +10,7 @@ import {
   findDrillValidationGateReportPaths,
   formatDrillValidationGateAggregateSummary,
   readDrillValidationGateReport,
+  runDrillValidationGate,
   summarizeDrillValidationGateReports,
 } from "./lib/drill-validation-gate.mjs"
 import { diagnosticMetadataForValidationGateAggregate } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
@@ -23,6 +24,8 @@ function printHelp() {
     "Options:",
     "  --gate-report PATH     Read a specific validation gate report; repeatable",
     "  --gate-root ROOT       Discover validation gate reports below ROOT; repeatable",
+    "  --artifact-index PATH  Read a specific artifact index as aggregate artifact metadata evidence; repeatable",
+    "  --artifact-root ROOT   Discover artifact indexes below ROOT as aggregate artifact metadata evidence; repeatable",
     "  --max-depth N          Limit artifact discovery depth; defaults to 8",
     "  --require-preset NAME  Require aggregate evidence for a validation gate preset; repeatable or comma-separated",
     "  --require-platform-coverage-area AREA",
@@ -78,8 +81,14 @@ async function main() {
     throw new Error("no validation gate reports found")
   }
   const reports = await Promise.all(reportPaths.map((reportPath) => readDrillValidationGateReport(reportPath)))
-  const aggregate = summarizeDrillValidationGateReports(reports, {
-    sources: reportPaths,
+  const artifactCoverageReport = await artifactCoverageReportForSummary(options)
+  const aggregateReports = artifactCoverageReport
+    ? [...reports, artifactCoverageReport.report]
+    : reports
+  const aggregate = summarizeDrillValidationGateReports(aggregateReports, {
+    sources: artifactCoverageReport
+      ? [...reportPaths, artifactCoverageReport.source]
+      : reportPaths,
     requiredPresets: options.requiredPresets,
     requiredPlatformCoverageAreas: options.requiredPlatformCoverageAreas,
     requiredArtifactCoverageAreas: options.requiredArtifactCoverageAreas,
@@ -121,6 +130,8 @@ async function main() {
 
 function parseArgs(argv) {
   const options = {
+    artifactIndexes: [],
+    artifactRoots: [],
     gateReports: [],
     gateRoots: [],
     help: false,
@@ -142,7 +153,21 @@ function parseArgs(argv) {
     }
     if (arg === "--help" || arg === "-h") options.help = true
     else if (arg === "--json") options.json = true
-    else if (arg === "--gate-report") {
+    else if (arg === "--artifact-index") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--artifact-index requires a value")
+      options.artifactIndexes.push(value)
+      index += 1
+    } else if (arg.startsWith("--artifact-index=")) {
+      options.artifactIndexes.push(arg.slice("--artifact-index=".length))
+    } else if (arg === "--artifact-root") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--artifact-root requires a value")
+      options.artifactRoots.push(value)
+      index += 1
+    } else if (arg.startsWith("--artifact-root=")) {
+      options.artifactRoots.push(arg.slice("--artifact-root=".length))
+    } else if (arg === "--gate-report") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--gate-report requires a value")
       options.gateReports.push(value)
@@ -187,6 +212,29 @@ function parseArgs(argv) {
     throw new Error("--output-artifact-index requires --output")
   }
   return options
+}
+
+async function artifactCoverageReportForSummary(options) {
+  if (options.artifactIndexes.length === 0 && options.artifactRoots.length === 0) return null
+  const report = await runDrillValidationGate({
+    artifactIndexes: options.artifactIndexes,
+    artifactRoots: options.artifactRoots,
+    maxDepth: options.maxDepth,
+    requiredArtifactCoverageAreas: options.requiredArtifactCoverageAreas,
+    requiredArtifactSchemas: options.requiredArtifactSchemas,
+    requiredArtifactKinds: options.requiredArtifactKinds,
+    requiredArtifactGeneratedEvidenceKinds: options.requiredArtifactGeneratedEvidenceKinds,
+    requiredArtifactGeneratedMatrixLimitations: options.requiredArtifactGeneratedMatrixLimitations,
+    requiredArtifactEvidenceRepos: options.requiredArtifactEvidenceRepos,
+    requiredArtifactRuntimeSignals: options.requiredArtifactRuntimeSignals,
+    requiredArtifactRuntimeSignalOwners: options.requiredArtifactRuntimeSignalOwners,
+    requiredArtifactOwners: options.requiredArtifactOwners,
+    requiredArtifactClassifications: options.requiredArtifactClassifications,
+  })
+  return {
+    report,
+    source: "artifact metadata inputs",
+  }
 }
 
 main().catch((error) => {

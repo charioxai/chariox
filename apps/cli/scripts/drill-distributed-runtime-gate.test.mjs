@@ -12,6 +12,7 @@ import { drillRuntimeSignalOwnersFor, drillRuntimeSignalsManifest } from "./lib/
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-distributed-runtime-gate.mjs", import.meta.url))
+const summaryScriptPath = fileURLToPath(new URL("./drill-validation-gate-summary.mjs", import.meta.url))
 
 test("distributed runtime gate passes with complete OSS and Cloud matrix evidence", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
@@ -387,6 +388,18 @@ test("distributed runtime gate labels dry-run generated matrix limitations", asy
       "--json",
     ])).stdout)
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+    const summary = JSON.parse((await execFile(process.execPath, [
+      summaryScriptPath,
+      "--gate-report",
+      outputPath,
+      "--artifact-index",
+      artifactIndexPath,
+      "--require-artifact-generated-matrix-limitation",
+      "dry-run-classification-coverage",
+      "--require-generated-matrix-limitation",
+      "dry-run-classification-coverage",
+      "--json",
+    ])).stdout)
 
     assert.equal(report.status, "passed")
     assert.equal(report.generatedEvidence.matrixReports.dryRun, true)
@@ -396,6 +409,11 @@ test("distributed runtime gate labels dry-run generated matrix limitations", asy
       nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before treating required matrix classifications as release evidence",
     }])
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(summary.status, "passed")
+    assert.deepEqual(summary.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+    assert.deepEqual(summary.missingArtifactGeneratedMatrixLimitations, [])
+    assert.deepEqual(summary.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+    assert.deepEqual(summary.missingGeneratedMatrixLimitations, [])
     assert(report.generatedEvidence.matrixReports.commands.every((command) => command.args.includes("--dry-run")))
   } finally {
     await rm(rootDir, { recursive: true, force: true })
