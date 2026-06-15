@@ -317,6 +317,11 @@ function normalizeValidationSuitePresetContract(preset, index) {
     throw new Error(`validation suite preset ${preset.name} has invalid description`)
   }
   const requiredRuntimeSignals = sortedRuntimeSignalArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`)
+  const requiredRuntimeSignalOwners = sortedRequiredRuntimeSignalOwnerArray(
+    preset.requiredRuntimeSignalOwners,
+    requiredRuntimeSignals,
+    `${preset.name}.requiredRuntimeSignalOwners`,
+  )
   return {
     name: preset.name,
     description: preset.description,
@@ -336,10 +341,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactExitCriterionStatuses, `${preset.name}.requiredArtifactExitCriterionStatuses`),
     requiredArtifactIncompleteExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactIncompleteExitCriterionStatuses, `${preset.name}.requiredArtifactIncompleteExitCriterionStatuses`),
     requiredRuntimeSignals,
-    requiredRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(
-      preset.requiredRuntimeSignalOwners ?? drillRuntimeSignalOwnersFor(requiredRuntimeSignals),
-      `${preset.name}.requiredRuntimeSignalOwners`,
-    ),
+    requiredRuntimeSignalOwners,
     requiredFailureClassifications: sortedFailureClassificationArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
     requiredMatrixClassifications: sortedFailureClassificationArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),
@@ -485,6 +487,15 @@ function sortedRuntimeSignalOwnerArray(value, source) {
     if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
       throw new Error(`validation suite preset ${source}[${index}] has unknown runtime signal owner ${JSON.stringify(owner)}`)
     }
+  }
+  return owners
+}
+
+function sortedRequiredRuntimeSignalOwnerArray(value, requiredRuntimeSignals, source) {
+  const expectedOwners = drillRuntimeSignalOwnersFor(requiredRuntimeSignals)
+  const owners = sortedRuntimeSignalOwnerArray(value ?? expectedOwners, source)
+  if (JSON.stringify(owners) !== JSON.stringify(expectedOwners)) {
+    throw new Error(`validation suite preset ${source} must match requiredRuntimeSignals`)
   }
   return owners
 }

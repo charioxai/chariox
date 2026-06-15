@@ -255,6 +255,11 @@ test("normalizes validation suite preset contracts", () => {
     requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   }])
+  assert.deepEqual(normalizeValidationSuitePresetContracts([{
+    name: "derived-runtime-signal-owners",
+    description: "Derived runtime signal owners",
+    requiredRuntimeSignals: ["provider-run-lifecycle", "session-authority"],
+  }])[0].requiredRuntimeSignalOwners, ["kernel-authority", "provider-runtime"])
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad",
     description: "bad",
@@ -265,6 +270,12 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad runtime signal",
     requiredRuntimeSignals: ["workspace-live-synch-state"],
   }]), /requiredRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-runtime-signal-owner",
+    description: "bad runtime signal owner",
+    requiredRuntimeSignals: ["session-authority"],
+    requiredRuntimeSignalOwners: ["runtime-state"],
+  }]), /requiredRuntimeSignalOwners must match requiredRuntimeSignals/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-artifact-runtime-signal",
     description: "bad artifact runtime signal",
