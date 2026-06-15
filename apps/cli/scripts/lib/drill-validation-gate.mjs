@@ -67,11 +67,18 @@ export {
 }
 
 export function summarizeDrillValidationGateReports(reports, options = {}) {
-  const { sources = [], requiredPresets = [] } = options
+  const {
+    sources = [],
+    supplementalArtifactReports = [],
+    supplementalArtifactSources = [],
+    requiredPresets = [],
+  } = options
   const normalizedRequiredPresets = normalizeRequiredPresets(requiredPresets)
   const normalizedAggregateRequirements = normalizeValidationGateAggregateRequirements(options)
   return summarizeValidationGateReportAggregate(reports, {
     sources,
+    supplementalArtifactReports,
+    supplementalArtifactSources,
     normalizedRequiredPresets,
     normalizedAggregateRequirements,
     validateReport: validateDrillValidationGateReport,

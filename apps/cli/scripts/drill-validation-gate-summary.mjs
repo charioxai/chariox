@@ -82,13 +82,10 @@ async function main() {
   }
   const reports = await Promise.all(reportPaths.map((reportPath) => readDrillValidationGateReport(reportPath)))
   const artifactCoverageReport = await artifactCoverageReportForSummary(options)
-  const aggregateReports = artifactCoverageReport
-    ? [...reports, artifactCoverageReport.report]
-    : reports
-  const aggregate = summarizeDrillValidationGateReports(aggregateReports, {
-    sources: artifactCoverageReport
-      ? [...reportPaths, artifactCoverageReport.source]
-      : reportPaths,
+  const aggregate = summarizeDrillValidationGateReports(reports, {
+    sources: reportPaths,
+    supplementalArtifactReports: artifactCoverageReport ? [artifactCoverageReport.report] : [],
+    supplementalArtifactSources: artifactCoverageReport ? [artifactCoverageReport.source] : [],
     requiredPresets: options.requiredPresets,
     requiredPlatformCoverageAreas: options.requiredPlatformCoverageAreas,
     requiredArtifactCoverageAreas: options.requiredArtifactCoverageAreas,

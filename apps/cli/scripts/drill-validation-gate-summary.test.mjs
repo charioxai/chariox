@@ -382,13 +382,12 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
 
     assert.deepEqual(fileAggregate, stdoutAggregate)
     assert.equal(stdoutAggregate.status, "passed")
+    assert.deepEqual(stdoutAggregate.totals, { reports: 1, passed: 1, failed: 0 })
     assert.deepEqual(stdoutAggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
     assert.deepEqual(stdoutAggregate.missingArtifactGeneratedMatrixLimitations, [])
     assert.equal(stdoutAggregate.coverage.artifactGeneratedMatrixLimitations["dry-run-classification-coverage"], 1)
-    assert.deepEqual(stdoutAggregate.reports.map((report) => report.source), [
-      reportPath,
-      "artifact metadata inputs",
-    ])
+    assert.deepEqual(stdoutAggregate.reports.map((report) => report.source), [reportPath])
+    assert.deepEqual(stdoutAggregate.artifactCoverageInputs.map((input) => input.source), ["artifact metadata inputs"])
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
   } finally {

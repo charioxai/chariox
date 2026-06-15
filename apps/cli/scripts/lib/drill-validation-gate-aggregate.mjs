@@ -23,6 +23,8 @@ export function summarizeValidationGateReportAggregate(
   reports,
   {
     sources = [],
+    supplementalArtifactReports = [],
+    supplementalArtifactSources = [],
     normalizedRequiredPresets = [],
     normalizedAggregateRequirements = {},
     validateReport,
@@ -189,6 +191,44 @@ export function summarizeValidationGateReportAggregate(
       ...(generatedEvidence ? { generatedEvidence } : {}),
     }
   })
+  const artifactCoverageInputs = supplementalArtifactReports.map((report, index) => {
+    validateReport(report, supplementalArtifactSources[index] ?? "validation gate artifact metadata input")
+    const artifactCoverage = validationGateReportArtifactCoverage(report)
+    countStringValues(coverage.requiredArtifactSchemas, artifactCoverage.requiredArtifactSchemas)
+    countStringValues(coverage.missingArtifactSchemas, artifactCoverage.missingArtifactSchemas)
+    countStringValues(coverage.requiredArtifactKinds, artifactCoverage.requiredArtifactKinds)
+    countStringValues(coverage.missingArtifactKinds, artifactCoverage.missingArtifactKinds)
+    countStringValues(coverage.requiredArtifactGeneratedEvidenceKinds, artifactCoverage.requiredArtifactGeneratedEvidenceKinds)
+    countStringValues(coverage.missingArtifactGeneratedEvidenceKinds, artifactCoverage.missingArtifactGeneratedEvidenceKinds)
+    countStringValues(coverage.requiredArtifactGeneratedMatrixLimitations, artifactCoverage.requiredArtifactGeneratedMatrixLimitations)
+    countStringValues(coverage.missingArtifactGeneratedMatrixLimitations, artifactCoverage.missingArtifactGeneratedMatrixLimitations)
+    countStringValues(coverage.requiredArtifactEvidenceRepos, artifactCoverage.requiredArtifactEvidenceRepos)
+    countStringValues(coverage.missingArtifactEvidenceRepos, artifactCoverage.missingArtifactEvidenceRepos)
+    countStringValues(coverage.requiredArtifactRuntimeSignals, artifactCoverage.requiredArtifactRuntimeSignals)
+    countStringValues(coverage.missingArtifactRuntimeSignals, artifactCoverage.missingArtifactRuntimeSignals)
+    countStringValues(coverage.requiredArtifactRuntimeSignalOwners, artifactCoverage.requiredArtifactRuntimeSignalOwners)
+    countStringValues(coverage.missingArtifactRuntimeSignalOwners, artifactCoverage.missingArtifactRuntimeSignalOwners)
+    countStringValues(coverage.requiredArtifactOwners, artifactCoverage.requiredArtifactOwners)
+    countStringValues(coverage.missingArtifactOwners, artifactCoverage.missingArtifactOwners)
+    countStringValues(coverage.requiredArtifactClassifications, artifactCoverage.requiredArtifactClassifications)
+    countStringValues(coverage.missingArtifactClassifications, artifactCoverage.missingArtifactClassifications)
+    countStringValues(coverage.requiredArtifactCoverageAreas, artifactCoverage.requiredArtifactCoverageAreas)
+    countStringValues(coverage.missingArtifactCoverageAreas, artifactCoverage.missingArtifactCoverageAreas)
+    countObjectValues(coverage.artifactSchemas, artifactCoverage.schemas)
+    countObjectValues(coverage.artifactCoverageAreas, artifactCoverage.coverageAreas)
+    countObjectValues(coverage.artifactRuntimeSignals, artifactCoverage.runtimeSignals)
+    countObjectValues(coverage.artifactRuntimeSignalOwners, artifactCoverage.runtimeSignalOwners)
+    countObjectValues(coverage.artifactOwners, artifactCoverage.owners)
+    countObjectValues(coverage.artifactClassifications, artifactCoverage.classifications)
+    countObjectValues(coverage.artifactKinds, artifactCoverage.artifactKinds)
+    countObjectValues(coverage.artifactGeneratedEvidenceKinds, artifactCoverage.generatedEvidenceKinds)
+    countObjectValues(coverage.artifactGeneratedMatrixLimitations, artifactCoverage.generatedMatrixLimitations)
+    countObjectValues(coverage.artifactEvidenceRepos, artifactCoverage.evidenceRepos)
+    return {
+      source: supplementalArtifactSources[index] ?? null,
+      artifactCoverage,
+    }
+  })
   countStringValues(coverage.requiredGeneratedEvidenceKinds, normalizedAggregateRequirements.requiredGeneratedEvidenceKinds ?? [])
   countStringValues(
     coverage.missingGeneratedEvidenceKinds,
@@ -271,6 +311,7 @@ export function summarizeValidationGateReportAggregate(
     coverage: coverageCounts,
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     reports: summaries,
+    ...(artifactCoverageInputs.length > 0 ? { artifactCoverageInputs } : {}),
   }
   validateDrillValidationGateAggregate(aggregate)
   return aggregate
@@ -407,6 +448,14 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   }
   for (const [index, report] of aggregate.reports.entries()) {
     validateGateAggregateReportSummary(report, `${source}.reports[${index}]`)
+  }
+  if (aggregate.artifactCoverageInputs !== undefined) {
+    if (!Array.isArray(aggregate.artifactCoverageInputs)) {
+      throw new Error(`${source} has invalid artifactCoverageInputs`)
+    }
+    for (const [index, input] of aggregate.artifactCoverageInputs.entries()) {
+      validateGateAggregateArtifactCoverageInput(input, `${source}.artifactCoverageInputs[${index}]`)
+    }
   }
   if (aggregate.coverage !== undefined) {
     validateValidationGateCoverageAggregate(aggregate.coverage, `${source}.coverage`)
@@ -1101,6 +1150,38 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
       (report.generatedEvidence?.matrixReports?.limitations ?? []).map((limitation) => limitation.kind),
     )
   }
+  for (const input of aggregate.artifactCoverageInputs ?? []) {
+    countStringValues(expected.requiredArtifactCoverageAreas, input.artifactCoverage?.requiredArtifactCoverageAreas ?? [])
+    countStringValues(expected.missingArtifactCoverageAreas, input.artifactCoverage?.missingArtifactCoverageAreas ?? [])
+    countStringValues(expected.requiredArtifactSchemas, input.artifactCoverage?.requiredArtifactSchemas ?? [])
+    countStringValues(expected.missingArtifactSchemas, input.artifactCoverage?.missingArtifactSchemas ?? [])
+    countStringValues(expected.requiredArtifactKinds, input.artifactCoverage?.requiredArtifactKinds ?? [])
+    countStringValues(expected.missingArtifactKinds, input.artifactCoverage?.missingArtifactKinds ?? [])
+    countStringValues(expected.requiredArtifactGeneratedEvidenceKinds, input.artifactCoverage?.requiredArtifactGeneratedEvidenceKinds ?? [])
+    countStringValues(expected.missingArtifactGeneratedEvidenceKinds, input.artifactCoverage?.missingArtifactGeneratedEvidenceKinds ?? [])
+    countStringValues(expected.requiredArtifactGeneratedMatrixLimitations, input.artifactCoverage?.requiredArtifactGeneratedMatrixLimitations ?? [])
+    countStringValues(expected.missingArtifactGeneratedMatrixLimitations, input.artifactCoverage?.missingArtifactGeneratedMatrixLimitations ?? [])
+    countStringValues(expected.requiredArtifactEvidenceRepos, input.artifactCoverage?.requiredArtifactEvidenceRepos ?? [])
+    countStringValues(expected.missingArtifactEvidenceRepos, input.artifactCoverage?.missingArtifactEvidenceRepos ?? [])
+    countStringValues(expected.requiredArtifactRuntimeSignals, input.artifactCoverage?.requiredArtifactRuntimeSignals ?? [])
+    countStringValues(expected.missingArtifactRuntimeSignals, input.artifactCoverage?.missingArtifactRuntimeSignals ?? [])
+    countStringValues(expected.requiredArtifactRuntimeSignalOwners, input.artifactCoverage?.requiredArtifactRuntimeSignalOwners ?? [])
+    countStringValues(expected.missingArtifactRuntimeSignalOwners, input.artifactCoverage?.missingArtifactRuntimeSignalOwners ?? [])
+    countStringValues(expected.requiredArtifactOwners, input.artifactCoverage?.requiredArtifactOwners ?? [])
+    countStringValues(expected.missingArtifactOwners, input.artifactCoverage?.missingArtifactOwners ?? [])
+    countStringValues(expected.requiredArtifactClassifications, input.artifactCoverage?.requiredArtifactClassifications ?? [])
+    countStringValues(expected.missingArtifactClassifications, input.artifactCoverage?.missingArtifactClassifications ?? [])
+    countObjectValues(expected.artifactSchemas, input.artifactCoverage?.schemas)
+    countObjectValues(expected.artifactCoverageAreas, input.artifactCoverage?.coverageAreas)
+    countObjectValues(expected.artifactRuntimeSignals, input.artifactCoverage?.runtimeSignals)
+    countObjectValues(expected.artifactRuntimeSignalOwners, input.artifactCoverage?.runtimeSignalOwners)
+    countObjectValues(expected.artifactOwners, input.artifactCoverage?.owners)
+    countObjectValues(expected.artifactClassifications, input.artifactCoverage?.classifications)
+    countObjectValues(expected.artifactKinds, input.artifactCoverage?.artifactKinds)
+    countObjectValues(expected.artifactGeneratedEvidenceKinds, input.artifactCoverage?.generatedEvidenceKinds)
+    countObjectValues(expected.artifactGeneratedMatrixLimitations, input.artifactCoverage?.generatedMatrixLimitations)
+    countObjectValues(expected.artifactEvidenceRepos, input.artifactCoverage?.evidenceRepos)
+  }
   countStringValues(expected.requiredGeneratedEvidenceKinds, aggregate.requiredGeneratedEvidenceKinds ?? [])
   countStringValues(expected.missingGeneratedEvidenceKinds, aggregate.missingGeneratedEvidenceKinds ?? [])
   countStringValues(expected.requiredGeneratedMatrixLimitations, aggregate.requiredGeneratedMatrixLimitations ?? [])
@@ -1159,6 +1240,16 @@ function validateGateAggregateReportSummary(report, source) {
   if (report.generatedEvidence !== undefined) {
     validateValidationGateGeneratedEvidenceSummary(report.generatedEvidence, `${source}.generatedEvidence`)
   }
+}
+
+function validateGateAggregateArtifactCoverageInput(input, source) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (input.source !== null && typeof input.source !== "string") {
+    throw new Error(`${source} has invalid source`)
+  }
+  validateValidationGateArtifactCoverage(input.artifactCoverage, `${source}.artifactCoverage`)
 }
 
 function validationGateReportGeneratedEvidence(report) {
