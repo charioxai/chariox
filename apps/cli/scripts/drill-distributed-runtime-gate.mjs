@@ -68,6 +68,7 @@ function printHelp() {
   "  --require-artifact-schema SCHEMA[,SCHEMA]",
   "  --require-artifact-kind KIND[,KIND]",
   "  --require-artifact-generated-evidence-kind KIND[,KIND]",
+  "  --require-artifact-generated-matrix-limitation KIND[,KIND]",
   "  --require-artifact-evidence-repo REPO[,REPO]",
   "  --require-artifact-runtime-signal ID[,ID]",
   "  --require-artifact-runtime-signal-owner OWNER[,OWNER]",
@@ -121,6 +122,7 @@ async function main() {
       requiredArtifactSchemas: options.requiredArtifactSchemas,
       requiredArtifactKinds: options.requiredArtifactKinds,
       requiredArtifactGeneratedEvidenceKinds: options.requiredArtifactGeneratedEvidenceKinds,
+      requiredArtifactGeneratedMatrixLimitations: options.requiredArtifactGeneratedMatrixLimitations,
       requiredArtifactEvidenceRepos: options.requiredArtifactEvidenceRepos,
       requiredArtifactRuntimeSignals: options.requiredArtifactRuntimeSignals,
       requiredArtifactRuntimeSignalOwners: options.requiredArtifactRuntimeSignalOwners,
@@ -294,6 +296,9 @@ function parseArgs(argv) {
   }
   if (options.requiredGeneratedEvidenceKinds.length > 0) {
     throw new Error("--require-generated-evidence-kind is supported by drill-validation-gate-summary.mjs after a distributed gate report is written")
+  }
+  if (options.requiredGeneratedMatrixLimitations.length > 0) {
+    throw new Error("--require-generated-matrix-limitation is supported by drill-validation-gate-summary.mjs after a distributed gate report is written")
   }
   return options
 }

@@ -641,6 +641,14 @@ test("distributed runtime gate rejects aggregate-only generated evidence require
       return true
     },
   )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-matrix-limitation", "dry-run-classification-coverage", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-matrix-limitation is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
 })
 
 async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud }) {

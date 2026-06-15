@@ -93,6 +93,9 @@ test("drill validation gate summary help lists artifact coverage requirements", 
   const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
 
   assert.match(stdout, /--require-artifact-coverage-area AREA/)
+  assert.match(stdout, /--require-artifact-generated-evidence-kind KIND/)
+  assert.match(stdout, /--require-artifact-generated-matrix-limitation KIND/)
+  assert.match(stdout, /--require-generated-matrix-limitation KIND/)
 })
 
 test("drill validation gate summary accepts explicit report paths", async () => {
@@ -293,6 +296,40 @@ test("drill validation gate summary gates aggregate artifact coverage areas", as
         assert.equal(
           aggregate.nextActions.some((action) =>
             action.nextAction === "provide validation gate reports with artifact coverage areas: distributed-observability"),
+          true,
+        )
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate summary gates artifact generated matrix limitation coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  try {
+    const reportPath = path.join(rootDir, "gate.json")
+    await writeGateReport(reportPath, await passingGateReport(rootDir))
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--require-artifact-generated-matrix-limitation",
+        "dry-run-classification-coverage",
+        "--json",
+      ]),
+      (error) => {
+        const aggregate = JSON.parse(error.stdout)
+        assert.equal(error.code, 1)
+        assert.equal(aggregate.status, "failed")
+        assert.deepEqual(aggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+        assert.deepEqual(aggregate.missingArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+        assert.equal(
+          aggregate.nextActions.some((action) =>
+            action.nextAction === "provide validation gate artifact indexes with generated matrix limitations: dry-run-classification-coverage"),
           true,
         )
         return true

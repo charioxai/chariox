@@ -56,6 +56,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
       requiredArtifactKinds: ["validation-suite-run"],
       requiredArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: ["cloud", "oss"],
       requiredArtifactRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredArtifactRuntimeSignalOwners: ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
@@ -70,6 +71,7 @@ test("describes stable validation gate presets", () => {
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["agent-reuse", "collab-remote-agent", "hetzner-collab", "hetzner-single", "lease-reconnect", "local-collab", "local-managed-codex", "local-native-tui", "local-single", "local-tracked-codex", "permission-visibility", "provider-auth", "provider-run-binding", "remote-managed-codex", "remote-native-tui", "remote-prompt-dispatch", "remote-tracked-codex", "session-start", "single-user-remote-agent", "slice-lifecycle", "slice-native-tui", "transcript-parity", "ui-projection"],
       requiredGeneratedEvidenceKinds: [],
+      requiredGeneratedMatrixLimitations: [],
     },
   )
   assert.deepEqual(
@@ -82,6 +84,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
@@ -96,6 +99,7 @@ test("describes stable validation gate presets", () => {
       requiredProviders: ["codex", "opencode"],
       requiredScenarios: workspaceLiveSyncRequiredScenarioIds(),
       requiredGeneratedEvidenceKinds: [],
+      requiredGeneratedMatrixLimitations: [],
     },
   )
   assert.equal(isKnownDrillValidationGatePreset("workspace-live-sync"), true)
@@ -110,6 +114,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
@@ -124,6 +129,7 @@ test("describes stable validation gate presets", () => {
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
       requiredGeneratedEvidenceKinds: [],
+      requiredGeneratedMatrixLimitations: [],
     },
   )
   assert.deepEqual(
@@ -136,6 +142,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
@@ -150,6 +157,7 @@ test("describes stable validation gate presets", () => {
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["local-native-tui", "permission-visibility", "remote-native-tui", "slice-native-tui", "transcript-parity"],
       requiredGeneratedEvidenceKinds: [],
+      requiredGeneratedMatrixLimitations: [],
     },
   )
   assert.deepEqual(
@@ -162,6 +170,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
@@ -176,6 +185,7 @@ test("describes stable validation gate presets", () => {
       requiredProviders: ["claude", "codex", "opencode"],
       requiredScenarios: ["collab-remote-agent", "lease-reconnect", "provider-run-binding", "remote-prompt-dispatch", "single-user-remote-agent"],
       requiredGeneratedEvidenceKinds: [],
+      requiredGeneratedMatrixLimitations: [],
     },
   )
 })
@@ -199,6 +209,7 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: [],
     requiredArtifactGeneratedEvidenceKinds: [],
+    requiredArtifactGeneratedMatrixLimitations: [],
     requiredArtifactEvidenceRepos: [],
     requiredArtifactRuntimeSignals: [],
     requiredArtifactRuntimeSignalOwners: [],
@@ -213,6 +224,7 @@ test("expands validation gate preset requirements", () => {
     requiredProviders: ["codex"],
     requiredScenarios: ["local"],
     requiredGeneratedEvidenceKinds: [],
+    requiredGeneratedMatrixLimitations: [],
   })
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["distributed-runtime"],

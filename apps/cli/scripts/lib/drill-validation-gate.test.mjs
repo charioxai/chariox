@@ -1075,6 +1075,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactKinds: {},
       requiredArtifactGeneratedEvidenceKinds: {},
       missingArtifactGeneratedEvidenceKinds: {},
+      requiredArtifactGeneratedMatrixLimitations: {},
+      missingArtifactGeneratedMatrixLimitations: {},
       requiredArtifactEvidenceRepos: {},
       missingArtifactEvidenceRepos: {},
       requiredArtifactRuntimeSignals: {},
@@ -1093,6 +1095,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       artifactClassifications: {},
       artifactKinds: {},
       artifactGeneratedEvidenceKinds: {},
+      artifactGeneratedMatrixLimitations: {},
       artifactEvidenceRepos: {},
       failureRuntimeSignals: {},
       failureRuntimeSignalOwners: {},
@@ -1140,8 +1143,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.artifactCoverage), [
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, generatedEvidenceKinds: {}, evidenceRepos: {} },
-      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, generatedEvidenceKinds: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactGeneratedMatrixLimitations: [], missingArtifactGeneratedMatrixLimitations: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, generatedEvidenceKinds: {}, generatedMatrixLimitations: {}, evidenceRepos: {} },
+      { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactGeneratedMatrixLimitations: [], missingArtifactGeneratedMatrixLimitations: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, artifactKinds: {}, generatedEvidenceKinds: {}, generatedMatrixLimitations: {}, evidenceRepos: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
       { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },

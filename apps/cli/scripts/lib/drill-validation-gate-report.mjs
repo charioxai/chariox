@@ -125,6 +125,8 @@ function validateArtifactIndexCheck(check, source) {
   validateArtifactKindArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(check.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateGeneratedMatrixLimitationArray(check.requiredArtifactGeneratedMatrixLimitations ?? [], `${source}.requiredArtifactGeneratedMatrixLimitations`)
+  validateGeneratedMatrixLimitationArray(check.missingArtifactGeneratedMatrixLimitations ?? [], `${source}.missingArtifactGeneratedMatrixLimitations`)
   validateArtifactEvidenceRepoArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateRuntimeSignalArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
@@ -409,6 +411,15 @@ function validateGeneratedEvidenceKindArray(value, source) {
   for (const [index, kind] of value.entries()) {
     if (!isKnownDrillGeneratedEvidenceKind(kind)) {
       throw new Error(`${source}[${index}] has unknown generated evidence kind ${JSON.stringify(kind)}`)
+    }
+  }
+}
+
+function validateGeneratedMatrixLimitationArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, limitation] of value.entries()) {
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+      throw new Error(`${source}[${index}] has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
     }
   }
 }

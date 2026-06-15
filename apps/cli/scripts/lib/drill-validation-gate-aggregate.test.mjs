@@ -16,6 +16,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
       requiredPlatformCoverageAreas: ["runtime-fixtures"],
       requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
       requiredArtifactKinds: ["validation-suite-run"],
+      requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredArtifactEvidenceRepos: ["oss"],
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
@@ -38,6 +39,11 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
   })
+  assert.deepEqual(aggregate.coverage.artifactGeneratedMatrixLimitations, {
+    "dry-run-classification-coverage": 1,
+  })
+  assert.deepEqual(aggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
+  assert.deepEqual(aggregate.missingArtifactGeneratedMatrixLimitations, [])
   assert.deepEqual(aggregate.coverage.artifactRuntimeSignalOwners, {
     "kernel-authority": 1,
     "runtime-state": 1,
@@ -939,6 +945,8 @@ function reportFixture(overrides = {}) {
         missingArtifactSchemas: [],
         requiredArtifactKinds: ["validation-suite-run"],
         missingArtifactKinds: [],
+        requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+        missingArtifactGeneratedMatrixLimitations: [],
         requiredArtifactEvidenceRepos: ["oss"],
         missingArtifactEvidenceRepos: [],
         aggregate: {
@@ -961,6 +969,9 @@ function reportFixture(overrides = {}) {
           },
           artifactKinds: {
             "validation-suite-run": 1,
+          },
+          generatedMatrixLimitations: {
+            "dry-run-classification-coverage": 1,
           },
           evidenceRepos: {
             oss: 1,

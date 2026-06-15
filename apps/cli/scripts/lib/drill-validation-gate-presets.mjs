@@ -213,6 +213,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
       requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
+      requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
       requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
@@ -227,6 +228,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredProviders: [...(preset.requiredProviders ?? [])],
       requiredScenarios: [...(preset.requiredScenarios ?? [])],
       requiredGeneratedEvidenceKinds: [...(preset.requiredGeneratedEvidenceKinds ?? [])],
+      requiredGeneratedMatrixLimitations: [...(preset.requiredGeneratedMatrixLimitations ?? [])],
     }
   })
 }
@@ -238,6 +240,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactSchemas = [],
   requiredArtifactKinds = [],
   requiredArtifactGeneratedEvidenceKinds = [],
+  requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
@@ -252,6 +255,7 @@ export function expandValidationGatePresetRequirements({
   requiredProviders,
   requiredScenarios,
   requiredGeneratedEvidenceKinds = [],
+  requiredGeneratedMatrixLimitations = [],
 }) {
   const expanded = {
     requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
@@ -259,6 +263,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactSchemas: [...requiredArtifactSchemas],
     requiredArtifactKinds: [...requiredArtifactKinds],
     requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+    requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
     requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -273,6 +278,7 @@ export function expandValidationGatePresetRequirements({
     requiredProviders: [...requiredProviders],
     requiredScenarios: [...requiredScenarios],
     requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds],
+    requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations],
   }
   for (const presetName of presets) {
     const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
@@ -281,6 +287,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
     expanded.requiredArtifactKinds.push(...(preset.requiredArtifactKinds ?? []))
     expanded.requiredArtifactGeneratedEvidenceKinds.push(...(preset.requiredArtifactGeneratedEvidenceKinds ?? []))
+    expanded.requiredArtifactGeneratedMatrixLimitations.push(...(preset.requiredArtifactGeneratedMatrixLimitations ?? []))
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
     expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
@@ -295,6 +302,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredProviders.push(...(preset.requiredProviders ?? []))
     expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
     expanded.requiredGeneratedEvidenceKinds.push(...(preset.requiredGeneratedEvidenceKinds ?? []))
+    expanded.requiredGeneratedMatrixLimitations.push(...(preset.requiredGeneratedMatrixLimitations ?? []))
   }
   return expanded
 }
@@ -383,6 +391,19 @@ export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifact
     }
   }
   return kinds
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixLimitations(requiredArtifactGeneratedMatrixLimitations) {
+  const limitations = normalizeCommaSeparatedStrings(requiredArtifactGeneratedMatrixLimitations, {
+    fieldName: "requiredArtifactGeneratedMatrixLimitations",
+    itemName: "limitation",
+  })
+  for (const limitation of limitations) {
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+      throw new Error(`unknown required artifact generated matrix limitation: ${limitation}`)
+    }
+  }
+  return limitations
 }
 
 export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceRepos) {

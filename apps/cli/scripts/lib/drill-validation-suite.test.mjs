@@ -118,6 +118,7 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactSchemas: [],
       requiredArtifactKinds: [],
       requiredArtifactGeneratedEvidenceKinds: [],
+      requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
@@ -187,6 +188,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run", "validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["matrix-report", "matrix-report"],
+    requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage", "dry-run-classification-coverage"],
     requiredArtifactEvidenceRepos: ["oss", "cloud", "oss"],
     requiredArtifactRuntimeSignals: ["workspace-live-sync-state", "session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
@@ -205,6 +207,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["matrix-report"],
+    requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactEvidenceRepos: ["cloud", "oss"],
     requiredArtifactRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
@@ -254,6 +257,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad generated evidence kind",
     requiredArtifactGeneratedEvidenceKinds: ["matrix-reprot"],
   }]), /requiredArtifactGeneratedEvidenceKinds\[0\] has unknown generated evidence kind "matrix-reprot"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-generated-matrix-limitation",
+    description: "bad generated matrix limitation",
+    requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-covergae"],
+  }]), /requiredArtifactGeneratedMatrixLimitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-artifact-evidence-repo",
     description: "bad artifact evidence repo",

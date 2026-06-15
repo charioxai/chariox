@@ -376,6 +376,21 @@ test("rejects unknown generated evidence kind labels in report checks", () => {
   )
   assert.throws(
     () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-covergae"],
+          missingArtifactGeneratedMatrixLimitations: [],
+        },
+      },
+    })),
+    /checks\.artifacts\.requiredArtifactGeneratedMatrixLimitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
       generatedEvidence: {
         ...generatedEvidence(),
         kinds: ["matrix-reprot"],

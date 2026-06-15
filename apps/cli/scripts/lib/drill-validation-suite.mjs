@@ -12,6 +12,7 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
@@ -307,6 +308,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
     requiredArtifactKinds: sortedArtifactKindArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
     requiredArtifactGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
+    requiredArtifactGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredArtifactGeneratedMatrixLimitations, `${preset.name}.requiredArtifactGeneratedMatrixLimitations`),
     requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
     requiredArtifactRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
@@ -364,6 +366,16 @@ function sortedGeneratedEvidenceKindArray(value, source) {
     }
   }
   return kinds
+}
+
+function sortedGeneratedMatrixLimitationArray(value, source) {
+  const limitations = sortedStringArray(value, source)
+  for (const [index, limitation] of limitations.entries()) {
+    if (!isKnownDrillGeneratedMatrixLimitation(limitation)) {
+      throw new Error(`validation suite preset ${source}[${index}] has unknown generated matrix limitation ${JSON.stringify(limitation)}`)
+    }
+  }
+  return limitations
 }
 
 function sortedArtifactEvidenceRepoArray(value, source) {

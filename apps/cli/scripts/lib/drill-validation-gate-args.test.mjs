@@ -20,6 +20,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-evidence-kind", "validation-suite-run"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-evidence-repo", "oss"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-runtime-signal", "session-authority"], 0, options)
@@ -50,6 +52,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["validation-suite-run"],
+    requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactEvidenceRepos: ["oss"],
     requiredArtifactRuntimeSignals: ["session-authority"],
     requiredArtifactRuntimeSignalOwners: ["kernel-authority"],
