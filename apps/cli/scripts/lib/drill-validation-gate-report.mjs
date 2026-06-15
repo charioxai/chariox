@@ -275,12 +275,18 @@ function validateRequiredMatrixRuntimeSignalScenario(scenario, source) {
     if (!nonEmptyString(scenario[field])) {
       throw new Error(`${source} has invalid ${field}`)
     }
+    if (redactDrillSecretText(scenario[field]) !== scenario[field]) {
+      throw new Error(`${source} includes secret-looking ${field}`)
+    }
   }
   if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
     throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
   }
   if (scenario.source !== null && scenario.source !== undefined && !nonEmptyString(scenario.source)) {
     throw new Error(`${source} has invalid source`)
+  }
+  if (scenario.source !== null && scenario.source !== undefined && redactDrillSecretText(scenario.source) !== scenario.source) {
+    throw new Error(`${source} includes secret-looking source`)
   }
 }
 

@@ -620,6 +620,24 @@ test("rejects unknown runtime signal and classification labels in report checks"
     })),
     /checks\.matrices\.requiredMatrixRuntimeSignalScenarios has unknown runtime signal "workspace-live-synch-state"/,
   )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        matrices: matrixCheck({
+          requiredMatrixRuntimeSignals: ["session-authority"],
+          requiredMatrixRuntimeSignalScenarios: {
+            "session-authority": [{
+              matrix: "remote-agent-runtime-matrix",
+              source: "/tmp/Bearer abcdefghijklmnop/matrix.json",
+              id: "single-user-remote-agent",
+              status: "passed",
+            }],
+          },
+        }),
+      },
+    })),
+    /checks\.matrices\.requiredMatrixRuntimeSignalScenarios\.session-authority\[0\] includes secret-looking source/,
+  )
 })
 
 function report(overrides = {}) {
