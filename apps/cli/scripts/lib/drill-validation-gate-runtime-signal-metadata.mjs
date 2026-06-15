@@ -42,11 +42,15 @@ export function diagnosticMetadataForValidationGateReport(report) {
     ...Object.keys(report.checks?.matrices?.aggregate?.classifications ?? {}),
     ...(report.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
   ])
+  const generatedEvidenceKinds = new Set(generatedEvidenceKindsFor(report.generatedEvidence))
+  const generatedMatrixLimitations = new Set(generatedMatrixLimitationsFor(report.generatedEvidence))
   return {
     ...runtimeSignalMetadataForValidationGateReport(report),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+    ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
+    ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
   }
 }
 
@@ -136,6 +140,22 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.length > 0
+}
+
+function generatedEvidenceKindsFor(generatedEvidence) {
+  if (!generatedEvidence || typeof generatedEvidence !== "object") return []
+  const kinds = new Set((generatedEvidence.kinds ?? []).filter(nonEmptyString))
+  if (generatedEvidence.validationSuites?.enabled) kinds.add("validation-suite-run")
+  if (generatedEvidence.matrixReports?.enabled) kinds.add("matrix-report")
+  return [...kinds].sort()
+}
+
+function generatedMatrixLimitationsFor(generatedEvidence) {
+  if (!generatedEvidence?.matrixReports || typeof generatedEvidence.matrixReports !== "object") return []
+  return (generatedEvidence.matrixReports.limitations ?? [])
+    .map((limitation) => limitation?.kind)
+    .filter(nonEmptyString)
+    .sort()
 }
 
 function platformCoverageAreas(report) {

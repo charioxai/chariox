@@ -80,11 +80,39 @@ test("builds owner and classification metadata for validation gate reports", () 
       classification: "matrix-coverage",
       nextAction: "run matrix reports",
     }],
+    generatedEvidence: {
+      kinds: ["matrix-report"],
+      validationSuites: {
+        enabled: true,
+        artifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
+        outputRoots: ["/tmp/generated-suite"],
+      },
+      matrixReports: {
+        enabled: true,
+        roots: ["/tmp/generated-matrix"],
+        dryRun: true,
+        continueOnFailure: true,
+        limitations: [{
+          kind: "dry-run-classification-coverage",
+          owner: "validation-harness",
+          nextAction: "rerun generated matrix reports without --matrix-dry-run",
+        }],
+        commands: [{
+          artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+          args: ["--matrix-dry-run"],
+          cwd: "/tmp/arroba",
+          reportPath: "/tmp/generated-matrix/workspace-live-sync-matrix.json",
+          scriptPath: "/tmp/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
+        }],
+      },
+    },
   })
 
   assert.deepEqual(metadata, {
     classifications: "cloud-validation-suite,kernel-authority,matrix-coverage,provider-auth,relay-runtime,slice-runtime,ui-client-projection",
     coverageAreas: "distributed-observability,matrix-validation",
+    generatedEvidenceKinds: "matrix-report,validation-suite-run",
+    generatedMatrixLimitations: "dry-run-classification-coverage",
     owners: "kernel-authority,provider-account,runtime-network,ui-client,validation-harness,validation-platform",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
     runtimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
