@@ -353,6 +353,67 @@ test("drill artifact index summary gates generated evidence kinds", async () => 
   }
 })
 
+test("drill artifact index summary gates generated matrix limitations", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const matrixIndexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+    const validationIndexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      matrixIndexPath,
+      "--require-generated-matrix-limitation",
+      "dry-run-classification-coverage",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredGeneratedMatrixLimitationRequirements, ["dry-run-classification-coverage"])
+    assert.deepEqual(aggregate.missingRequiredGeneratedMatrixLimitations, [])
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitationRequirements, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.missingRequiredGeneratedMatrixLimitations, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        validationIndexPath,
+        "--require-generated-matrix-limitation=dry-run-classification-coverage",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /generated_matrix_limitations_required=dry-run-classification-coverage missing=dry-run-classification-coverage/)
+        assert.match(error.stdout, /next: include drill artifact indexes that record generated matrix limitations: dry-run-classification-coverage/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        matrixIndexPath,
+        "--require-generated-matrix-limitation",
+        "dry-run-classification-covergae",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-generated-matrix-limitation has unknown generated matrix limitation: dry-run-classification-covergae/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary gates generated matrix artifact indexes", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
