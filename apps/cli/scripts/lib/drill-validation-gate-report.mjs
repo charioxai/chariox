@@ -12,6 +12,7 @@ import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
 } from "./drill-provider-profiles.mjs"
+import { redactDrillSecretText } from "./drill-secrets.mjs"
 import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -415,9 +416,9 @@ function validateGeneratedValidationSuites(validationSuites, source) {
   if (typeof validationSuites.enabled !== "boolean") {
     throw new Error(`${source} has invalid enabled`)
   }
-  validateStringArray(validationSuites.artifactIndexes, `${source}.artifactIndexes`)
-  validateStringArray(validationSuites.failureRoots, `${source}.failureRoots`)
-  validateStringArray(validationSuites.outputRoots, `${source}.outputRoots`)
+  validateGeneratedEvidencePathArray(validationSuites.artifactIndexes, `${source}.artifactIndexes`)
+  validateGeneratedEvidencePathArray(validationSuites.failureRoots, `${source}.failureRoots`)
+  validateGeneratedEvidencePathArray(validationSuites.outputRoots, `${source}.outputRoots`)
   if (!Array.isArray(validationSuites.commands)) {
     throw new Error(`${source}.commands is not an array`)
   }
@@ -440,8 +441,9 @@ function validateGeneratedValidationSuiteCommand(command, source) {
     if (!nonEmptyString(command[key])) {
       throw new Error(`${source} has invalid ${key}`)
     }
+    validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
-  validateStringArray(command.args, `${source}.args`)
+  validateGeneratedEvidencePathArray(command.args, `${source}.args`)
 }
 
 function validateGeneratedMatrixReports(matrixReports, source) {
@@ -458,8 +460,8 @@ function validateGeneratedMatrixReports(matrixReports, source) {
     throw new Error(`${source} has invalid continueOnFailure`)
   }
   validateGeneratedMatrixLimitations(matrixReports.limitations ?? [], `${source}.limitations`)
-  validateStringArray(matrixReports.artifactIndexes, `${source}.artifactIndexes`)
-  validateStringArray(matrixReports.roots, `${source}.roots`)
+  validateGeneratedEvidencePathArray(matrixReports.artifactIndexes, `${source}.artifactIndexes`)
+  validateGeneratedEvidencePathArray(matrixReports.roots, `${source}.roots`)
   if (!Array.isArray(matrixReports.commands)) {
     throw new Error(`${source}.commands is not an array`)
   }
@@ -505,8 +507,22 @@ function validateGeneratedMatrixCommand(command, source) {
     if (!nonEmptyString(command[key])) {
       throw new Error(`${source} has invalid ${key}`)
     }
+    validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
-  validateStringArray(command.args, `${source}.args`)
+  validateGeneratedEvidencePathArray(command.args, `${source}.args`)
+}
+
+function validateGeneratedEvidencePathArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, entry] of value.entries()) {
+    validateGeneratedEvidencePathText(entry, `${source}[${index}]`)
+  }
+}
+
+function validateGeneratedEvidencePathText(value, source) {
+  if (redactDrillSecretText(value) !== value) {
+    throw new Error(`${source} includes secret-looking generated evidence path`)
+  }
 }
 
 function validateStringArray(value, source) {

@@ -167,6 +167,45 @@ test("validates optional generated evidence provenance", () => {
     })),
     /generatedEvidence\.matrixReports\.limitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/,
   )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        validationSuites: {
+          ...generatedEvidence().validationSuites,
+          failureRoots: ["/tmp/Bearer abcdefghijklmnop"],
+        },
+      },
+    })),
+    /generatedEvidence\.validationSuites\.failureRoots\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        validationSuites: {
+          ...generatedEvidence().validationSuites,
+          commands: [{
+            ...generatedEvidence().validationSuites.commands[0],
+            args: ["--preserve-failure-root", "/tmp/Bearer abcdefghijklmnop"],
+          }],
+        },
+      },
+    })),
+    /generatedEvidence\.validationSuites\.commands\[0\]\.args\[1\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      generatedEvidence: {
+        ...generatedEvidence(),
+        matrixReports: {
+          ...generatedEvidence().matrixReports,
+          artifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
+        },
+      },
+    })),
+    /generatedEvidence\.matrixReports\.artifactIndexes\[0\] includes secret-looking generated evidence path/,
+  )
 })
 
 test("validates platform bundle summary evidence", () => {
