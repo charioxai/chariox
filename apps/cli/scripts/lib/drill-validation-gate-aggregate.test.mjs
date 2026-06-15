@@ -212,6 +212,51 @@ test("summarizes stale matrix reports from gate reports", () => {
   assert.match(text, /classification=matrix-staleness count=1/)
 })
 
+test("summarizes stale failure manifests from gate reports", () => {
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture({
+    status: "failed",
+    checks: {
+      ...reportFixture().checks,
+      failures: {
+        ...reportFixture().checks.failures,
+        status: "failed",
+        requiredFailureMaxAgeMs: 100,
+        staleFailureManifests: [{
+          source: "/tmp/arroba-drill-failure.json",
+          drill: "workspace-live-sync",
+          failedAt: "2026-01-01T00:00:00.000Z",
+          ageMs: 1000,
+          maxAgeMs: 100,
+        }],
+      },
+    },
+    nextActions: [{
+      owner: "validation-harness",
+      classification: "failure-artifacts",
+      nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
+      count: 1,
+    }],
+  })], {
+    sources: ["distributed-runtime-gate.json"],
+    validateReport: () => {},
+  })
+  const text = formatDrillValidationGateAggregateSummary(aggregate)
+
+  assert.equal(aggregate.status, "failed")
+  assert.deepEqual(aggregate.coverage.failureStaleManifests, {
+    "/tmp/arroba-drill-failure.json": 1,
+  })
+  assert.deepEqual(aggregate.reports[0].failureCoverage.staleFailureManifests, [{
+    source: "/tmp/arroba-drill-failure.json",
+    drill: "workspace-live-sync",
+    failedAt: "2026-01-01T00:00:00.000Z",
+    ageMs: 1000,
+    maxAgeMs: 100,
+  }])
+  assert.match(text, /- failure_stale_manifests: \/tmp\/arroba-drill-failure\.json=1/)
+  assert.match(text, /classification=failure-artifacts count=1/)
+})
+
 test("rejects unknown artifact evidence repo labels in aggregate reports", () => {
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], { validateReport: () => {} })
 

@@ -1270,6 +1270,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       failureRuntimeSignalOwners: {},
       failureOwners: {},
       failureClassifications: {},
+      failureStaleManifests: {},
       matrixRuntimeSignals: {},
       matrixRuntimeSignalOwners: {},
       matrixOwners: {},
@@ -1317,8 +1318,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       { requiredArtifactCoverageAreas: [], missingArtifactCoverageAreas: [], requiredArtifactSchemas: [], missingArtifactSchemas: [], requiredArtifactKinds: [], missingArtifactKinds: [], requiredArtifactGeneratedEvidenceKinds: [], missingArtifactGeneratedEvidenceKinds: [], requiredArtifactGeneratedMatrixLimitations: [], missingArtifactGeneratedMatrixLimitations: [], requiredArtifactEvidenceRepos: [], missingArtifactEvidenceRepos: [], requiredArtifactRuntimeSignals: [], missingArtifactRuntimeSignals: [], requiredArtifactRuntimeSignalOwners: [], missingArtifactRuntimeSignalOwners: [], requiredArtifactOwners: [], missingArtifactOwners: [], requiredArtifactClassifications: [], missingArtifactClassifications: [], requiredArtifactExitCriterionStatuses: [], missingArtifactExitCriterionStatuses: [], requiredArtifactIncompleteExitCriterionStatuses: [], missingArtifactIncompleteExitCriterionStatuses: [], schemas: {}, coverageAreas: {}, runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, exitCriterionStatuses: {}, incompleteExitCriterionStatuses: {}, artifactKinds: {}, generatedEvidenceKinds: {}, generatedMatrixLimitations: {}, evidenceRepos: {}, artifactCoverageInputSources: {} },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.failureCoverage), [
-      { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
-      { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {} },
+      { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, staleFailureManifests: [] },
+      { runtimeSignals: {}, runtimeSignalOwners: {}, owners: {}, classifications: {}, staleFailureManifests: [] },
     ])
     assert.deepEqual(aggregate.reports.map((report) => report.matrixCoverage), [
       {

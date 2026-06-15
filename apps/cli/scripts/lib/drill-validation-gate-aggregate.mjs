@@ -86,6 +86,7 @@ export function summarizeValidationGateReportAggregate(
     failureRuntimeSignalOwners: new Map(),
     failureOwners: new Map(),
     failureClassifications: new Map(),
+    failureStaleManifests: new Map(),
     matrixRuntimeSignals: new Map(),
     matrixRuntimeSignalOwners: new Map(),
     matrixOwners: new Map(),
@@ -131,6 +132,7 @@ export function summarizeValidationGateReportAggregate(
     countObjectValues(coverage.failureRuntimeSignalOwners, failureCoverage.runtimeSignalOwners)
     countObjectValues(coverage.failureOwners, failureCoverage.owners)
     countObjectValues(coverage.failureClassifications, failureCoverage.classifications)
+    countStringValues(coverage.failureStaleManifests, staleFailureManifestSourceLabels(failureCoverage.staleFailureManifests))
     const matrixCoverage = validationGateReportMatrixCoverage(report)
     countObjectValues(coverage.matrixRuntimeSignals, matrixCoverage.runtimeSignals)
     countObjectValues(coverage.matrixRuntimeSignalOwners, matrixCoverage.runtimeSignalOwners)
@@ -582,12 +584,14 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
 }
 
 function validationGateReportFailureCoverage(report) {
-  const runtimeSignals = { ...(report.checks.failures.aggregate?.runtimeSignals ?? {}) }
+  const failures = report.checks.failures
+  const runtimeSignals = { ...(failures.aggregate?.runtimeSignals ?? {}) }
   return {
     runtimeSignals,
     runtimeSignalOwners: drillRuntimeSignalOwnerCounts(runtimeSignals),
-    owners: { ...(report.checks.failures.aggregate?.owners ?? {}) },
-    classifications: { ...(report.checks.failures.aggregate?.classifications ?? {}) },
+    owners: { ...(failures.aggregate?.owners ?? {}) },
+    classifications: { ...(failures.aggregate?.classifications ?? {}) },
+    staleFailureManifests: [...(failures.staleFailureManifests ?? [])],
   }
 }
 
@@ -631,6 +635,10 @@ function countObjectValues(counts, values) {
 
 function staleMatrixReportSourceLabels(staleMatrixReports) {
   return (staleMatrixReports ?? []).map((report) => report.source ?? "unknown")
+}
+
+function staleFailureManifestSourceLabels(staleFailureManifests) {
+  return (staleFailureManifests ?? []).map((manifest) => manifest.source ?? "unknown")
 }
 
 function missingValidationGateAggregateRequirements(coverage, requirements) {
@@ -806,6 +814,7 @@ function formatValidationGateCoverageCounts(coverage) {
     failureRuntimeSignalOwners: countMapToObject(coverage.failureRuntimeSignalOwners),
     failureOwners: countMapToObject(coverage.failureOwners),
     failureClassifications: countMapToObject(coverage.failureClassifications),
+    failureStaleManifests: countMapToObject(coverage.failureStaleManifests),
     matrixRuntimeSignals: countMapToObject(coverage.matrixRuntimeSignals),
     matrixRuntimeSignalOwners: countMapToObject(coverage.matrixRuntimeSignalOwners),
     matrixOwners: countMapToObject(coverage.matrixOwners),
@@ -886,6 +895,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "failure_runtime_signal_owners", coverage.failureRuntimeSignalOwners)
   appendCoverageLine(lines, "failure_owners", coverage.failureOwners)
   appendCoverageLine(lines, "failure_classifications", coverage.failureClassifications)
+  appendCoverageLine(lines, "failure_stale_manifests", coverage.failureStaleManifests)
   appendCoverageLine(lines, "matrix_runtime_signals", coverage.matrixRuntimeSignals)
   appendCoverageLine(lines, "matrix_runtime_signal_owners", coverage.matrixRuntimeSignalOwners)
   appendCoverageLine(lines, "matrix_owners", coverage.matrixOwners)
@@ -995,6 +1005,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateRuntimeSignalOwnerCountsMatch(coverage.failureRuntimeSignals ?? {}, coverage.failureRuntimeSignalOwners ?? {}, `${source}.failureRuntimeSignalOwners`)
   validateCountObject(coverage.failureOwners ?? {}, `${source}.failureOwners`)
   validateFailureClassificationCountObject(coverage.failureClassifications ?? {}, `${source}.failureClassifications`)
+  validateCountObject(coverage.failureStaleManifests ?? {}, `${source}.failureStaleManifests`)
   validateRuntimeSignalCountObject(coverage.matrixRuntimeSignals ?? {}, `${source}.matrixRuntimeSignals`)
   validateRuntimeSignalOwnerCountsMatch(coverage.matrixRuntimeSignals ?? {}, coverage.matrixRuntimeSignalOwners ?? {}, `${source}.matrixRuntimeSignalOwners`)
   validateCountObject(coverage.matrixOwners ?? {}, `${source}.matrixOwners`)
@@ -1046,6 +1057,17 @@ function validateValidationGateMatrixCoverage(coverage, source) {
   }
 }
 
+function validateValidationGateFailureCoverage(coverage, source) {
+  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
+    throw new Error(`${source} is not an object`)
+  }
+  validateRuntimeSignalCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)
+  validateRuntimeSignalOwnerCountsMatch(coverage.runtimeSignals ?? {}, coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
+  validateCountObject(coverage.owners ?? {}, `${source}.owners`)
+  validateFailureClassificationCountObject(coverage.classifications ?? {}, `${source}.classifications`)
+  validateStaleFailureManifestSummaries(coverage.staleFailureManifests ?? [], `${source}.staleFailureManifests`)
+}
+
 function validateStaleMatrixReportSummaries(reports, source) {
   if (!Array.isArray(reports)) {
     throw new Error(`${source} is not an array`)
@@ -1068,6 +1090,32 @@ function validateStaleMatrixReportSummaries(reports, source) {
       throw new Error(`${entrySource} has invalid ageMs`)
     }
     if (!Number.isSafeInteger(report.maxAgeMs) || report.maxAgeMs < 0) {
+      throw new Error(`${entrySource} has invalid maxAgeMs`)
+    }
+  }
+}
+
+function validateStaleFailureManifestSummaries(manifests, source) {
+  if (!Array.isArray(manifests)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, manifest] of manifests.entries()) {
+    const entrySource = `${source}[${index}]`
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+      throw new Error(`${entrySource} is not an object`)
+    }
+    if (manifest.source !== null && typeof manifest.source !== "string") {
+      throw new Error(`${entrySource} has invalid source`)
+    }
+    for (const key of ["drill", "failedAt"]) {
+      if (typeof manifest[key] !== "string" || manifest[key].length === 0) {
+        throw new Error(`${entrySource} has invalid ${key}`)
+      }
+    }
+    if (!Number.isSafeInteger(manifest.ageMs) || manifest.ageMs < 0) {
+      throw new Error(`${entrySource} has invalid ageMs`)
+    }
+    if (!Number.isSafeInteger(manifest.maxAgeMs) || manifest.maxAgeMs < 0) {
       throw new Error(`${entrySource} has invalid maxAgeMs`)
     }
   }
@@ -1135,6 +1183,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     failureRuntimeSignalOwners: new Map(),
     failureOwners: new Map(),
     failureClassifications: new Map(),
+    failureStaleManifests: new Map(),
     matrixRuntimeSignals: new Map(),
     matrixRuntimeSignalOwners: new Map(),
     matrixOwners: new Map(),
@@ -1216,6 +1265,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.failureRuntimeSignalOwners, report.failureCoverage?.runtimeSignalOwners)
     countObjectValues(expected.failureOwners, report.failureCoverage?.owners)
     countObjectValues(expected.failureClassifications, report.failureCoverage?.classifications)
+    countStringValues(expected.failureStaleManifests, staleFailureManifestSourceLabels(report.failureCoverage?.staleFailureManifests))
     const coverage = report.matrixCoverage ?? {
       runtimeSignals: {},
       runtimeSignalOwners: {},
@@ -1349,7 +1399,7 @@ function validateGateAggregateReportSummary(report, source) {
     validateValidationGateArtifactCoverage(report.artifactCoverage, `${source}.artifactCoverage`)
   }
   if (report.failureCoverage !== undefined) {
-    validateValidationGateArtifactCoverage(report.failureCoverage, `${source}.failureCoverage`)
+    validateValidationGateFailureCoverage(report.failureCoverage, `${source}.failureCoverage`)
   }
   if (report.generatedEvidence !== undefined) {
     validateValidationGateGeneratedEvidenceSummary(report.generatedEvidence, `${source}.generatedEvidence`)
