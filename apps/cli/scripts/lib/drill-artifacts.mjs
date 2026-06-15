@@ -278,9 +278,15 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
 
 export function diagnosticMetadataForDrillArtifactIndexAggregate(aggregate) {
   validateDrillArtifactDiagnosticDimensions(aggregate)
-  return Object.fromEntries(DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS
+  const metadata = Object.fromEntries(DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS
     .map((key) => [key, Object.keys(aggregate[key] ?? {}).sort().join(",")])
     .filter(([, value]) => value.length > 0))
+  const artifactCoverageInputCount = Object.values(aggregate.artifactCoverageInputSources ?? {})
+    .reduce((sum, count) => sum + count, 0)
+  return {
+    ...metadata,
+    ...(artifactCoverageInputCount > 0 ? { artifactCoverageInputCount: String(artifactCoverageInputCount) } : {}),
+  }
 }
 
 export function formatDrillArtifactIndexAggregateSummary(aggregate) {

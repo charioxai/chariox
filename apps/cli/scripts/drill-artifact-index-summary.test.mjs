@@ -102,6 +102,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
+    assert.equal(artifactIndex.metadata.artifactCoverageInputCount, "1")
     assert.equal(artifactIndex.metadata.artifactCoverageInputSources, "artifact metadata inputs")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,

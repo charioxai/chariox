@@ -673,6 +673,7 @@ test("summarizes drill artifact indexes", async () => {
     ])
     assert.deepEqual(diagnosticMetadataForDrillArtifactIndexAggregate(aggregate), {
       artifactKinds: "matrix-report,validation-gate,validation-suite-run",
+      artifactCoverageInputCount: "1",
       artifactCoverageInputSources: "artifact metadata inputs",
       classifications: "artifact-coverage,matrix-coverage,validation-gate",
       evidenceRepos: "cloud,oss",
