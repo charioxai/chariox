@@ -34,6 +34,8 @@ function printHelp() {
     "                         Exit non-zero when indexed matrix reports are older than this many milliseconds",
     "  --require-generated-validation-suite-failure-root PATH",
     "                         Exit non-zero when generated validation-suite failure-root metadata is missing; repeatable",
+    "  --require-generated-matrix-artifact-index PATH",
+    "                         Exit non-zero when generated matrix artifact-index metadata is missing; repeatable",
     "  --require-provider-account-alias P=A",
     "                         Exit non-zero when provider account alias metadata is missing; repeatable",
     "  --json                 Print aggregate JSON",
@@ -63,6 +65,7 @@ async function main() {
     ...await matrixFreshnessDiagnosticsFor(indexes, options),
   }
   Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
@@ -74,6 +77,7 @@ async function main() {
         indexes: aggregate.totals.indexes,
         ...diagnosticMetadataForDrillArtifactIndexAggregate(aggregate),
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
+        ...generatedMatrixArtifactIndexRequirementMetadataFor(aggregate),
         ...providerAccountAliasRequirementMetadataFor(aggregate),
       },
     })
@@ -87,6 +91,7 @@ async function main() {
     (aggregate.staleArtifactIndexes ?? []).length > 0
     || (aggregate.staleMatrixReports ?? []).length > 0
     || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
+    || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
   ) {
     process.exitCode = 1
@@ -104,6 +109,7 @@ function parseArgs(argv) {
     outputPath: null,
     requiredArtifactMaxAgeMs: null,
     requiredGeneratedValidationSuiteFailureRoots: [],
+    requiredGeneratedMatrixArtifactIndexes: [],
     requiredMatrixMaxAgeMs: null,
     requiredProviderAccountAliases: [],
   }
@@ -153,6 +159,11 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--require-generated-validation-suite-failure-root=")) {
       options.requiredGeneratedValidationSuiteFailureRoots.push(arg.slice("--require-generated-validation-suite-failure-root=".length))
+    } else if (arg === "--require-generated-matrix-artifact-index") {
+      options.requiredGeneratedMatrixArtifactIndexes.push(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--require-generated-matrix-artifact-index=")) {
+      options.requiredGeneratedMatrixArtifactIndexes.push(arg.slice("--require-generated-matrix-artifact-index=".length))
     } else if (arg === "--require-provider-account-alias") {
       options.requiredProviderAccountAliases.push(parseProviderAccountAliasRequirement(readValue(argv, index, arg), arg))
       index += 1
@@ -272,6 +283,25 @@ function generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate) {
   }
 }
 
+function generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredGeneratedMatrixArtifactIndexes)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.generatedMatrixArtifactIndexes ?? {}))
+  return {
+    requiredGeneratedMatrixArtifactIndexPaths: required,
+    missingGeneratedMatrixArtifactIndexPaths: required.filter((indexPath) => !available.has(indexPath)),
+  }
+}
+
+function generatedMatrixArtifactIndexRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredGeneratedMatrixArtifactIndexPaths ?? []
+  const missing = aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []
+  return {
+    ...(required.length > 0 ? { requiredGeneratedMatrixArtifactIndexes: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingGeneratedMatrixArtifactIndexes: missing.join(",") } : {}),
+  }
+}
+
 function providerAccountAliasDiagnosticsFor(aggregate, options) {
   const required = [...new Set(options.requiredProviderAccountAliases)].sort()
   if (required.length === 0) return {}
@@ -309,6 +339,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
     lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRoots.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredGeneratedMatrixArtifactIndexPaths !== undefined) {
+    const missing = aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []
+    lines.push(`generated_matrix_artifact_indexes_required=${aggregate.requiredGeneratedMatrixArtifactIndexPaths.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if (aggregate.requiredProviderAccountAliases !== undefined) {
     const missing = aggregate.missingProviderAccountAliases ?? []
     lines.push(`provider_account_aliases_required=${aggregate.requiredProviderAccountAliases.join(",") || "none"} missing=${missing.join(",") || "none"}`)
@@ -321,6 +355,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
     lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRoots.join(", ")}`)
+  }
+  if ((aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0) {
+    lines.push(`next: rerun generated matrix drills with artifact indexes or include the artifact index that records generated matrix artifact indexes: ${aggregate.missingGeneratedMatrixArtifactIndexPaths.join(", ")}`)
   }
   if ((aggregate.missingProviderAccountAliases ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record provider account aliases: ${aggregate.missingProviderAccountAliases.join(", ")}`)

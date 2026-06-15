@@ -81,6 +81,9 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.deepEqual(stdoutAggregate.generatedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
     })
+    assert.deepEqual(stdoutAggregate.generatedMatrixArtifactIndexes, {
+      "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json": 1,
+    })
     assert.deepEqual(stdoutAggregate.generatedValidationSuiteFailureRoots, {
       "/tmp/generated-suite/failed-run": 1,
     })
@@ -90,6 +93,12 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     })
     assert.deepEqual(stdoutAggregate.missingGeneratedEvidenceKinds, {
       "matrix-report": 1,
+    })
+    assert.deepEqual(stdoutAggregate.requiredGeneratedMatrixArtifactIndexes, {
+      "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json": 1,
+    })
+    assert.deepEqual(stdoutAggregate.missingGeneratedMatrixArtifactIndexes, {
+      "/tmp/generated-matrix/missing-matrix-artifacts.json": 1,
     })
     assert.deepEqual(stdoutAggregate.requiredGeneratedMatrixLimitations, {
       "dry-run-classification-coverage": 1,
@@ -111,10 +120,13 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,matrix-report,validation-gate")
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
+    assert.equal(artifactIndex.metadata.generatedMatrixArtifactIndexes, "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.generatedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
     assert.equal(artifactIndex.metadata.requiredGeneratedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.missingGeneratedEvidenceKinds, "matrix-report")
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixArtifactIndexes, "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json")
+    assert.equal(artifactIndex.metadata.missingGeneratedMatrixArtifactIndexes, "/tmp/generated-matrix/missing-matrix-artifacts.json")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
@@ -281,6 +293,52 @@ test("drill artifact index summary gates generated validation-suite failure root
   }
 })
 
+test("drill artifact index summary gates generated matrix artifact indexes", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-generated-matrix-artifact-index",
+      "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredGeneratedMatrixArtifactIndexPaths, ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"])
+    assert.deepEqual(aggregate.missingGeneratedMatrixArtifactIndexPaths, [])
+    assert.equal(artifactIndex.metadata.requiredGeneratedMatrixArtifactIndexes, "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json")
+    assert.equal(artifactIndex.metadata.missingGeneratedMatrixArtifactIndexes, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-matrix-artifact-index=/tmp/generated-matrix/missing-artifacts.json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /generated_matrix_artifact_indexes_required=\/tmp\/generated-matrix\/missing-artifacts\.json missing=\/tmp\/generated-matrix\/missing-artifacts\.json/)
+        assert.match(error.stdout, /next: rerun generated matrix drills with artifact indexes .*\/tmp\/generated-matrix\/missing-artifacts\.json/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary gates provider account aliases", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
@@ -426,6 +484,9 @@ async function writeIndexedReport(rootDir, name, schema) {
       generatedEvidenceKinds: name === "one"
         ? "validation-suite-run"
         : "matrix-report",
+      generatedMatrixArtifactIndexes: name === "one"
+        ? ""
+        : "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       generatedMatrixLimitations: name === "one"
         ? ""
         : "dry-run-classification-coverage",
@@ -437,6 +498,12 @@ async function writeIndexedReport(rootDir, name, schema) {
         : "matrix-report",
       missingGeneratedEvidenceKinds: name === "one"
         ? "matrix-report"
+        : "",
+      requiredGeneratedMatrixArtifactIndexes: name === "one"
+        ? "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"
+        : "",
+      missingGeneratedMatrixArtifactIndexes: name === "one"
+        ? "/tmp/generated-matrix/missing-matrix-artifacts.json"
         : "",
       requiredGeneratedMatrixLimitations: name === "one"
         ? "dry-run-classification-coverage"
