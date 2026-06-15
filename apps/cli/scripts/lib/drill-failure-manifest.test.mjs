@@ -112,6 +112,10 @@ test("rejects malformed failure manifests", () => {
   }), /missing rootDir/)
   assert.throws(() => validateDrillFailureManifest({
     ...validManifest(),
+    rootDir: "relative-failure-root",
+  }), /invalid rootDir/)
+  assert.throws(() => validateDrillFailureManifest({
+    ...validManifest(),
     failedAt: "2026-06-13",
   }), /failedAt must be an ISO timestamp/)
   assert.throws(() => validateDrillFailureManifest({
@@ -374,6 +378,24 @@ test("rejects inconsistent failure aggregates", () => {
     ...aggregate,
     runtimeSignals: { "lease-health": 2 },
   }), /runtimeSignals do not match failures/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    failures: [{
+      ...aggregate.failures[0],
+      rootDir: "relative-provider-root",
+    }],
+  }), /failures\[0\] has invalid rootDir/)
+  assert.throws(() => formatDrillFailureManifestAggregateSummary({
+    ...aggregate,
+    staleFailureManifests: [{
+      source: "/tmp/provider/arroba-drill-failure.json",
+      rootDir: "relative-provider-root",
+      drill: "provider-drill",
+      failedAt: "2026-06-13T00:00:00.000Z",
+      ageMs: 1000,
+      maxAgeMs: 100,
+    }],
+  }), /staleFailureManifests\[0\] has invalid rootDir/)
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
     ...aggregate,
     failures: [{

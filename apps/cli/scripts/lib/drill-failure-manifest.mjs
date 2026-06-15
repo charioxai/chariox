@@ -58,6 +58,9 @@ export function validateDrillFailureManifest(manifest, source = "manifest") {
   if (!nonEmptyString(manifest.rootDir)) {
     throw new Error(`${source} is missing rootDir`)
   }
+  if (!path.isAbsolute(manifest.rootDir)) {
+    throw new Error(`${source} has invalid rootDir`)
+  }
   if (!nonEmptyString(manifest.failedAt)) {
     throw new Error(`${source} is missing failedAt`)
   }
@@ -360,6 +363,9 @@ function validateDrillFailureAggregateEntry(failure, source) {
       throw new Error(`${source} is missing ${key}`)
     }
   }
+  if (!path.isAbsolute(failure.rootDir)) {
+    throw new Error(`${source} has invalid rootDir`)
+  }
   if (!isKnownDrillFailureClassification(failure.classification)) {
     throw new Error(`${source} has unknown classification ${JSON.stringify(failure.classification)}`)
   }
@@ -396,6 +402,9 @@ function validateStaleFailureManifests(staleFailures) {
       if (!nonEmptyString(staleFailure[key])) {
         throw new Error(`${source} is missing ${key}`)
       }
+    }
+    if (!path.isAbsolute(staleFailure.rootDir)) {
+      throw new Error(`${source} has invalid rootDir`)
     }
     parseDrillIsoTimestamp(staleFailure.failedAt, `${source}.failedAt`)
     for (const key of ["ageMs", "maxAgeMs"]) {
