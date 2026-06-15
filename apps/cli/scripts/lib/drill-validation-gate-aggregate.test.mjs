@@ -869,13 +869,53 @@ test("formats supplemental artifact coverage inputs without inflating report tot
   assert.deepEqual(aggregate.totals, { reports: 1, passed: 1, failed: 0 })
   assert.equal(aggregate.artifactCoverageInputs.length, 1)
   assert.deepEqual(aggregate.artifactCoverageInputs.map((input) => input.source), ["distributed-runtime-gate-artifacts.json"])
+  assert.deepEqual(aggregate.artifactCoverageInputs.map((input) => input.status), ["passed"])
   assert.deepEqual(aggregate.coverage.artifactCoverageInputSources, {
     "artifact metadata inputs": 2,
   })
   assert.match(text, /status=passed reports=1 passed=1 failed=0/)
-  assert.match(text, /artifact_coverage_inputs=1 sources=distributed-runtime-gate-artifacts\.json/)
+  assert.match(text, /artifact_coverage_inputs=1 failed=0 sources=distributed-runtime-gate-artifacts\.json/)
   assert.match(text, /- artifact_coverage_input_sources: artifact metadata inputs=2/)
   assert.match(text, /required_artifact_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
+})
+
+test("failed supplemental artifact coverage inputs fail the aggregate without inflating report totals", () => {
+  const failedArtifactReport = {
+    ...reportFixture(),
+    status: "failed",
+    checks: {
+      ...reportFixture().checks,
+      artifacts: {
+        ...reportFixture().checks.artifacts,
+        status: "failed",
+        requiredArtifactMaxAgeMs: 100,
+        staleArtifactIndexes: [{
+          source: "/tmp/arroba-drill-artifacts.json",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          ageMs: 1000,
+          maxAgeMs: 100,
+        }],
+      },
+    },
+    nextActions: [{
+      owner: "validation-harness",
+      classification: "artifact-staleness",
+      nextAction: "regenerate stale drill artifact indexes, then rerun the validation gate",
+      count: 1,
+    }],
+  }
+  const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
+    supplementalArtifactReports: [failedArtifactReport],
+    supplementalArtifactSources: ["distributed-runtime-gate-artifacts.json"],
+    validateReport: () => {},
+  })
+  const text = formatDrillValidationGateAggregateSummary(aggregate)
+
+  assert.deepEqual(aggregate.totals, { reports: 1, passed: 1, failed: 0 })
+  assert.equal(aggregate.status, "failed")
+  assert.deepEqual(aggregate.artifactCoverageInputs.map((input) => input.status), ["failed"])
+  assert.match(text, /artifact_coverage_inputs=1 failed=1 sources=distributed-runtime-gate-artifacts\.json/)
+  assert.deepEqual(aggregate.nextActions.map(({ classification }) => classification), ["artifact-staleness"])
 })
 
 test("rejects inconsistent aggregate status and coverage", () => {

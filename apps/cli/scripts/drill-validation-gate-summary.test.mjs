@@ -389,6 +389,7 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     assert.deepEqual(fileAggregate, stdoutAggregate)
     assert.equal(stdoutAggregate.status, "passed")
     assert.deepEqual(stdoutAggregate.totals, { reports: 1, passed: 1, failed: 0 })
+    assert.deepEqual(stdoutAggregate.artifactCoverageInputs.map((input) => input.status), ["passed"])
     assert.deepEqual(stdoutAggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
     assert.deepEqual(stdoutAggregate.missingArtifactGeneratedMatrixLimitations, [])
     assert.equal(stdoutAggregate.coverage.artifactExitCriterionStatuses["dry-run"], 1)
@@ -402,6 +403,67 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("drill validation gate summary fails stale artifact metadata inputs", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  try {
+    const evidenceRoot = path.join(rootDir, "evidence")
+    const evidencePath = path.join(evidenceRoot, "distributed-runtime-gate.json")
+    await mkdir(evidenceRoot, { recursive: true })
+    await writeGateReport(evidencePath, await passingGateReport(rootDir))
+    await writeDrillArtifactIndex({
+      rootDir: evidenceRoot,
+      artifacts: ["distributed-runtime-gate.json"],
+    })
+    const evidenceIndexPath = path.join(evidenceRoot, "arroba-drill-artifacts.json")
+    await rewriteArtifactIndexCreatedAt(evidenceIndexPath, new Date(Date.now() - 500).toISOString())
+
+    const reportPath = path.join(rootDir, "gate.json")
+    await writeGateReport(reportPath, await passingGateReport(rootDir))
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--gate-report",
+        reportPath,
+        "--artifact-index",
+        evidenceIndexPath,
+        "--require-artifact-max-age-ms",
+        "100",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const aggregate = JSON.parse(error.stdout)
+        assert.equal(aggregate.status, "failed")
+        assert.deepEqual(aggregate.totals, { reports: 1, passed: 1, failed: 0 })
+        assert.equal(aggregate.artifactCoverageInputs.length, 1)
+        assert.equal(aggregate.artifactCoverageInputs[0].status, "failed")
+        assert.equal(aggregate.artifactCoverageInputs[0].checks.artifacts, "failed")
+        assert.equal(
+          aggregate.nextActions.some(({ classification }) => classification === "artifact-staleness"),
+          true,
+        )
+        return true
+      },
+    )
+
+    const fresh = JSON.parse((await execFile(process.execPath, [
+      scriptPath,
+      "--gate-report",
+      reportPath,
+      "--artifact-index",
+      evidenceIndexPath,
+      "--require-artifact-max-age-ms",
+      "3600000",
+      "--json",
+    ])).stdout)
+    assert.equal(fresh.status, "passed")
+    assert.equal(fresh.artifactCoverageInputs[0].status, "passed")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -577,4 +639,10 @@ function passingScenario(id, classification, runtimeSignals = []) {
 async function writeGateReport(file, report) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+}
+
+async function rewriteArtifactIndexCreatedAt(indexPath, createdAt) {
+  const index = JSON.parse(await readFile(indexPath, "utf8"))
+  index.createdAt = createdAt
+  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8")
 }

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
+import {
+  parseDrillMaxDepth,
+  parseDrillNonNegativeInteger,
+} from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
   parseValidationGateRequirementArg,
@@ -54,6 +57,8 @@ function printHelp() {
     "                         Require aggregate artifact metadata for exit criterion statuses",
     "  --require-artifact-incomplete-exit-criterion-status STATUS",
     "                         Require aggregate artifact metadata for incomplete exit criterion statuses",
+    "  --require-artifact-max-age-ms MS",
+    "                         Fail when artifact metadata inputs include stale artifact indexes",
     "  --require-runtime-signal ID",
     "                         Require aggregate evidence for platform runtime signals",
     "  --require-failure-classification CLASSIFICATION",
@@ -154,6 +159,7 @@ function parseArgs(argv) {
     maxDepth: 8,
     outputArtifactIndexPath: null,
     outputPath: null,
+    requiredArtifactMaxAgeMs: null,
     ...validationGateRequirementOptionDefaults({ presetKey: "requiredPresets" }),
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -203,6 +209,16 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--max-depth=")) {
       options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
+    } else if (arg === "--require-artifact-max-age-ms") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-artifact-max-age-ms requires a value")
+      options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(value, "--require-artifact-max-age-ms")
+      index += 1
+    } else if (arg.startsWith("--require-artifact-max-age-ms=")) {
+      options.requiredArtifactMaxAgeMs = parseDrillNonNegativeInteger(
+        arg.slice("--require-artifact-max-age-ms=".length),
+        "--require-artifact-max-age-ms",
+      )
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -230,7 +246,9 @@ function parseArgs(argv) {
 }
 
 async function artifactCoverageReportForSummary(options) {
-  if (options.artifactIndexes.length === 0 && options.artifactRoots.length === 0) return null
+  if (options.artifactIndexes.length === 0
+    && options.artifactRoots.length === 0
+    && options.requiredArtifactMaxAgeMs === null) return null
   const report = await runDrillValidationGate({
     artifactIndexes: options.artifactIndexes,
     artifactRoots: options.artifactRoots,
@@ -247,6 +265,7 @@ async function artifactCoverageReportForSummary(options) {
     requiredArtifactClassifications: options.requiredArtifactClassifications,
     requiredArtifactExitCriterionStatuses: options.requiredArtifactExitCriterionStatuses,
     requiredArtifactIncompleteExitCriterionStatuses: options.requiredArtifactIncompleteExitCriterionStatuses,
+    requiredArtifactMaxAgeMs: options.requiredArtifactMaxAgeMs,
   })
   return {
     report,

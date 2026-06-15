@@ -171,10 +171,15 @@ export function summarizeValidationGateReportAggregate(
   })
   const artifactCoverageInputs = supplementalArtifactReports.map((report, index) => {
     validateReport(report, supplementalArtifactSources[index] ?? "validation gate artifact metadata input")
+    for (const action of report.nextActions) {
+      countDrillAggregateNextAction(nextActions, action)
+    }
     const artifactCoverage = validationGateReportArtifactCoverage(report)
     countValidationGateArtifactCoverage(coverage, artifactCoverage)
     return {
       source: supplementalArtifactSources[index] ?? null,
+      status: report.status,
+      checks: Object.fromEntries(Object.entries(report.checks).map(([name, check]) => [name, check.status])),
       artifactCoverage,
     }
   })
@@ -201,6 +206,7 @@ export function summarizeValidationGateReportAggregate(
   })
   appendMissingValidationGateAggregateNextActions(nextActions, missingRequirements)
   const hasMissingRequirements = Object.values(missingRequirements).some((missing) => missing.length > 0)
+  const hasFailedArtifactCoverageInputs = artifactCoverageInputs.some((input) => input.status === "failed")
   if (missingRequirements.missingPresets.length > 0) {
     countDrillAggregateNextAction(nextActions, {
       owner: "validation-harness",
@@ -210,7 +216,7 @@ export function summarizeValidationGateReportAggregate(
   }
   const aggregate = {
     schema: DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA,
-    status: totals.failed > 0 || hasMissingRequirements ? "failed" : "passed",
+    status: totals.failed > 0 || hasMissingRequirements || hasFailedArtifactCoverageInputs ? "failed" : "passed",
     totals,
     requiredPresets: normalizedRequiredPresets,
     missingPresets: missingRequirements.missingPresets,
@@ -281,7 +287,8 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
     const sources = artifactCoverageInputs
       .map((input) => input.source)
       .filter((source) => typeof source === "string" && source.length > 0)
-    lines.push(`artifact_coverage_inputs=${artifactCoverageInputs.length}${sources.length > 0 ? ` sources=${sources.join(",")}` : ""}`)
+    const failedInputs = artifactCoverageInputs.filter((input) => input.status === "failed").length
+    lines.push(`artifact_coverage_inputs=${artifactCoverageInputs.length} failed=${failedInputs}${sources.length > 0 ? ` sources=${sources.join(",")}` : ""}`)
   }
   if (aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -462,7 +469,11 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   })
   assertValidationGateAggregateMissingRequirementsMatch(aggregate, expectedMissingRequirements, source)
   const hasMissingRequirements = Object.values(expectedMissingRequirements).some((missing) => missing.length > 0)
-  const expectedStatus = aggregate.totals.failed > 0 || hasMissingRequirements ? "failed" : "passed"
+  const hasFailedArtifactCoverageInputs = (aggregate.artifactCoverageInputs ?? [])
+    .some((input) => input.status === "failed")
+  const expectedStatus = aggregate.totals.failed > 0 || hasMissingRequirements || hasFailedArtifactCoverageInputs
+    ? "failed"
+    : "passed"
   if (aggregate.status !== expectedStatus) {
     throw new Error(`${source} status does not match totals and requirements`)
   }
@@ -1311,6 +1322,17 @@ function validateGateAggregateArtifactCoverageInput(input, source) {
   }
   if (input.source !== null && typeof input.source !== "string") {
     throw new Error(`${source} has invalid source`)
+  }
+  if (!["passed", "failed"].includes(input.status)) {
+    throw new Error(`${source} has invalid status ${JSON.stringify(input.status)}`)
+  }
+  if (!input.checks || typeof input.checks !== "object" || Array.isArray(input.checks)) {
+    throw new Error(`${source} has invalid checks`)
+  }
+  for (const name of ["configuration", "platformBundle", "artifacts", "matrices", "failures"]) {
+    if (!["passed", "failed", "skipped"].includes(input.checks[name])) {
+      throw new Error(`${source}.checks has invalid ${name}`)
+    }
   }
   validateValidationGateArtifactCoverage(input.artifactCoverage, `${source}.artifactCoverage`)
 }
