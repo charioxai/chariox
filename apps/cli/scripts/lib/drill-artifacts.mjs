@@ -15,7 +15,7 @@ import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
 } from "./drill-provider-profiles.mjs"
-import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
+import { isKnownDrillArtifactValidationPreset } from "./drill-validation-gate-presets.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 import {
   drillRuntimeSignalOwnersFor,
@@ -641,7 +641,7 @@ function validateDiagnosticCountObject(value, source, key) {
   }
   if (key === "validationPresets") {
     for (const preset of Object.keys(value)) {
-      if (!isKnownDrillValidationGatePreset(preset)) {
+      if (!isKnownDrillArtifactValidationPreset(preset)) {
         throw new Error(`${source} has unknown validation preset ${JSON.stringify(preset)}`)
       }
     }

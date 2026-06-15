@@ -36,6 +36,8 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
     missingArtifactProviderAccountAliases: [],
+    requiredArtifactValidationPresets: [],
+    missingArtifactValidationPresets: [],
     requiredArtifactRuntimeSignals: [],
     missingArtifactRuntimeSignals: [],
     requiredArtifactRuntimeSignalOwners: [],
@@ -187,6 +189,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
       metadata: {
         runtimeSignals: "session-authority,workspace-live-sync-state",
         runtimeSignalOwners: "kernel-authority,runtime-state",
+        validationPresets: "distributed-runtime",
         owners: "validation-platform",
         classifications: "validation-gate",
       },
@@ -200,12 +203,14 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
       maxDepth: 8,
       requiredArtifactRuntimeSignals: ["workspace-live-sync-state"],
       requiredArtifactRuntimeSignalOwners: ["kernel-authority", "runtime-state"],
+      requiredArtifactValidationPresets: ["distributed-runtime"],
       requiredArtifactOwners: ["validation-platform"],
       requiredArtifactClassifications: ["validation-gate"],
     })
     assert.equal(pass.status, "passed")
     assert.deepEqual(pass.missingArtifactRuntimeSignals, [])
     assert.deepEqual(pass.missingArtifactRuntimeSignalOwners, [])
+    assert.deepEqual(pass.missingArtifactValidationPresets, [])
     assert.deepEqual(pass.missingArtifactOwners, [])
     assert.deepEqual(pass.missingArtifactClassifications, [])
 
@@ -216,16 +221,19 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
       maxDepth: 8,
       requiredArtifactRuntimeSignals: ["lease-health"],
       requiredArtifactRuntimeSignalOwners: ["worker-kernel"],
+      requiredArtifactValidationPresets: ["workspace-live-sync"],
       requiredArtifactOwners: ["runtime-network"],
       requiredArtifactClassifications: ["relay-runtime"],
     })
     assert.equal(fail.status, "failed")
     assert.deepEqual(fail.missingArtifactRuntimeSignals, ["lease-health"])
     assert.deepEqual(fail.missingArtifactRuntimeSignalOwners, ["worker-kernel"])
+    assert.deepEqual(fail.missingArtifactValidationPresets, ["workspace-live-sync"])
     assert.deepEqual(fail.missingArtifactOwners, ["runtime-network"])
     assert.deepEqual(fail.missingArtifactClassifications, ["relay-runtime"])
     assert.match(fail.error, /missing required artifact runtime signals: lease-health/)
     assert.match(fail.error, /missing required artifact runtime signal owners: worker-kernel/)
+    assert.match(fail.error, /missing required artifact validation presets: workspace-live-sync/)
     assert.match(fail.error, /missing required artifact owners: runtime-network/)
     assert.match(fail.error, /missing required artifact classifications: relay-runtime/)
   } finally {

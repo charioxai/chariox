@@ -83,6 +83,11 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactProviderAccountAliases.length > 0) {
     lines.push(`artifact_required_provider_account_aliases=${requiredArtifactProviderAccountAliases.join(",")} missing=${missingArtifactProviderAccountAliases.join(",") || "none"}`)
   }
+  const requiredArtifactValidationPresets = artifacts.requiredArtifactValidationPresets ?? []
+  const missingArtifactValidationPresets = artifacts.missingArtifactValidationPresets ?? []
+  if (requiredArtifactValidationPresets.length > 0) {
+    lines.push(`artifact_required_validation_presets=${requiredArtifactValidationPresets.join(",")} missing=${missingArtifactValidationPresets.join(",") || "none"}`)
+  }
   const requiredArtifactRuntimeSignals = artifacts.requiredArtifactRuntimeSignals ?? []
   const missingArtifactRuntimeSignals = artifacts.missingArtifactRuntimeSignals ?? []
   if (requiredArtifactRuntimeSignals.length > 0) {
@@ -119,6 +124,10 @@ export function formatDrillValidationGateSummary(report) {
     const artifactCoverageAreas = Object.entries(artifacts.aggregate.coverageAreas ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (artifactCoverageAreas.length > 0) {
       lines.push(`artifact_coverage_areas=${artifactCoverageAreas.map(([area, count]) => `${area}:${count}`).join(",")}`)
+    }
+    const validationPresets = Object.entries(artifacts.aggregate.validationPresets ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (validationPresets.length > 0) {
+      lines.push(`artifact_validation_presets=${validationPresets.map(([preset, count]) => `${preset}:${count}`).join(",")}`)
     }
     const runtimeSignals = Object.entries(artifacts.aggregate.runtimeSignals ?? {})
     if (runtimeSignals.length > 0) {

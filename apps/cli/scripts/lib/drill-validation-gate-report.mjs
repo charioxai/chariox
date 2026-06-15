@@ -13,7 +13,10 @@ import {
   parseProviderAccountAlias,
 } from "./drill-provider-profiles.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
-import { isKnownDrillValidationGatePreset } from "./drill-validation-gate-presets.mjs"
+import {
+  isKnownDrillArtifactValidationPreset,
+  isKnownDrillValidationGatePreset,
+} from "./drill-validation-gate-presets.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
   validateDrillRuntimeSignals,
@@ -137,6 +140,8 @@ function validateArtifactIndexCheck(check, source) {
   validateArtifactEvidenceRepoArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateProviderAccountAliasArray(check.requiredArtifactProviderAccountAliases ?? [], `${source}.requiredArtifactProviderAccountAliases`)
   validateProviderAccountAliasArray(check.missingArtifactProviderAccountAliases ?? [], `${source}.missingArtifactProviderAccountAliases`)
+  validateArtifactValidationPresetArray(check.requiredArtifactValidationPresets ?? [], `${source}.requiredArtifactValidationPresets`)
+  validateArtifactValidationPresetArray(check.missingArtifactValidationPresets ?? [], `${source}.missingArtifactValidationPresets`)
   validateRuntimeSignalArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
   validateRuntimeSignalArray(check.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateRuntimeSignalOwnerArray(check.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -596,6 +601,15 @@ function validateProviderAccountAliasArray(value, source) {
     const { provider } = parseProviderAccountAlias(alias)
     if (!isKnownDrillProvider(provider)) {
       throw new Error(`${source}[${index}] has unknown provider account alias provider ${JSON.stringify(provider)}`)
+    }
+  }
+}
+
+function validateArtifactValidationPresetArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, preset] of value.entries()) {
+    if (!isKnownDrillArtifactValidationPreset(preset)) {
+      throw new Error(`${source}[${index}] has unknown validation preset ${JSON.stringify(preset)}`)
     }
   }
 }

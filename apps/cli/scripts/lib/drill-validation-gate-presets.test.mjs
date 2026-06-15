@@ -2,15 +2,18 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  DRILL_ARTIFACT_VALIDATION_PRESETS,
   DRILL_VALIDATION_GATE_PRESETS,
   describeDrillValidationGatePresets,
   expandValidationGatePresetRequirements,
+  isKnownDrillArtifactValidationPreset,
   isKnownDrillValidationGatePreset,
   normalizeRequiredDeploymentPresets,
   normalizeRequiredArtifactCoverageAreas,
   normalizeRequiredArtifactClassifications,
   normalizeRequiredArtifactEvidenceRepos,
   normalizeRequiredArtifactProviderAccountAliases,
+  normalizeRequiredArtifactValidationPresets,
   normalizeRequiredArtifactExitCriterionStatuses,
   normalizeRequiredArtifactIncompleteExitCriterionStatuses,
   normalizeRequiredArtifactKinds,
@@ -44,6 +47,15 @@ test("describes stable validation gate presets", () => {
     "slice-runtime",
     "workspace-live-sync",
   ])
+  assert.deepEqual(DRILL_ARTIFACT_VALIDATION_PRESETS, [
+    "cloud-distributed-runtime",
+    "distributed-runtime",
+    "native-provider-tui",
+    "remote-agent-runtime",
+    "remote-home-extension",
+    "slice-runtime",
+    "workspace-live-sync",
+  ])
   assert.deepEqual(describeDrillValidationGatePresets().map((preset) => preset.name), [
     "distributed-runtime",
     "native-provider-tui",
@@ -52,6 +64,9 @@ test("describes stable validation gate presets", () => {
     "slice-runtime",
     "workspace-live-sync",
   ])
+  assert.equal(isKnownDrillValidationGatePreset("cloud-distributed-runtime"), false)
+  assert.equal(isKnownDrillArtifactValidationPreset("cloud-distributed-runtime"), true)
+  assert.equal(isKnownDrillArtifactValidationPreset("cloud-distributed-runtmie"), false)
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["distributed-runtime"] })[0],
     {
@@ -66,6 +81,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: ["cloud", "oss"],
       requiredArtifactProviderAccountAliases: [],
+      requiredArtifactValidationPresets: ["distributed-runtime"],
       requiredArtifactRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredArtifactRuntimeSignalOwners: ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
       requiredArtifactOwners: ["validation-platform"],
@@ -100,6 +116,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
+      requiredArtifactValidationPresets: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -136,6 +153,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
+      requiredArtifactValidationPresets: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -170,6 +188,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
+      requiredArtifactValidationPresets: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -204,6 +223,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
+      requiredArtifactValidationPresets: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -249,6 +269,7 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactGeneratedMatrixLimitations: [],
     requiredArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
+    requiredArtifactValidationPresets: [],
     requiredArtifactRuntimeSignals: [],
     requiredArtifactRuntimeSignalOwners: [],
     requiredArtifactOwners: [],
@@ -355,6 +376,24 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactKinds: [],
     requiredArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
+    requiredArtifactValidationPresets: [],
+    requiredRuntimeSignals: [],
+    requiredFailureClassifications: [],
+    requiredMatrices: [],
+    requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    requiredDeploymentPresets: [],
+    requiredProviders: [],
+    requiredScenarios: [],
+  }).requiredArtifactValidationPresets, ["distributed-runtime"])
+  assert.deepEqual(expandValidationGatePresetRequirements({
+    presets: ["distributed-runtime"],
+    requiredPlatformCoverageAreas: [],
+    requiredArtifactCoverageAreas: [],
+    requiredArtifactSchemas: [],
+    requiredArtifactKinds: [],
+    requiredArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
     requiredArtifactExitCriterionStatuses: [],
     requiredRuntimeSignals: [],
     requiredFailureClassifications: [],
@@ -416,6 +455,10 @@ test("normalizes validation gate requirements", () => {
   assert.deepEqual(normalizeRequiredArtifactProviderAccountAliases(["codex=work,opencode=zen", "codex=work"]), [
     "codex=work",
     "opencode=zen",
+  ])
+  assert.deepEqual(normalizeRequiredArtifactValidationPresets(["cloud-distributed-runtime,distributed-runtime", "distributed-runtime"]), [
+    "cloud-distributed-runtime",
+    "distributed-runtime",
   ])
   assert.deepEqual(normalizeRequiredArtifactExitCriterionStatuses(["satisfied,failed", "satisfied"]), [
     "failed",
@@ -503,6 +546,10 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredArtifactProviderAccountAliases(["codex=sk-secretsecretsecretsecret"]),
     /provider account alias must be a non-secret label/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactValidationPresets(["distributed-runtmie"]),
+    /unknown required artifact validation preset: distributed-runtmie/,
   )
   assert.throws(
     () => normalizeRequiredMatrixClassifications(["not-a-classification"]),

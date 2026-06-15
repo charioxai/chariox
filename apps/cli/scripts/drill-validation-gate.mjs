@@ -55,6 +55,8 @@ function printHelp() {
     "                         Fail when artifact index metadata lacks evidence from each repo; repeatable",
     "  --require-artifact-provider-account-alias P=A[,P=A]",
     "                         Fail when artifact index metadata lacks each provider account alias label; repeatable",
+    "  --require-artifact-validation-preset NAME[,NAME]",
+    "                         Fail when artifact index metadata lacks each validation preset label; repeatable",
     "  --require-artifact-runtime-signal ID[,ID]",
     "                         Fail when artifact index metadata lacks each runtime signal; repeatable",
     "  --require-artifact-runtime-signal-owner OWNER[,OWNER]",

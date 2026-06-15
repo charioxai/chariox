@@ -23,6 +23,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredArtifactSchemas: Object.freeze(["arroba.drill.validation_suite_run.v1"]),
     requiredArtifactKinds: Object.freeze(["validation-suite-run"]),
     requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),
+    requiredArtifactValidationPresets: Object.freeze(["distributed-runtime"]),
     requiredArtifactRuntimeSignals: Object.freeze([
       "agent-lifecycle",
       "client-projection-health",
@@ -204,6 +205,11 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
   }),
 })
 
+export const DRILL_ARTIFACT_VALIDATION_PRESETS = Object.freeze([
+  ...Object.keys(DRILL_VALIDATION_GATE_PRESETS),
+  "cloud-distributed-runtime",
+].sort())
+
 export function describeDrillValidationGatePresets({ names = null } = {}) {
   const presetNames = names == null
     ? Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort()
@@ -222,13 +228,14 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredArtifactProviderAccountAliases: [...(preset.requiredArtifactProviderAccountAliases ?? [])],
-    requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
-    requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
-    requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
-    requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
-    requiredArtifactExitCriterionStatuses: [...(preset.requiredArtifactExitCriterionStatuses ?? [])],
-    requiredArtifactIncompleteExitCriterionStatuses: [...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? [])],
-    requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
+      requiredArtifactValidationPresets: [...(preset.requiredArtifactValidationPresets ?? [])],
+      requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
+      requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
+      requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
+      requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
+      requiredArtifactExitCriterionStatuses: [...(preset.requiredArtifactExitCriterionStatuses ?? [])],
+      requiredArtifactIncompleteExitCriterionStatuses: [...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? [])],
+      requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
       requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
       requiredMatrices: [...(preset.requiredMatrices ?? [])],
       requiredMatrixClassifications: [...(preset.requiredMatrixClassifications ?? [])],
@@ -255,6 +262,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
+  requiredArtifactValidationPresets = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
@@ -284,6 +292,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
     requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
+    requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
     requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
     requiredArtifactOwners: [...requiredArtifactOwners],
@@ -314,6 +323,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactGeneratedMatrixLimitations.push(...(preset.requiredArtifactGeneratedMatrixLimitations ?? []))
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
     expanded.requiredArtifactProviderAccountAliases.push(...(preset.requiredArtifactProviderAccountAliases ?? []))
+    expanded.requiredArtifactValidationPresets.push(...(preset.requiredArtifactValidationPresets ?? []))
     expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
     expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
@@ -483,6 +493,19 @@ export function normalizeRequiredArtifactProviderAccountAliases(requiredArtifact
   return aliases
 }
 
+export function normalizeRequiredArtifactValidationPresets(requiredArtifactValidationPresets) {
+  const presets = normalizeCommaSeparatedStrings(requiredArtifactValidationPresets, {
+    fieldName: "requiredArtifactValidationPresets",
+    itemName: "preset",
+  })
+  for (const preset of presets) {
+    if (!isKnownDrillArtifactValidationPreset(preset)) {
+      throw new Error(`unknown required artifact validation preset: ${preset}`)
+    }
+  }
+  return presets
+}
+
 export function normalizeRequiredArtifactRuntimeSignals(requiredArtifactRuntimeSignals) {
   const signals = normalizeCommaSeparatedStrings(requiredArtifactRuntimeSignals, {
     fieldName: "requiredArtifactRuntimeSignals",
@@ -607,6 +630,11 @@ export function normalizeRequiredPresets(presets) {
 export function isKnownDrillValidationGatePreset(preset) {
   return typeof preset === "string"
     && Object.prototype.hasOwnProperty.call(DRILL_VALIDATION_GATE_PRESETS, preset)
+}
+
+export function isKnownDrillArtifactValidationPreset(preset) {
+  return typeof preset === "string"
+    && DRILL_ARTIFACT_VALIDATION_PRESETS.includes(preset)
 }
 
 export function normalizeRequiredFailureClassifications(requiredFailureClassifications) {

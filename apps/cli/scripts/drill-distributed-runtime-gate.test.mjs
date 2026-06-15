@@ -90,6 +90,12 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       "codex=work": 1,
       "opencode=zen": 1,
     })
+    assert.deepEqual(report.checks.artifacts.requiredArtifactValidationPresets, ["distributed-runtime"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactValidationPresets, [])
+    assert.deepEqual(report.checks.artifacts.aggregate.validationPresets, {
+      "cloud-distributed-runtime": 1,
+      "distributed-runtime": 1,
+    })
     assert.deepEqual(report.presets, ["distributed-runtime"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
@@ -919,6 +925,7 @@ async function writeValidationSuiteArtifact(rootDir, {
   coverageAreas = ["distributed-observability", "suite-contract"],
   evidenceRepo = "cloud",
   providerAccountAliases = "",
+  validationPresets = evidenceRepo === "oss" ? "distributed-runtime" : "cloud-distributed-runtime",
 } = {}) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
   await mkdir(rootDir, { recursive: true })
@@ -962,6 +969,7 @@ async function writeValidationSuiteArtifact(rootDir, {
       classifications: evidenceRepo === "cloud" ? "cloud-validation-suite" : "validation-suite",
       artifactKinds: "validation-suite-run",
       evidenceRepos: evidenceRepo,
+      validationPresets,
       ...(providerAccountAliases ? { providerAccountAliases } : {}),
       exitCriterionStatuses: "satisfied",
     },
@@ -1232,6 +1240,7 @@ async function writeFakeValidationSuiteScript({
   evidenceRepo,
   file,
 }) {
+  const validationPresets = evidenceRepo === "oss" ? "distributed-runtime" : "cloud-distributed-runtime"
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `#!/usr/bin/env node
 import { createHash } from "node:crypto"
@@ -1294,6 +1303,7 @@ const index = {
     classifications: ${JSON.stringify(classification)},
     artifactKinds: "validation-suite-run",
     evidenceRepos: ${JSON.stringify(evidenceRepo)},
+    validationPresets: ${JSON.stringify(validationPresets)},
     exitCriterionStatuses: "satisfied",
   },
   artifacts: [{

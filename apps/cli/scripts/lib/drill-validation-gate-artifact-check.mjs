@@ -15,6 +15,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
+  requiredArtifactValidationPresets = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
@@ -33,6 +34,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       || requiredArtifactGeneratedMatrixLimitations.length > 0
       || requiredArtifactEvidenceRepos.length > 0
       || requiredArtifactProviderAccountAliases.length > 0
+      || requiredArtifactValidationPresets.length > 0
       || requiredArtifactRuntimeSignals.length > 0
       || requiredArtifactRuntimeSignalOwners.length > 0
       || requiredArtifactOwners.length > 0
@@ -63,6 +65,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
         missingArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
+        requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
+        missingArtifactValidationPresets: [...requiredArtifactValidationPresets],
         requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -84,6 +88,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactGeneratedMatrixLimitations: requiredArtifactGeneratedMatrixLimitations,
           missingArtifactEvidenceRepos: requiredArtifactEvidenceRepos,
           missingArtifactProviderAccountAliases: requiredArtifactProviderAccountAliases,
+          missingArtifactValidationPresets: requiredArtifactValidationPresets,
           missingArtifactRuntimeSignals: requiredArtifactRuntimeSignals,
           missingArtifactRuntimeSignalOwners: requiredArtifactRuntimeSignalOwners,
           missingArtifactOwners: requiredArtifactOwners,
@@ -117,6 +122,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
       missingArtifactProviderAccountAliases: [],
+      requiredArtifactValidationPresets: [],
+      missingArtifactValidationPresets: [],
       requiredArtifactRuntimeSignals: [],
       missingArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
@@ -160,6 +167,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
         requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
         missingArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
+        requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
+        missingArtifactValidationPresets: [...requiredArtifactValidationPresets],
         requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -189,6 +198,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactGeneratedMatrixLimitations = requiredArtifactGeneratedMatrixLimitations.filter((limitation) => !Object.prototype.hasOwnProperty.call(aggregate.generatedMatrixLimitations ?? {}, limitation))
     const missingArtifactEvidenceRepos = requiredArtifactEvidenceRepos.filter((repo) => !Object.prototype.hasOwnProperty.call(aggregate.evidenceRepos ?? {}, repo))
     const missingArtifactProviderAccountAliases = requiredArtifactProviderAccountAliases.filter((alias) => !Object.prototype.hasOwnProperty.call(aggregate.providerAccountAliases ?? {}, alias))
+    const missingArtifactValidationPresets = requiredArtifactValidationPresets.filter((preset) => !Object.prototype.hasOwnProperty.call(aggregate.validationPresets ?? {}, preset))
     const missingArtifactRuntimeSignals = requiredArtifactRuntimeSignals.filter((signal) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignals ?? {}, signal))
     const missingArtifactRuntimeSignalOwners = requiredArtifactRuntimeSignalOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignalOwners ?? {}, owner))
     const missingArtifactOwners = requiredArtifactOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.owners ?? {}, owner))
@@ -203,6 +213,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       + missingArtifactGeneratedMatrixLimitations.length
       + missingArtifactEvidenceRepos.length
       + missingArtifactProviderAccountAliases.length
+      + missingArtifactValidationPresets.length
       + missingArtifactRuntimeSignals.length
       + missingArtifactRuntimeSignalOwners.length
       + missingArtifactOwners.length
@@ -233,6 +244,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactEvidenceRepos,
       requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
       missingArtifactProviderAccountAliases,
+      requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
+      missingArtifactValidationPresets,
       requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
       missingArtifactRuntimeSignals,
       requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -257,6 +270,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactGeneratedMatrixLimitations,
             missingArtifactEvidenceRepos,
             missingArtifactProviderAccountAliases,
+            missingArtifactValidationPresets,
             missingArtifactRuntimeSignals,
             missingArtifactRuntimeSignalOwners,
             missingArtifactOwners,
@@ -292,6 +306,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
       requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
       missingArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
+      requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
+      missingArtifactValidationPresets: [...requiredArtifactValidationPresets],
       requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
       missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
       requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -318,6 +334,7 @@ function artifactRequirementError({
   missingArtifactGeneratedMatrixLimitations,
   missingArtifactEvidenceRepos,
   missingArtifactProviderAccountAliases,
+  missingArtifactValidationPresets,
   missingArtifactRuntimeSignals,
   missingArtifactRuntimeSignalOwners,
   missingArtifactOwners,
@@ -350,6 +367,9 @@ function artifactRequirementError({
   }
   if (missingArtifactProviderAccountAliases.length > 0) {
     messages.push(`missing required artifact provider account aliases: ${missingArtifactProviderAccountAliases.join(", ")}`)
+  }
+  if (missingArtifactValidationPresets.length > 0) {
+    messages.push(`missing required artifact validation presets: ${missingArtifactValidationPresets.join(", ")}`)
   }
   if (missingArtifactRuntimeSignals.length > 0) {
     messages.push(`missing required artifact runtime signals: ${missingArtifactRuntimeSignals.join(", ")}`)

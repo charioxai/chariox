@@ -20,7 +20,7 @@ import {
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
-import { isKnownDrillValidationGatePreset } from "./lib/drill-validation-gate-presets.mjs"
+import { isKnownDrillArtifactValidationPreset } from "./lib/drill-validation-gate-presets.mjs"
 
 function printHelp() {
   console.log([
@@ -301,7 +301,7 @@ function parseGeneratedMatrixLimitationRequirement(value, flag) {
 }
 
 function parseValidationPresetRequirement(value, flag) {
-  if (!isKnownDrillValidationGatePreset(value)) {
+  if (!isKnownDrillArtifactValidationPreset(value)) {
     throw new Error(`${flag} has unknown validation preset: ${value}`)
   }
   return value

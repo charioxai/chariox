@@ -28,6 +28,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-provider-account-alias", "codex=work"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-validation-preset", "distributed-runtime"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-runtime-signal", "session-authority"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-runtime-signal-owner=kernel-authority"], 0, options)
@@ -68,6 +70,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactEvidenceRepos: ["oss"],
     requiredArtifactProviderAccountAliases: ["codex=work"],
+    requiredArtifactValidationPresets: ["distributed-runtime"],
     requiredArtifactRuntimeSignals: ["session-authority"],
     requiredArtifactRuntimeSignalOwners: ["kernel-authority"],
     requiredArtifactOwners: ["validation-platform"],
