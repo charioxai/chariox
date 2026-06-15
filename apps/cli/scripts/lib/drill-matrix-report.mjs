@@ -86,6 +86,18 @@ function validateDrillMatrixReportConsistency(report, source) {
   if (report.dryRun !== (expectedStatus === "dry-run")) {
     throw new Error(`${source} dryRun does not match scenario statuses`)
   }
+  if (report.exitCriteria !== undefined) {
+    validateExitCriteriaCountObject(report.exitCriteria, `${source}.exitCriteria`)
+    if (JSON.stringify(report.exitCriteria) !== JSON.stringify(countExitCriteriaStatuses(report.scenarios))) {
+      throw new Error(`${source}.exitCriteria do not match scenario exit criteria evidence`)
+    }
+  }
+  if (report.incompleteExitCriteria !== undefined) {
+    validateMatrixReportIncompleteExitCriteria(report.incompleteExitCriteria, `${source}.incompleteExitCriteria`)
+    if (JSON.stringify(report.incompleteExitCriteria) !== JSON.stringify(incompleteExitCriteriaForScenarios(report.scenarios))) {
+      throw new Error(`${source}.incompleteExitCriteria do not match scenario exit criteria evidence`)
+    }
+  }
   if (report.runtimeSignals !== undefined) {
     validateRuntimeSignalCountObject(report.runtimeSignals, `${source}.runtimeSignals`)
     if (JSON.stringify(report.runtimeSignals) !== JSON.stringify(runtimeSignalCountsForScenarios(report.scenarios))) {
@@ -965,6 +977,26 @@ function validateMatrixAggregateExitCriterion(criterion, source) {
     throw new Error(`${source} must not be satisfied`)
   }
   validateOptionalCriterionDiagnostics(criterion, source)
+}
+
+function validateMatrixReportIncompleteExitCriteria(criteria, source) {
+  if (!Array.isArray(criteria)) {
+    throw new Error(`${source} is not an array`)
+  }
+  for (const [index, criterion] of criteria.entries()) {
+    const criterionSource = `${source}[${index}]`
+    if (!criterion || typeof criterion !== "object" || Array.isArray(criterion)) {
+      throw new Error(`${criterionSource} is not an object`)
+    }
+    if (!nonEmptyString(criterion.scenarioId)) {
+      throw new Error(`${criterionSource} is missing scenarioId`)
+    }
+    validateExitCriterionEvidence(criterion, criterionSource)
+    if (criterion.status === "satisfied") {
+      throw new Error(`${criterionSource} must not be satisfied`)
+    }
+    validateOptionalCriterionDiagnostics(criterion, criterionSource)
+  }
 }
 
 function validateOptionalCriterionDiagnostics(criterion, source) {

@@ -244,6 +244,8 @@ test("runs a passing matrix scenario", async () => {
     status: "satisfied",
     reason: null,
   }])
+  assert.deepEqual(report.exitCriteria, { satisfied: 1 })
+  assert.deepEqual(report.incompleteExitCriteria, [])
   assert.deepEqual(report.scenarios[0].runtimeSignals, ["provider-run-lifecycle", "session-authority"])
   assert.deepEqual(report.runtimeSignals, {
     "provider-run-lifecycle": 1,
@@ -401,6 +403,14 @@ test("writes dry-run report without executing scenarios", async () => {
   assert.equal(report.scenarios[0].status, "dry-run")
   assert.equal(report.scenarios[0].classification, null)
   assert.deepEqual(report.scenarios[0].exitCriteriaEvidence, [{
+    id: "dry:exit-01",
+    criterion: "dry command is selected",
+    status: "dry-run",
+    reason: "scenario command was selected but not executed",
+  }])
+  assert.deepEqual(report.exitCriteria, { "dry-run": 1 })
+  assert.deepEqual(report.incompleteExitCriteria, [{
+    scenarioId: "dry",
     id: "dry:exit-01",
     criterion: "dry command is selected",
     status: "dry-run",

@@ -337,6 +337,24 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
   const runtimeSignalIds = Object.keys(runtimeSignals)
   const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignalIds)
   const runtimeSignalScenarios = runtimeSignalScenariosForResults(results)
+  const scenarios = results.map((result) => ({
+    id: result.scenario.id,
+    description: result.scenario.description,
+    requires: requirementsFor(result.scenario),
+    exitCriteria: exitCriteriaFor(result.scenario),
+    exitCriteriaEvidence: exitCriteriaEvidenceForResult(result),
+    runtimeSignals: runtimeSignalsForScenario(result.scenario),
+    status: result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed",
+    expectedFailure: Boolean(result.expectedFailure),
+    classification: result.classification ?? null,
+    owner: ownerForResult(result),
+    nextAction: nextActionForResult(result),
+    durationMs: result.durationMs,
+    reason: result.reason ?? null,
+    command: result.command,
+    args: result.args,
+    artifactHints: Array.isArray(result.artifactHints) ? result.artifactHints : [],
+  }))
   const report = {
     schema: "arroba.drill.matrix.v1",
     matrix: matrixName,
@@ -354,24 +372,9 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
         }
         : {}),
     },
-    scenarios: results.map((result) => ({
-      id: result.scenario.id,
-      description: result.scenario.description,
-      requires: requirementsFor(result.scenario),
-      exitCriteria: exitCriteriaFor(result.scenario),
-      exitCriteriaEvidence: exitCriteriaEvidenceForResult(result),
-      runtimeSignals: runtimeSignalsForScenario(result.scenario),
-      status: result.dryRun ? "dry-run" : result.skipped ? "skipped" : result.ok ? "passed" : "failed",
-      expectedFailure: Boolean(result.expectedFailure),
-      classification: result.classification ?? null,
-      owner: ownerForResult(result),
-      nextAction: nextActionForResult(result),
-      durationMs: result.durationMs,
-      reason: result.reason ?? null,
-      command: result.command,
-      args: result.args,
-      artifactHints: Array.isArray(result.artifactHints) ? result.artifactHints : [],
-    })),
+    exitCriteria: exitCriteriaCountsForScenarios(scenarios),
+    incompleteExitCriteria: incompleteExitCriteriaForScenarios(scenarios),
+    scenarios,
     ...(runtimeSignalIds.length > 0
       ? {
         runtimeSignals,
@@ -425,6 +428,46 @@ function exitCriteriaEvidenceForResult(result) {
       reason: exitCriterionReasonForResult(result, status),
     }
   })
+}
+
+function exitCriteriaCountsForScenarios(scenarios) {
+  const counts = new Map()
+  for (const scenario of scenarios) {
+    for (const criterion of scenario.exitCriteriaEvidence ?? []) {
+      counts.set(criterion.status, (counts.get(criterion.status) ?? 0) + 1)
+    }
+  }
+  return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
+}
+
+function incompleteExitCriteriaForScenarios(scenarios) {
+  const incomplete = []
+  for (const scenario of scenarios) {
+    for (const criterion of scenario.exitCriteriaEvidence ?? []) {
+      if (criterion.status !== "satisfied") {
+        incomplete.push({
+          scenarioId: scenario.id,
+          id: criterion.id,
+          criterion: criterion.criterion,
+          status: criterion.status,
+          reason: criterion.reason ?? null,
+          ...diagnosticsForIncompleteExitCriterion(scenario),
+        })
+      }
+    }
+  }
+  return incomplete
+}
+
+function diagnosticsForIncompleteExitCriterion(scenario) {
+  const diagnostics = {}
+  if (scenario.owner) diagnostics.owner = scenario.owner
+  if (scenario.classification) {
+    diagnostics.classification = scenario.classification
+    diagnostics.owner = drillFailureOwnerForClassification(scenario.classification)
+    diagnostics.nextAction = scenario.nextAction ?? drillFailureNextActionForClassification(scenario.classification, { target: "scenario" })
+  }
+  return diagnostics
 }
 
 function exitCriterionStatusForResult(result) {

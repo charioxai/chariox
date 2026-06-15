@@ -714,6 +714,44 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport({
+      scenarios: [scenario("remote", "passed", {
+        exitCriteria: ["provider turn completes"],
+        exitCriteriaEvidence: [{
+          id: "remote:exit-01",
+          criterion: "provider turn completes",
+          status: "satisfied",
+          reason: null,
+        }],
+      })],
+      exitCriteria: { failed: 1 },
+    }),
+  }), /exitCriteria do not match scenario exit criteria evidence/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      status: "dry-run",
+      dryRun: true,
+      scenarios: [scenario("remote", "dry-run", {
+        exitCriteria: ["provider turn completes"],
+        exitCriteriaEvidence: [{
+          id: "remote:exit-01",
+          criterion: "provider turn completes",
+          status: "dry-run",
+          reason: "scenario command was selected but not executed",
+        }],
+      })],
+      incompleteExitCriteria: [{
+        scenarioId: "other",
+        id: "remote:exit-01",
+        criterion: "provider turn completes",
+        status: "dry-run",
+        reason: "scenario command was selected but not executed",
+      }],
+    }),
+  }), /incompleteExitCriteria do not match scenario exit criteria evidence/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
       scenarios: [scenario("remote", "passed", { runtimeSignals: ["session-authority"] })],
       runtimeSignals: { "lease-health": 1 },
     }),
