@@ -1,4 +1,8 @@
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import {
+  DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
+  DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
+} from "./drill-distributed-runtime-evidence.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
@@ -23,15 +27,8 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredArtifactCoverageAreas: Object.freeze(["distributed-observability"]),
     requiredArtifactSchemas: Object.freeze(["arroba.drill.validation_suite_run.v1"]),
     requiredArtifactKinds: Object.freeze(["validation-suite-run"]),
-    requiredArtifactGeneratedMatrixNames: Object.freeze([
-      "cloud-slice-runtime-matrix",
-      "native-provider-tui-matrix",
-      "remote-agent-runtime-matrix",
-      "remote-home-extension-matrix",
-      "slice-runtime-matrix",
-      "workspace-live-sync-matrix",
-    ]),
-    requiredArtifactGeneratedMatrixRepos: Object.freeze(["cloud", "oss"]),
+    requiredArtifactGeneratedMatrixNames: DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
+    requiredArtifactGeneratedMatrixRepos: DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
     requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),
     requiredArtifactValidationPresets: Object.freeze(["distributed-runtime"]),
     requiredArtifactRuntimeSignals: Object.freeze([

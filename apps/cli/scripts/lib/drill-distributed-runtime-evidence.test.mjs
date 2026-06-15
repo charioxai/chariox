@@ -5,6 +5,9 @@ import path from "node:path"
 import test from "node:test"
 
 import {
+  DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
+  DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO,
+  DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
   distributedRuntimeGeneratedEvidenceSummaryFor,
   distributedRuntimeMatrixArtifactIndexPathsFor,
   distributedRuntimeMatrixCommandsFor,
@@ -127,6 +130,16 @@ test("builds distributed runtime matrix command contracts", () => {
     "oss/workspace-live-sync-matrix",
     "cloud/cloud-slice-runtime-matrix",
   ])
+  assert.deepEqual([...new Set(commands.map((command) => command.repo))].sort(), DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS)
+  assert.deepEqual(commands.map((command) => command.matrix).sort(), [...DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES].sort())
+  assert.deepEqual(
+    commands.filter((command) => command.repo === "oss").map((command) => command.matrix),
+    DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO.oss,
+  )
+  assert.deepEqual(
+    commands.filter((command) => command.repo === "cloud").map((command) => command.matrix),
+    DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO.cloud,
+  )
 })
 
 test("builds distributed runtime generated evidence output directories", () => {

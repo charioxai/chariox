@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO } from "./lib/drill-distributed-runtime-evidence.mjs"
 import { drillRuntimeSignalOwnersFor, drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -1014,16 +1015,7 @@ async function writeValidationSuiteArtifact(rootDir, {
 }
 
 function generatedMatrixNamesForEvidenceRepo(evidenceRepo) {
-  if (evidenceRepo === "oss") {
-    return [
-      "native-provider-tui-matrix",
-      "remote-agent-runtime-matrix",
-      "remote-home-extension-matrix",
-      "slice-runtime-matrix",
-      "workspace-live-sync-matrix",
-    ]
-  }
-  return ["cloud-slice-runtime-matrix"]
+  return DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO[evidenceRepo] ?? []
 }
 
 const DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS = Object.freeze([
