@@ -28,6 +28,7 @@ test("builds distributed runtime matrix command contracts", () => {
     providerAccounts: {
       claude: "work_claude",
       codex: "work_codex",
+      "dev-stub": "stub",
       opencode: "zen",
     },
   })
@@ -99,6 +100,17 @@ test("builds distributed runtime matrix command contracts", () => {
     "--include-hosted-cloud",
   ])
   assert.deepEqual(commands[2].args, ["--dry-run", "--continue-on-failure", "--include-hetzner"])
+  assert.deepEqual(commands[3].args, [
+    "--dry-run",
+    "--continue-on-failure",
+    "--provider-account",
+    "claude=work_claude",
+    "--provider-account",
+    "codex=work_codex",
+    "--provider-account",
+    "opencode=zen",
+    "--include-self-hosted-relay",
+  ])
   assert.deepEqual(commands[4].args, [
     "--dry-run",
     "--continue-on-failure",
