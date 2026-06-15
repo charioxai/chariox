@@ -6,7 +6,7 @@ use crate::transport::runtime_tools::{
     MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
     MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs, MetaUpdatePlanArgs,
     MetaUpdateTaskArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
-    META_COMPLETE_TASK_TOOL, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
+    META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
     META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_READ_EVENT_TOOL,
     META_READ_PLAN_TOOL, META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL,
     META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL, META_SESSION_OVERVIEW_TOOL,
@@ -223,6 +223,17 @@ impl KernelRuntimeState {
             META_SUBSCRIBE_EVENTS_TOOL => {
                 let args = serde_json::from_value::<MetaSubscribeEventsArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                if !crate::transport::runtime_tools::is_known_metaagent_event_kind(&args.kind) {
+                    return Ok(RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({
+                            "error": format!("unknown metaagent event kind `{}`", args.kind),
+                            "kind": args.kind,
+                            "suggestions": suggest_metaagent_event_kinds(&args.kind),
+                            "valid_event_kinds": META_EVENT_KINDS,
+                        }),
+                    });
+                }
                 let subscription =
                     self.owned
                         .metaagent_events
@@ -281,6 +292,7 @@ impl KernelRuntimeState {
                     ok: true,
                     payload: serde_json::json!({
                         "subscriptions": subscriptions,
+                        "valid_event_kinds": META_EVENT_KINDS,
                     }),
                 })
             }
@@ -954,6 +966,83 @@ fn required_metaagent_subscriptions(metaagent_id: &str) -> Vec<serde_json::Value
             "scope": "owned_regular_agents",
         }),
     ]
+}
+
+fn suggest_metaagent_event_kinds(input: &str) -> Vec<&'static str> {
+    let normalized_input = normalize_event_kind_for_suggestion(input);
+    let mut scored = META_EVENT_KINDS
+        .iter()
+        .filter_map(|kind| {
+            let normalized_kind = normalize_event_kind_for_suggestion(kind);
+            let score = event_kind_suggestion_score(&normalized_input, &normalized_kind);
+            (score > 0).then_some((*kind, score))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|(left_kind, left_score), (right_kind, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_kind.cmp(right_kind))
+    });
+    scored.into_iter().take(3).map(|(kind, _)| kind).collect()
+}
+
+fn normalize_event_kind_for_suggestion(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn event_kind_suggestion_score(input: &str, candidate: &str) -> u8 {
+    if input.is_empty() {
+        return 0;
+    }
+    if input == candidate {
+        return 100;
+    }
+    if candidate.contains(input) || input.contains(candidate) {
+        return 80;
+    }
+    let input_tokens = event_kind_tokens(input);
+    let candidate_tokens = event_kind_tokens(candidate);
+    let overlap = input_tokens
+        .iter()
+        .filter(|token| candidate_tokens.iter().any(|candidate| candidate == *token))
+        .count();
+    if overlap > 0 {
+        return 40 + overlap.min(4) as u8 * 10;
+    }
+    let common_prefix = input
+        .chars()
+        .zip(candidate.chars())
+        .take_while(|(left, right)| left == right)
+        .count();
+    (common_prefix >= 5).then_some(20).unwrap_or(0)
+}
+
+fn event_kind_tokens(normalized: &str) -> Vec<&str> {
+    const TOKENS: &[&str] = &[
+        "agent",
+        "turn",
+        "completed",
+        "failed",
+        "runtime",
+        "interaction",
+        "workflow",
+        "run",
+        "started",
+        "updated",
+        "cancelled",
+        "output",
+        "final",
+        "intermediate",
+    ];
+    TOKENS
+        .iter()
+        .copied()
+        .filter(|token| normalized.contains(token))
+        .collect()
 }
 
 fn meta_agent_ref_json(agent: &crate::agent::AgentInstance) -> serde_json::Value {

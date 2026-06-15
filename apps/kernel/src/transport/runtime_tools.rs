@@ -102,6 +102,34 @@ pub const META_UPDATE_PLAN_TOOL: &str = "arroba.meta.update_plan";
 pub const META_COMPLETE_TASK_TOOL: &str = "arroba.meta.complete_task";
 pub const META_MARK_BLOCKED_TOOL: &str = "arroba.meta.mark_blocked";
 
+pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
+pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
+pub const META_EVENT_KIND_RUNTIME_INTERACTION: &str = "runtime.interaction";
+pub const META_EVENT_KIND_WORKFLOW_RUN_STARTED: &str = "workflow.run.started";
+pub const META_EVENT_KIND_WORKFLOW_RUN_UPDATED: &str = "workflow.run.updated";
+pub const META_EVENT_KIND_WORKFLOW_RUN_COMPLETED: &str = "workflow.run.completed";
+pub const META_EVENT_KIND_WORKFLOW_RUN_FAILED: &str = "workflow.run.failed";
+pub const META_EVENT_KIND_WORKFLOW_RUN_CANCELLED: &str = "workflow.run.cancelled";
+pub const META_EVENT_KIND_WORKFLOW_OUTPUT_FINAL: &str = "workflow.output.final";
+pub const META_EVENT_KIND_WORKFLOW_OUTPUT_INTERMEDIATE: &str = "workflow.output.intermediate";
+
+pub const META_EVENT_KINDS: &[&str] = &[
+    META_EVENT_KIND_AGENT_TURN_COMPLETED,
+    META_EVENT_KIND_AGENT_TURN_FAILED,
+    META_EVENT_KIND_RUNTIME_INTERACTION,
+    META_EVENT_KIND_WORKFLOW_RUN_STARTED,
+    META_EVENT_KIND_WORKFLOW_RUN_UPDATED,
+    META_EVENT_KIND_WORKFLOW_RUN_COMPLETED,
+    META_EVENT_KIND_WORKFLOW_RUN_FAILED,
+    META_EVENT_KIND_WORKFLOW_RUN_CANCELLED,
+    META_EVENT_KIND_WORKFLOW_OUTPUT_FINAL,
+    META_EVENT_KIND_WORKFLOW_OUTPUT_INTERMEDIATE,
+];
+
+pub fn is_known_metaagent_event_kind(kind: &str) -> bool {
+    META_EVENT_KINDS.contains(&kind)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeToolSpec {
     pub name: String,
@@ -879,7 +907,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SEARCH_COMMANDS_TOOL.to_string(),
-            description: "Search Arroba commands available to this metaagent by name, usage, tag, scope, mutation behavior, or metaagent policy.".to_string(),
+            description: "Search Arroba commands available to this metaagent by natural-language goal, name, usage, intent, tag, scope, mutation behavior, or metaagent policy.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -994,12 +1022,15 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SUBSCRIBE_EVENTS_TOOL.to_string(),
-            description: "Subscribe the metaagent to optional session events such as workflow outputs or runtime tool activity.".to_string(),
+            description: format!(
+                "Subscribe the metaagent to an optional session event. Valid event kinds: {}.",
+                META_EVENT_KINDS.join(", ")
+            ),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind"],
                 "properties": {
-                    "kind": {"type": "string"},
+                    "kind": {"type": "string", "enum": META_EVENT_KINDS},
                     "filter": {"type": "object"}
                 },
                 "additionalProperties": false
