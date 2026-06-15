@@ -267,7 +267,7 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     lines.push("next: regenerate stale drill matrix reports before using them as validation evidence")
   }
   if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
-    lines.push("next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root")
+    lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRoots.join(", ")}`)
   }
   return lines.join("\n")
 }

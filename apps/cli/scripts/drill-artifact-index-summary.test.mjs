@@ -267,7 +267,7 @@ test("drill artifact index summary gates generated validation-suite failure root
       (error) => {
         assert.equal(error.code, 1)
         assert.match(error.stdout, /generated_validation_suite_failure_roots_required=\/tmp\/generated-suite\/missing-run missing=\/tmp\/generated-suite\/missing-run/)
-        assert.match(error.stdout, /next: rerun generated validation suites with --preserve-failure-root/)
+        assert.match(error.stdout, /next: rerun generated validation suites with --preserve-failure-root .*\/tmp\/generated-suite\/missing-run/)
         return true
       },
     )
