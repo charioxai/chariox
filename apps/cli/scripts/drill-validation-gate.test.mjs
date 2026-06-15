@@ -97,6 +97,41 @@ test("drill validation gate rejects output artifact index without output", async
   )
 })
 
+test("drill validation gate rejects aggregate-only generated evidence requirements", async () => {
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-evidence-kind", "matrix-report", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-evidence-kind is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-matrix-artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-matrix-artifact-index is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-matrix-limitation", "dry-run-classification-coverage", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-matrix-limitation is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-validation-suite-failure-root is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+})
+
 test("drill validation gate forwards failure freshness requirement", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
   try {
@@ -146,6 +181,7 @@ test("drill validation gate help lists presets from the registry", async () => {
   assert.match(stdout, /Known: distributed-runtime, native-provider-tui, remote-agent-runtime, remote-home-extension, slice-runtime, workspace-live-sync/)
   assert.match(stdout, /--require-artifact-coverage-area ID\[,ID\]/)
   assert.match(stdout, /--require-artifact-provider-account-alias P=A\[,P=A\]/)
+  assert.match(stdout, /--require-artifact-generated-matrix-artifact-index PATH\[,PATH\]/)
 })
 
 test("drill validation gate lists selected presets as JSON", async () => {

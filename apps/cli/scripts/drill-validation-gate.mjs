@@ -47,6 +47,8 @@ function printHelp() {
     "                         Fail when artifact index metadata lacks each artifact kind; repeatable",
   "  --require-artifact-generated-evidence-kind KIND[,KIND]",
   "                         Fail when artifact index metadata lacks each generated evidence kind; repeatable",
+  "  --require-artifact-generated-matrix-artifact-index PATH[,PATH]",
+  "                         Fail when artifact index metadata lacks each generated matrix artifact index; repeatable",
   "  --require-artifact-generated-matrix-limitation KIND[,KIND]",
   "                         Fail when artifact index metadata lacks each generated matrix limitation; repeatable",
   "  --require-artifact-evidence-repo REPO[,REPO]",
@@ -272,6 +274,18 @@ function parseArgs(argv) {
   }
   if (options.outputArtifactIndexPath && !options.outputPath) {
     throw new Error("--output-artifact-index requires --output")
+  }
+  if (options.requiredGeneratedEvidenceKinds.length > 0) {
+    throw new Error("--require-generated-evidence-kind is supported by drill-validation-gate-summary.mjs after validation gate reports are written")
+  }
+  if (options.requiredGeneratedMatrixArtifactIndexes.length > 0) {
+    throw new Error("--require-generated-matrix-artifact-index is supported by drill-validation-gate-summary.mjs after validation gate reports are written")
+  }
+  if (options.requiredGeneratedMatrixLimitations.length > 0) {
+    throw new Error("--require-generated-matrix-limitation is supported by drill-validation-gate-summary.mjs after validation gate reports are written")
+  }
+  if (options.requiredGeneratedValidationSuiteFailureRoots.length > 0) {
+    throw new Error("--require-generated-validation-suite-failure-root is supported by drill-validation-gate-summary.mjs after validation gate reports are written")
   }
   return options
 }
