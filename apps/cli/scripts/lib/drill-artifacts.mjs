@@ -4,6 +4,7 @@ import path from "node:path"
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -787,9 +788,7 @@ function validateDiagnosticCountObject(value, source, key) {
   }
   if (key === "exitCriterionStatuses" || key === "incompleteExitCriterionStatuses") {
     for (const status of Object.keys(value)) {
-      if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
-        throw new Error(`${source} has unknown exit criterion status ${JSON.stringify(status)}`)
-      }
+      validateDrillExitCriterionStatus(status, source)
     }
   }
   if (key === "evidenceRepos") {

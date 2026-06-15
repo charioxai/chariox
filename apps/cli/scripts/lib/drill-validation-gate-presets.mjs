@@ -5,6 +5,7 @@ import {
 } from "./drill-distributed-runtime-evidence.mjs"
 import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
 import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -958,8 +959,8 @@ function normalizeDiagnosticTextRequirements(values, { fieldName, itemName }) {
 
 function validateExitCriterionStatuses(statuses, fieldName) {
   for (const status of statuses) {
-    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
-      throw new Error(`unknown required artifact exit criterion status in ${fieldName}: ${status}`)
-    }
+    validateDrillExitCriterionStatus(status, fieldName, {
+      message: () => `unknown required artifact exit criterion status in ${fieldName}: ${status}`,
+    })
   }
 }

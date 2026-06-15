@@ -10,6 +10,7 @@ import {
   drillFailureOwnerForClassification,
   validateDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
+import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
 import { drillRuntimeSignalOwnerCounts, validateDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import {
   isSensitiveDrillKey,
@@ -1322,9 +1323,9 @@ function validateCountObject(value, source) {
 function validateExitCriteriaCountObject(value, source) {
   validateCountObject(value, source)
   for (const status of Object.keys(value)) {
-    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
-      throw new Error(`${source} has invalid status ${JSON.stringify(status)}`)
-    }
+    validateDrillExitCriterionStatus(status, source, {
+      message: () => `${source} has invalid status ${JSON.stringify(status)}`,
+    })
   }
 }
 
@@ -1519,9 +1520,9 @@ function validateExitCriterionEvidence(criterion, source) {
   if (!nonEmptyString(criterion.criterion)) {
     throw new Error(`${source} is missing criterion`)
   }
-  if (!["satisfied", "failed", "skipped", "dry-run"].includes(criterion.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(criterion.status)}`)
-  }
+  validateDrillExitCriterionStatus(criterion.status, source, {
+    message: () => `${source} has invalid status ${JSON.stringify(criterion.status)}`,
+  })
   if (criterion.reason !== null && typeof criterion.reason !== "string") {
     throw new Error(`${source} has invalid reason`)
   }

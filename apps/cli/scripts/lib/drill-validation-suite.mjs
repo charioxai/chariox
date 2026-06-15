@@ -10,6 +10,7 @@ import {
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
 import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -42,6 +43,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-distributed-runtime-evidence.test.mjs",
   "apps/cli/scripts/lib/drill-environment-presets.test.mjs",
   "apps/cli/scripts/lib/drill-evidence-repos.test.mjs",
+  "apps/cli/scripts/lib/drill-exit-criterion-statuses.test.mjs",
   "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
   "apps/cli/scripts/lib/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
@@ -103,6 +105,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-artifact-kinds.test.mjs",
       "apps/cli/scripts/lib/drill-artifacts.test.mjs",
       "apps/cli/scripts/lib/drill-evidence-repos.test.mjs",
+      "apps/cli/scripts/lib/drill-exit-criterion-statuses.test.mjs",
       "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
       "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
       "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
@@ -443,9 +446,7 @@ function sortedGeneratedMatrixNameArray(value, source) {
 function sortedExitCriterionStatusArray(value, source) {
   const statuses = sortedStringArray(value, source)
   for (const [index, status] of statuses.entries()) {
-    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown exit criterion status ${JSON.stringify(status)}`)
-    }
+    validateDrillExitCriterionStatus(status, `validation suite preset ${source}[${index}]`)
   }
   return statuses
 }

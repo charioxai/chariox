@@ -6,6 +6,7 @@ import {
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
+import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
 import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -2274,9 +2275,7 @@ function validateGeneratedMatrixLimitationArray(value, source) {
 function validateExitCriterionStatusArray(value, source) {
   validateStringArray(value, source)
   for (const [index, status] of value.entries()) {
-    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
-      throw new Error(`${source}[${index}] has unknown exit criterion status ${JSON.stringify(status)}`)
-    }
+    validateDrillExitCriterionStatus(status, `${source}[${index}]`)
   }
 }
 
@@ -2342,9 +2341,7 @@ function validateArtifactKindCountObject(value, source) {
 function validateExitCriterionStatusCountObject(value, source) {
   validateCountObject(value, source)
   for (const status of Object.keys(value)) {
-    if (!["satisfied", "failed", "skipped", "dry-run"].includes(status)) {
-      throw new Error(`${source} has unknown exit criterion status ${JSON.stringify(status)}`)
-    }
+    validateDrillExitCriterionStatus(status, source)
   }
 }
 
