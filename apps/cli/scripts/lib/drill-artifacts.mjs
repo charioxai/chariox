@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
@@ -544,6 +545,7 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
   for (const [index, summary] of aggregate.indexes.entries()) {
     validateArtifactIndexSummary(summary, `${source}.indexes[${index}]`)
   }
+  validateDrillArtifactIndexAggregateNextActions(aggregate.nextActions, `${source}.nextActions`)
   if (aggregate.totals.indexes !== aggregate.indexes.length) {
     throw new Error(`${source} totals.indexes does not match indexes`)
   }
@@ -566,6 +568,16 @@ export function validateDrillArtifactIndexAggregate(aggregate, source = "drill a
     if (JSON.stringify(aggregate[key] ?? {}) !== JSON.stringify(sortedCountObject(expectedCounts))) {
       throw new Error(`${source} ${key} do not match indexes`)
     }
+  }
+}
+
+function validateDrillArtifactIndexAggregateNextActions(nextActions, source) {
+  if (nextActions === undefined) return
+  if (!Array.isArray(nextActions)) {
+    throw new Error(`${source} is invalid`)
+  }
+  for (const [index, action] of nextActions.entries()) {
+    validateDrillAggregateNextAction(action, `${source}[${index}]`)
   }
 }
 

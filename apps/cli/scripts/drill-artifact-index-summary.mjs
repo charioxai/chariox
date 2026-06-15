@@ -14,6 +14,10 @@ import {
   writeDrillJsonArtifactOutput,
 } from "./lib/drill-artifacts.mjs"
 import {
+  countDrillAggregateNextAction,
+  formatDrillAggregateNextActionCounts,
+} from "./lib/drill-aggregate-actions.mjs"
+import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
 } from "./lib/drill-provider-profiles.mjs"
@@ -99,6 +103,7 @@ async function main() {
   Object.assign(aggregate, plannedDiagnosticRequirementDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, validationPresetDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, runtimeSignalDiagnosticsFor(aggregate, options))
+  aggregate.nextActions = artifactIndexSummaryNextActions(aggregate)
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
@@ -706,6 +711,12 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingRuntimeSignalOwnerRequirements ?? []
     lines.push(`runtime_signal_owners_required=${aggregate.requiredRuntimeSignalOwnerRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if ((aggregate.nextActions ?? []).length > 0) {
+    lines.push("next actions:")
+    for (const action of aggregate.nextActions) {
+      lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count} next=${action.nextAction}`)
+    }
+  }
   if ((aggregate.staleArtifactIndexes ?? []).length > 0) {
     lines.push("next: regenerate stale drill artifact indexes before using them as validation evidence")
   }
@@ -747,6 +758,126 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   return lines.join("\n")
 }
+
+function artifactIndexSummaryNextActions(aggregate) {
+  const nextActions = new Map()
+  if ((aggregate.staleArtifactIndexes ?? []).length > 0) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      classification: "artifact-staleness",
+      nextAction: "regenerate stale drill artifact indexes before using them as validation evidence",
+    })
+  }
+  if ((aggregate.staleMatrixReports ?? []).length > 0) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      classification: "matrix-staleness",
+      nextAction: "regenerate stale drill matrix reports before using them as validation evidence",
+    })
+  }
+  addMissingListActions(
+    nextActions,
+    aggregate.missingRequiredGeneratedEvidenceKinds,
+    "generated-evidence",
+    "include drill artifact indexes that record generated evidence kinds",
+  )
+  addMissingListActions(
+    nextActions,
+    aggregate.missingRequiredGeneratedMatrixLimitations,
+    "generated-evidence",
+    "include drill artifact indexes that record generated matrix limitations",
+  )
+  addMissingListActions(
+    nextActions,
+    aggregate.missingGeneratedValidationSuiteFailureRoots,
+    "generated-evidence",
+    "rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root",
+  )
+  addMissingListActions(
+    nextActions,
+    aggregate.missingGeneratedValidationSuiteArtifactIndexPaths,
+    "generated-evidence",
+    "rerun generated validation suites with artifact indexes or include the artifact index that records generated validation-suite artifact indexes",
+  )
+  addMissingListActions(
+    nextActions,
+    aggregate.missingGeneratedMatrixArtifactIndexPaths,
+    "generated-evidence",
+    "rerun generated matrix drills with artifact indexes or include the artifact index that records generated matrix artifact indexes",
+  )
+  addMissingListActions(
+    nextActions,
+    aggregate.missingProviderAccountAliases,
+    "provider-account",
+    "include drill artifact indexes that record provider account aliases",
+    "provider-account",
+  )
+  for (const owner of aggregate.missingPlannedOwners ?? []) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      owner,
+      classification: "artifact-coverage",
+      nextAction: `include dry-run drill matrix artifact indexes with planned owner coverage: ${owner}`,
+    })
+  }
+  for (const classification of aggregate.missingPlannedClassifications ?? []) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      owner: artifactIndexSummaryOwnerForClassification(classification),
+      classification,
+      nextAction: `include dry-run drill matrix artifact indexes with planned classification coverage: ${classification}`,
+    })
+  }
+  addMissingListActions(
+    nextActions,
+    aggregate.missingValidationPresets,
+    "artifact-coverage",
+    "include drill artifact indexes that record validation presets",
+  )
+  for (const signal of aggregate.missingRuntimeSignalRequirements ?? []) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      owner: drillRuntimeSignalOwnersFor([signal])[0],
+      classification: "runtime-signal-coverage",
+      nextAction: drillRuntimeSignalNextAction(signal, { target: "artifact-index" }),
+    })
+  }
+  for (const owner of aggregate.missingRuntimeSignalOwnerRequirements ?? []) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      owner,
+      classification: "runtime-signal-coverage",
+      nextAction: `include drill artifact indexes with runtime signal owner coverage: ${owner}`,
+    })
+  }
+  return formatDrillAggregateNextActionCounts(nextActions)
+}
+
+function addMissingListActions(nextActions, values, classification, prefix, owner = "validation-harness") {
+  if ((values ?? []).length === 0) return
+  countArtifactIndexSummaryNextAction(nextActions, {
+    owner,
+    classification,
+    nextAction: `${prefix}: ${values.join(", ")}`,
+  })
+}
+
+function countArtifactIndexSummaryNextAction(nextActions, {
+  owner = "validation-harness",
+  classification,
+  nextAction,
+}) {
+  countDrillAggregateNextAction(nextActions, { owner, classification, nextAction })
+}
+
+function artifactIndexSummaryOwnerForClassification(classification) {
+  return ARTIFACT_INDEX_SUMMARY_CLASSIFICATION_OWNERS[classification] ?? "validation-harness"
+}
+
+const ARTIFACT_INDEX_SUMMARY_CLASSIFICATION_OWNERS = Object.freeze({
+  "kernel-authority": "kernel-authority",
+  "provider-auth": "provider-account",
+  "provider-error": "provider-runtime",
+  "runtime-projection-health": "kernel-authority",
+  "slice-auth": "provider-account",
+  "slice-runtime": "worker-kernel",
+  "ui-client-projection": "ui-client",
+  "workspace-live-sync-conflict": "runtime-state",
+})
 
 main().catch((error) => {
   console.error(`[drill-artifact-index-summary] ${error.stack ?? error.message}`)

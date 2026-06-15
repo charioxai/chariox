@@ -662,6 +662,7 @@ test("drill artifact index summary gates planned dry-run diagnostics", async () 
     assert.deepEqual(aggregate.missingPlannedOwners, [])
     assert.deepEqual(aggregate.requiredPlannedClassifications, ["matrix-coverage"])
     assert.deepEqual(aggregate.missingPlannedClassifications, [])
+    assert.deepEqual(aggregate.nextActions, [])
     assert.equal(artifactIndex.metadata.requiredPlannedOwners, "validation-harness")
     assert.equal(artifactIndex.metadata.requiredPlannedClassifications, "matrix-coverage")
     assert.equal(artifactIndex.metadata.missingPlannedOwners, undefined)
@@ -681,6 +682,34 @@ test("drill artifact index summary gates planned dry-run diagnostics", async () 
         assert.match(error.stdout, /planned_classifications_required=workspace-live-sync-conflict missing=workspace-live-sync-conflict/)
         assert.match(error.stdout, /next: include dry-run drill matrix artifact indexes with planned owner coverage: kernel-authority/)
         assert.match(error.stdout, /next: include dry-run drill matrix artifact indexes with planned classification coverage: workspace-live-sync-conflict/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-planned-owner=kernel-authority",
+        "--require-planned-classification=workspace-live-sync-conflict",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const missing = JSON.parse(error.stdout)
+        assert.deepEqual(missing.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [
+          {
+            owner: "kernel-authority",
+            classification: "artifact-coverage",
+            nextAction: "include dry-run drill matrix artifact indexes with planned owner coverage: kernel-authority",
+          },
+          {
+            owner: "runtime-state",
+            classification: "workspace-live-sync-conflict",
+            nextAction: "include dry-run drill matrix artifact indexes with planned classification coverage: workspace-live-sync-conflict",
+          },
+        ])
         return true
       },
     )
@@ -793,6 +822,7 @@ test("drill artifact index summary gates runtime signals with owner-routed next 
     assert.deepEqual(aggregate.missingRuntimeSignalRequirements, [])
     assert.deepEqual(aggregate.requiredRuntimeSignalOwnerRequirements, ["kernel-authority"])
     assert.deepEqual(aggregate.missingRuntimeSignalOwnerRequirements, [])
+    assert.deepEqual(aggregate.nextActions, [])
     assert.equal(artifactIndex.metadata.requiredRuntimeSignals, "lease-health,session-authority")
     assert.equal(artifactIndex.metadata.requiredRuntimeSignalOwners, "kernel-authority")
     assert.equal(artifactIndex.metadata.missingRuntimeSignals, undefined)
@@ -809,6 +839,27 @@ test("drill artifact index summary gates runtime signals with owner-routed next 
         assert.equal(error.code, 1)
         assert.match(error.stdout, /runtime_signals_required=relay-target-freshness missing=relay-target-freshness/)
         assert.match(error.stdout, /next: include drill artifact indexes proving relay-target-freshness owned by runtime-network/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-runtime-signal=relay-target-freshness",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const missing = JSON.parse(error.stdout)
+        assert.deepEqual(missing.nextActions.map(({ owner, classification, count }) => ({ owner, classification, count })), [{
+          owner: "runtime-network",
+          classification: "runtime-signal-coverage",
+          count: 1,
+        }])
+        assert.match(missing.nextActions[0].nextAction, /relay-target-freshness owned by runtime-network/)
         return true
       },
     )

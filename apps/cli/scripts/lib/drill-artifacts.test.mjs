@@ -969,6 +969,34 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
     })
     const aggregate = summarizeDrillArtifactIndexes([index])
 
+    assert.doesNotThrow(() => validateDrillArtifactIndexAggregate({
+      ...aggregate,
+      nextActions: [{
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: "include drill artifact indexes with required coverage",
+        count: 1,
+      }],
+    }))
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        nextActions: "invalid",
+      }),
+      /nextActions is invalid/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndexAggregate({
+        ...aggregate,
+        nextActions: [{
+          owner: "validation-harness",
+          classification: "artifact-coverage",
+          nextAction: "retry with Bearer abcdefghijklmnopqrstuvwxyz",
+          count: 1,
+        }],
+      }),
+      /nextActions\[0\] includes secret-looking nextAction/,
+    )
     assert.throws(
       () => validateDrillArtifactIndexAggregate({
         ...aggregate,
