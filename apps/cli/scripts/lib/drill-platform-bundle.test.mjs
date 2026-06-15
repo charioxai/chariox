@@ -29,6 +29,10 @@ test("defines stable drill platform bundle artifacts", () => {
       schema: "arroba.drill.generated_matrix_limitations.v1",
     },
     {
+      path: "generated-matrix-names.json",
+      schema: "arroba.drill.generated_matrix_names.v1",
+    },
+    {
       path: "runtime-signals.json",
       schema: "arroba.drill.runtime_signals.v1",
     },
@@ -46,6 +50,7 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     const verified = await verifyDrillPlatformBundle(rootDir)
     const artifactIndex = await verifyDrillArtifactIndex(path.join(rootDir, "arroba-drill-artifacts.json"))
     const generatedMatrixLimitations = JSON.parse(await readFile(path.join(rootDir, "generated-matrix-limitations.json"), "utf8"))
+    const generatedMatrixNames = JSON.parse(await readFile(path.join(rootDir, "generated-matrix-names.json"), "utf8"))
     const validationSuite = JSON.parse(await readFile(path.join(rootDir, "validation-suite.json"), "utf8"))
 
     assert.equal(bundle.schema, DRILL_PLATFORM_BUNDLE_SCHEMA)
@@ -53,6 +58,15 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     assert.equal(artifactIndex.metadata.drill, "platform-bundle")
     assert.equal(generatedMatrixLimitations.schema, "arroba.drill.generated_matrix_limitations.v1")
     assert.deepEqual(generatedMatrixLimitations.limitations.map((limitation) => limitation.kind), ["dry-run-classification-coverage"])
+    assert.equal(generatedMatrixNames.schema, "arroba.drill.generated_matrix_names.v1")
+    assert.deepEqual(generatedMatrixNames.matrices, [
+      { name: "cloud-slice-runtime-matrix", repo: "cloud" },
+      { name: "native-provider-tui-matrix", repo: "oss" },
+      { name: "remote-agent-runtime-matrix", repo: "oss" },
+      { name: "remote-home-extension-matrix", repo: "oss" },
+      { name: "slice-runtime-matrix", repo: "oss" },
+      { name: "workspace-live-sync-matrix", repo: "oss" },
+    ])
     assert.equal(validationSuite.coverage.length, 6)
     assert.deepEqual(validationSuite.coverage.map((area) => area.id), [
       "distributed-observability",
@@ -125,6 +139,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       {
         path: "generated-matrix-limitations.json",
         schema: "arroba.drill.generated_matrix_limitations.v1",
+      },
+      {
+        path: "generated-matrix-names.json",
+        schema: "arroba.drill.generated_matrix_names.v1",
       },
       {
         path: "index.json",
