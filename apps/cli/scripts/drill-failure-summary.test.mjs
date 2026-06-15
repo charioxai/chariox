@@ -83,6 +83,69 @@ test("failure summary writes artifact index for output", async () => {
   }
 })
 
+test("failure summary gates stale failure manifests", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-summary-"))
+  try {
+    const manifestPath = path.join(dir, "arroba-drill-failure.json")
+    const failedAt = new Date(Date.now() - 500).toISOString()
+    await writeManifest(manifestPath, failureManifest({
+      rootDir: dir,
+      drill: "stale-root",
+      failedAt,
+    }))
+
+    const fresh = await runSummary([
+      "--json",
+      "--require-failure-max-age-ms",
+      "3600000",
+      manifestPath,
+    ])
+    assert.equal(fresh.requiredFailureMaxAgeMs, 3_600_000)
+    assert.deepEqual(fresh.staleFailureManifests, [])
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--json",
+        "--require-failure-max-age-ms",
+        "100",
+        manifestPath,
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const stale = JSON.parse(error.stdout)
+        assert.equal(stale.requiredFailureMaxAgeMs, 100)
+        assert.equal(stale.staleFailureManifests.length, 1)
+        assert.equal(stale.staleFailureManifests[0].source, manifestPath)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--require-failure-max-age-ms=100",
+        manifestPath,
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /failure_required_max_age_ms=100 stale_manifests=1/)
+        assert.match(error.stdout, /stale_failure_manifest=.*arroba-drill-failure\.json drill=stale-root/)
+        return true
+      },
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("failure summary rejects invalid failure freshness age", async () => {
+  await assert.rejects(
+    () => execFile(process.execPath, [scriptPath, "--find", ".", "--require-failure-max-age-ms", "old"]),
+    /--require-failure-max-age-ms must be a non-negative integer/,
+  )
+})
+
 test("failure summary rejects output artifact index without output", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
@@ -104,11 +167,11 @@ async function writeManifest(file, manifest) {
   await writeFile(file, `${JSON.stringify(manifest)}\n`, "utf8")
 }
 
-function failureManifest({ rootDir, drill, runtimeSignals = null }) {
+function failureManifest({ rootDir, drill, failedAt = "2026-06-13T00:00:00.000Z", runtimeSignals = null }) {
   return {
     schema: "arroba.drill.failure.v1",
     rootDir,
-    failedAt: "2026-06-13T00:00:00.000Z",
+    failedAt,
     metadata: {
       drill,
       ...(runtimeSignals ? { runtimeSignals } : {}),

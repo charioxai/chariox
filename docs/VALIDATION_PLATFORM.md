@@ -160,6 +160,7 @@ node apps/cli/scripts/drill-failure-summary.mjs path/to/arroba-drill-failure.jso
 node apps/cli/scripts/drill-failure-summary.mjs --find apps/cli/target .artifacts
 node apps/cli/scripts/drill-failure-summary.mjs --find --max-depth 4 .artifacts
 node apps/cli/scripts/drill-failure-summary.mjs --json --output path/to/failure-aggregate.json --find apps/cli/target .artifacts
+node apps/cli/scripts/drill-failure-summary.mjs --find --require-failure-max-age-ms 3600000 .artifacts
 ```
 
 Required top-level fields:
@@ -176,6 +177,7 @@ Failure manifest discovery is bounded by default, prunes heavy irrelevant direct
 The `--json`/`--output` aggregate schema is `arroba.drill.failure.aggregate.v1`.
 Its `nextActions` entries group repeated owner/classification/action pairs so CI and humans can route a failure batch without scanning every manifest.
 Each failure entry includes the drill name, preserved artifact root, optional manifest `source` path, owner, classification, and next action.
+Use `--require-failure-max-age-ms MS` when CI must reject stale preserved failure bundles instead of routing old failures as current blockers; aggregate output then includes `requiredFailureMaxAgeMs` and `staleFailureManifests`.
 
 ## Scenario Selection
 

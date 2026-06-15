@@ -295,6 +295,40 @@ test("aggregates preserved drill failure summaries", () => {
   assert.match(text, /next: inspect relay and kernel logs/)
 })
 
+test("summarizes stale preserved failure manifests", () => {
+  const failedAt = "2026-01-01T00:00:00.000Z"
+  const manifest = validManifest({
+    rootDir: "/tmp/stale-failure",
+    failedAt,
+    metadata: { drill: "stale-drill", runtimeSignals: "runtime-projection-health" },
+    error: { name: "Error", message: "projection stale", stack: null },
+  })
+  const aggregate = summarizeDrillFailureManifests([manifest], {
+    sources: ["/tmp/stale-failure/arroba-drill-failure.json"],
+    nowMs: Date.parse(failedAt) + 1_000,
+    requiredFailureMaxAgeMs: 100,
+  })
+  const text = formatDrillFailureManifestAggregateSummary(aggregate)
+
+  assert.equal(aggregate.requiredFailureMaxAgeMs, 100)
+  assert.deepEqual(aggregate.staleFailureManifests, [{
+    source: "/tmp/stale-failure/arroba-drill-failure.json",
+    rootDir: "/tmp/stale-failure",
+    drill: "stale-drill",
+    failedAt,
+    ageMs: 1000,
+    maxAgeMs: 100,
+  }])
+  assert.match(text, /failure_required_max_age_ms=100 stale_manifests=1/)
+  assert.match(text, /stale_failure_manifest=\/tmp\/stale-failure\/arroba-drill-failure\.json drill=stale-drill/)
+
+  const fresh = summarizeDrillFailureManifests([manifest], {
+    nowMs: Date.parse(failedAt) + 100,
+    requiredFailureMaxAgeMs: 1_000,
+  })
+  assert.deepEqual(fresh.staleFailureManifests, [])
+})
+
 test("rejects inconsistent failure aggregates", () => {
   const aggregate = summarizeDrillFailureManifests([
     validManifest({

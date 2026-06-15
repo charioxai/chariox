@@ -6,7 +6,10 @@ import {
   readDrillFailureManifest,
   summarizeDrillFailureManifests,
 } from "./lib/drill-failure-manifest.mjs"
-import { parseDrillMaxDepth } from "./lib/drill-cli-args.mjs"
+import {
+  parseDrillMaxDepth,
+  parseDrillNonNegativeInteger,
+} from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 
 function printHelp() {
@@ -19,6 +22,8 @@ function printHelp() {
     "Options:",
     "  --find          Recursively discover arroba-drill-failure.json files below each input directory",
     "  --max-depth N   Limit --find traversal depth; defaults to 8",
+    "  --require-failure-max-age-ms MS",
+    "                 Exit non-zero when failure manifests are older than this many milliseconds",
     "  --json          Print aggregate JSON instead of human-readable summaries",
     "  --output PATH   Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -58,7 +63,10 @@ async function main() {
       console.log(formatDrillFailureManifestSummary(manifest, { source: input }))
     }
   }
-  const aggregate = summarizeDrillFailureManifests(manifests, { sources: inputs })
+  const aggregate = summarizeDrillFailureManifests(manifests, {
+    sources: inputs,
+    requiredFailureMaxAgeMs: options.requiredFailureMaxAgeMs,
+  })
   if (options.outputPath) {
     const runtimeSignals = Object.keys(aggregate.runtimeSignals).sort()
     const runtimeSignalOwners = Object.keys(aggregate.runtimeSignalOwners).sort()
@@ -82,12 +90,14 @@ async function main() {
   }
   if (options.json) {
     console.log(JSON.stringify(aggregate, null, 2))
+    if ((aggregate.staleFailureManifests ?? []).length > 0) process.exitCode = 1
     return
   }
-  if (manifests.length > 1) {
+  if (manifests.length > 1 || options.requiredFailureMaxAgeMs !== null) {
     console.log("")
     console.log(formatDrillFailureManifestAggregateSummary(aggregate))
   }
+  if ((aggregate.staleFailureManifests ?? []).length > 0) process.exitCode = 1
 }
 
 function parseArgs(argv) {
@@ -98,6 +108,7 @@ function parseArgs(argv) {
     maxDepth: 8,
     outputArtifactIndexPath: null,
     outputPath: null,
+    requiredFailureMaxAgeMs: null,
     inputs: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -112,6 +123,17 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--max-depth=")) {
       options.maxDepth = parseDrillMaxDepth(arg.slice("--max-depth=".length))
+    }
+    else if (arg === "--require-failure-max-age-ms") {
+      const value = argv[index + 1]
+      if (!value || value.startsWith("--")) throw new Error("--require-failure-max-age-ms requires a value")
+      options.requiredFailureMaxAgeMs = parseDrillNonNegativeInteger(value, "--require-failure-max-age-ms")
+      index += 1
+    } else if (arg.startsWith("--require-failure-max-age-ms=")) {
+      options.requiredFailureMaxAgeMs = parseDrillNonNegativeInteger(
+        arg.slice("--require-failure-max-age-ms=".length),
+        "--require-failure-max-age-ms",
+      )
     }
     else if (arg === "--json") options.json = true
     else if (arg === "--output") {

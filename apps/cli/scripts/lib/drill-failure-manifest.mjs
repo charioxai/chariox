@@ -117,7 +117,11 @@ export function formatDrillFailureManifestSummary(manifest, { source = null } = 
   return lines.join("\n")
 }
 
-export function summarizeDrillFailureManifests(manifests, { sources = [] } = {}) {
+export function summarizeDrillFailureManifests(manifests, {
+  requiredFailureMaxAgeMs = null,
+  nowMs = Date.now(),
+  sources = [],
+} = {}) {
   const summaries = manifests.map((manifest, index) => summarizeDrillFailureManifest(manifest, {
     source: sources[index] ?? null,
   }))
@@ -145,7 +149,7 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
       nextAction,
     })
   }
-  return {
+  const aggregate = {
     schema: "arroba.drill.failure.aggregate.v1",
     total: summaries.length,
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -155,6 +159,15 @@ export function summarizeDrillFailureManifests(manifests, { sources = [] } = {})
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
     failures,
   }
+  if (requiredFailureMaxAgeMs !== null) {
+    aggregate.requiredFailureMaxAgeMs = requiredFailureMaxAgeMs
+    aggregate.staleFailureManifests = staleFailureManifestsFor(summaries, {
+      nowMs,
+      requiredFailureMaxAgeMs,
+    })
+  }
+  validateDrillFailureManifestAggregate(aggregate)
+  return aggregate
 }
 
 export function formatDrillFailureManifestAggregateSummary(aggregate) {
@@ -175,6 +188,12 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
   if (runtimeSignals.length > 0) {
     lines.push(`runtime_signals: ${runtimeSignals.map(([signal, count]) => `${signal}=${count}`).join(" ")}`)
     lines.push(`runtime_signal_owners: ${formatCountObject(aggregate.runtimeSignalOwners)}`)
+  }
+  if (aggregate.requiredFailureMaxAgeMs !== undefined) {
+    lines.push(`failure_required_max_age_ms=${aggregate.requiredFailureMaxAgeMs} stale_manifests=${(aggregate.staleFailureManifests ?? []).length}`)
+    for (const staleFailure of aggregate.staleFailureManifests ?? []) {
+      lines.push(`- stale_failure_manifest=${staleFailure.source ?? "unknown"} drill=${staleFailure.drill} failed_at=${staleFailure.failedAt} age_ms=${staleFailure.ageMs} max_age_ms=${staleFailure.maxAgeMs}`)
+    }
   }
   if (Array.isArray(aggregate.nextActions) && aggregate.nextActions.length > 0) {
     lines.push("next actions:")
@@ -236,6 +255,13 @@ export function validateDrillFailureManifestAggregate(aggregate) {
   }
   if (!aggregate.runtimeSignalOwners || typeof aggregate.runtimeSignalOwners !== "object" || Array.isArray(aggregate.runtimeSignalOwners)) {
     throw new Error("aggregate has invalid runtimeSignalOwners")
+  }
+  if (aggregate.requiredFailureMaxAgeMs !== undefined
+    && (!Number.isSafeInteger(aggregate.requiredFailureMaxAgeMs) || aggregate.requiredFailureMaxAgeMs < 0)) {
+    throw new Error("aggregate has invalid requiredFailureMaxAgeMs")
+  }
+  if (aggregate.staleFailureManifests !== undefined) {
+    validateStaleFailureManifests(aggregate.staleFailureManifests)
   }
   if (!Array.isArray(aggregate.failures)) {
     throw new Error("aggregate has invalid failures")
@@ -303,6 +329,28 @@ function assertRuntimeSignalOwnerCountsMatchSignals(aggregate) {
   }
 }
 
+function staleFailureManifestsFor(summaries, { nowMs, requiredFailureMaxAgeMs }) {
+  if (!Number.isSafeInteger(requiredFailureMaxAgeMs) || requiredFailureMaxAgeMs < 0) {
+    throw new Error("requiredFailureMaxAgeMs must be a non-negative integer")
+  }
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("nowMs must be finite")
+  }
+  return summaries
+    .map((summary) => {
+      const failedMs = parseDrillIsoTimestamp(summary.failedAt, `${summary.source ?? "failure manifest"}.failedAt`)
+      return {
+        source: summary.source,
+        rootDir: summary.rootDir,
+        drill: summary.metadata.drill ?? "unknown",
+        failedAt: summary.failedAt,
+        ageMs: Math.max(0, Math.floor(nowMs - failedMs)),
+        maxAgeMs: requiredFailureMaxAgeMs,
+      }
+    })
+    .filter((entry) => entry.ageMs > requiredFailureMaxAgeMs)
+}
+
 function validateDrillFailureAggregateEntry(failure, source) {
   if (!failure || typeof failure !== "object" || Array.isArray(failure)) {
     throw new Error(`${source} is not an object`)
@@ -330,6 +378,32 @@ function validateDrillFailureAggregateEntry(failure, source) {
     throw new Error(`${source} has invalid runtimeSignals`)
   }
   validateDrillRuntimeSignals(failure.runtimeSignals, `${source}.runtimeSignals`)
+}
+
+function validateStaleFailureManifests(staleFailures) {
+  if (!Array.isArray(staleFailures)) {
+    throw new Error("aggregate has invalid staleFailureManifests")
+  }
+  for (const [index, staleFailure] of staleFailures.entries()) {
+    const source = `aggregate.staleFailureManifests[${index}]`
+    if (!staleFailure || typeof staleFailure !== "object" || Array.isArray(staleFailure)) {
+      throw new Error(`${source} is not an object`)
+    }
+    if (staleFailure.source !== null && staleFailure.source !== undefined && !nonEmptyString(staleFailure.source)) {
+      throw new Error(`${source} has invalid source`)
+    }
+    for (const key of ["rootDir", "drill", "failedAt"]) {
+      if (!nonEmptyString(staleFailure[key])) {
+        throw new Error(`${source} is missing ${key}`)
+      }
+    }
+    parseDrillIsoTimestamp(staleFailure.failedAt, `${source}.failedAt`)
+    for (const key of ["ageMs", "maxAgeMs"]) {
+      if (!Number.isSafeInteger(staleFailure[key]) || staleFailure[key] < 0) {
+        throw new Error(`${source} has invalid ${key}`)
+      }
+    }
+  }
 }
 
 function validateFailureError(error, source) {
