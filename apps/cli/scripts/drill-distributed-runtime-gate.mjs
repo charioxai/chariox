@@ -181,7 +181,7 @@ async function main() {
             ossRoot: options.ossRoot,
             cloudRoot: options.cloudRoot,
           }),
-          ...diagnosticMetadataForValidationGateReport(report),
+          ...diagnosticMetadataForValidationGateReport(outputReport),
         },
       })
     }
@@ -424,13 +424,17 @@ function generatedEvidenceKindsFor(generatedEvidence) {
 }
 
 function generatedEvidenceMetadataFor(generatedEvidence) {
-  const kinds = generatedEvidenceKindsFor(generatedEvidence)
+  const kinds = generatedEvidenceKindsFor(generatedEvidence).sort()
   const matrixLimitations = (generatedEvidence.matrixReports.limitations ?? [])
     .map((limitation) => limitation.kind)
     .filter((kind) => typeof kind === "string" && kind.length > 0)
     .sort()
+  const matrixArtifactIndexes = (generatedEvidence.matrixReports.artifactIndexes ?? [])
+    .filter((artifactIndex) => typeof artifactIndex === "string" && artifactIndex.length > 0)
+    .sort()
   return {
     ...(kinds.length > 0 ? { generatedEvidenceKinds: kinds.join(",") } : {}),
+    ...(matrixArtifactIndexes.length > 0 ? { generatedMatrixArtifactIndexes: matrixArtifactIndexes.join(",") } : {}),
     ...(matrixLimitations.length > 0 ? { generatedMatrixLimitations: matrixLimitations.join(",") } : {}),
     ...(generatedEvidence.matrixReports.roots.length > 0
       ? { generatedMatrixRoots: generatedEvidence.matrixReports.roots.join(",") }

@@ -425,7 +425,15 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
       path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
     ].sort())
-    assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "validation-suite-run,matrix-report")
+    assert.equal(artifactIndex.metadata.generatedMatrixArtifactIndexes, [
+      path.join(matrixOutputRoot, "cloud", "cloud-slice-runtime-matrix-artifacts.json"),
+      path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix-artifacts.json"),
+      path.join(matrixOutputRoot, "oss", "remote-agent-runtime-matrix-artifacts.json"),
+      path.join(matrixOutputRoot, "oss", "remote-home-extension-matrix-artifacts.json"),
+      path.join(matrixOutputRoot, "oss", "slice-runtime-matrix-artifacts.json"),
+      path.join(matrixOutputRoot, "oss", "workspace-live-sync-matrix-artifacts.json"),
+    ].join(","))
+    assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex,opencode=zen")
     assert.equal(artifactIndex.metadata.generatedMatrixRoots, [
       path.join(matrixOutputRoot, "cloud"),
@@ -507,7 +515,11 @@ test("distributed runtime gate labels dry-run generated matrix limitations", asy
       nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before treating required matrix classifications as release evidence",
     }])
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
+    assert.match(artifactIndex.metadata.generatedMatrixArtifactIndexes, /cloud-slice-runtime-matrix-artifacts\.json/)
+    assert.match(artifactIndex.metadata.generatedMatrixArtifactIndexes, /workspace-live-sync-matrix-artifacts\.json/)
     assert.equal(summary.status, "passed")
+    assert.equal(summary.coverage.generatedMatrixArtifactIndexes[path.join(matrixOutputRoot, "cloud", "cloud-slice-runtime-matrix-artifacts.json")], 1)
+    assert.equal(summary.coverage.generatedMatrixArtifactIndexes[path.join(matrixOutputRoot, "oss", "workspace-live-sync-matrix-artifacts.json")], 1)
     assert.deepEqual(summary.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
     assert.deepEqual(summary.missingArtifactGeneratedMatrixLimitations, [])
     assert.deepEqual(summary.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
