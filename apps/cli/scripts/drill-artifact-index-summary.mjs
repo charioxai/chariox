@@ -13,6 +13,10 @@ import {
   verifyDrillArtifactIndex,
   writeDrillJsonArtifactOutput,
 } from "./lib/drill-artifacts.mjs"
+import {
+  isKnownDrillProvider,
+  parseProviderAccountAlias,
+} from "./lib/drill-provider-profiles.mjs"
 
 function printHelp() {
   console.log([
@@ -30,6 +34,8 @@ function printHelp() {
     "                         Exit non-zero when indexed matrix reports are older than this many milliseconds",
     "  --require-generated-validation-suite-failure-root PATH",
     "                         Exit non-zero when generated validation-suite failure-root metadata is missing; repeatable",
+    "  --require-provider-account-alias P=A",
+    "                         Exit non-zero when provider account alias metadata is missing; repeatable",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -57,6 +63,7 @@ async function main() {
     ...await matrixFreshnessDiagnosticsFor(indexes, options),
   }
   Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
@@ -67,6 +74,7 @@ async function main() {
         indexes: aggregate.totals.indexes,
         ...diagnosticMetadataForDrillArtifactIndexAggregate(aggregate),
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
+        ...providerAccountAliasRequirementMetadataFor(aggregate),
       },
     })
   }
@@ -79,6 +87,7 @@ async function main() {
     (aggregate.staleArtifactIndexes ?? []).length > 0
     || (aggregate.staleMatrixReports ?? []).length > 0
     || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
+    || (aggregate.missingProviderAccountAliases ?? []).length > 0
   ) {
     process.exitCode = 1
   }
@@ -96,6 +105,7 @@ function parseArgs(argv) {
     requiredArtifactMaxAgeMs: null,
     requiredGeneratedValidationSuiteFailureRoots: [],
     requiredMatrixMaxAgeMs: null,
+    requiredProviderAccountAliases: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -143,6 +153,14 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--require-generated-validation-suite-failure-root=")) {
       options.requiredGeneratedValidationSuiteFailureRoots.push(arg.slice("--require-generated-validation-suite-failure-root=".length))
+    } else if (arg === "--require-provider-account-alias") {
+      options.requiredProviderAccountAliases.push(parseProviderAccountAliasRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-provider-account-alias=")) {
+      options.requiredProviderAccountAliases.push(parseProviderAccountAliasRequirement(
+        arg.slice("--require-provider-account-alias=".length),
+        "--require-provider-account-alias",
+      ))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -190,6 +208,18 @@ function freshnessDiagnosticsFor(indexes, sources, options) {
         }
       })
       .filter((entry) => entry.ageMs > options.requiredArtifactMaxAgeMs),
+  }
+}
+
+function parseProviderAccountAliasRequirement(value, flag) {
+  try {
+    const { provider, alias } = parseProviderAccountAlias(value)
+    if (!isKnownDrillProvider(provider)) {
+      throw new Error(`unknown provider account alias provider: ${provider}`)
+    }
+    return `${provider}=${alias}`
+  } catch (error) {
+    throw new Error(`${flag} has invalid value: ${error.message}`)
   }
 }
 
@@ -242,6 +272,25 @@ function generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate) {
   }
 }
 
+function providerAccountAliasDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredProviderAccountAliases)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.providerAccountAliases ?? {}))
+  return {
+    requiredProviderAccountAliases: required,
+    missingProviderAccountAliases: required.filter((alias) => !available.has(alias)),
+  }
+}
+
+function providerAccountAliasRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredProviderAccountAliases ?? []
+  const missing = aggregate.missingProviderAccountAliases ?? []
+  return {
+    ...(required.length > 0 ? { requiredProviderAccountAliases: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingProviderAccountAliases: missing.join(",") } : {}),
+  }
+}
+
 function formatAggregateSummaryWithFreshness(aggregate) {
   const lines = [formatDrillArtifactIndexAggregateSummary(aggregate)]
   if (aggregate.requiredArtifactMaxAgeMs !== undefined) {
@@ -260,6 +309,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
     lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRoots.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredProviderAccountAliases !== undefined) {
+    const missing = aggregate.missingProviderAccountAliases ?? []
+    lines.push(`provider_account_aliases_required=${aggregate.requiredProviderAccountAliases.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if ((aggregate.staleArtifactIndexes ?? []).length > 0) {
     lines.push("next: regenerate stale drill artifact indexes before using them as validation evidence")
   }
@@ -268,6 +321,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
     lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRoots.join(", ")}`)
+  }
+  if ((aggregate.missingProviderAccountAliases ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes that record provider account aliases: ${aggregate.missingProviderAccountAliases.join(", ")}`)
   }
   return lines.join("\n")
 }

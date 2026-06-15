@@ -61,6 +61,10 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       cloud: 1,
       oss: 2,
     })
+    assert.deepEqual(stdoutAggregate.providerAccountAliases, {
+      "codex=work": 1,
+      "opencode=zen": 1,
+    })
     assert.deepEqual(stdoutAggregate.artifactCoverageInputSources, {
       "artifact metadata inputs": 1,
     })
@@ -114,6 +118,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
+    assert.equal(artifactIndex.metadata.providerAccountAliases, "codex=work,opencode=zen")
     assert.equal(artifactIndex.metadata.artifactCoverageInputCount, "1")
     assert.equal(artifactIndex.metadata.artifactCoverageInputSources, "artifact metadata inputs")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
@@ -276,6 +281,68 @@ test("drill artifact index summary gates generated validation-suite failure root
   }
 })
 
+test("drill artifact index summary gates provider account aliases", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-provider-account-alias",
+      "codex=work",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredProviderAccountAliases, ["codex=work"])
+    assert.deepEqual(aggregate.missingProviderAccountAliases, [])
+    assert.equal(artifactIndex.metadata.requiredProviderAccountAliases, "codex=work")
+    assert.equal(artifactIndex.metadata.missingProviderAccountAliases, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-provider-account-alias=opencode=zen",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /provider_account_aliases_required=opencode=zen missing=opencode=zen/)
+        assert.match(error.stdout, /next: include drill artifact indexes that record provider account aliases: opencode=zen/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-provider-account-alias",
+        "cdoex=work",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-provider-account-alias has invalid value/)
+        assert.match(error.stderr, /unknown provider account alias provider: cdoex/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary accepts explicit index paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   try {
@@ -380,6 +447,9 @@ async function writeIndexedReport(rootDir, name, schema) {
       evidenceRepos: name === "one"
         ? "oss"
         : "oss,cloud",
+      providerAccountAliases: name === "one"
+        ? "codex=work"
+        : "opencode=zen",
       artifactCoverageInputSources: name === "one"
         ? ""
         : "artifact metadata inputs",
