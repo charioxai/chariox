@@ -58,8 +58,8 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "prompt",
         aliases: &["prompt <agent-ref> <text>"],
-        usage: "prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]",
-        examples: &["prompt agent-2 \"Investigate this failure\" --wait"],
+        usage: "prompt <owned-agent-ref> <prompt text>",
+        examples: &["prompt agent-2 \"Investigate this failure\""],
         tags: &["prompt", "agent", "orchestration"],
         intents: &[
             "delegate work to an agent",
@@ -72,7 +72,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Submit a normal Arroba prompt to one of this user's regular agents through the existing prompt path.",
+        description: "Submit a normal Arroba prompt to one of this user's regular agents through the existing prompt path. Metaagent prompt commands do not support blocking reply flags; use events, turn_overview, and turn_blob for supervision.",
     },
     MetaCommandDoc {
         name: "agent list",
@@ -1713,6 +1713,7 @@ mod tests {
     #[test]
     fn command_docs_do_not_advertise_unrouted_subcommands() {
         let forbidden = [
+            ("prompt", &["--wait", "--show-reply", "--show-summary"][..]),
             ("workflow", &["edit"][..]),
             ("workflow node add", &["node-name", "node alias"][..]),
             ("mcp", &["test", "adapter", "connector"][..]),

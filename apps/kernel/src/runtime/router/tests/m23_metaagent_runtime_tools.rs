@@ -1316,9 +1316,6 @@ async fn metaagent_run_command_routes_core_workflow_commands() {
             workspace.to_string_lossy(),
         ))
         .expect("session should be created");
-    let worker = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
-        .expect("worker should spawn");
     let peer_worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -1333,6 +1330,13 @@ async fn metaagent_run_command_routes_core_workflow_commands() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("worker")
+                .with_owner_user_id(metaagent.owner_user_id()),
+        )
+        .expect("worker should spawn");
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2143,6 +2147,13 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    let prompt_flag_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("prompt-flag-worker")
+                .with_owner_user_id(metaagent.owner_user_id()),
+        )
+        .expect("prompt flag worker should spawn");
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2259,6 +2270,27 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .is_some_and(|message| message.contains("mcp install-json")),
         "{:?}",
         not_routed.payload
+    );
+
+    let prompt_flag_denied = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({
+                "command": format!("prompt {} --wait inspect this", prompt_flag_worker.id())
+            }),
+        )
+        .await
+        .expect("prompt flag denial should return a structured tool result");
+    assert!(!prompt_flag_denied.ok);
+    assert!(
+        prompt_flag_denied
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("does not support blocking reply flags")),
+        "{:?}",
+        prompt_flag_denied.payload
     );
 
     let audit_events = app
