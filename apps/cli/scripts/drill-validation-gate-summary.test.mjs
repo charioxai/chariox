@@ -98,6 +98,8 @@ test("drill validation gate summary help lists artifact coverage requirements", 
   assert.match(stdout, /--require-artifact-generated-evidence-kind KIND/)
   assert.match(stdout, /--require-artifact-generated-matrix-artifact-index PATH/)
   assert.match(stdout, /--require-artifact-generated-matrix-limitation KIND/)
+  assert.match(stdout, /--require-artifact-generated-matrix-name NAME/)
+  assert.match(stdout, /--require-artifact-generated-matrix-repo REPO/)
   assert.match(stdout, /--require-artifact-runtime-signal ID/)
   assert.match(stdout, /--require-artifact-runtime-signal-owner OWNER/)
   assert.match(stdout, /--require-artifact-owner OWNER/)
