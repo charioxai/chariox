@@ -87,3 +87,16 @@ test("summarizes provider profile metadata without account secrets", () => {
     providerAccounts: { opencode: "zen" },
   }), /provider account alias references unselected provider: opencode/)
 })
+
+test("normalizes provider profile metadata for stable evidence", () => {
+  assert.deepEqual(providerProfileMetadata({
+    providers: ["opencode", "codex", "opencode"],
+    defaultModel: "gpt-5.2",
+  }), {
+    providerCount: 2,
+    providers: "codex,opencode",
+    defaultModel: "gpt-5.2",
+    providerModelOverrides: "",
+    providerAccountAliases: "",
+  })
+})

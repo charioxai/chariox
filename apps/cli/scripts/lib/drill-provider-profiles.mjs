@@ -67,8 +67,9 @@ export function codexCliModel(model) {
 }
 
 export function providerProfileMetadata({ providers, defaultModel, providerModels = {}, providerAccounts = {} }) {
-  validateDrillProviders(providers, "provider profile providers")
-  const providerSet = new Set(providers)
+  const normalizedProviders = [...new Set((providers ?? []).filter(Boolean))].sort()
+  validateDrillProviders(normalizedProviders, "provider profile providers")
+  const providerSet = new Set(normalizedProviders)
   const accountProviders = Object.keys(providerAccounts).sort()
   for (const provider of accountProviders) {
     validateKnownDrillProvider(provider, "provider account alias provider")
@@ -84,8 +85,8 @@ export function providerProfileMetadata({ providers, defaultModel, providerModel
     }
   }
   return {
-    providerCount: providers.length,
-    providers: providers.join(","),
+    providerCount: normalizedProviders.length,
+    providers: normalizedProviders.join(","),
     defaultModel,
     providerModelOverrides: Object.keys(providerModels).sort().join(","),
     providerAccountAliases: accountProviders.map((provider) => `${provider}=${providerAccounts[provider]}`).join(","),
