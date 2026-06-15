@@ -17,6 +17,7 @@ import {
   isKnownDrillProvider,
   parseProviderAccountAlias,
 } from "./drill-provider-profiles.mjs"
+import { redactDrillSecretText } from "./drill-secrets.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
@@ -320,7 +321,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactSchemas: sortedStringArray(preset.requiredArtifactSchemas, `${preset.name}.requiredArtifactSchemas`),
     requiredArtifactKinds: sortedArtifactKindArray(preset.requiredArtifactKinds, `${preset.name}.requiredArtifactKinds`),
     requiredArtifactGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredArtifactGeneratedEvidenceKinds, `${preset.name}.requiredArtifactGeneratedEvidenceKinds`),
-    requiredArtifactGeneratedMatrixArtifactIndexes: sortedStringArray(preset.requiredArtifactGeneratedMatrixArtifactIndexes, `${preset.name}.requiredArtifactGeneratedMatrixArtifactIndexes`),
+    requiredArtifactGeneratedMatrixArtifactIndexes: sortedGeneratedEvidencePathArray(preset.requiredArtifactGeneratedMatrixArtifactIndexes, `${preset.name}.requiredArtifactGeneratedMatrixArtifactIndexes`),
     requiredArtifactGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredArtifactGeneratedMatrixLimitations, `${preset.name}.requiredArtifactGeneratedMatrixLimitations`),
     requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactProviderAccountAliases: sortedProviderAccountAliasArray(preset.requiredArtifactProviderAccountAliases, `${preset.name}.requiredArtifactProviderAccountAliases`),
@@ -339,9 +340,9 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredProviders: sortedProviderArray(preset.requiredProviders, `${preset.name}.requiredProviders`),
     requiredScenarios: sortedStringArray(preset.requiredScenarios, `${preset.name}.requiredScenarios`),
     requiredGeneratedEvidenceKinds: sortedGeneratedEvidenceKindArray(preset.requiredGeneratedEvidenceKinds, `${preset.name}.requiredGeneratedEvidenceKinds`),
-    requiredGeneratedMatrixArtifactIndexes: sortedStringArray(preset.requiredGeneratedMatrixArtifactIndexes, `${preset.name}.requiredGeneratedMatrixArtifactIndexes`),
+    requiredGeneratedMatrixArtifactIndexes: sortedGeneratedEvidencePathArray(preset.requiredGeneratedMatrixArtifactIndexes, `${preset.name}.requiredGeneratedMatrixArtifactIndexes`),
     requiredGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredGeneratedMatrixLimitations, `${preset.name}.requiredGeneratedMatrixLimitations`),
-    requiredGeneratedValidationSuiteFailureRoots: sortedStringArray(preset.requiredGeneratedValidationSuiteFailureRoots, `${preset.name}.requiredGeneratedValidationSuiteFailureRoots`),
+    requiredGeneratedValidationSuiteFailureRoots: sortedGeneratedEvidencePathArray(preset.requiredGeneratedValidationSuiteFailureRoots, `${preset.name}.requiredGeneratedValidationSuiteFailureRoots`),
   }
 }
 
@@ -386,6 +387,16 @@ function sortedGeneratedEvidenceKindArray(value, source) {
     }
   }
   return kinds
+}
+
+function sortedGeneratedEvidencePathArray(value, source) {
+  const paths = sortedStringArray(value, source)
+  for (const [index, valuePath] of paths.entries()) {
+    if (redactDrillSecretText(valuePath) !== valuePath) {
+      throw new Error(`validation suite preset ${source}[${index}] includes secret-looking generated evidence path`)
+    }
+  }
+  return paths
 }
 
 function sortedGeneratedMatrixLimitationArray(value, source) {

@@ -291,6 +291,11 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-covergae"],
   }]), /requiredArtifactGeneratedMatrixLimitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-generated-path",
+    description: "bad artifact generated path",
+    requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
+  }]), /requiredArtifactGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-generated-evidence-kind",
     description: "bad generated evidence kind",
     requiredGeneratedEvidenceKinds: ["matrix-reprot"],
@@ -300,6 +305,16 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad generated matrix limitation",
     requiredGeneratedMatrixLimitations: ["dry-run-classification-covergae"],
   }]), /requiredGeneratedMatrixLimitations\[0\] has unknown generated matrix limitation "dry-run-classification-covergae"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-generated-artifact-index",
+    description: "bad generated artifact index",
+    requiredGeneratedMatrixArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
+  }]), /requiredGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-generated-failure-root",
+    description: "bad generated failure root",
+    requiredGeneratedValidationSuiteFailureRoots: ["/tmp/Bearer abcdefghijklmnop"],
+  }]), /requiredGeneratedValidationSuiteFailureRoots\[0\] includes secret-looking generated evidence path/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-provider-account-alias",
     description: "bad provider account alias",
