@@ -94,7 +94,7 @@ function validateDrillMatrixReportConsistency(report, source) {
   }
   if (report.incompleteExitCriteria !== undefined) {
     validateMatrixReportIncompleteExitCriteria(report.incompleteExitCriteria, `${source}.incompleteExitCriteria`)
-    if (JSON.stringify(report.incompleteExitCriteria) !== JSON.stringify(incompleteExitCriteriaForScenarios(report.scenarios))) {
+    if (!sameIncompleteExitCriteria(report.incompleteExitCriteria, incompleteExitCriteriaForScenarios(report.scenarios))) {
       throw new Error(`${source}.incompleteExitCriteria do not match scenario exit criteria evidence`)
     }
   }
@@ -1432,6 +1432,26 @@ function incompleteExitCriteriaForScenarios(scenarios) {
     }
   }
   return incomplete
+}
+
+function sameIncompleteExitCriteria(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+  const leftKeys = left.map(canonicalIncompleteExitCriterionKey).sort()
+  const rightKeys = right.map(canonicalIncompleteExitCriterionKey).sort()
+  return leftKeys.every((key, index) => key === rightKeys[index])
+}
+
+function canonicalIncompleteExitCriterionKey(criterion) {
+  return JSON.stringify({
+    scenarioId: criterion.scenarioId,
+    id: criterion.id,
+    criterion: criterion.criterion,
+    status: criterion.status,
+    reason: criterion.reason ?? null,
+    owner: criterion.owner ?? null,
+    classification: criterion.classification ?? null,
+    nextAction: criterion.nextAction ?? null,
+  })
 }
 
 function diagnosticsForIncompleteExitCriterion(scenario) {

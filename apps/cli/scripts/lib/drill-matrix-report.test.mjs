@@ -162,6 +162,31 @@ test("tracks criterion-level completion evidence", () => {
   assert.match(text, /test-matrix\/projection\/projection:exit-02 status=dry-run reason=scenario command was selected but not executed source=\/tmp\/projection-matrix\.json: worker acknowledgement is observed/)
 })
 
+test("validates incomplete exit criteria independent of object key order", () => {
+  assert.doesNotThrow(() => validateDrillMatrixReport(matrixReport({
+    status: "dry-run",
+    dryRun: true,
+    scenarios: [scenario("projection", "dry-run", {
+      owner: "cloud-web",
+      exitCriteria: ["worker acknowledgement is observed"],
+      exitCriteriaEvidence: [{
+        id: "projection:exit-01",
+        criterion: "worker acknowledgement is observed",
+        status: "dry-run",
+        reason: "scenario command was selected but not executed",
+      }],
+    })],
+    incompleteExitCriteria: [{
+      scenarioId: "projection",
+      id: "projection:exit-01",
+      owner: "cloud-web",
+      status: "dry-run",
+      criterion: "worker acknowledgement is observed",
+      reason: "scenario command was selected but not executed",
+    }],
+  })))
+})
+
 test("carries ownership diagnostics for incomplete exit criteria", () => {
   const report = matrixReport({
     scenarios: [
