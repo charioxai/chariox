@@ -11,6 +11,7 @@ import {
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
   distributedRuntimeGeneratedEvidenceSummaryFor,
+  distributedRuntimeMatrixArtifactIndexPathsFor,
   runDistributedRuntimeMatrixReportsFor,
   runDistributedRuntimeValidationSuitesFor,
 } from "./lib/drill-distributed-runtime-evidence.mjs"
@@ -18,6 +19,10 @@ import {
   parseValidationGateRequirementArg,
   validationGateRequirementOptionDefaults,
 } from "./lib/drill-validation-gate-args.mjs"
+import {
+  applyProviderAccountAlias,
+  isKnownDrillProvider,
+} from "./lib/drill-provider-profiles.mjs"
 import {
   drillValidationGateExitCode,
   formatDrillValidationGateSummary,
@@ -60,6 +65,8 @@ function printHelp() {
     "                         Run distributed runtime matrix scripts and feed their reports into this gate",
     "  --matrix-output-root DIR",
     "                         Write generated matrix reports below DIR; defaults to each repo's .artifacts",
+    "  --provider-account P=A",
+    "                         Label provider account/profile metadata for generated matrix reports; repeatable",
     "  --matrix-dry-run       Forward --dry-run to generated matrix reports",
     "  --matrix-continue-on-failure",
     "                         Forward --continue-on-failure to generated matrix reports",
@@ -112,13 +119,14 @@ async function main() {
     }
     const validationSuiteArtifactIndexes = await runDistributedRuntimeValidationSuitesFor(options)
     const generatedMatrixRoots = await runDistributedRuntimeMatrixReportsFor(options)
+    const generatedMatrixArtifactIndexes = distributedRuntimeMatrixArtifactIndexPathsFor(options)
     const generatedEvidence = distributedRuntimeGeneratedEvidenceSummaryFor(options, {
       generatedMatrixRoots,
       validationSuiteArtifactIndexes,
     })
     const report = await runDrillValidationGate({
-      artifactIndexes: [...options.artifactIndexes, ...validationSuiteArtifactIndexes],
-      artifactRoots: artifactRootsFor(options),
+      artifactIndexes: [...options.artifactIndexes, ...validationSuiteArtifactIndexes, ...generatedMatrixArtifactIndexes],
+      artifactRoots: artifactRootsFor(options, generatedMatrixRoots),
       failureInputs: options.failureInputs,
       failureRoots: failureRootsFor(options),
       matrixRoots: matrixRootsFor(options, generatedMatrixRoots),
@@ -211,6 +219,7 @@ function parseArgs(argv) {
     outputArtifactIndexPath: null,
     outputPath: null,
     platformBundleDir: null,
+    providerAccounts: {},
     requireComplete: false,
     requiredArtifactMaxAgeMs: null,
     requiredFailureMaxAgeMs: null,
@@ -277,6 +286,11 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith("--matrix-output-root=")) {
       options.matrixOutputRoot = path.resolve(arg.slice("--matrix-output-root=".length))
+    } else if (arg === "--provider-account") {
+      applyProviderAccountAliasRequirement(options.providerAccounts, readValue(argv, index, arg), arg)
+      index += 1
+    } else if (arg.startsWith("--provider-account=")) {
+      applyProviderAccountAliasRequirement(options.providerAccounts, arg.slice("--provider-account=".length), "--provider-account")
     } else if (arg === "--platform-bundle") {
       options.platformBundleDir = readValue(argv, index, arg)
       index += 1
@@ -355,6 +369,20 @@ function readValue(argv, index, flag) {
   return value
 }
 
+function applyProviderAccountAliasRequirement(providerAccounts, value, flag) {
+  try {
+    const before = { ...providerAccounts }
+    applyProviderAccountAlias(providerAccounts, value)
+    const provider = Object.keys(providerAccounts).find((key) => before[key] !== providerAccounts[key])
+    if (provider && !isKnownDrillProvider(provider)) {
+      delete providerAccounts[provider]
+      throw new Error(`unknown provider account alias provider: ${provider}`)
+    }
+  } catch (error) {
+    throw new Error(`${flag} has invalid value: ${error.message}`)
+  }
+}
+
 function matrixRootsFor(options, generatedMatrixRoots = []) {
   const roots = [...options.matrixRoots, ...generatedMatrixRoots]
   if (options.defaultRoots) {
@@ -366,8 +394,8 @@ function matrixRootsFor(options, generatedMatrixRoots = []) {
   return [...new Set(roots.map((item) => path.resolve(item)))].sort()
 }
 
-function artifactRootsFor(options) {
-  const roots = [...options.artifactRoots]
+function artifactRootsFor(options, generatedArtifactRoots = []) {
+  const roots = [...options.artifactRoots, ...generatedArtifactRoots]
   if (options.includeDefaultArtifacts) {
     roots.push(
       path.join(options.ossRoot, ".artifacts"),

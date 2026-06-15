@@ -18,6 +18,7 @@ export async function runDistributedRuntimeMatrixReportsFor(options) {
     commonArgs,
     ossOutputDir,
     ossRoot: options.ossRoot,
+    providerAccounts: options.providerAccounts,
   })
   for (const command of matrixCommands) {
     await runDistributedRuntimeMatrixReportCommand(command)
@@ -46,6 +47,7 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
           ],
           ossOutputDir: distributedRuntimeMatrixOutputDirFor(options, "oss"),
           ossRoot: options.ossRoot,
+          providerAccounts: options.providerAccounts,
         }).map(distributedRuntimeMatrixCommandSummary)
         : [],
     },
@@ -71,6 +73,24 @@ export function distributedRuntimeGeneratedEvidenceSummaryFor(options, {
         : [],
     },
   }
+}
+
+export function distributedRuntimeMatrixArtifactIndexPathsFor(options) {
+  if (options.runMatrixReports !== true) return []
+  return distributedRuntimeMatrixCommandsFor({
+    cloudOutputDir: distributedRuntimeMatrixOutputDirFor(options, "cloud"),
+    cloudRoot: options.cloudRoot,
+    commonArgs: [
+      ...(options.matrixDryRun ? ["--dry-run"] : []),
+      ...(options.matrixContinueOnFailure ? ["--continue-on-failure"] : []),
+    ],
+    ossOutputDir: distributedRuntimeMatrixOutputDirFor(options, "oss"),
+    ossRoot: options.ossRoot,
+    providerAccounts: options.providerAccounts,
+  })
+    .map((command) => distributedRuntimeMatrixCommandSummary(command).artifactIndexPath)
+    .map((item) => path.resolve(item))
+    .sort()
 }
 
 export function distributedRuntimeValidationSuiteFailureRootsFor(options) {
@@ -101,11 +121,12 @@ export function distributedRuntimeMatrixCommandsFor({
   commonArgs = [],
   ossOutputDir,
   ossRoot,
+  providerAccounts = {},
 }) {
   return [
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, "--include-hetzner"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hetzner"],
       cwd: ossRoot,
       outputDir: ossOutputDir,
       reportFileName: "native-provider-tui-matrix.json",
@@ -113,7 +134,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, "--include-hetzner", "--include-hosted-cloud"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hetzner", "--include-hosted-cloud"],
       cwd: ossRoot,
       outputDir: ossOutputDir,
       reportFileName: "remote-agent-runtime-matrix.json",
@@ -129,7 +150,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, "--include-self-hosted-relay"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-self-hosted-relay"],
       cwd: ossRoot,
       outputDir: ossOutputDir,
       reportFileName: "slice-runtime-matrix.json",
@@ -137,7 +158,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, "--include-remote", "--include-hetzner", "--include-opencode"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["codex", "opencode"]), "--include-remote", "--include-hetzner", "--include-opencode"],
       cwd: ossRoot,
       outputDir: ossOutputDir,
       reportFileName: "workspace-live-sync-matrix.json",
@@ -145,13 +166,21 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--output-artifact-index",
-      args: [...commonArgs, "--include-hosted-cloud", "--include-vault"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hosted-cloud", "--include-vault"],
       cwd: cloudRoot,
       outputDir: cloudOutputDir,
       reportFileName: "cloud-slice-runtime-matrix.json",
       scriptPath: path.join(cloudRoot, "scripts", "staging-slice-runtime-matrix.mjs"),
     },
   ]
+}
+
+function providerAccountArgsFor(providerAccounts = {}, supportedProviders = []) {
+  const supported = new Set(supportedProviders)
+  return Object.keys(providerAccounts)
+    .filter((provider) => supported.has(provider))
+    .sort()
+    .flatMap((provider) => ["--provider-account", `${provider}=${providerAccounts[provider]}`])
 }
 
 export function distributedRuntimeMatrixOutputDirFor(options, repo) {

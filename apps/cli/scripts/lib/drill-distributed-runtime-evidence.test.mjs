@@ -6,6 +6,7 @@ import test from "node:test"
 
 import {
   distributedRuntimeGeneratedEvidenceSummaryFor,
+  distributedRuntimeMatrixArtifactIndexPathsFor,
   distributedRuntimeMatrixCommandsFor,
   distributedRuntimeMatrixOutputDirFor,
   distributedRuntimeValidationSuiteCommandsFor,
@@ -21,6 +22,11 @@ test("builds distributed runtime matrix command contracts", () => {
     commonArgs: ["--dry-run", "--continue-on-failure"],
     ossOutputDir: "/tmp/out/oss",
     ossRoot: "/repo/arroba",
+    providerAccounts: {
+      claude: "work_claude",
+      codex: "work_codex",
+      opencode: "zen",
+    },
   })
 
   assert.deepEqual(commands.map((command) => ({
@@ -66,9 +72,53 @@ test("builds distributed runtime matrix command contracts", () => {
       scriptPath: path.join("/repo/arroba-cloud", "scripts", "staging-slice-runtime-matrix.mjs"),
     },
   ])
-  assert.deepEqual(commands[0].args, ["--dry-run", "--continue-on-failure", "--include-hetzner"])
-  assert.deepEqual(commands[1].args, ["--dry-run", "--continue-on-failure", "--include-hetzner", "--include-hosted-cloud"])
-  assert.deepEqual(commands[5].args, ["--dry-run", "--continue-on-failure", "--include-hosted-cloud", "--include-vault"])
+  assert.deepEqual(commands[0].args, [
+    "--dry-run",
+    "--continue-on-failure",
+    "--provider-account",
+    "claude=work_claude",
+    "--provider-account",
+    "codex=work_codex",
+    "--provider-account",
+    "opencode=zen",
+    "--include-hetzner",
+  ])
+  assert.deepEqual(commands[1].args, [
+    "--dry-run",
+    "--continue-on-failure",
+    "--provider-account",
+    "claude=work_claude",
+    "--provider-account",
+    "codex=work_codex",
+    "--provider-account",
+    "opencode=zen",
+    "--include-hetzner",
+    "--include-hosted-cloud",
+  ])
+  assert.deepEqual(commands[2].args, ["--dry-run", "--continue-on-failure", "--include-hetzner"])
+  assert.deepEqual(commands[4].args, [
+    "--dry-run",
+    "--continue-on-failure",
+    "--provider-account",
+    "codex=work_codex",
+    "--provider-account",
+    "opencode=zen",
+    "--include-remote",
+    "--include-hetzner",
+    "--include-opencode",
+  ])
+  assert.deepEqual(commands[5].args, [
+    "--dry-run",
+    "--continue-on-failure",
+    "--provider-account",
+    "claude=work_claude",
+    "--provider-account",
+    "codex=work_codex",
+    "--provider-account",
+    "opencode=zen",
+    "--include-hosted-cloud",
+    "--include-vault",
+  ])
 })
 
 test("builds distributed runtime generated evidence output directories", () => {
@@ -141,6 +191,9 @@ test("builds distributed runtime generated evidence summary", () => {
     runMatrixReports: true,
     runValidationSuites: true,
     validationSuiteOutputRoot: "/tmp/suites",
+    providerAccounts: {
+      codex: "work_codex",
+    },
   }
 
   const summary = distributedRuntimeGeneratedEvidenceSummaryFor(options, {
@@ -163,7 +216,7 @@ test("builds distributed runtime generated evidence summary", () => {
   assert.equal(summary.matrixReports.commands.length, 6)
   assert.deepEqual(summary.matrixReports.commands[0], {
     artifactIndexPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix-artifacts.json"),
-    args: ["--dry-run", "--continue-on-failure", "--include-hetzner"],
+    args: ["--dry-run", "--continue-on-failure", "--provider-account", "codex=work_codex", "--include-hetzner"],
     cwd: "/repo/arroba",
     reportPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix.json"),
     scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
@@ -198,6 +251,25 @@ test("builds distributed runtime generated evidence summary", () => {
     enabled: true,
     outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
   })
+})
+
+test("builds generated matrix artifact index inputs", () => {
+  const paths = distributedRuntimeMatrixArtifactIndexPathsFor({
+    cloudRoot: "/repo/arroba-cloud",
+    matrixOutputRoot: "/tmp/matrices",
+    ossRoot: "/repo/arroba",
+    runMatrixReports: true,
+  })
+
+  assert.deepEqual(paths, [
+    "/tmp/matrices/cloud/cloud-slice-runtime-matrix-artifacts.json",
+    "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
+    "/tmp/matrices/oss/remote-agent-runtime-matrix-artifacts.json",
+    "/tmp/matrices/oss/remote-home-extension-matrix-artifacts.json",
+    "/tmp/matrices/oss/slice-runtime-matrix-artifacts.json",
+    "/tmp/matrices/oss/workspace-live-sync-matrix-artifacts.json",
+  ])
+  assert.deepEqual(distributedRuntimeMatrixArtifactIndexPathsFor({ runMatrixReports: false }), [])
 })
 
 test("builds empty generated evidence summary when generation is disabled", () => {

@@ -345,6 +345,16 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "--run-matrix-reports",
       "--matrix-output-root",
       matrixOutputRoot,
+      "--provider-account",
+      "claude=work_claude",
+      "--provider-account",
+      "codex=work_codex",
+      "--provider-account",
+      "opencode=zen",
+      "--require-artifact-provider-account-alias",
+      "codex=work_codex",
+      "--require-artifact-provider-account-alias",
+      "opencode=zen",
       "--output",
       outputPath,
       "--output-artifact-index",
@@ -357,6 +367,13 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
     assert.equal(report.checks.artifacts.status, "passed")
+    assert.deepEqual(report.checks.artifacts.requiredArtifactProviderAccountAliases, ["codex=work_codex", "opencode=zen"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactProviderAccountAliases, [])
+    assert.deepEqual(report.checks.artifacts.aggregate.providerAccountAliases, {
+      "claude=work_claude": 4,
+      "codex=work_codex": 5,
+      "opencode=zen": 5,
+    })
     assert.equal(report.checks.matrices.status, "passed")
     assert.deepEqual(report.checks.matrices.roots, [
       path.join(matrixOutputRoot, "cloud"),
@@ -376,11 +393,31 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
     ].sort())
     assert.equal(report.generatedEvidence.matrixReports.commands.length, 6)
     assert.equal(report.generatedEvidence.matrixReports.commands[0].reportPath, path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix.json"))
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[0].args, [
+      "--provider-account",
+      "claude=work_claude",
+      "--provider-account",
+      "codex=work_codex",
+      "--provider-account",
+      "opencode=zen",
+      "--include-hetzner",
+    ])
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[2].args, ["--include-hetzner"])
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[4].args, [
+      "--provider-account",
+      "codex=work_codex",
+      "--provider-account",
+      "opencode=zen",
+      "--include-remote",
+      "--include-hetzner",
+      "--include-opencode",
+    ])
     assert.deepEqual(report.generatedEvidence.validationSuites.artifactIndexes, [
       path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
       path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
     ].sort())
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "validation-suite-run,matrix-report")
+    assert.equal(artifactIndex.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex,opencode=zen")
     assert.equal(artifactIndex.metadata.generatedMatrixRoots, [
       path.join(matrixOutputRoot, "cloud"),
       path.join(matrixOutputRoot, "oss"),
@@ -1081,7 +1118,17 @@ const reportPath = valueFor("--report")
 const artifactIndexPath = valueFor("--artifact-index") ?? valueFor("--output-artifact-index")
 await mkdir(path.dirname(reportPath), { recursive: true })
 const baseReport = ${JSON.stringify(report, null, 2)}
-const report = args.includes("--dry-run") ? dryRunReportFor(baseReport) : baseReport
+const providerAccountAliases = providerAccountAliasesFor(args)
+const reportWithMetadata = providerAccountAliases.length > 0
+  ? {
+    ...baseReport,
+    metadata: {
+      ...baseReport.metadata,
+      providerAccountAliases: providerAccountAliases.join(","),
+    },
+  }
+  : baseReport
+const report = args.includes("--dry-run") ? dryRunReportFor(reportWithMetadata) : reportWithMetadata
 await writeFile(reportPath, \`\${JSON.stringify(report, null, 2)}\\n\`, "utf8")
 if (artifactIndexPath) {
   const bytes = await readFile(reportPath)
@@ -1093,6 +1140,7 @@ if (artifactIndexPath) {
       drill: report.matrix,
       matrix: report.matrix,
       artifactKinds: "matrix-report",
+      ...(providerAccountAliases.length > 0 ? { providerAccountAliases: providerAccountAliases.join(",") } : {}),
     },
     artifacts: [{
       path: path.basename(reportPath),
@@ -1108,6 +1156,19 @@ function valueFor(flag) {
   const index = args.indexOf(flag)
   if (index < 0 || !args[index + 1]) return null
   return args[index + 1]
+}
+
+function providerAccountAliasesFor(args) {
+  const aliases = []
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--provider-account" && args[index + 1]) {
+      aliases.push(args[index + 1])
+      index += 1
+    } else if (args[index].startsWith("--provider-account=")) {
+      aliases.push(args[index].slice("--provider-account=".length))
+    }
+  }
+  return aliases.sort()
 }
 
 function dryRunReportFor(report) {
