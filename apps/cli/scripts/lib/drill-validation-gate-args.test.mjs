@@ -144,6 +144,18 @@ test("rejects secret-looking generated path requirements", () => {
   }
 })
 
+test("rejects unknown generated matrix name requirements", () => {
+  const options = validationGateRequirementOptionDefaults()
+  assert.throws(
+    () => parseValidationGateRequirementArg(
+      ["--require-artifact-generated-matrix-name", "workspace-live-synch-matrix"],
+      0,
+      options,
+    ),
+    /--require-artifact-generated-matrix-name has unknown generated matrix name: workspace-live-synch-matrix/,
+  )
+})
+
 test("parses requirement arguments without accepting a preset flag", () => {
   const options = validationGateRequirementOptionDefaults()
   let index = parseValidationGateRequirementArg(

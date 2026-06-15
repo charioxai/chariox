@@ -1,3 +1,4 @@
+import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
 
 const SECRET_SENSITIVE_REQUIREMENT_KEYS = new Set([
@@ -128,6 +129,9 @@ function normalizedRequirementValue(value, flag, key) {
   }
   if (redactDrillSecretText(value) !== value) {
     throw new Error(`${flag} includes secret-looking diagnostic text`)
+  }
+  if (key === "requiredArtifactGeneratedMatrixNames" && !isKnownDrillGeneratedMatrixName(value)) {
+    throw new Error(`${flag} has unknown generated matrix name: ${value}`)
   }
   return value
 }
