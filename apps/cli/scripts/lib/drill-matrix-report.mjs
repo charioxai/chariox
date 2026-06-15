@@ -620,8 +620,20 @@ function validateDrillMatrixScenario(scenario, source) {
   if (scenario.runtimeSignals !== undefined) {
     validateRuntimeSignals(scenario.runtimeSignals, `${source}.runtimeSignals`)
   }
+  if (scenario.provider !== undefined) {
+    validateProviderList([scenario.provider], `${source}.provider`)
+    if (scenario.providers !== undefined && !scenario.providers.includes(scenario.provider)) {
+      throw new Error(`${source}.provider must be included in providers`)
+    }
+  }
   if (scenario.providers !== undefined) {
     validateProviderList(scenario.providers, `${source}.providers`)
+  }
+  if (scenario.deployment !== undefined && !nonSecretString(scenario.deployment)) {
+    throw new Error(`${source} has invalid deployment`)
+  }
+  if (scenario.mode !== undefined && !nonSecretString(scenario.mode)) {
+    throw new Error(`${source} has invalid mode`)
   }
   validateDrillMatrixScenarioOutcome(scenario, source)
 }
@@ -1458,6 +1470,10 @@ function validateReportMetadataValue(value, source, key = "") {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function nonSecretString(value) {
+  return nonEmptyString(value) && !looksLikeDrillSecretValue(value)
 }
 
 function validateRuntimeSignals(value, source) {

@@ -20,6 +20,9 @@ import {
 import {
   workspaceLiveSyncRequiredScenarioIds,
   workspaceLiveSyncScenarioClassification,
+  workspaceLiveSyncScenarioDeployment,
+  workspaceLiveSyncScenarioMode,
+  workspaceLiveSyncScenarioProvider,
   workspaceLiveSyncScenarioRuntimeSignals,
 } from './lib/workspace-live-sync-fixtures.mjs'
 
@@ -81,6 +84,9 @@ function scenario(id, description, script, args, flags = {}) {
     args,
     ...flags,
     classification: flags.classification ?? workspaceLiveSyncClassification({ id, args, flags }),
+    deployment: workspaceLiveSyncScenarioDeployment(id),
+    mode: workspaceLiveSyncScenarioMode(id),
+    provider: workspaceLiveSyncScenarioProvider(id),
     runtimeSignals: workspaceLiveSyncRuntimeSignals({ id, args, flags }),
     requires,
     exitCriteria: workspaceLiveSyncExitCriteria({ id, args, flags }),

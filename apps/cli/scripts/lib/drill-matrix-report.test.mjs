@@ -827,6 +827,34 @@ test("rejects malformed matrix reports", () => {
   }), /runtimeSignalScenarios do not match scenario runtimeSignals/)
 
   assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", { provider: "cdoex", providers: ["cdoex"] })],
+    }),
+  }), /scenarios\[0\]\.provider\[0\] has unknown provider "cdoex"/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", {
+        provider: "codex",
+        providers: ["opencode"],
+      })],
+      metadata: { providers: "opencode" },
+    }),
+  }), /scenarios\[0\]\.provider must be included in providers/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", { deployment: "Bearer abcdefghijklmnop" })],
+    }),
+  }), /scenarios\[0\] has invalid deployment/)
+
+  assert.throws(() => validateDrillMatrixReport({
+    ...matrixReport({
+      scenarios: [scenario("remote", "passed", { mode: "" })],
+    }),
+  }), /scenarios\[0\] has invalid mode/)
+
+  assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
     durationMs: -1,
   }), /invalid durationMs/)

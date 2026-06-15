@@ -8,6 +8,7 @@ import {
   isKnownDrillFailureClassification,
 } from "./drill-failure-taxonomy.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
+import { isKnownDrillProvider } from "./drill-provider-profiles.mjs"
 import { drillRuntimeSignalOwnerCounts, drillRuntimeSignalOwnersFor, isKnownDrillRuntimeSignal } from "./drill-runtime-signals.mjs"
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
@@ -259,6 +260,15 @@ export function validateDrillMatrixScenarioDefinitions(scenarios, { requireDescr
     if (scenario.runtimeSignals !== undefined) {
       validateRuntimeSignals(scenario.runtimeSignals, `${source}.runtimeSignals`)
     }
+    if (scenario.provider !== undefined && !isKnownDrillProvider(scenario.provider)) {
+      throw new Error(`${source} has unknown provider ${JSON.stringify(scenario.provider)}`)
+    }
+    if (scenario.deployment !== undefined && !nonSecretText(scenario.deployment)) {
+      throw new Error(`${source} has invalid deployment`)
+    }
+    if (scenario.mode !== undefined && !nonSecretText(scenario.mode)) {
+      throw new Error(`${source} has invalid mode`)
+    }
   }
 }
 
@@ -303,6 +313,10 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0
 }
 
+function nonSecretText(value) {
+  return nonEmptyString(value) && !looksLikeDrillSecretValue(value)
+}
+
 function exitCriteriaFor(scenario) {
   if (Array.isArray(scenario.exitCriteria)) {
     return scenario.exitCriteria.filter((criterion) => typeof criterion === "string" && criterion.trim().length > 0)
@@ -330,6 +344,14 @@ function runtimeSignalsForScenario(scenario) {
     : []
 }
 
+function scenarioReportMetadata(scenario) {
+  return {
+    ...(nonSecretText(scenario.deployment) ? { deployment: scenario.deployment } : {}),
+    ...(nonSecretText(scenario.mode) ? { mode: scenario.mode } : {}),
+    ...(isKnownDrillProvider(scenario.provider) ? { provider: scenario.provider } : {}),
+  }
+}
+
 async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixName, startedAt, results, dryRun, metadata }) {
   if (!reportPath) return
   const completedAt = new Date()
@@ -340,6 +362,7 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
   const scenarios = results.map((result) => ({
     id: result.scenario.id,
     description: result.scenario.description,
+    ...scenarioReportMetadata(result.scenario),
     requires: requirementsFor(result.scenario),
     exitCriteria: exitCriteriaFor(result.scenario),
     exitCriteriaEvidence: exitCriteriaEvidenceForResult(result),

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { workspaceLiveSyncRequiredScenarioDescriptors } from "./lib/workspace-live-sync-fixtures.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-workspace-live-sync-matrix-drill.mjs", import.meta.url))
@@ -47,6 +48,24 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     assert(scenarioIds.includes("remote-tracked-opencode"))
     assert(scenarioIds.includes("hetzner-permission-opencode"))
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-managed-codex").requires, ["remote", "hetzner"])
+    const opencodeRemote = report.scenarios.find((scenario) => scenario.id === "remote-tracked-opencode")
+    assert.deepEqual({
+      deployment: opencodeRemote.deployment,
+      mode: opencodeRemote.mode,
+      provider: opencodeRemote.provider,
+    }, {
+      deployment: "same-host-remote",
+      mode: "tracked",
+      provider: "opencode",
+    })
+    const descriptorsById = new Map(workspaceLiveSyncRequiredScenarioDescriptors().map((descriptor) => [descriptor.id, descriptor]))
+    for (const scenario of report.scenarios.filter((item) => descriptorsById.has(item.id))) {
+      const descriptor = descriptorsById.get(scenario.id)
+      assert.equal(scenario.deployment, descriptor.deployment)
+      assert.equal(scenario.mode, descriptor.mode)
+      assert.equal(scenario.provider, descriptor.provider)
+      assert.deepEqual(scenario.requires, descriptor.requires)
+    }
     assert.equal(report.metadata.deploymentPresets, "hetzner,local,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providerCount, 2)
     assert.equal(report.metadata.providers, "codex,opencode")
