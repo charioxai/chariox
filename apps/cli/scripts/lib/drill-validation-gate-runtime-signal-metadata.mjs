@@ -44,11 +44,15 @@ export function diagnosticMetadataForValidationGateReport(report) {
   ])
   const generatedEvidenceKinds = new Set(generatedEvidenceKindsFor(report.generatedEvidence))
   const generatedMatrixLimitations = new Set(generatedMatrixLimitationsFor(report.generatedEvidence))
+  const exitCriterionStatuses = new Set(Object.keys(report.checks?.artifacts?.aggregate?.exitCriterionStatuses ?? {}))
+  const incompleteExitCriterionStatuses = new Set(Object.keys(report.checks?.artifacts?.aggregate?.incompleteExitCriterionStatuses ?? {}))
   return {
     ...runtimeSignalMetadataForValidationGateReport(report),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+    ...(exitCriterionStatuses.size > 0 ? { exitCriterionStatuses: [...exitCriterionStatuses].sort().join(",") } : {}),
+    ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
   }
@@ -118,6 +122,8 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.artifactGeneratedMatrixLimitations ?? {}),
     ...Object.keys(aggregate.coverage?.generatedMatrixLimitations ?? {}),
   ])
+  const exitCriterionStatuses = new Set(Object.keys(aggregate.coverage?.artifactExitCriterionStatuses ?? {}))
+  const incompleteExitCriterionStatuses = new Set(Object.keys(aggregate.coverage?.artifactIncompleteExitCriterionStatuses ?? {}))
   const requiredGeneratedEvidenceKinds = new Set([
     ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedEvidenceKinds ?? {}),
     ...Object.keys(aggregate.coverage?.requiredGeneratedEvidenceKinds ?? {}),
@@ -147,6 +153,8 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+    ...(exitCriterionStatuses.size > 0 ? { exitCriterionStatuses: [...exitCriterionStatuses].sort().join(",") } : {}),
+    ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),
     ...(requiredGeneratedEvidenceKinds.size > 0 ? { requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds].sort().join(",") } : {}),

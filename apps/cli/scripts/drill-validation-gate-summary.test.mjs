@@ -360,6 +360,8 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
       rootDir: evidenceRoot,
       artifacts: ["distributed-runtime-gate.json"],
       metadata: {
+        exitCriterionStatuses: "dry-run",
+        incompleteExitCriterionStatuses: "dry-run",
         generatedMatrixLimitations: "dry-run-classification-coverage",
       },
     })
@@ -389,11 +391,15 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     assert.deepEqual(stdoutAggregate.totals, { reports: 1, passed: 1, failed: 0 })
     assert.deepEqual(stdoutAggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
     assert.deepEqual(stdoutAggregate.missingArtifactGeneratedMatrixLimitations, [])
+    assert.equal(stdoutAggregate.coverage.artifactExitCriterionStatuses["dry-run"], 1)
+    assert.equal(stdoutAggregate.coverage.artifactIncompleteExitCriterionStatuses["dry-run"], 1)
     assert.equal(stdoutAggregate.coverage.artifactGeneratedMatrixLimitations["dry-run-classification-coverage"], 1)
     assert.deepEqual(stdoutAggregate.reports.map((report) => report.source), [reportPath])
     assert.deepEqual(stdoutAggregate.artifactCoverageInputs.map((input) => input.source), ["artifact metadata inputs"])
     assert.equal(artifactIndex.metadata.artifactCoverageInputCount, "1")
     assert.equal(artifactIndex.metadata.artifactCoverageInputSources, "artifact metadata inputs")
+    assert.equal(artifactIndex.metadata.exitCriterionStatuses, "dry-run")
+    assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
   } finally {
