@@ -87,6 +87,9 @@ test("formats dry-run reports without failures", () => {
     scenarios: [scenario("local", "dry-run", {
       exitCriteria: ["local runtime path is selected"],
       owner: "cloud-web",
+      plannedClassification: "kernel-authority",
+      plannedOwner: "kernel-authority",
+      plannedNextAction: "inspect session, agent, lease, provider-run, and projection authority state before rerunning the scenario",
     })],
   })
 
@@ -264,7 +267,12 @@ test("aggregates multiple matrix reports for CI", () => {
       deploymentPresets: "hosted-cloud",
       providers: "claude",
     },
-    scenarios: [scenario("tracked", "dry-run", { runtimeSignals: ["workspace-live-sync-state"] })],
+    scenarios: [scenario("tracked", "dry-run", {
+      runtimeSignals: ["workspace-live-sync-state"],
+      plannedClassification: "workspace-live-sync-conflict",
+      plannedOwner: "runtime-state",
+      plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
+    })],
   })
 
   const aggregate = summarizeDrillMatrixReports([failed, dryRun], {
@@ -350,6 +358,12 @@ test("aggregates multiple matrix reports for CI", () => {
   })), [
     { owner: "provider-account", classification: "provider-auth", count: 1 },
   ])
+  assert.deepEqual(aggregate.plannedNextActions, [{
+    owner: "runtime-state",
+    classification: "workspace-live-sync-conflict",
+    plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
+    count: 1,
+  }])
   assert.deepEqual(aggregate.reports.map((report) => ({ matrix: report.matrix, source: report.source })), [
     { matrix: "remote", source: "/tmp/remote-matrix.json" },
     { matrix: "workspace", source: "/tmp/workspace-matrix.json" },
@@ -393,6 +407,9 @@ test("aggregates multiple matrix reports for CI", () => {
       id: "tracked",
       status: "dry-run",
       reason: null,
+      plannedClassification: "workspace-live-sync-conflict",
+      plannedOwner: "runtime-state",
+      plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
     },
   ])
 
@@ -413,10 +430,12 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /- workspace-live-sync-state: workspace\/tracked\(dry-run\) source=\/tmp\/workspace-matrix\.json/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
+  assert.match(text, /planned next actions:/)
+  assert.match(text, /owner=runtime-state classification=workspace-live-sync-conflict count=1: inspect workspace live sync status/)
   assert.match(text, /next: refresh provider login/)
   assert.match(text, /incomplete scenarios:/)
   assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure source=\/tmp\/remote-matrix.json/)
-  assert.match(text, /- workspace\/tracked status=dry-run source=\/tmp\/workspace-matrix.json/)
+  assert.match(text, /- workspace\/tracked status=dry-run source=\/tmp\/workspace-matrix.json planned_owner=runtime-state planned_classification=workspace-live-sync-conflict planned_next=inspect workspace live sync status/)
 })
 
 test("rejects inconsistent matrix aggregates", () => {

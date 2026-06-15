@@ -188,6 +188,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
   const runtimeSignalScenarios = new Map()
   const owners = new Map()
   const nextActions = new Map()
+  const plannedNextActions = new Map()
   const matrixNames = new Map()
   const deploymentPresets = new Map()
   const providers = new Map()
@@ -258,7 +259,22 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
       incompleteScenarios.push({ matrix: summary.matrix, source: summary.source, id: scenario.id, status: "skipped", reason: scenario.reason ?? null })
     }
     for (const scenario of summary.dryRunScenarios) {
-      incompleteScenarios.push({ matrix: summary.matrix, source: summary.source, id: scenario.id, status: "dry-run", reason: scenario.reason ?? null })
+      const planned = plannedDiagnosticsForScenario(scenario)
+      incompleteScenarios.push({
+        matrix: summary.matrix,
+        source: summary.source,
+        id: scenario.id,
+        status: "dry-run",
+        reason: scenario.reason ?? null,
+        ...planned,
+      })
+      if (planned.plannedNextAction) {
+        countDrillAggregateNextAction(plannedNextActions, {
+          owner: planned.plannedOwner,
+          classification: planned.plannedClassification,
+          nextAction: planned.plannedNextAction,
+        })
+      }
     }
   }
   return {
@@ -280,6 +296,13 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     exitCriteria: Object.fromEntries([...exitCriteria.entries()].sort(([left], [right]) => left.localeCompare(right))),
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     nextActions: formatDrillAggregateNextActionCounts(nextActions),
+    plannedNextActions: formatDrillAggregateNextActionCounts(plannedNextActions)
+      .map((action) => ({
+        owner: action.owner,
+        classification: action.classification,
+        plannedNextAction: action.nextAction,
+        count: action.count,
+      })),
     reports: summaries.map((summary) => ({
       matrix: summary.matrix,
       source: summary.source,
@@ -419,6 +442,12 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
     }
   }
+  if (Array.isArray(aggregate.plannedNextActions) && aggregate.plannedNextActions.length > 0) {
+    lines.push("planned next actions:")
+    for (const action of aggregate.plannedNextActions) {
+      lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.plannedNextAction}`)
+    }
+  }
 
   if (aggregate.failedScenarios.length > 0) {
     lines.push("failed scenarios:")
@@ -439,7 +468,10 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     for (const scenario of aggregate.incompleteScenarios) {
       const reason = scenario.reason ? ` reason=${scenario.reason}` : ""
       const source = scenario.source ? ` source=${scenario.source}` : ""
-      lines.push(`- ${scenario.matrix}/${scenario.id} status=${scenario.status}${reason}${source}`)
+      const plannedOwner = scenario.plannedOwner ? ` planned_owner=${scenario.plannedOwner}` : ""
+      const plannedClassification = scenario.plannedClassification ? ` planned_classification=${scenario.plannedClassification}` : ""
+      const plannedNextAction = scenario.plannedNextAction ? ` planned_next=${scenario.plannedNextAction}` : ""
+      lines.push(`- ${scenario.matrix}/${scenario.id} status=${scenario.status}${reason}${source}${plannedOwner}${plannedClassification}${plannedNextAction}`)
     }
   }
 
@@ -480,6 +512,15 @@ function nextActionForScenario(scenario) {
 
 function ownerForScenario(scenario) {
   return drillFailureOwnerForClassification(scenario.classification)
+}
+
+function plannedDiagnosticsForScenario(scenario) {
+  if (!scenario.plannedClassification) return {}
+  return {
+    plannedClassification: scenario.plannedClassification,
+    plannedOwner: scenario.plannedOwner,
+    plannedNextAction: scenario.plannedNextAction,
+  }
 }
 
 function appendDryRunCriteria(lines, scenarios) {
@@ -554,6 +595,7 @@ function validateDrillMatrixScenario(scenario, source) {
       throw new Error(`${source} nextAction does not match classification`)
     }
   }
+  validatePlannedScenarioDiagnostics(scenario, source)
   if (!Number.isSafeInteger(scenario.durationMs) || scenario.durationMs < 0) {
     throw new Error(`${source} has invalid durationMs`)
   }
@@ -668,6 +710,12 @@ export function validateDrillMatrixAggregate(aggregate) {
   for (const [index, action] of (aggregate.nextActions ?? []).entries()) {
     validateDrillAggregateNextAction(action, `aggregate.nextActions[${index}]`)
   }
+  if (aggregate.plannedNextActions !== undefined && !Array.isArray(aggregate.plannedNextActions)) {
+    throw new Error("aggregate has invalid plannedNextActions")
+  }
+  for (const [index, action] of (aggregate.plannedNextActions ?? []).entries()) {
+    validateMatrixAggregatePlannedNextAction(action, `aggregate.plannedNextActions[${index}]`)
+  }
   if (!Array.isArray(aggregate.skippedScenarios)) {
     throw new Error("aggregate is missing skippedScenarios")
   }
@@ -693,6 +741,30 @@ export function validateDrillMatrixAggregate(aggregate) {
     validateMatrixAggregateReport(report, `aggregate.reports[${index}]`)
   }
   validateDrillMatrixAggregateConsistency(aggregate)
+}
+
+function validatePlannedScenarioDiagnostics(scenario, source) {
+  const hasPlannedClassification = scenario.plannedClassification !== undefined && scenario.plannedClassification !== null
+  const hasPlannedOwner = scenario.plannedOwner !== undefined && scenario.plannedOwner !== null
+  const hasPlannedNextAction = scenario.plannedNextAction !== undefined && scenario.plannedNextAction !== null
+  if (!hasPlannedClassification && !hasPlannedOwner && !hasPlannedNextAction) return
+  if (scenario.status !== "dry-run") {
+    throw new Error(`${source} planned diagnostics require dry-run status`)
+  }
+  if (!nonEmptyString(scenario.plannedClassification)) {
+    throw new Error(`${source} has invalid plannedClassification`)
+  }
+  if (!isKnownDrillFailureClassification(scenario.plannedClassification)) {
+    throw new Error(`${source} has unknown plannedClassification ${JSON.stringify(scenario.plannedClassification)}`)
+  }
+  const expectedOwner = drillFailureOwnerForClassification(scenario.plannedClassification)
+  if (scenario.plannedOwner !== expectedOwner) {
+    throw new Error(`${source} plannedOwner does not match plannedClassification`)
+  }
+  const expectedNextAction = drillFailureNextActionForClassification(scenario.plannedClassification, { target: "scenario" })
+  if (scenario.plannedNextAction !== expectedNextAction) {
+    throw new Error(`${source} plannedNextAction does not match plannedClassification`)
+  }
 }
 
 function validateDrillMatrixAggregateConsistency(aggregate) {
@@ -738,6 +810,7 @@ function validateDrillMatrixAggregateConsistency(aggregate) {
   assertRuntimeSignalScenariosMatchReports(aggregate)
   assertRuntimeSignalScenarioStatusesMatchDiagnostics(aggregate)
   assertNextActionCountsMatchScenarios(aggregate)
+  assertPlannedNextActionCountsMatchScenarios(aggregate)
 }
 
 function assertObjectCountsMatchEntries(label, counts, entries, key) {
@@ -786,6 +859,28 @@ function assertNextActionCountsMatchScenarios(aggregate) {
   const expectedActions = formatDrillAggregateNextActionCounts(expected)
   if (JSON.stringify(aggregate.nextActions ?? []) !== JSON.stringify(expectedActions)) {
     throw new Error("aggregate nextActions do not match failedScenarios")
+  }
+}
+
+function assertPlannedNextActionCountsMatchScenarios(aggregate) {
+  const expected = new Map()
+  for (const scenario of aggregate.incompleteScenarios) {
+    if (!scenario.plannedNextAction) continue
+    countDrillAggregateNextAction(expected, {
+      owner: scenario.plannedOwner,
+      classification: scenario.plannedClassification,
+      nextAction: scenario.plannedNextAction,
+    })
+  }
+  const expectedActions = formatDrillAggregateNextActionCounts(expected)
+    .map((action) => ({
+      owner: action.owner,
+      classification: action.classification,
+      plannedNextAction: action.nextAction,
+      count: action.count,
+    }))
+  if (JSON.stringify(aggregate.plannedNextActions ?? []) !== JSON.stringify(expectedActions)) {
+    throw new Error("aggregate plannedNextActions do not match incompleteScenarios")
   }
 }
 
@@ -1045,6 +1140,35 @@ function validateMatrixAggregateScenario(scenario, source) {
   if (scenario.artifactHints?.some(artifactHintLooksSecret)) {
     throw new Error(`${source} includes secret-looking artifactHints`)
   }
+  validateMatrixAggregatePlannedScenarioDiagnostics(scenario, source)
+}
+
+function validateMatrixAggregatePlannedScenarioDiagnostics(scenario, source) {
+  const hasPlannedClassification = scenario.plannedClassification !== undefined && scenario.plannedClassification !== null
+  const hasPlannedOwner = scenario.plannedOwner !== undefined && scenario.plannedOwner !== null
+  const hasPlannedNextAction = scenario.plannedNextAction !== undefined && scenario.plannedNextAction !== null
+  if (!hasPlannedClassification && !hasPlannedOwner && !hasPlannedNextAction) return
+  if (scenario.status !== "dry-run") {
+    throw new Error(`${source} planned diagnostics require dry-run status`)
+  }
+  if (!nonEmptyString(scenario.plannedClassification)) {
+    throw new Error(`${source} has invalid plannedClassification`)
+  }
+  validateMatrixAggregatePlannedNextAction({
+    owner: scenario.plannedOwner,
+    classification: scenario.plannedClassification,
+    plannedNextAction: scenario.plannedNextAction,
+    count: 1,
+  }, source)
+}
+
+function validateMatrixAggregatePlannedNextAction(action, source) {
+  validateDrillAggregateNextAction({
+    owner: action?.owner,
+    classification: action?.classification,
+    nextAction: action?.plannedNextAction,
+    count: action?.count,
+  }, source)
 }
 
 function validateMatrixAggregateFailedScenario(scenario, source) {

@@ -349,6 +349,9 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     classification: result.classification ?? null,
     owner: ownerForResult(result),
     nextAction: nextActionForResult(result),
+    plannedClassification: plannedClassificationForResult(result),
+    plannedOwner: plannedOwnerForResult(result),
+    plannedNextAction: plannedNextActionForResult(result),
     durationMs: result.durationMs,
     reason: result.reason ?? null,
     command: result.command,
@@ -416,6 +419,20 @@ function nextActionForResult(result) {
   return result.classification
     ? drillFailureNextActionForClassification(result.classification, { target: "scenario" })
     : null
+}
+
+function plannedClassificationForResult(result) {
+  return result.dryRun && result.scenario.classification ? result.scenario.classification : null
+}
+
+function plannedOwnerForResult(result) {
+  const classification = plannedClassificationForResult(result)
+  return classification ? drillFailureOwnerForClassification(classification) : null
+}
+
+function plannedNextActionForResult(result) {
+  const classification = plannedClassificationForResult(result)
+  return classification ? drillFailureNextActionForClassification(classification, { target: "scenario" }) : null
 }
 
 function exitCriteriaEvidenceForResult(result) {

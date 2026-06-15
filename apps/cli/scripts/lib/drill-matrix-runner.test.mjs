@@ -402,6 +402,9 @@ test("writes dry-run report without executing scenarios", async () => {
   assert.equal(report.status, "dry-run")
   assert.equal(report.scenarios[0].status, "dry-run")
   assert.equal(report.scenarios[0].classification, null)
+  assert.equal(report.scenarios[0].plannedClassification, "kernel-authority")
+  assert.equal(report.scenarios[0].plannedOwner, "kernel-authority")
+  assert.match(report.scenarios[0].plannedNextAction, /inspect session, agent, lease, provider-run, and projection authority state/)
   assert.deepEqual(report.scenarios[0].exitCriteriaEvidence, [{
     id: "dry:exit-01",
     criterion: "dry command is selected",
