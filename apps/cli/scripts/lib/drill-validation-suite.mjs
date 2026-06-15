@@ -218,6 +218,7 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
   if (runtimeSignals.length > 0) {
     validateDrillRuntimeSignalsManifest(manifest.runtimeSignalsManifest, "validation suite runtimeSignalsManifest")
   }
+  const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)
   return {
     drill: "validation-suite",
     ...(suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1" ? { status: suiteArtifact.status } : {}),
@@ -236,7 +237,9 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     ...(runtimeSignals.length > 0
       ? {
         runtimeSignals: runtimeSignals.join(","),
-        runtimeSignalOwners: drillRuntimeSignalOwnersFor(runtimeSignals).join(","),
+        runtimeSignalOwners: runtimeSignalOwners.join(","),
+        requiredRuntimeSignals: runtimeSignals.join(","),
+        requiredRuntimeSignalOwners: runtimeSignalOwners.join(","),
       }
       : {}),
   }
@@ -313,6 +316,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
   if (typeof preset.description !== "string" || preset.description.length === 0) {
     throw new Error(`validation suite preset ${preset.name} has invalid description`)
   }
+  const requiredRuntimeSignals = sortedRuntimeSignalArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`)
   return {
     name: preset.name,
     description: preset.description,
@@ -331,7 +335,11 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactClassifications: sortedStringArray(preset.requiredArtifactClassifications, `${preset.name}.requiredArtifactClassifications`),
     requiredArtifactExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactExitCriterionStatuses, `${preset.name}.requiredArtifactExitCriterionStatuses`),
     requiredArtifactIncompleteExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactIncompleteExitCriterionStatuses, `${preset.name}.requiredArtifactIncompleteExitCriterionStatuses`),
-    requiredRuntimeSignals: sortedRuntimeSignalArray(preset.requiredRuntimeSignals, `${preset.name}.requiredRuntimeSignals`),
+    requiredRuntimeSignals,
+    requiredRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(
+      preset.requiredRuntimeSignalOwners ?? drillRuntimeSignalOwnersFor(requiredRuntimeSignals),
+      `${preset.name}.requiredRuntimeSignalOwners`,
+    ),
     requiredFailureClassifications: sortedFailureClassificationArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
     requiredMatrixClassifications: sortedFailureClassificationArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),

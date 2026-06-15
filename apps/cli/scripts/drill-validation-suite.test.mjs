@@ -80,6 +80,10 @@ test("drill validation suite prints coverage manifest", async () => {
     ["satisfied"],
   )
   assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredRuntimeSignalOwners,
+    ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
+  )
+  assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "workspace-live-sync").requiredMatrices,
     ["workspace-live-sync-matrix"],
   )
@@ -129,6 +133,8 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync")
     assert.equal(artifactIndex.metadata.runtimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
+    assert.equal(artifactIndex.metadata.requiredRuntimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))
+    assert.equal(artifactIndex.metadata.requiredRuntimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,

@@ -129,6 +129,7 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactExitCriterionStatuses: [],
       requiredArtifactIncompleteExitCriterionStatuses: [],
       requiredRuntimeSignals: [],
+      requiredRuntimeSignalOwners: [],
       requiredFailureClassifications: [],
       requiredMatrices: ["sample-matrix"],
       requiredMatrixClassifications: [],
@@ -161,6 +162,8 @@ test("builds validation suite artifact metadata from manifest and run report", (
     validationPresets: "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync",
     runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
+    requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
   })
   assert.deepEqual(drillValidationSuiteArtifactMetadata({
     schema: "arroba.drill.validation_suite_run.v1",
@@ -179,6 +182,8 @@ test("builds validation suite artifact metadata from manifest and run report", (
     validationPresets: "distributed-runtime,native-provider-tui,remote-agent-runtime,remote-home-extension,slice-runtime,workspace-live-sync",
     runtimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
+    requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
   })
   assert.throws(() => drillValidationSuiteArtifactMetadata({
     ...manifest,
@@ -206,6 +211,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-suite"],
+    requiredRuntimeSignals: ["provider-run-lifecycle", "session-authority", "provider-run-lifecycle"],
     requiredMatrices: ["workspace-live-sync-matrix"],
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -234,7 +240,8 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactClassifications: ["validation-suite"],
     requiredArtifactExitCriterionStatuses: [],
     requiredArtifactIncompleteExitCriterionStatuses: [],
-    requiredRuntimeSignals: [],
+    requiredRuntimeSignals: ["provider-run-lifecycle", "session-authority"],
+    requiredRuntimeSignalOwners: ["kernel-authority", "provider-runtime"],
     requiredFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
     requiredMatrices: ["workspace-live-sync-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
