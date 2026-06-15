@@ -28,6 +28,8 @@ function printHelp() {
     "                         Exit non-zero when artifact indexes are older than this many milliseconds",
     "  --require-matrix-max-age-ms MS",
     "                         Exit non-zero when indexed matrix reports are older than this many milliseconds",
+    "  --require-generated-validation-suite-failure-root PATH",
+    "                         Exit non-zero when generated validation-suite failure-root metadata is missing; repeatable",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -54,6 +56,7 @@ async function main() {
     ...freshnessDiagnosticsFor(indexes, indexPaths, options),
     ...await matrixFreshnessDiagnosticsFor(indexes, options),
   }
+  Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
@@ -63,6 +66,7 @@ async function main() {
         drill: "artifact-index-summary",
         indexes: aggregate.totals.indexes,
         ...diagnosticMetadataForDrillArtifactIndexAggregate(aggregate),
+        ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
       },
     })
   }
@@ -71,7 +75,11 @@ async function main() {
   } else {
     console.log(formatAggregateSummaryWithFreshness(aggregate))
   }
-  if ((aggregate.staleArtifactIndexes ?? []).length > 0 || (aggregate.staleMatrixReports ?? []).length > 0) {
+  if (
+    (aggregate.staleArtifactIndexes ?? []).length > 0
+    || (aggregate.staleMatrixReports ?? []).length > 0
+    || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
+  ) {
     process.exitCode = 1
   }
 }
@@ -86,6 +94,7 @@ function parseArgs(argv) {
     outputArtifactIndexPath: null,
     outputPath: null,
     requiredArtifactMaxAgeMs: null,
+    requiredGeneratedValidationSuiteFailureRoots: [],
     requiredMatrixMaxAgeMs: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -129,6 +138,11 @@ function parseArgs(argv) {
         arg.slice("--require-matrix-max-age-ms=".length),
         "--require-matrix-max-age-ms",
       )
+    } else if (arg === "--require-generated-validation-suite-failure-root") {
+      options.requiredGeneratedValidationSuiteFailureRoots.push(readValue(argv, index, arg))
+      index += 1
+    } else if (arg.startsWith("--require-generated-validation-suite-failure-root=")) {
+      options.requiredGeneratedValidationSuiteFailureRoots.push(arg.slice("--require-generated-validation-suite-failure-root=".length))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -209,6 +223,25 @@ async function matrixFreshnessDiagnosticsFor(indexes, options) {
   }
 }
 
+function generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredGeneratedValidationSuiteFailureRoots)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.generatedValidationSuiteFailureRoots ?? {}))
+  return {
+    requiredGeneratedValidationSuiteFailureRoots: required,
+    missingGeneratedValidationSuiteFailureRoots: required.filter((root) => !available.has(root)),
+  }
+}
+
+function generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredGeneratedValidationSuiteFailureRoots ?? []
+  const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
+  return {
+    ...(required.length > 0 ? { requiredGeneratedValidationSuiteFailureRoots: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingGeneratedValidationSuiteFailureRoots: missing.join(",") } : {}),
+  }
+}
+
 function formatAggregateSummaryWithFreshness(aggregate) {
   const lines = [formatDrillArtifactIndexAggregateSummary(aggregate)]
   if (aggregate.requiredArtifactMaxAgeMs !== undefined) {
@@ -223,11 +256,18 @@ function formatAggregateSummaryWithFreshness(aggregate) {
       lines.push(`- stale_matrix_report=${staleReport.source ?? "unknown"} matrix=${staleReport.matrix} completed_at=${staleReport.completedAt} age_ms=${staleReport.ageMs} max_age_ms=${staleReport.maxAgeMs}`)
     }
   }
+  if (aggregate.requiredGeneratedValidationSuiteFailureRoots !== undefined) {
+    const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
+    lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRoots.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if ((aggregate.staleArtifactIndexes ?? []).length > 0) {
     lines.push("next: regenerate stale drill artifact indexes before using them as validation evidence")
   }
   if ((aggregate.staleMatrixReports ?? []).length > 0) {
     lines.push("next: regenerate stale drill matrix reports before using them as validation evidence")
+  }
+  if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
+    lines.push("next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root")
   }
   return lines.join("\n")
 }

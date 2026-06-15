@@ -230,6 +230,52 @@ test("drill artifact index summary gates stale matrix reports", async () => {
   }
 })
 
+test("drill artifact index summary gates generated validation-suite failure roots", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-generated-validation-suite-failure-root",
+      "/tmp/generated-suite/failed-run",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, ["/tmp/generated-suite/failed-run"])
+    assert.deepEqual(aggregate.missingGeneratedValidationSuiteFailureRoots, [])
+    assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
+    assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteFailureRoots, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-validation-suite-failure-root=/tmp/generated-suite/missing-run",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /generated_validation_suite_failure_roots_required=\/tmp\/generated-suite\/missing-run missing=\/tmp\/generated-suite\/missing-run/)
+        assert.match(error.stdout, /next: rerun generated validation suites with --preserve-failure-root/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary accepts explicit index paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   try {
