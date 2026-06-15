@@ -190,6 +190,9 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const providerAccountAliases = new Set([
     ...Object.keys(aggregate.coverage?.artifactProviderAccountAliases ?? {}),
   ])
+  const validationPresets = new Set([
+    ...Object.keys(aggregate.coverage?.artifactValidationPresets ?? {}),
+  ])
   const requiredProviderAccountAliases = new Set([
     ...Object.keys(aggregate.coverage?.requiredArtifactProviderAccountAliases ?? {}),
     ...(aggregate.requiredArtifactProviderAccountAliases ?? []).filter(nonEmptyString),
@@ -197,6 +200,14 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const missingProviderAccountAliases = new Set([
     ...Object.keys(aggregate.coverage?.missingArtifactProviderAccountAliases ?? {}),
     ...(aggregate.missingArtifactProviderAccountAliases ?? []).filter(nonEmptyString),
+  ])
+  const requiredValidationPresets = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactValidationPresets ?? {}),
+    ...(aggregate.requiredArtifactValidationPresets ?? []).filter(nonEmptyString),
+  ])
+  const missingValidationPresets = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactValidationPresets ?? {}),
+    ...(aggregate.missingArtifactValidationPresets ?? []).filter(nonEmptyString),
   ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
@@ -208,6 +219,9 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(providerAccountAliases.size > 0 ? { providerAccountAliases: [...providerAccountAliases].sort().join(",") } : {}),
     ...(requiredProviderAccountAliases.size > 0 ? { requiredProviderAccountAliases: [...requiredProviderAccountAliases].sort().join(",") } : {}),
     ...(missingProviderAccountAliases.size > 0 ? { missingProviderAccountAliases: [...missingProviderAccountAliases].sort().join(",") } : {}),
+    ...(validationPresets.size > 0 ? { validationPresets: [...validationPresets].sort().join(",") } : {}),
+    ...(requiredValidationPresets.size > 0 ? { requiredValidationPresets: [...requiredValidationPresets].sort().join(",") } : {}),
+    ...(missingValidationPresets.size > 0 ? { missingValidationPresets: [...missingValidationPresets].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixArtifactIndexes.size > 0 ? { generatedMatrixArtifactIndexes: [...generatedMatrixArtifactIndexes].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),

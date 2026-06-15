@@ -103,6 +103,7 @@ test("drill validation gate summary help lists artifact coverage requirements", 
   assert.match(stdout, /--require-artifact-owner OWNER/)
   assert.match(stdout, /--require-artifact-classification CLASSIFICATION/)
   assert.match(stdout, /--require-artifact-provider-account-alias P=A/)
+  assert.match(stdout, /--require-artifact-validation-preset NAME/)
   assert.match(stdout, /--require-generated-matrix-artifact-index PATH/)
   assert.match(stdout, /--require-generated-matrix-limitation KIND/)
   assert.match(stdout, /--require-generated-validation-suite-failure-root PATH/)
@@ -451,6 +452,7 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
         exitCriterionStatuses: "dry-run",
         incompleteExitCriterionStatuses: "dry-run",
         generatedMatrixLimitations: "dry-run-classification-coverage",
+        validationPresets: "distributed-runtime",
       },
     })
 
@@ -464,6 +466,8 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
       path.join(rootDir, "evidence"),
       "--require-artifact-generated-matrix-limitation",
       "dry-run-classification-coverage",
+      "--require-artifact-validation-preset",
+      "distributed-runtime",
       "--json",
       "--output",
       outputPath,
@@ -480,9 +484,12 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     assert.deepEqual(stdoutAggregate.artifactCoverageInputs.map((input) => input.status), ["passed"])
     assert.deepEqual(stdoutAggregate.requiredArtifactGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
     assert.deepEqual(stdoutAggregate.missingArtifactGeneratedMatrixLimitations, [])
+    assert.deepEqual(stdoutAggregate.requiredArtifactValidationPresets, ["distributed-runtime"])
+    assert.deepEqual(stdoutAggregate.missingArtifactValidationPresets, [])
     assert.equal(stdoutAggregate.coverage.artifactExitCriterionStatuses["dry-run"], 1)
     assert.equal(stdoutAggregate.coverage.artifactIncompleteExitCriterionStatuses["dry-run"], 1)
     assert.equal(stdoutAggregate.coverage.artifactGeneratedMatrixLimitations["dry-run-classification-coverage"], 1)
+    assert.equal(stdoutAggregate.coverage.artifactValidationPresets["distributed-runtime"], 1)
     assert.deepEqual(stdoutAggregate.reports.map((report) => report.source), [reportPath])
     assert.deepEqual(stdoutAggregate.artifactCoverageInputs.map((input) => input.source), ["artifact metadata inputs"])
     assert.equal(artifactIndex.metadata.artifactCoverageInputCount, "1")
@@ -491,6 +498,8 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime")
+    assert.equal(artifactIndex.metadata.requiredValidationPresets, "distributed-runtime")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

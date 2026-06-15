@@ -1250,6 +1250,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactEvidenceRepos: {},
       requiredArtifactProviderAccountAliases: {},
       missingArtifactProviderAccountAliases: {},
+      requiredArtifactValidationPresets: {},
+      missingArtifactValidationPresets: {},
       requiredArtifactRuntimeSignals: {},
       missingArtifactRuntimeSignals: {},
       requiredArtifactRuntimeSignalOwners: {},
@@ -1277,6 +1279,7 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       artifactGeneratedValidationSuiteFailureRoots: {},
       artifactEvidenceRepos: {},
       artifactProviderAccountAliases: {},
+      artifactValidationPresets: {},
       artifactCoverageInputSources: {},
       failureRuntimeSignals: {},
       failureRuntimeSignalOwners: {},
@@ -1540,6 +1543,8 @@ function emptyArtifactCoverageSummary() {
     missingArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
     missingArtifactProviderAccountAliases: [],
+    requiredArtifactValidationPresets: [],
+    missingArtifactValidationPresets: [],
     requiredArtifactRuntimeSignals: [],
     missingArtifactRuntimeSignals: [],
     requiredArtifactRuntimeSignalOwners: [],
@@ -1567,6 +1572,7 @@ function emptyArtifactCoverageSummary() {
     generatedValidationSuiteFailureRoots: {},
     evidenceRepos: {},
     providerAccountAliases: {},
+    validationPresets: {},
     artifactCoverageInputSources: {},
   }
 }
