@@ -22,10 +22,10 @@ import {
   validateDrillProvider,
 } from "./lib/drill-provider-profiles.mjs"
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
-import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
-import { isKnownDrillGeneratedMatrixName } from "./lib/drill-generated-matrix-names.mjs"
-import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./lib/drill-evidence-repos.mjs"
+import { validateDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-metadata.mjs"
+import { validateDrillGeneratedMatrixName } from "./lib/drill-generated-matrix-metadata.mjs"
+import { validateDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 import { drillFailureOwnerForClassification } from "./lib/drill-failure-taxonomy.mjs"
 import {
   DRILL_RUNTIME_SIGNAL_OWNERS,
@@ -395,24 +395,26 @@ function parseProviderAccountAliasRequirement(value, flag) {
 }
 
 function parseGeneratedEvidenceKindRequirement(value, flag) {
-  if (!isKnownDrillGeneratedEvidenceKind(value)) {
-    throw new Error(`${flag} has unknown generated evidence kind: ${value}`)
-  }
+  validateDrillGeneratedEvidenceKind(value, flag, {
+    message: () => `${flag} has unknown generated evidence kind: ${value}`,
+  })
   return value
 }
 
 function parseGeneratedMatrixLimitationRequirement(value, flag) {
-  if (!isKnownDrillGeneratedMatrixLimitation(value)) {
-    throw new Error(`${flag} has unknown generated matrix limitation: ${value}`)
-  }
+  validateDrillGeneratedMatrixLimitation(value, flag, {
+    message: () => `${flag} has unknown generated matrix limitation: ${value}`,
+  })
   return value
 }
 
 function parseGeneratedMatrixNameRequirement(value, flag) {
   const matrixName = parseDiagnosticRequirementText(value, flag)
-  if (!isKnownDrillGeneratedMatrixName(matrixName)) {
-    throw new Error(`${flag} has unknown generated matrix name: ${matrixName}`)
-  }
+  validateDrillGeneratedMatrixName(matrixName, {
+    secretSource: flag,
+    unknownSource: flag,
+    message: () => `${flag} has unknown generated matrix name: ${matrixName}`,
+  })
   return matrixName
 }
 
