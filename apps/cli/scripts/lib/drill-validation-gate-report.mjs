@@ -13,6 +13,7 @@ import {
 import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-matrix-command-metadata.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import { validateDrillMatrixAggregate } from "./drill-matrix-report.mjs"
+import { validateDrillMatrixScenarioStatus } from "./drill-matrix-statuses.mjs"
 import {
   parseProviderAccountAlias,
   validateDrillProvider,
@@ -294,9 +295,7 @@ function validateRequiredMatrixRuntimeSignalScenario(scenario, source) {
       throw new Error(`${source} includes secret-looking ${field}`)
     }
   }
-  if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
-  }
+  validateDrillMatrixScenarioStatus(scenario.status, source)
   if (scenario.source !== null && scenario.source !== undefined && !nonEmptyString(scenario.source)) {
     throw new Error(`${source} has invalid source`)
   }

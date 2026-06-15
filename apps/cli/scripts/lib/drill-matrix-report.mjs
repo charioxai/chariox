@@ -20,6 +20,10 @@ import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import { validateDrillDeploymentPresets } from "./drill-environment-presets.mjs"
 import { validateDrillProviders } from "./drill-provider-profiles.mjs"
 import {
+  validateDrillMatrixReportStatus,
+  validateDrillMatrixScenarioStatus,
+} from "./drill-matrix-statuses.mjs"
+import {
   validateDrillDurationMatchesTimestamps,
   validateDrillTimestampOrder,
 } from "./drill-time.mjs"
@@ -49,9 +53,7 @@ export function validateDrillMatrixReport(report, source = "report") {
   if (!nonEmptyString(report.matrix)) {
     throw new Error(`${source} is missing matrix`)
   }
-  if (!["passed", "failed", "dry-run"].includes(report.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
-  }
+  validateDrillMatrixReportStatus(report.status, source)
   if (typeof report.dryRun !== "boolean") {
     throw new Error(`${source} is missing dryRun`)
   }
@@ -557,9 +559,7 @@ function validateDrillMatrixScenario(scenario, source) {
   if (scenario.exitCriteriaEvidence !== undefined) {
     validateExitCriteriaEvidence(scenario, `${source}.exitCriteriaEvidence`)
   }
-  if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
-  }
+  validateDrillMatrixScenarioStatus(scenario.status, source)
   if (typeof scenario.expectedFailure !== "boolean") {
     throw new Error(`${source} is missing expectedFailure`)
   }
@@ -684,9 +684,7 @@ export function validateDrillMatrixAggregate(aggregate) {
   if (aggregate.schema !== "arroba.drill.matrix.aggregate.v1") {
     throw new Error(`aggregate has unsupported schema ${JSON.stringify(aggregate.schema)}`)
   }
-  if (!["passed", "failed", "dry-run"].includes(aggregate.status)) {
-    throw new Error(`aggregate has invalid status ${JSON.stringify(aggregate.status)}`)
-  }
+  validateDrillMatrixReportStatus(aggregate.status, "aggregate")
   if (!aggregate.totals || typeof aggregate.totals !== "object") {
     throw new Error("aggregate is missing totals")
   }
@@ -1032,9 +1030,7 @@ function validateMatrixAggregateReport(report, source) {
   if (report.source !== null && report.source !== undefined && !nonEmptyString(report.source)) {
     throw new Error(`${source} has invalid source`)
   }
-  if (!["passed", "failed", "dry-run"].includes(report.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(report.status)}`)
-  }
+  validateDrillMatrixReportStatus(report.status, source)
   validateFailureClassificationCountObject(report.classifications, `${source}.classifications`)
   validateDeploymentPresetList(report.deploymentPresets, `${source}.deploymentPresets`)
   validateProviderList(report.providers ?? [], `${source}.providers`)
@@ -1371,9 +1367,7 @@ function validateRuntimeSignalEvidenceEntry(entry, source, { aggregate }) {
   if (!nonEmptyString(entry.id)) {
     throw new Error(`${source} is missing id`)
   }
-  if (!["passed", "failed", "skipped", "dry-run"].includes(entry.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(entry.status)}`)
-  }
+  validateDrillMatrixScenarioStatus(entry.status, source)
 }
 
 function assertRuntimeSignalEvidenceCounts(label, counts, evidence) {

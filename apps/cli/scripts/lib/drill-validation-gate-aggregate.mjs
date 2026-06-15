@@ -14,6 +14,7 @@ import {
 } from "./drill-generated-evidence-metadata.mjs"
 import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-matrix-command-metadata.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
+import { validateDrillMatrixScenarioStatus } from "./drill-matrix-statuses.mjs"
 import {
   parseProviderAccountAlias,
   validateDrillProvider,
@@ -2176,9 +2177,7 @@ function validateRuntimeSignalScenario(scenario, source, { reportSource }) {
   if (!nonEmptyString(scenario.id)) {
     throw new Error(`${source} is missing id`)
   }
-  if (!["passed", "failed", "skipped", "dry-run"].includes(scenario.status)) {
-    throw new Error(`${source} has invalid status ${JSON.stringify(scenario.status)}`)
-  }
+  validateDrillMatrixScenarioStatus(scenario.status, source)
 }
 
 function validateRuntimeSignalArray(value, source) {
