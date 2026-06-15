@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
-import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
@@ -746,9 +746,7 @@ function validateDiagnosticCountObject(value, source, key) {
   }
   if (key === "artifactKinds") {
     for (const kind of Object.keys(value)) {
-      if (!isKnownDrillArtifactKind(kind)) {
-        throw new Error(`${source} has unknown artifact kind ${JSON.stringify(kind)}`)
-      }
+      validateDrillArtifactKind(kind, source)
     }
   }
   if ([
@@ -1185,9 +1183,7 @@ function validateGeneratedEvidencePathText(value, source) {
 
 function validateDrillArtifactIndexKindMetadata(metadata, source) {
   for (const kind of metadataListFromMetadata(metadata, "artifactKinds")) {
-    if (!isKnownDrillArtifactKind(kind)) {
-      throw new Error(`${source}.artifactKinds has unknown artifact kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillArtifactKind(kind, `${source}.artifactKinds`)
   }
 }
 

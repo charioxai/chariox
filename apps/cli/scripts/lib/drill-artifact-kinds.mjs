@@ -17,3 +17,12 @@ export const DRILL_ARTIFACT_KINDS = Object.freeze([
 export function isKnownDrillArtifactKind(kind) {
   return DRILL_ARTIFACT_KINDS.includes(kind)
 }
+
+export function validateDrillArtifactKind(kind, source, { message } = {}) {
+  if (!isKnownDrillArtifactKind(kind)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(kind) : message)
+    }
+    throw new Error(`${source} has unknown artifact kind ${JSON.stringify(kind)}`)
+  }
+}

@@ -3,7 +3,7 @@ import {
   formatDrillAggregateNextActionCounts,
   validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
-import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
@@ -2219,9 +2219,7 @@ function validateArtifactEvidenceRepoArray(value, source) {
 function validateArtifactKindArray(value, source) {
   validateStringArray(value, source)
   for (const [index, kind] of value.entries()) {
-    if (!isKnownDrillArtifactKind(kind)) {
-      throw new Error(`${source}[${index}] has unknown artifact kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillArtifactKind(kind, `${source}[${index}]`)
   }
 }
 
@@ -2353,9 +2351,7 @@ function validateArtifactEvidenceRepoCountObject(value, source) {
 function validateArtifactKindCountObject(value, source) {
   validateCountObject(value, source)
   for (const kind of Object.keys(value)) {
-    if (!isKnownDrillArtifactKind(kind)) {
-      throw new Error(`${source} has unknown artifact kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillArtifactKind(kind, source)
   }
 }
 

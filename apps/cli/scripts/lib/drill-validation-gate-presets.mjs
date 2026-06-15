@@ -1,4 +1,4 @@
-import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import {
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
@@ -444,9 +444,9 @@ export function normalizeRequiredArtifactKinds(requiredArtifactKinds) {
     itemName: "kind",
   })
   for (const kind of kinds) {
-    if (!isKnownDrillArtifactKind(kind)) {
-      throw new Error(`unknown required artifact kind: ${kind}`)
-    }
+    validateDrillArtifactKind(kind, "required artifact kinds", {
+      message: () => `unknown required artifact kind: ${kind}`,
+    })
   }
   return kinds
 }

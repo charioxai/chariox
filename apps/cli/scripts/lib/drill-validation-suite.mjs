@@ -7,7 +7,7 @@ import {
   isKnownDrillRuntimeSignal,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
-import { isKnownDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
@@ -35,6 +35,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/drill-validation-gate.test.mjs",
   "apps/cli/scripts/drill-validation-suite.test.mjs",
   "apps/cli/scripts/lib/drill-aggregate-actions.test.mjs",
+  "apps/cli/scripts/lib/drill-artifact-kinds.test.mjs",
   "apps/cli/scripts/lib/drill-artifacts.test.mjs",
   "apps/cli/scripts/lib/drill-child-process.test.mjs",
   "apps/cli/scripts/lib/drill-cli-args.test.mjs",
@@ -99,6 +100,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/drill-failure-summary.test.mjs",
       "apps/cli/scripts/drill-platform-bundle.test.mjs",
       "apps/cli/scripts/lib/drill-aggregate-actions.test.mjs",
+      "apps/cli/scripts/lib/drill-artifact-kinds.test.mjs",
       "apps/cli/scripts/lib/drill-artifacts.test.mjs",
       "apps/cli/scripts/lib/drill-evidence-repos.test.mjs",
       "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
@@ -400,9 +402,7 @@ function sortedRuntimeSignalArray(value, source) {
 function sortedArtifactKindArray(value, source) {
   const kinds = sortedStringArray(value, source)
   for (const [index, kind] of kinds.entries()) {
-    if (!isKnownDrillArtifactKind(kind)) {
-      throw new Error(`validation suite preset ${source}[${index}] has unknown artifact kind ${JSON.stringify(kind)}`)
-    }
+    validateDrillArtifactKind(kind, `validation suite preset ${source}[${index}]`)
   }
   return kinds
 }
