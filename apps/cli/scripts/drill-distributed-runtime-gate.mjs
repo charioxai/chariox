@@ -453,10 +453,14 @@ function generatedEvidenceMetadataFor(generatedEvidence) {
   const matrixArtifactIndexes = (generatedEvidence.matrixReports.artifactIndexes ?? [])
     .filter((artifactIndex) => typeof artifactIndex === "string" && artifactIndex.length > 0)
     .sort()
+  const matrixNames = generatedMatrixCommandMetadataValues(generatedEvidence, "matrix")
+  const matrixRepos = generatedMatrixCommandMetadataValues(generatedEvidence, "repo")
   return {
     ...(kinds.length > 0 ? { generatedEvidenceKinds: kinds.join(",") } : {}),
     ...(matrixArtifactIndexes.length > 0 ? { generatedMatrixArtifactIndexes: matrixArtifactIndexes.join(",") } : {}),
     ...(matrixLimitations.length > 0 ? { generatedMatrixLimitations: matrixLimitations.join(",") } : {}),
+    ...(matrixNames.length > 0 ? { generatedMatrixNames: matrixNames.join(",") } : {}),
+    ...(matrixRepos.length > 0 ? { generatedMatrixRepos: matrixRepos.join(",") } : {}),
     ...(generatedEvidence.matrixReports.roots.length > 0
       ? { generatedMatrixRoots: generatedEvidence.matrixReports.roots.join(",") }
       : {}),
@@ -467,6 +471,13 @@ function generatedEvidenceMetadataFor(generatedEvidence) {
       ? { generatedValidationSuiteFailureRoots: generatedEvidence.validationSuites.failureRoots.join(",") }
       : {}),
   }
+}
+
+function generatedMatrixCommandMetadataValues(generatedEvidence, key) {
+  return [...new Set((generatedEvidence.matrixReports.commands ?? [])
+    .map((command) => command?.[key])
+    .filter((value) => typeof value === "string" && value.length > 0))]
+    .sort()
 }
 
 function suppressedPresetRequirementsForGeneratedEvidence(generatedEvidence) {

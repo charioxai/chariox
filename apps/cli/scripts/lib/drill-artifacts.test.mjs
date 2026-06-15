@@ -700,6 +700,8 @@ test("summarizes drill artifact indexes", async () => {
         generatedEvidenceKinds: "matrix-report",
         generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
         generatedMatrixLimitations: "dry-run-classification-coverage",
+        generatedMatrixNames: "workspace-live-sync-matrix",
+        generatedMatrixRepos: "oss",
         requiredGeneratedEvidenceKinds: "matrix-report",
         requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
         missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
@@ -788,6 +790,12 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.generatedMatrixArtifactIndexes, {
       "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json": 1,
     })
+    assert.deepEqual(aggregate.generatedMatrixNames, {
+      "workspace-live-sync-matrix": 1,
+    })
+    assert.deepEqual(aggregate.generatedMatrixRepos, {
+      oss: 1,
+    })
     assert.deepEqual(aggregate.generatedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
     })
@@ -874,6 +882,8 @@ test("summarizes drill artifact indexes", async () => {
       generatedEvidenceKinds: "matrix-report,validation-suite-run",
       generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
       generatedMatrixLimitations: "dry-run-classification-coverage",
+      generatedMatrixNames: "workspace-live-sync-matrix",
+      generatedMatrixRepos: "oss",
       generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
       generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       missingGeneratedEvidenceKinds: "matrix-report",
@@ -915,6 +925,8 @@ test("summarizes drill artifact indexes", async () => {
       "generatedEvidenceKinds",
       "generatedMatrixArtifactIndexes",
       "generatedMatrixLimitations",
+      "generatedMatrixNames",
+      "generatedMatrixRepos",
       "generatedValidationSuiteArtifactIndexes",
       "generatedValidationSuiteFailureRoots",
       "requiredGeneratedEvidenceKinds",
@@ -1310,6 +1322,36 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.generatedMatrixLimitations has unknown generated matrix limitation "dry-run-classification-covergae"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { generatedMatrixRepos: "cluod" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedMatrixRepos has unknown evidence repo "cluod"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { generatedMatrixNames: "Bearer abcdefghijklmnop" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedMatrixNames\[0\] includes secret-looking generated matrix name/,
     )
     assert.throws(
       () => validateDrillArtifactIndex({

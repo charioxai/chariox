@@ -452,6 +452,15 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       path.join(matrixOutputRoot, "oss", "workspace-live-sync-matrix-artifacts.json"),
     ].join(","))
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
+    assert.equal(artifactIndex.metadata.generatedMatrixNames, [
+      "cloud-slice-runtime-matrix",
+      "native-provider-tui-matrix",
+      "remote-agent-runtime-matrix",
+      "remote-home-extension-matrix",
+      "slice-runtime-matrix",
+      "workspace-live-sync-matrix",
+    ].join(","))
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex,opencode=zen")
     assert.equal(artifactIndex.metadata.generatedMatrixRoots, [
       path.join(matrixOutputRoot, "cloud"),
@@ -533,6 +542,9 @@ test("distributed runtime gate labels dry-run generated matrix limitations", asy
       nextAction: "rerun distributed runtime matrix reports without --matrix-dry-run before treating required matrix classifications as release evidence",
     }])
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
+    assert.match(artifactIndex.metadata.generatedMatrixNames, /cloud-slice-runtime-matrix/)
+    assert.match(artifactIndex.metadata.generatedMatrixNames, /workspace-live-sync-matrix/)
+    assert.equal(artifactIndex.metadata.generatedMatrixRepos, "cloud,oss")
     assert.match(artifactIndex.metadata.generatedMatrixArtifactIndexes, /cloud-slice-runtime-matrix-artifacts\.json/)
     assert.match(artifactIndex.metadata.generatedMatrixArtifactIndexes, /workspace-live-sync-matrix-artifacts\.json/)
     assert.equal(summary.status, "passed")
