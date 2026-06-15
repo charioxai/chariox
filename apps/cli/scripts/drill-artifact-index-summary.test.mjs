@@ -118,7 +118,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
     assert.equal(artifactIndex.metadata.exitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
-    assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,matrix-report,validation-gate")
+    assert.equal(artifactIndex.metadata.artifactKinds, "artifact-index,artifact-index-aggregate,matrix-report,validation-gate")
     assert.equal(artifactIndex.metadata.generatedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.generatedMatrixArtifactIndexes, "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")

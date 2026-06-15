@@ -83,7 +83,7 @@ async function main() {
       metadata: {
         drill: "artifact-index-summary",
         indexes: aggregate.totals.indexes,
-        ...diagnosticMetadataForDrillArtifactIndexAggregate(aggregate),
+        ...artifactIndexSummaryOutputMetadataFor(aggregate),
         ...generatedEvidenceKindRequirementMetadataFor(aggregate),
         ...generatedMatrixLimitationRequirementMetadataFor(aggregate),
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
@@ -276,6 +276,16 @@ function parseGeneratedMatrixLimitationRequirement(value, flag) {
     throw new Error(`${flag} has unknown generated matrix limitation: ${value}`)
   }
   return value
+}
+
+function artifactIndexSummaryOutputMetadataFor(aggregate) {
+  const metadata = diagnosticMetadataForDrillArtifactIndexAggregate(aggregate)
+  const artifactKinds = new Set(String(metadata.artifactKinds ?? "").split(",").filter(Boolean))
+  artifactKinds.add("artifact-index-aggregate")
+  return {
+    ...metadata,
+    artifactKinds: [...artifactKinds].sort().join(","),
+  }
 }
 
 async function matrixFreshnessDiagnosticsFor(indexes, options) {
