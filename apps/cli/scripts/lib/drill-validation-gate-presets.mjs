@@ -7,6 +7,7 @@ import { DRILL_DEPLOYMENT_PRESETS } from "./drill-environment-presets.mjs"
 import { isKnownDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { isKnownDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./drill-generated-evidence-kinds.mjs"
+import { isKnownDrillGeneratedMatrixName } from "./drill-generated-matrix-names.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
 import {
   isKnownDrillProvider,
@@ -528,10 +529,16 @@ export function normalizeRequiredArtifactGeneratedMatrixLimitations(requiredArti
 }
 
 export function normalizeRequiredArtifactGeneratedMatrixNames(requiredArtifactGeneratedMatrixNames) {
-  return normalizeDiagnosticTextRequirements(requiredArtifactGeneratedMatrixNames, {
+  const matrixNames = normalizeDiagnosticTextRequirements(requiredArtifactGeneratedMatrixNames, {
     fieldName: "requiredArtifactGeneratedMatrixNames",
     itemName: "matrix",
   })
+  for (const matrixName of matrixNames) {
+    if (!isKnownDrillGeneratedMatrixName(matrixName)) {
+      throw new Error(`unknown required artifact generated matrix name: ${matrixName}`)
+    }
+  }
+  return matrixNames
 }
 
 export function normalizeRequiredArtifactGeneratedMatrixRepos(requiredArtifactGeneratedMatrixRepos) {

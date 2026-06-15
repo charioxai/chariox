@@ -22,6 +22,7 @@ import {
   normalizeRequiredArtifactRuntimeSignals,
   normalizeRequiredArtifactSchemas,
   normalizeRequiredArtifactGeneratedMatrixArtifactIndexes,
+  normalizeRequiredArtifactGeneratedMatrixNames,
   normalizeRequiredFailureClassifications,
   normalizeRequiredGeneratedEvidenceKinds,
   normalizeRequiredGeneratedMatrixArtifactIndexes,
@@ -610,6 +611,10 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredGeneratedMatrixLimitations(["dry-run-classification-covergae"]),
     /unknown required generated matrix limitation: dry-run-classification-covergae/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactGeneratedMatrixNames(["workspace-live-synch-matrix"]),
+    /unknown required artifact generated matrix name: workspace-live-synch-matrix/,
   )
   assert.throws(
     () => normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(["/tmp/Bearer abcdefghijklmnop.json"]),
