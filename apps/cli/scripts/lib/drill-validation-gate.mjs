@@ -119,6 +119,7 @@ export async function runDrillValidationGate({
   requiredDeploymentPresets = [],
   requiredProviders = [],
   requiredScenarios = [],
+  suppressedPresetRequirements = [],
 } = {}) {
   const normalizedPresets = normalizeRequiredPresets(presets)
   const expandedRequirements = expandValidationGatePresetRequirements({
@@ -145,6 +146,9 @@ export async function runDrillValidationGate({
     requiredProviders,
     requiredScenarios,
   })
+  suppressPresetRequirements(expandedRequirements, {
+    requiredMatrixClassifications,
+  }, suppressedPresetRequirements)
   const normalizedRequiredPlatformCoverageAreas = normalizeRequiredPlatformCoverageAreas(expandedRequirements.requiredPlatformCoverageAreas)
   const normalizedRequiredArtifactCoverageAreas = normalizeRequiredArtifactCoverageAreas(expandedRequirements.requiredArtifactCoverageAreas)
   const normalizedRequiredArtifactSchemas = normalizeRequiredArtifactSchemas(expandedRequirements.requiredArtifactSchemas)
@@ -242,6 +246,17 @@ export async function runDrillValidationGate({
   }
   validateDrillValidationGateReport(report)
   return report
+}
+
+function suppressPresetRequirements(expandedRequirements, explicitRequirements, suppressedPresetRequirements) {
+  if (!Array.isArray(suppressedPresetRequirements)) throw new Error("suppressedPresetRequirements must be an array")
+  const suppressibleRequirements = new Set(Object.keys(explicitRequirements))
+  for (const requirement of suppressedPresetRequirements) {
+    if (typeof requirement !== "string" || !suppressibleRequirements.has(requirement)) {
+      throw new Error(`unsupported suppressed preset requirement ${JSON.stringify(requirement)}`)
+    }
+    expandedRequirements[requirement] = [...(explicitRequirements[requirement] ?? [])]
+  }
 }
 
 export function drillValidationGateExitCode(report) {

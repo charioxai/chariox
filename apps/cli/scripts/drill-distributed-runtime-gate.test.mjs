@@ -1010,7 +1010,8 @@ const args = process.argv.slice(2)
 const reportPath = valueFor("--report")
 const artifactIndexPath = valueFor("--artifact-index") ?? valueFor("--output-artifact-index")
 await mkdir(path.dirname(reportPath), { recursive: true })
-const report = ${JSON.stringify(report, null, 2)}
+const baseReport = ${JSON.stringify(report, null, 2)}
+const report = args.includes("--dry-run") ? dryRunReportFor(baseReport) : baseReport
 await writeFile(reportPath, \`\${JSON.stringify(report, null, 2)}\\n\`, "utf8")
 if (artifactIndexPath) {
   const bytes = await readFile(reportPath)
@@ -1037,6 +1038,24 @@ function valueFor(flag) {
   const index = args.indexOf(flag)
   if (index < 0 || !args[index + 1]) return null
   return args[index + 1]
+}
+
+function dryRunReportFor(report) {
+  return {
+    ...report,
+    status: "dry-run",
+    dryRun: true,
+    completedAt: report.startedAt,
+    durationMs: 0,
+    scenarios: report.scenarios.map((scenario) => ({
+      ...scenario,
+      status: "dry-run",
+      ok: true,
+      classification: null,
+      durationMs: 0,
+      reason: null,
+    })),
+  }
 }
 `, "utf8")
 }

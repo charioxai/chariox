@@ -323,6 +323,51 @@ test("applies validation gate requirement presets", async () => {
   }
 })
 
+test("suppresses only preset-derived matrix classification requirements", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const reportPath = path.join(rootDir, "workspace-live-sync.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      matrix: "workspace-live-sync-matrix",
+      metadata: {
+        deploymentPresets: "local",
+        providers: "codex",
+      },
+      scenarios: [
+        scenario("local-managed-codex", "passed", {
+          classification: null,
+          runtimeSignals: ["session-authority", "workspace-live-sync-state"],
+        }),
+      ],
+    }))
+
+    const suppressed = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      presets: ["workspace-live-sync"],
+      suppressedPresetRequirements: ["requiredMatrixClassifications"],
+    })
+    assert.deepEqual(suppressed.presets, ["workspace-live-sync"])
+    assert.deepEqual(suppressed.checks.matrices.requiredMatrixClassifications, [])
+    assert.deepEqual(suppressed.checks.matrices.missingMatrixClassifications, [])
+
+    const explicit = await runDrillValidationGate({
+      matrixReports: [reportPath],
+      presets: ["workspace-live-sync"],
+      requiredMatrixClassifications: ["kernel-authority"],
+      suppressedPresetRequirements: ["requiredMatrixClassifications"],
+    })
+    assert.deepEqual(explicit.checks.matrices.requiredMatrixClassifications, ["kernel-authority"])
+    assert.deepEqual(explicit.checks.matrices.missingMatrixClassifications, ["kernel-authority"])
+
+    await assert.rejects(
+      () => runDrillValidationGate({ suppressedPresetRequirements: ["requiredMatrices"] }),
+      /unsupported suppressed preset requirement "requiredMatrices"/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("slice runtime preset accepts hosted Cloud evidence from a separate matrix report", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {

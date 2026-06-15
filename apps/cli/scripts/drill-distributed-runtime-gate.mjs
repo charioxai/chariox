@@ -140,6 +140,7 @@ async function main() {
       requiredDeploymentPresets: options.requiredDeploymentPresets,
       requiredProviders: options.requiredProviders,
       requiredScenarios: options.requiredScenarios,
+      suppressedPresetRequirements: suppressedPresetRequirementsForGeneratedEvidence(generatedEvidence),
     })
     const outputReport = {
       ...report,
@@ -369,6 +370,15 @@ function generatedEvidenceMetadataFor(generatedEvidence) {
       ? { generatedValidationSuiteRoots: generatedEvidence.validationSuites.outputRoots.join(",") }
       : {}),
   }
+}
+
+function suppressedPresetRequirementsForGeneratedEvidence(generatedEvidence) {
+  const matrixLimitations = new Set((generatedEvidence.matrixReports.limitations ?? [])
+    .map((limitation) => limitation.kind)
+    .filter((kind) => typeof kind === "string" && kind.length > 0))
+  return matrixLimitations.has("dry-run-classification-coverage")
+    ? ["requiredMatrixClassifications"]
+    : []
 }
 
 main().catch((error) => {
