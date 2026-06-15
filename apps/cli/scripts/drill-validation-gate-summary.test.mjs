@@ -480,7 +480,10 @@ test("drill validation gate summary indexes aggregate artifact coverage metadata
     await writeDrillArtifactIndex({
       rootDir: evidenceRoot,
       artifacts: ["validation-suite.json"],
-      metadata: { coverageAreas: "distributed-observability" },
+      metadata: {
+        coverageAreas: "distributed-observability",
+        generatedValidationSuiteFailureRoots: "/tmp/generated-validation-suite/failed-run",
+      },
     })
 
     const reportPath = path.join(rootDir, "gate.json")
@@ -509,7 +512,9 @@ test("drill validation gate summary indexes aggregate artifact coverage metadata
     assert.equal(aggregate.status, "passed")
     assert.deepEqual(aggregate.requiredArtifactCoverageAreas, ["distributed-observability"])
     assert.deepEqual(aggregate.missingArtifactCoverageAreas, [])
+    assert.equal(aggregate.coverage.artifactGeneratedValidationSuiteFailureRoots["/tmp/generated-validation-suite/failed-run"], 1)
     assert.equal(artifactIndex.metadata.coverageAreas, "distributed-observability")
+    assert.equal(artifactIndex.metadata.generatedValidationSuiteFailureRoots, "/tmp/generated-validation-suite/failed-run")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
