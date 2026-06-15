@@ -202,6 +202,11 @@ test("gates platform bundle runtime signal coverage", async () => {
     assert.deepEqual(fail.checks.platformBundle.missingRuntimeSignals, ["lease-health"])
     assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [
       {
+        owner: "kernel-authority",
+        classification: "runtime-signal-coverage",
+        nextAction: "add runtime-signal contract coverage for lease-health owned by kernel-authority to the drill platform bundle",
+      },
+      {
         owner: "validation-harness",
         classification: "platform-bundle",
         nextAction: "provide a drill platform bundle covering runtime signals: lease-health",

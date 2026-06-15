@@ -5,6 +5,7 @@ import {
   DRILL_RUNTIME_SIGNAL_IDS,
   DRILL_RUNTIME_SIGNALS_SCHEMA,
   drillRuntimeSignalOwnerCounts,
+  drillRuntimeSignalNextAction,
   drillRuntimeSignalOwner,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalsManifest,
@@ -37,6 +38,14 @@ test("writes and validates runtime signal manifest", () => {
   assert.deepEqual(manifest.signals.map((signal) => signal.id), DRILL_RUNTIME_SIGNAL_IDS)
   assert.equal(drillRuntimeSignalOwner("session-authority"), "kernel-authority")
   assert.equal(drillRuntimeSignalOwner("slice-auth-state"), "provider-account")
+  assert.equal(
+    drillRuntimeSignalNextAction("lease-health"),
+    "run matrix scenarios that prove lease-health owned by kernel-authority: Remote leased-agent session, worker, reconnect, and provider-run binding health.",
+  )
+  assert.equal(
+    drillRuntimeSignalNextAction("slice-auth-state", { target: "platform-bundle" }),
+    "add runtime-signal contract coverage for slice-auth-state owned by provider-account to the drill platform bundle",
+  )
   assert.deepEqual(drillRuntimeSignalOwnersFor(["slice-auth-state", "session-authority", "lease-health"]), [
     "kernel-authority",
     "provider-account",
@@ -59,6 +68,10 @@ test("writes and validates runtime signal manifest", () => {
 test("rejects unknown drill runtime signals in shared helpers", () => {
   assert.throws(
     () => drillRuntimeSignalOwner("workspace-live-synch-state"),
+    /unknown drill runtime signal "workspace-live-synch-state"/,
+  )
+  assert.throws(
+    () => drillRuntimeSignalNextAction("workspace-live-synch-state"),
     /unknown drill runtime signal "workspace-live-synch-state"/,
   )
   assert.throws(

@@ -68,6 +68,17 @@ export function drillRuntimeSignalOwner(signal) {
   return RUNTIME_SIGNALS[signal].owner
 }
 
+export function drillRuntimeSignalNextAction(signal, { target = "matrix" } = {}) {
+  if (!isKnownDrillRuntimeSignal(signal)) {
+    throw new Error(`unknown drill runtime signal ${JSON.stringify(signal)}`)
+  }
+  const owner = drillRuntimeSignalOwner(signal)
+  if (target === "platform-bundle") {
+    return `add runtime-signal contract coverage for ${signal} owned by ${owner} to the drill platform bundle`
+  }
+  return `run matrix scenarios that prove ${signal} owned by ${owner}: ${RUNTIME_SIGNALS[signal].description}`
+}
+
 export function drillRuntimeSignalOwnersFor(runtimeSignals) {
   validateDrillRuntimeSignals(runtimeSignals)
   return [...new Set((runtimeSignals ?? []).map((signal) => drillRuntimeSignalOwner(signal)))].sort()

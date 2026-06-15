@@ -2,6 +2,10 @@ import {
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
 } from "./drill-aggregate-actions.mjs"
+import {
+  drillRuntimeSignalNextAction,
+  drillRuntimeSignalOwner,
+} from "./drill-runtime-signals.mjs"
 
 export function validationGateNextActions(checks) {
   const counts = new Map()
@@ -33,6 +37,7 @@ export function validationGateNextActions(checks) {
         classification: "platform-bundle",
         nextAction: `provide a drill platform bundle covering runtime signals: ${missingRuntimeSignals.join(", ")}`,
       })
+      countMissingRuntimeSignalActions(counts, missingRuntimeSignals, { target: "platform-bundle" })
     }
     const missingFailureClassifications = checks.platformBundle.missingFailureClassifications ?? []
     if (missingFailureClassifications.length > 0) {
@@ -164,6 +169,7 @@ export function validationGateNextActions(checks) {
         classification: "matrix-coverage",
         nextAction: `run matrix reports covering runtime signals: ${missingMatrixRuntimeSignals.join(", ")}`,
       })
+      countMissingRuntimeSignalActions(counts, missingMatrixRuntimeSignals, { target: "matrix" })
     }
     const missingDeploymentPresets = checks.matrices.missingDeploymentPresets ?? []
     if (missingDeploymentPresets.length > 0) {
@@ -219,6 +225,16 @@ export function validationGateNextActions(checks) {
     }
   }
   return formatDrillAggregateNextActionCounts(counts)
+}
+
+function countMissingRuntimeSignalActions(counts, runtimeSignals, { target }) {
+  for (const signal of runtimeSignals) {
+    countDrillAggregateNextAction(counts, {
+      owner: drillRuntimeSignalOwner(signal),
+      classification: "runtime-signal-coverage",
+      nextAction: drillRuntimeSignalNextAction(signal, { target }),
+    })
+  }
 }
 
 function countIncompleteExitCriterionNextActions(counts, criteria) {

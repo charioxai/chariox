@@ -23,15 +23,28 @@ test("explains platform bundle rebuild and missing coverage requirements", () =>
     platformBundle: {
       status: "failed",
       missingCoverageAreas: ["matrix-validation"],
+      missingRuntimeSignals: ["slice-auth-state"],
       missingFailureClassifications: ["kernel-authority"],
     },
   }))
 
   assert.deepEqual(actions, [
     {
+      owner: "provider-account",
+      classification: "runtime-signal-coverage",
+      nextAction: "add runtime-signal contract coverage for slice-auth-state owned by provider-account to the drill platform bundle",
+      count: 1,
+    },
+    {
       owner: "validation-harness",
       classification: "platform-bundle",
       nextAction: "provide a drill platform bundle covering failure classifications: kernel-authority",
+      count: 1,
+    },
+    {
+      owner: "validation-harness",
+      classification: "platform-bundle",
+      nextAction: "provide a drill platform bundle covering runtime signals: slice-auth-state",
       count: 1,
     },
     {
@@ -96,6 +109,7 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       requireComplete: true,
       missingMatrices: ["workspace-live-sync-matrix"],
       missingMatrixClassifications: ["workspace-live-sync-conflict"],
+      missingMatrixRuntimeSignals: ["lease-health", "workspace-live-sync-state"],
       missingDeploymentPresets: ["hosted-cloud"],
       missingProviders: ["claude"],
       missingScenarios: ["tracked"],
@@ -129,6 +143,18 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       count: 3,
     },
     {
+      owner: "kernel-authority",
+      classification: "runtime-signal-coverage",
+      nextAction: "run matrix scenarios that prove lease-health owned by kernel-authority: Remote leased-agent session, worker, reconnect, and provider-run binding health.",
+      count: 1,
+    },
+    {
+      owner: "runtime-state",
+      classification: "runtime-signal-coverage",
+      nextAction: "run matrix scenarios that prove workspace-live-sync-state owned by runtime-state: Workspace Live Sync mode, included paths, ignored paths, conflict/reconcile status, and peer propagation state.",
+      count: 1,
+    },
+    {
       owner: "validation-harness",
       classification: "incomplete-matrix",
       nextAction: "run or reconcile incomplete matrix exit criteria before treating this validation set as complete",
@@ -150,6 +176,12 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       owner: "validation-harness",
       classification: "matrix-coverage",
       nextAction: "run matrix reports covering failure classifications: workspace-live-sync-conflict",
+      count: 1,
+    },
+    {
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports covering runtime signals: lease-health, workspace-live-sync-state",
       count: 1,
     },
     {
