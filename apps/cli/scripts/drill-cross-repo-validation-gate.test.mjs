@@ -479,6 +479,65 @@ test("cross repo validation gate requires artifact generated matrix limitation m
   }
 })
 
+test("cross repo validation gate requires artifact generated matrix artifact-index metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const generatedMatrixArtifactIndex = path.join(rootDir, "generated-matrix", "workspace-live-sync-matrix-artifacts.json")
+    const artifactIndexPath = await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
+      metadata: { generatedMatrixArtifactIndexes: generatedMatrixArtifactIndex },
+    })
+
+    const missingGeneratedMatrixArtifactIndex = path.join(rootDir, "generated-matrix", "missing-matrix-artifacts.json")
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--no-default-roots",
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--artifact-index",
+        artifactIndexPath,
+        "--require-artifact-generated-matrix-artifact-index",
+        missingGeneratedMatrixArtifactIndex,
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const failed = JSON.parse(error.stdout)
+        assert.equal(failed.status, "failed")
+        assert.deepEqual(failed.checks.artifacts.missingArtifactGeneratedMatrixArtifactIndexes, [
+          missingGeneratedMatrixArtifactIndex,
+        ])
+        return true
+      },
+    )
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--no-default-roots",
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--artifact-index",
+      artifactIndexPath,
+      "--require-artifact-generated-matrix-artifact-index",
+      generatedMatrixArtifactIndex,
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.artifacts.requiredArtifactGeneratedMatrixArtifactIndexes, [generatedMatrixArtifactIndex])
+    assert.deepEqual(report.checks.artifacts.missingArtifactGeneratedMatrixArtifactIndexes, [])
+    assert.equal(report.checks.artifacts.aggregate.generatedMatrixArtifactIndexes[generatedMatrixArtifactIndex], 1)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate rejects aggregate-only generated evidence requirements", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--require-failure-max-age-ms", "--json"]),
@@ -493,6 +552,14 @@ test("cross repo validation gate rejects aggregate-only generated evidence requi
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /--require-generated-evidence-kind is supported by drill-validation-gate-summary\.mjs/)
+      return true
+    },
+  )
+  await assert.rejects(
+    execFile(process.execPath, [scriptPath, "--require-generated-matrix-artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json", "--json"]),
+    (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /--require-generated-matrix-artifact-index is supported by drill-validation-gate-summary\.mjs/)
       return true
     },
   )
