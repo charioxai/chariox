@@ -11,7 +11,13 @@ import {
 test("builds runtime signal metadata for validation gate reports", () => {
   const metadata = runtimeSignalMetadataForValidationGateReport({
     checks: {
+      platformBundle: {
+        requiredRuntimeSignals: ["session-authority", "relay-target-freshness"],
+        missingRuntimeSignals: ["relay-target-freshness"],
+      },
       artifacts: {
+        requiredArtifactRuntimeSignals: ["workspace-live-sync-state"],
+        missingArtifactRuntimeSignals: ["lease-health"],
         aggregate: {
           classifications: { "cloud-validation-suite": 1 },
           coverageAreas: { "distributed-observability": 1 },
@@ -19,12 +25,16 @@ test("builds runtime signal metadata for validation gate reports", () => {
           exitCriterionStatuses: { "dry-run": 1 },
           incompleteExitCriterionStatuses: { "dry-run": 1 },
           providerAccountAliases: { "codex=work": 1 },
+          requiredRuntimeSignals: { "provider-run-lifecycle": 1 },
+          missingRuntimeSignals: { "client-projection-health": 1 },
           runtimeSignals: { "session-authority": 1 },
           runtimeSignalOwners: { "kernel-authority": 1 },
         },
       },
       failures: { aggregate: { runtimeSignals: { "relay-target-freshness": 1 } } },
       matrices: {
+        requiredMatrixRuntimeSignals: ["runtime-projection-health"],
+        missingMatrixRuntimeSignals: ["slice-auth-state"],
         aggregate: {
           runtimeSignals: { "provider-run-lifecycle": 2 },
           runtimeSignalScenarios: { "workspace-live-sync-state": [] },
@@ -34,6 +44,8 @@ test("builds runtime signal metadata for validation gate reports", () => {
   })
 
   assert.deepEqual(metadata, {
+    missingRuntimeSignals: "client-projection-health,lease-health,relay-target-freshness,slice-auth-state",
+    requiredRuntimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-projection-health,session-authority,workspace-live-sync-state",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
   })
@@ -43,6 +55,8 @@ test("builds owner and classification metadata for validation gate reports", () 
   const metadata = diagnosticMetadataForValidationGateReport({
     checks: {
       platformBundle: {
+        requiredRuntimeSignals: ["client-projection-health"],
+        missingRuntimeSignals: ["lease-health"],
         validationSuite: {
           coverageAreas: [{ id: "matrix-validation", testCount: 4 }],
         },
@@ -55,6 +69,8 @@ test("builds owner and classification metadata for validation gate reports", () 
         },
       },
       artifacts: {
+        requiredArtifactRuntimeSignals: ["session-authority"],
+        missingArtifactRuntimeSignals: ["workspace-live-sync-state"],
         aggregate: {
           classifications: { "cloud-validation-suite": 1 },
           coverageAreas: { "distributed-observability": 1 },
@@ -62,6 +78,8 @@ test("builds owner and classification metadata for validation gate reports", () 
           exitCriterionStatuses: { "dry-run": 1 },
           incompleteExitCriterionStatuses: { "dry-run": 1 },
           providerAccountAliases: { "codex=work": 1 },
+          requiredRuntimeSignals: { "relay-target-freshness": 1 },
+          missingRuntimeSignals: { "permission-interaction": 1 },
           runtimeSignals: { "session-authority": 1 },
           runtimeSignalOwners: { "kernel-authority": 1 },
         },
@@ -74,6 +92,8 @@ test("builds owner and classification metadata for validation gate reports", () 
         },
       },
       matrices: {
+        requiredMatrixRuntimeSignals: ["provider-run-lifecycle"],
+        missingMatrixRuntimeSignals: ["slice-auth-state"],
         aggregate: {
           owners: { "provider-account": 1 },
           classifications: { "provider-auth": 1, "slice-runtime": 2 },
@@ -126,8 +146,10 @@ test("builds owner and classification metadata for validation gate reports", () 
     generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
     generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
     incompleteExitCriterionStatuses: "dry-run",
+    missingRuntimeSignals: "lease-health,permission-interaction,slice-auth-state,workspace-live-sync-state",
     owners: "kernel-authority,provider-account,runtime-network,ui-client,validation-harness,validation-platform",
     providerAccountAliases: "codex=work",
+    requiredRuntimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
     runtimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
   })
@@ -146,17 +168,31 @@ test("builds runtime signal metadata for validation gate aggregates", () => {
       artifactProviderAccountAliases: { "codex=work": 1 },
       requiredArtifactProviderAccountAliases: { "codex=work": 1 },
       missingArtifactProviderAccountAliases: { "opencode=zen": 1 },
+      requiredArtifactRuntimeSignals: { "workspace-live-sync-state": 1 },
+      missingArtifactRuntimeSignals: { "relay-target-freshness": 1 },
+      requiredRuntimeSignals: { "session-authority": 1 },
+      missingRuntimeSignals: { "lease-health": 1 },
       failureRuntimeSignals: { "relay-target-freshness": 1 },
       failureRuntimeSignalOwners: { "runtime-network": 1 },
       matrixRuntimeSignals: { "workspace-live-sync-state": 1 },
       matrixRuntimeSignalOwners: { "runtime-state": 1 },
+      requiredMatrixRuntimeSignals: { "provider-run-lifecycle": 1 },
+      missingMatrixRuntimeSignals: { "slice-auth-state": 1 },
     },
+    requiredRuntimeSignals: ["runtime-projection-health"],
+    missingRuntimeSignals: ["client-projection-health"],
+    requiredArtifactRuntimeSignals: ["home-extension-manifest-sync"],
+    missingArtifactRuntimeSignals: ["permission-interaction"],
+    requiredMatrixRuntimeSignals: ["slice-runtime-state"],
+    missingMatrixRuntimeSignals: ["agent-lifecycle"],
     matrixRuntimeSignalSources: {
       "provider-run-lifecycle": [],
     },
   })
 
   assert.deepEqual(metadata, {
+    missingRuntimeSignals: "agent-lifecycle,client-projection-health,lease-health,permission-interaction,relay-target-freshness,slice-auth-state",
+    requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority,workspace-live-sync-state",
   })
@@ -175,6 +211,10 @@ test("builds owner and classification metadata for validation gate aggregates", 
       artifactProviderAccountAliases: { "codex=work": 1 },
       requiredArtifactProviderAccountAliases: { "codex=work": 1 },
       missingArtifactProviderAccountAliases: { "opencode=zen": 1 },
+      requiredArtifactRuntimeSignals: { "workspace-live-sync-state": 1 },
+      missingArtifactRuntimeSignals: { "client-projection-health": 1 },
+      requiredRuntimeSignals: { "session-authority": 1 },
+      missingRuntimeSignals: { "lease-health": 1 },
       failureRuntimeSignals: { "relay-target-freshness": 1 },
       failureRuntimeSignalOwners: { "runtime-network": 1 },
       failureOwners: { "runtime-network": 1 },
@@ -183,6 +223,8 @@ test("builds owner and classification metadata for validation gate aggregates", 
       matrixRuntimeSignalOwners: { "provider-runtime": 1 },
       matrixOwners: { "provider-account": 1 },
       matrixClassifications: { "provider-auth": 1 },
+      requiredMatrixRuntimeSignals: { "provider-run-lifecycle": 1 },
+      missingMatrixRuntimeSignals: { "slice-auth-state": 1 },
       requiredFailureClassifications: { "kernel-authority": 1 },
       missingFailureClassifications: { "remote-extension-sync": 1 },
       requiredMatrixClassifications: { "workspace-live-sync-conflict": 2 },
@@ -208,6 +250,12 @@ test("builds owner and classification metadata for validation gate aggregates", 
     },
     requiredFailureClassifications: ["kernel-authority"],
     missingFailureClassifications: ["remote-extension-sync"],
+    requiredRuntimeSignals: ["runtime-projection-health"],
+    missingRuntimeSignals: ["permission-interaction"],
+    requiredArtifactRuntimeSignals: ["home-extension-manifest-sync"],
+    missingArtifactRuntimeSignals: ["relay-target-freshness"],
+    requiredMatrixRuntimeSignals: ["slice-runtime-state"],
+    missingMatrixRuntimeSignals: ["agent-lifecycle"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
     missingMatrixClassifications: ["provider-auth"],
     requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
@@ -262,6 +310,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
     missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
     missingGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/missing-run",
     missingProviderAccountAliases: "opencode=zen",
+    missingRuntimeSignals: "agent-lifecycle,client-projection-health,lease-health,permission-interaction,relay-target-freshness,slice-auth-state",
     owners: "kernel-authority,provider-account,provider-runtime,runtime-network,validation-harness,validation-platform",
     providerAccountAliases: "codex=work",
     requiredProviderAccountAliases: "codex=work",
@@ -269,6 +318,7 @@ test("builds owner and classification metadata for validation gate aggregates", 
     requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
     requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/required-artifacts.json",
     requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
+    requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
     runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network",
     runtimeSignals: "provider-run-lifecycle,relay-target-freshness,session-authority",
   })

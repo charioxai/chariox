@@ -9,14 +9,28 @@ export function runtimeSignalMetadataForValidationGateReport(report) {
     ...Object.keys(report.checks?.matrices?.aggregate?.runtimeSignals ?? {}),
     ...Object.keys(report.checks?.matrices?.aggregate?.runtimeSignalScenarios ?? {}),
   ])
+  const requiredSignals = new Set([
+    ...(report.checks?.platformBundle?.requiredRuntimeSignals ?? []),
+    ...(report.checks?.artifacts?.requiredArtifactRuntimeSignals ?? []),
+    ...Object.keys(report.checks?.artifacts?.aggregate?.requiredRuntimeSignals ?? {}),
+    ...(report.checks?.matrices?.requiredMatrixRuntimeSignals ?? []),
+  ].filter(nonEmptyString))
+  const missingSignals = new Set([
+    ...(report.checks?.platformBundle?.missingRuntimeSignals ?? []),
+    ...(report.checks?.artifacts?.missingArtifactRuntimeSignals ?? []),
+    ...Object.keys(report.checks?.artifacts?.aggregate?.missingRuntimeSignals ?? {}),
+    ...(report.checks?.matrices?.missingMatrixRuntimeSignals ?? []),
+  ].filter(nonEmptyString))
   const signalOwners = new Set([
     ...drillRuntimeSignalOwnersFor([...signals]),
     ...platformRuntimeSignalOwners(report),
     ...Object.keys(report.checks?.artifacts?.aggregate?.runtimeSignalOwners ?? {}),
   ])
-  return signals.size > 0
+  return signals.size > 0 || requiredSignals.size > 0 || missingSignals.size > 0
     ? {
-      runtimeSignals: [...signals].sort().join(","),
+      ...(signals.size > 0 ? { runtimeSignals: [...signals].sort().join(",") } : {}),
+      ...(requiredSignals.size > 0 ? { requiredRuntimeSignals: [...requiredSignals].sort().join(",") } : {}),
+      ...(missingSignals.size > 0 ? { missingRuntimeSignals: [...missingSignals].sort().join(",") } : {}),
       ...(signalOwners.size > 0 ? { runtimeSignalOwners: [...signalOwners].sort().join(",") } : {}),
     }
     : {}
@@ -73,15 +87,33 @@ export function runtimeSignalMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.matrixRuntimeSignals ?? {}),
     ...Object.keys(aggregate.matrixRuntimeSignalSources ?? {}),
   ])
+  const requiredSignals = new Set([
+    ...Object.keys(aggregate.coverage?.requiredRuntimeSignals ?? {}),
+    ...Object.keys(aggregate.coverage?.requiredArtifactRuntimeSignals ?? {}),
+    ...Object.keys(aggregate.coverage?.requiredMatrixRuntimeSignals ?? {}),
+    ...(aggregate.requiredRuntimeSignals ?? []),
+    ...(aggregate.requiredArtifactRuntimeSignals ?? []),
+    ...(aggregate.requiredMatrixRuntimeSignals ?? []),
+  ].filter(nonEmptyString))
+  const missingSignals = new Set([
+    ...Object.keys(aggregate.coverage?.missingRuntimeSignals ?? {}),
+    ...Object.keys(aggregate.coverage?.missingArtifactRuntimeSignals ?? {}),
+    ...Object.keys(aggregate.coverage?.missingMatrixRuntimeSignals ?? {}),
+    ...(aggregate.missingRuntimeSignals ?? []),
+    ...(aggregate.missingArtifactRuntimeSignals ?? []),
+    ...(aggregate.missingMatrixRuntimeSignals ?? []),
+  ].filter(nonEmptyString))
   const signalOwners = new Set([
     ...drillRuntimeSignalOwnersFor([...signals]),
     ...Object.keys(aggregate.coverage?.artifactRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.failureRuntimeSignalOwners ?? {}),
     ...Object.keys(aggregate.coverage?.matrixRuntimeSignalOwners ?? {}),
   ])
-  return signals.size > 0
+  return signals.size > 0 || requiredSignals.size > 0 || missingSignals.size > 0
     ? {
-      runtimeSignals: [...signals].sort().join(","),
+      ...(signals.size > 0 ? { runtimeSignals: [...signals].sort().join(",") } : {}),
+      ...(requiredSignals.size > 0 ? { requiredRuntimeSignals: [...requiredSignals].sort().join(",") } : {}),
+      ...(missingSignals.size > 0 ? { missingRuntimeSignals: [...missingSignals].sort().join(",") } : {}),
       ...(signalOwners.size > 0 ? { runtimeSignalOwners: [...signalOwners].sort().join(",") } : {}),
     }
     : {}
