@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 import {
   parseDrillMaxDepth,
   parseDrillNonNegativeInteger,
 } from "./lib/drill-cli-args.mjs"
+import {
+  drillGeneratedMatrixNamesManifest,
+} from "./lib/drill-generated-matrix-names.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
   parseValidationGateRequirementArg,
@@ -39,6 +42,8 @@ function printHelp() {
     "                         Discover artifact indexes under each repo's .artifacts root",
     "  --include-default-failures",
     "                         Discover failure manifests under each repo's .artifacts root",
+    "  --require-generated-matrix-registry-parity",
+    "                         Fail when OSS and Cloud generated matrix registries drift",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
     "  --matrix-root ROOT     Discover matrix reports below ROOT; repeatable",
     "  --artifact-index PATH  Read and verify a specific artifact index; repeatable",
@@ -90,6 +95,9 @@ async function main() {
     printHelp()
     return
   }
+  if (options.requireGeneratedMatrixRegistryParity) {
+    await verifyGeneratedMatrixRegistryParity(options)
+  }
   const gateOptions = gateOptionsFor(options)
   const report = await runDrillValidationGate(gateOptions)
   if (options.outputPath) {
@@ -137,6 +145,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    requireGeneratedMatrixRegistryParity: false,
     requiredArtifactMaxAgeMs: null,
     requiredFailureMaxAgeMs: null,
     requiredMatrixMaxAgeMs: null,
@@ -149,6 +158,7 @@ function parseArgs(argv) {
     else if (arg === "--no-default-roots") options.defaultRoots = false
     else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
     else if (arg === "--include-default-failures") options.includeDefaultFailures = true
+    else if (arg === "--require-generated-matrix-registry-parity") options.requireGeneratedMatrixRegistryParity = true
     else if (arg === "--require-complete") options.requireComplete = true
     else {
       const requirementIndex = parseValidationGateRequirementArg(argv, index, options)
@@ -335,6 +345,53 @@ function gateOptionsFor(options) {
 
 function uniqueSortedResolvedPaths(paths) {
   return [...new Set(paths.map((item) => path.resolve(item)))].sort()
+}
+
+async function verifyGeneratedMatrixRegistryParity(options) {
+  const cloudRegistryPath = path.join(options.cloudRoot, "scripts", "lib", "cloud-drill-generated-matrix-names.mjs")
+  let cloudModule
+  try {
+    cloudModule = await import(pathToFileURL(cloudRegistryPath).href)
+  } catch (error) {
+    throw new Error(`generated matrix registry parity requires Cloud registry at ${cloudRegistryPath}: ${error.message}`)
+  }
+  if (typeof cloudModule.cloudDrillGeneratedMatrixNamesManifest !== "function") {
+    throw new Error(`generated matrix registry parity requires cloudDrillGeneratedMatrixNamesManifest in ${cloudRegistryPath}`)
+  }
+  const ossRegistry = generatedMatrixRepoMap(drillGeneratedMatrixNamesManifest(), "OSS generated matrix registry")
+  const cloudRegistry = generatedMatrixRepoMap(
+    cloudModule.cloudDrillGeneratedMatrixNamesManifest(),
+    "Cloud generated matrix registry",
+  )
+  if (JSON.stringify(ossRegistry) !== JSON.stringify(cloudRegistry)) {
+    throw new Error(
+      "generated matrix registry parity failed: "
+        + `OSS=${JSON.stringify(ossRegistry)} Cloud=${JSON.stringify(cloudRegistry)}`,
+    )
+  }
+}
+
+function generatedMatrixRepoMap(manifest, source) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (!Array.isArray(manifest.matrices)) {
+    throw new Error(`${source} has invalid matrices`)
+  }
+  return Object.fromEntries(manifest.matrices
+    .map((matrix, index) => {
+      if (!matrix || typeof matrix !== "object" || Array.isArray(matrix)) {
+        throw new Error(`${source}.matrices[${index}] is not an object`)
+      }
+      if (typeof matrix.name !== "string" || matrix.name.length === 0) {
+        throw new Error(`${source}.matrices[${index}] has invalid name`)
+      }
+      if (typeof matrix.repo !== "string" || matrix.repo.length === 0) {
+        throw new Error(`${source}.matrices[${index}] has invalid repo`)
+      }
+      return [matrix.name, matrix.repo]
+    })
+    .sort(([left], [right]) => left.localeCompare(right)))
 }
 
 main().catch((error) => {

@@ -427,6 +427,63 @@ test("cross repo validation gate rejects output artifact index without output", 
   )
 })
 
+test("cross repo validation gate checks generated matrix registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeCloudGeneratedMatrixRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--require-generated-matrix-registry-parity",
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("cross repo validation gate rejects generated matrix registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeCloudGeneratedMatrixRegistry(cloudRoot, {
+      matrices: [
+        { name: "cloud-slice-runtime-matrix", repo: "cloud" },
+        { name: "slice-runtime-matrix", repo: "oss" },
+      ],
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--no-default-roots",
+        "--require-generated-matrix-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /generated matrix registry parity failed/)
+        assert.match(error.stderr, /workspace-live-sync-matrix/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate requires artifact generated matrix limitation metadata", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
   try {
@@ -644,6 +701,27 @@ async function writeValidationSuiteArtifact(rootDir, { metadata = {} } = {}) {
     },
   })
   return path.join(rootDir, "arroba-drill-artifacts.json")
+}
+
+async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
+  matrices = [
+    { name: "cloud-slice-runtime-matrix", repo: "cloud" },
+    { name: "native-provider-tui-matrix", repo: "oss" },
+    { name: "remote-agent-runtime-matrix", repo: "oss" },
+    { name: "remote-home-extension-matrix", repo: "oss" },
+    { name: "slice-runtime-matrix", repo: "oss" },
+    { name: "workspace-live-sync-matrix", repo: "oss" },
+  ],
+} = {}) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-drill-generated-matrix-names.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudDrillGeneratedMatrixNamesManifest() {",
+    `  return { schema: "arroba.cloud.drill.generated_matrix_names.v1", matrices: ${JSON.stringify(matrices)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
 }
 
 async function writeFailureManifest(file, {
