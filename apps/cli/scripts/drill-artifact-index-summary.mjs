@@ -20,6 +20,7 @@ import {
 import { redactDrillSecretText } from "./lib/drill-secrets.mjs"
 import { isKnownDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-kinds.mjs"
 import { isKnownDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
+import { isKnownDrillValidationGatePreset } from "./lib/drill-validation-gate-presets.mjs"
 
 function printHelp() {
   console.log([
@@ -45,6 +46,8 @@ function printHelp() {
     "                         Exit non-zero when generated matrix artifact-index metadata is missing; repeatable",
     "  --require-provider-account-alias P=A",
     "                         Exit non-zero when provider account alias metadata is missing; repeatable",
+    "  --require-validation-preset PRESET",
+    "                         Exit non-zero when validation preset metadata is missing; repeatable",
     "  --json                 Print aggregate JSON",
     "  --output PATH          Write aggregate JSON to PATH",
     "  --output-artifact-index PATH",
@@ -76,6 +79,7 @@ async function main() {
   Object.assign(aggregate, generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, generatedMatrixArtifactIndexDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, validationPresetDiagnosticsFor(aggregate, options))
   if (options.outputPath) {
     await writeDrillJsonArtifactOutput({
       outputPath: options.outputPath,
@@ -90,6 +94,7 @@ async function main() {
         ...generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate),
         ...generatedMatrixArtifactIndexRequirementMetadataFor(aggregate),
         ...providerAccountAliasRequirementMetadataFor(aggregate),
+        ...validationPresetRequirementMetadataFor(aggregate),
       },
     })
   }
@@ -106,6 +111,7 @@ async function main() {
     || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
     || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
+    || (aggregate.missingValidationPresets ?? []).length > 0
   ) {
     process.exitCode = 1
   }
@@ -127,6 +133,7 @@ function parseArgs(argv) {
     requiredGeneratedMatrixArtifactIndexes: [],
     requiredMatrixMaxAgeMs: null,
     requiredProviderAccountAliases: [],
+    requiredValidationPresets: [],
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -209,6 +216,14 @@ function parseArgs(argv) {
         arg.slice("--require-provider-account-alias=".length),
         "--require-provider-account-alias",
       ))
+    } else if (arg === "--require-validation-preset") {
+      options.requiredValidationPresets.push(parseValidationPresetRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-validation-preset=")) {
+      options.requiredValidationPresets.push(parseValidationPresetRequirement(
+        arg.slice("--require-validation-preset=".length),
+        "--require-validation-preset",
+      ))
     } else if (arg === "--output") {
       const value = argv[index + 1]
       if (!value || value.startsWith("--")) throw new Error("--output requires a value")
@@ -281,6 +296,13 @@ function parseGeneratedEvidenceKindRequirement(value, flag) {
 function parseGeneratedMatrixLimitationRequirement(value, flag) {
   if (!isKnownDrillGeneratedMatrixLimitation(value)) {
     throw new Error(`${flag} has unknown generated matrix limitation: ${value}`)
+  }
+  return value
+}
+
+function parseValidationPresetRequirement(value, flag) {
+  if (!isKnownDrillValidationGatePreset(value)) {
+    throw new Error(`${flag} has unknown validation preset: ${value}`)
   }
   return value
 }
@@ -430,6 +452,25 @@ function providerAccountAliasRequirementMetadataFor(aggregate) {
   }
 }
 
+function validationPresetDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredValidationPresets)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.validationPresets ?? {}))
+  return {
+    requiredValidationPresets: required,
+    missingValidationPresets: required.filter((preset) => !available.has(preset)),
+  }
+}
+
+function validationPresetRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredValidationPresets ?? []
+  const missing = aggregate.missingValidationPresets ?? []
+  return {
+    ...(required.length > 0 ? { requiredValidationPresets: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingValidationPresets: missing.join(",") } : {}),
+  }
+}
+
 function formatAggregateSummaryWithFreshness(aggregate) {
   const lines = [formatDrillArtifactIndexAggregateSummary(aggregate)]
   if (aggregate.requiredArtifactMaxAgeMs !== undefined) {
@@ -464,6 +505,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingProviderAccountAliases ?? []
     lines.push(`provider_account_aliases_required=${aggregate.requiredProviderAccountAliases.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredValidationPresets !== undefined) {
+    const missing = aggregate.missingValidationPresets ?? []
+    lines.push(`validation_presets_required=${aggregate.requiredValidationPresets.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if ((aggregate.staleArtifactIndexes ?? []).length > 0) {
     lines.push("next: regenerate stale drill artifact indexes before using them as validation evidence")
   }
@@ -484,6 +529,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingProviderAccountAliases ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record provider account aliases: ${aggregate.missingProviderAccountAliases.join(", ")}`)
+  }
+  if ((aggregate.missingValidationPresets ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes that record validation presets: ${aggregate.missingValidationPresets.join(", ")}`)
   }
   return lines.join("\n")
 }

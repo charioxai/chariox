@@ -52,6 +52,10 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       "kernel-authority": 2,
       "runtime-state": 1,
     })
+    assert.deepEqual(stdoutAggregate.validationPresets, {
+      "distributed-runtime": 1,
+      "workspace-live-sync": 1,
+    })
     assert.deepEqual(stdoutAggregate.artifactKinds, {
       "artifact-index": 1,
       "matrix-report": 1,
@@ -114,6 +118,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.indexes, 2)
     assert.equal(artifactIndex.metadata.runtimeSignals, "lease-health,session-authority,workspace-live-sync-state")
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,runtime-state")
+    assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime,workspace-live-sync")
     assert.equal(artifactIndex.metadata.owners, "runtime-network,validation-harness")
     assert.equal(artifactIndex.metadata.classifications, "matrix-coverage,validation-gate")
     assert.equal(artifactIndex.metadata.exitCriterionStatuses, "dry-run")
@@ -549,6 +554,67 @@ test("drill artifact index summary gates provider account aliases", async () => 
   }
 })
 
+test("drill artifact index summary gates validation presets", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-validation-preset",
+      "distributed-runtime",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredValidationPresets, ["distributed-runtime"])
+    assert.deepEqual(aggregate.missingValidationPresets, [])
+    assert.equal(artifactIndex.metadata.requiredValidationPresets, "distributed-runtime")
+    assert.equal(artifactIndex.metadata.missingValidationPresets, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-validation-preset=workspace-live-sync",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /validation_presets_required=workspace-live-sync missing=workspace-live-sync/)
+        assert.match(error.stdout, /next: include drill artifact indexes that record validation presets: workspace-live-sync/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-validation-preset",
+        "distributed-runtmie",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-validation-preset has unknown validation preset: distributed-runtmie/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary accepts explicit index paths", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   try {
@@ -626,6 +692,9 @@ async function writeIndexedReport(rootDir, name, schema) {
         : "dry-run",
       runtimeSignals: runtimeSignals.join(","),
       runtimeSignalOwners: drillRuntimeSignalOwnersFor(runtimeSignals).join(","),
+      validationPresets: name === "one"
+        ? "distributed-runtime"
+        : "workspace-live-sync",
       artifactKinds: name === "one"
         ? "validation-gate,artifact-index"
         : "matrix-report",
