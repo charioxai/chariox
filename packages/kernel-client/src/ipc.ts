@@ -277,26 +277,49 @@ export class LocalIpcClient {
   }
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
-    const socket = await this.ensureWebSocket(lane)
     const requestId = randomUUID()
-    const pending = this.pendingRequests.register<TResponse>(requestId, lane)
+    const maxAttempts = lane === "control" ? 2 : 1
+    let lastError: unknown = null
 
-    try {
-      const relayRequest = this.isRelayMode()
-        ? normalizeRelayRequest(requestId, request, this.relayTarget, this.getRelayDaemonPublicKey(lane))
-        : null
-      if (relayRequest) {
-        pending.setRelayPrivateKey(relayRequest.privateKey)
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const socket = await this.ensureWebSocket(lane)
+      const pending = this.pendingRequests.register<TResponse>(requestId, lane)
+
+      try {
+        const relayRequest = this.isRelayMode()
+          ? normalizeRelayRequest(requestId, request, this.relayTarget, this.getRelayDaemonPublicKey(lane))
+          : null
+        if (relayRequest) {
+          pending.setRelayPrivateKey(relayRequest.privateKey)
+        }
+        const payload = relayRequest
+          ? relayRequest.frame
+          : normalizeWebSocketRequest(requestId, request)
+        socket.send(JSON.stringify(payload))
+      } catch (error) {
+        pending.reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
       }
-      const payload = relayRequest
-        ? relayRequest.frame
-        : normalizeWebSocketRequest(requestId, request)
-      socket.send(JSON.stringify(payload))
-    } catch (error) {
-      pending.reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
+
+      try {
+        return await pending.promise
+      } catch (error) {
+        lastError = error
+        if (!this.shouldReplayWebSocketRequest(error, lane, attempt, maxAttempts)) {
+          throw error
+        }
+        this.destroyWebSocket(lane)
+      }
     }
 
-    return pending.promise
+    throw lastError
+  }
+
+  private shouldReplayWebSocketRequest(error: unknown, lane: KernelSocketLane, attempt: number, maxAttempts: number): boolean {
+    return lane === "control"
+      && attempt < maxAttempts
+      && error instanceof LocalIpcError
+      && error.retryable
+      && (error.code === "connection_closed" || error.code === "write_failed")
   }
 
   private async sendRelaySubscribe(
@@ -395,13 +418,13 @@ export class LocalIpcClient {
           socket.once("close", (code: number, reason: Buffer) => {
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
-            this.rejectPending("kernel websocket closed", lane)
-            this.setWebSocket(lane, null)
-            this.setRelayDaemonPublicKey(lane, null)
-            this.clearKernelHeartbeat(lane)
             const closeMessage = reason.length > 0
               ? reason.toString("utf8")
               : `kernel websocket closed${code ? ` (${code})` : ""}`
+            this.rejectPending(closeMessage, lane)
+            this.setWebSocket(lane, null)
+            this.setRelayDaemonPublicKey(lane, null)
+            this.clearKernelHeartbeat(lane)
             if (!suppressed) {
               this.emitSyntheticEvent({
                 event: "transport_closed",

@@ -8,12 +8,66 @@ use arroba_kernel::local::{
 use arroba_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
 use arroba_kernel::session::CreateSessionRequest;
 use arroba_kernel::{DaemonApp, DaemonConfig};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::sync::oneshot;
+use tokio::time::{timeout, Duration};
+use tokio_tungstenite::tungstenite::Message;
 
 mod support;
 
 use support::kernel_websocket::*;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_replies_to_client_ping() {
+    let mut config = DaemonConfig::for_tests();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+    socket
+        .send(Message::Ping(Vec::new().into()))
+        .await
+        .expect("kernel websocket ping should send");
+
+    let pong = timeout(Duration::from_millis(250), async {
+        loop {
+            let message = socket
+                .next()
+                .await
+                .expect("kernel websocket should yield a frame")
+                .expect("kernel websocket frame should decode");
+            if matches!(message, Message::Pong(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        pong.is_ok(),
+        "kernel websocket should reply to client pings"
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
