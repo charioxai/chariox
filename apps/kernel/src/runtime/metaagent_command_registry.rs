@@ -995,6 +995,45 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         description: "Import skills from local provider skill directories into the Arroba registry. Only Arroba-registered skills can be granted to workers, so list or show skills after importing before using `skill grant`.",
     },
     MetaCommandDoc {
+        name: "extension import providers",
+        aliases: &[
+            "extension import providers",
+            "extensions import providers",
+            "sync provider capabilities",
+            "import all provider capabilities",
+            "import provider mcps and skills",
+        ],
+        usage: "extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]",
+        examples: &[
+            "extension import providers --dry-run",
+            "extension import providers --provider codex --provider claude --kind all",
+            "extension import providers --provider claude --kind skill --name docs-helper",
+        ],
+        tags: &[
+            "extension",
+            "mcp",
+            "skill",
+            "capability",
+            "import",
+            "provider",
+            "sync",
+            "dedupe",
+            "discover",
+        ],
+        intents: &[
+            "import all provider mcps and skills",
+            "sync local provider capabilities into arroba",
+            "deduplicate provider tools before granting",
+            "make provider capabilities available to grant",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "owned regular agents",
+        routed: true,
+        description: "Discover Codex, OpenCode, and Claude MCPs and skills, deduplicate by capability kind/name/hash, import or update the selected newest definitions in the Arroba registries, and return a compact report. Use this when you are not sure whether a needed MCP or skill is already installed in Arroba; run with `--dry-run` first if you only need discovery.",
+    },
+    MetaCommandDoc {
         name: "slice",
         aliases: &["slice save", "slice save-state", "slice stop"],
         usage: "slice <list|show|start|stop|save-state|status|backup> ...",
@@ -1406,6 +1445,15 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
                 message: "only `skill list`, `skill show`, `skill install`, `skill update`, `skill uninstall`, `skill import`, `skill grant`, and `skill revoke` are routed for metaagent command execution yet".to_string(),
+            }),
+        },
+        "extension" | "extensions" => match (
+            tokens.get(1).map(String::as_str),
+            tokens.get(2).map(String::as_str),
+        ) {
+            (Some("import"), Some("providers")) => Some(MetaCommandExecutionPolicy::Routed),
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "only `extension import providers` is routed for metaagent extension command execution yet".to_string(),
             }),
         },
         "slice" => Some(MetaCommandExecutionPolicy::Denied {

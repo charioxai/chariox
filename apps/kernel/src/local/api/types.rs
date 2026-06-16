@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 144;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 145;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -174,6 +174,7 @@ pub enum LocalDaemonRequest {
     UpdateMcpServer(UpdateMcpServerRequest),
     UninstallMcpServer(UninstallMcpServerRequest),
     ImportMcpServers(ImportMcpServersRequest),
+    ImportProviderCapabilities(ImportProviderCapabilitiesRequest),
     GetMcpServer(GetMcpServerRequest),
     ListMcpServers(ListMcpServersRequest),
     RegisterEnvironment(RegisterEnvironmentRequest),
@@ -519,6 +520,9 @@ pub enum LocalDaemonResponse {
     },
     McpServersImported {
         outcome: McpImportOutcome,
+    },
+    ProviderCapabilitiesImported {
+        report: ProviderCapabilityImportReport,
     },
     McpServer {
         mcp: ArrobaMcpServerConfig,

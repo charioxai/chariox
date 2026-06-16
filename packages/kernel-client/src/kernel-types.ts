@@ -95,6 +95,42 @@ export type SkillImportOutcome = {
   skipped: SkillImportSkip[]
 }
 
+export type ProviderCapabilityImportDuplicate = {
+  provider: string
+  source: string
+  hash?: string | null
+  reason: string
+}
+
+export type ProviderCapabilityImportEntry = {
+  kind: string
+  name: string
+  provider: string
+  source: string
+  hash?: string | null
+  action: string
+  reason: string
+  duplicates?: ProviderCapabilityImportDuplicate[]
+}
+
+export type ProviderCapabilityImportSummary = {
+  candidates: number
+  imported: number
+  updated: number
+  already_installed: number
+  deduped: number
+  skipped: number
+  errors: number
+}
+
+export type ProviderCapabilityImportReport = {
+  dry_run: boolean
+  providers: string[]
+  summary: ProviderCapabilityImportSummary
+  mcps: ProviderCapabilityImportEntry[]
+  skills: ProviderCapabilityImportEntry[]
+}
+
 export type RuntimeSession = {
   id: string
   alias?: string | null
@@ -1379,7 +1415,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 144
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 145
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

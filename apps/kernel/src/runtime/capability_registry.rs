@@ -4,10 +4,10 @@ use crate::error::DaemonError;
 use crate::local::{
     GetConnectorAdapterRequest, GetConnectorRequest, GetCredentialRequest, GetEnvironmentRequest,
     GetMcpServerRequest, GetScriptRequest, GetSkillRequest, ImportMcpServersRequest,
-    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
-    ListConnectorAdaptersRequest, ListConnectorsRequest, ListCredentialsRequest,
-    ListEnvironmentsRequest, ListMcpServersRequest, ListScriptsRequest, ListSkillsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorAdapterRequest,
+    ImportProviderCapabilitiesRequest, ImportSkillsRequest, InstallMcpServerRequest,
+    InstallSkillRequest, ListConnectorAdaptersRequest, ListConnectorsRequest,
+    ListCredentialsRequest, ListEnvironmentsRequest, ListMcpServersRequest, ListScriptsRequest,
+    ListSkillsRequest, LocalDaemonRequest, LocalDaemonResponse, RegisterConnectorAdapterRequest,
     RegisterConnectorRequest, RegisterCredentialRequest, RegisterEnvironmentRequest,
     RegisterScriptRequest, RemoveConnectorAdapterRequest, RemoveConnectorRequest,
     RemoveCredentialRequest, RemoveEnvironmentRequest, RemoveScriptRequest, TestConnectorRequest,
@@ -29,6 +29,9 @@ pub(crate) fn execute_capability_registry_request(
         }
         LocalDaemonRequest::ImportMcpServers(request) => {
             execute_import_mcp_servers_request(request)
+        }
+        LocalDaemonRequest::ImportProviderCapabilities(request) => {
+            execute_import_provider_capabilities_request(request)
         }
         LocalDaemonRequest::GetMcpServer(request) => execute_get_mcp_server_request(request),
         LocalDaemonRequest::ListMcpServers(request) => execute_list_mcp_servers_request(request),
@@ -86,6 +89,12 @@ pub(crate) fn execute_capability_registry_request(
             message: "unsupported capability registry request".to_string(),
         }),
     }
+}
+
+pub(crate) fn execute_import_provider_capabilities_request(
+    request: ImportProviderCapabilitiesRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    super::provider_capability_import::execute_import_provider_capabilities_request(request)
 }
 
 pub(crate) fn execute_register_credential_request(
@@ -622,7 +631,7 @@ pub(crate) fn ensure_environment_exists(
     Ok(())
 }
 
-fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {
+pub(super) fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {
     let workspace = registry_workspace_root(workspace_id)?;
     let mut roots = Vec::new();
     #[cfg(not(test))]
@@ -712,7 +721,9 @@ fn script_validation_context(
     Ok((script_registry, env, source_path))
 }
 
-fn skill_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {
+pub(super) fn skill_registry_roots(
+    workspace_id: Option<&str>,
+) -> Result<Vec<PathBuf>, DaemonError> {
     let workspace = registry_workspace_root(workspace_id)?;
     let mut roots = Vec::new();
     #[cfg(not(test))]
@@ -729,7 +740,7 @@ fn skill_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, Daem
     Ok(roots)
 }
 
-fn registry_workspace_root(workspace_id: Option<&str>) -> Result<PathBuf, DaemonError> {
+pub(super) fn registry_workspace_root(workspace_id: Option<&str>) -> Result<PathBuf, DaemonError> {
     match workspace_id {
         Some(value) if !value.trim().is_empty() => Ok(PathBuf::from(value)),
         _ => std::env::current_dir().map_err(|error| DaemonError::LocalTransport {

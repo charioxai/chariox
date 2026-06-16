@@ -44,6 +44,26 @@ export function importMcpServersRequest(workspaceId: string | null, provider: st
   }
 }
 
+export function importProviderCapabilitiesRequest(
+  workspaceId: string | null,
+  options?: {
+    providers?: string[]
+    kind?: string | null
+    name?: string | null
+    dryRun?: boolean
+  },
+) {
+  return {
+    ImportProviderCapabilities: {
+      workspace_id: workspaceId ?? null,
+      providers: options?.providers ?? [],
+      kind: options?.kind ?? null,
+      name: options?.name ?? null,
+      dry_run: options?.dryRun ?? false,
+    },
+  }
+}
+
 export function getSkillRequest(workspaceId: string | null, name: string) {
   return {
     GetSkill: {

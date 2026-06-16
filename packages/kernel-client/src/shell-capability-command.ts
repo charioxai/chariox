@@ -9,6 +9,7 @@ import type {
   ArrobaSkillMetadata,
   ExtensionKind,
   McpImportOutcome,
+  ProviderCapabilityImportReport,
   SkillImportOutcome,
 } from "./kernel-types.js"
 import {
@@ -21,6 +22,7 @@ import {
   getSkillRequest,
   grantAgentExtensionRequest,
   importMcpServersRequest,
+  importProviderCapabilitiesRequest,
   importSkillsRequest,
   installMcpServerRequest,
   listHomeExtensionAuditRequest,
@@ -56,6 +58,7 @@ import {
   formatMcpImportOutcome,
   formatMcpList,
   formatHomeExtensionAuditEvents,
+  formatProviderCapabilityImportReport,
   formatRemoteExtensionSyncStatus,
   formatScriptList,
   formatSkillImportOutcome,
@@ -152,7 +155,7 @@ export async function executeMcpCommand(
       const provider = name
       const importName = parsed.args[2] ?? null
       if (!provider) {
-        return { ok: false, message: "usage: mcp import <codex|opencode> [name]" }
+        return { ok: false, message: "usage: mcp import <codex|opencode|claude> [name]" }
       }
       const response = await deps.client.send(importMcpServersRequest(context.workspace, provider, importName))
       const outcome = expectVariant<{ outcome: McpImportOutcome }>(response, "McpServersImported").outcome
@@ -234,7 +237,7 @@ export async function executeSkillCommand(
       const provider = name
       const importName = parsed.args[2] ?? null
       if (!provider) {
-        return { ok: false, message: "usage: skill import <codex|opencode> [name]" }
+        return { ok: false, message: "usage: skill import <codex|opencode|claude> [name]" }
       }
       const response = await deps.client.send(importSkillsRequest(context.workspace, provider, importName))
       const outcome = expectVariant<{ outcome: SkillImportOutcome }>(response, "SkillsImported").outcome
@@ -464,6 +467,19 @@ export async function executeExtensionCommand(
   deps: ShellCapabilityCommandDeps,
 ): Promise<ShellCommandResult> {
   const [action, kind, agentRef, name] = parsed.args
+  if (action === "import") {
+    if (kind !== "providers") {
+      return { ok: false, message: "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]" }
+    }
+    const response = await deps.client.send(importProviderCapabilitiesRequest(context.workspace, {
+      providers: readRepeatedOption(parsed.args, "--provider"),
+      kind: readOption(parsed.args, "--kind"),
+      name: readOption(parsed.args, "--name"),
+      dryRun: parsed.args.includes("--dry-run"),
+    }))
+    const report = expectVariant<{ report: ProviderCapabilityImportReport }>(response, "ProviderCapabilitiesImported").report
+    return { ok: true, message: formatProviderCapabilityImportReport(report), data: { report } }
+  }
   if (action === "sync-status") {
     const agent = await resolveShellAgent(context, deps, kind)
     if (!agent.ok) return { ok: false, message: agent.message }
@@ -482,7 +498,7 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatHomeExtensionAuditEvents(events), data: { events } }
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension sync-status|sync-retry|audit <agent-ref>" }
+    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
   }
   if (!isExtensionKind(kind)) {
     return { ok: false, message: "extension kind must be mcp, skill, script, or connector" }
@@ -599,6 +615,20 @@ function readOption(args: string[], flag: string): string | null {
   if (index === -1) return null
   const value = args[index + 1]
   return value && !value.startsWith("--") ? value : null
+}
+
+function readRepeatedOption(args: string[], flag: string): string[] {
+  const values: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === flag) {
+      const value = args[index + 1]
+      if (value && !value.startsWith("--")) {
+        values.push(value)
+        index += 1
+      }
+    }
+  }
+  return values
 }
 
 async function confirmActiveHomeProxyGrant(

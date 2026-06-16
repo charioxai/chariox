@@ -8,8 +8,8 @@ use crate::local::{
     CreateWorkflowRequest, DestroyAgentRequest, ExtensionKind, FocusAgentRequest,
     GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest, GetSkillRequest,
     GetWorkflowRunRequest, GrantAgentExtensionRequest, ImportMcpServersRequest,
-    ImportSkillsRequest, InstallMcpServerRequest, InstallSkillRequest,
-    InvokeWorkflowEndpointRequest, ListAgentsRequest, ListCredentialsRequest,
+    ImportProviderCapabilitiesRequest, ImportSkillsRequest, InstallMcpServerRequest,
+    InstallSkillRequest, InvokeWorkflowEndpointRequest, ListAgentsRequest, ListCredentialsRequest,
     ListMcpServersRequest, ListSkillsRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
     LocalDaemonRequest, LocalDaemonResponse, ManageCredentialVaultRequest, RemoveCredentialRequest,
     RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveWorkflowRequest,
@@ -644,6 +644,7 @@ impl CommandRouter {
                     &agents,
                 )
             }
+            "extension" | "extensions" => meta_extension_import_request(session, &tokens[1..]),
             "credential" | "credentials" => {
                 meta_credential_request(session, metaagent, &tokens[1..])
             }
@@ -1473,6 +1474,88 @@ fn meta_workflow_request(
             "usage: workflow <list|new|resolve|alias|node|endpoint|edge|run|runs|get-run|cancel|resume> ...",
         )),
     }
+}
+
+fn meta_extension_import_request(
+    session: &crate::session::RuntimeSession,
+    args: &[String],
+) -> Result<LocalDaemonRequest, DaemonError> {
+    if args.first().map(String::as_str) != Some("import")
+        || args.get(1).map(String::as_str) != Some("providers")
+    {
+        return Err(meta_command_error(
+            "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]",
+        ));
+    }
+    let mut providers = Vec::new();
+    let mut kind = None;
+    let mut name = None;
+    let mut dry_run = false;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--provider" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: extension import providers --provider <provider>",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: extension import providers --provider <provider>",
+                    ));
+                }
+                providers.push(value.clone());
+                index += 2;
+            }
+            "--kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: extension import providers --kind all|mcp|skill",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: extension import providers --kind all|mcp|skill",
+                    ));
+                }
+                kind = Some(value.clone());
+                index += 2;
+            }
+            "--name" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(meta_command_error(
+                        "usage: extension import providers --name <capability>",
+                    ));
+                };
+                if value.starts_with("--") {
+                    return Err(meta_command_error(
+                        "usage: extension import providers --name <capability>",
+                    ));
+                }
+                name = Some(value.clone());
+                index += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            other => {
+                return Err(meta_command_error(format!(
+                    "unsupported extension import option `{other}`"
+                )));
+            }
+        }
+    }
+    Ok(LocalDaemonRequest::ImportProviderCapabilities(
+        ImportProviderCapabilitiesRequest {
+            workspace_id: Some(session.workspace_id().to_string()),
+            providers,
+            kind,
+            name,
+            dry_run,
+        },
+    ))
 }
 
 fn meta_extension_request(
@@ -2307,6 +2390,35 @@ mod tests {
         assert_eq!(parsed.alias.as_deref(), Some("checker"));
         assert_eq!(parsed.slice_ref.as_deref(), Some("linux-dev"));
         assert!(parsed.slice_create.is_none());
+    }
+
+    #[test]
+    fn meta_extension_import_parser_supports_provider_sync() {
+        let args = vec![
+            "import".to_string(),
+            "providers".to_string(),
+            "--provider".to_string(),
+            "codex".to_string(),
+            "--provider".to_string(),
+            "claude".to_string(),
+            "--kind".to_string(),
+            "skill".to_string(),
+            "--name".to_string(),
+            "docs-helper".to_string(),
+            "--dry-run".to_string(),
+        ];
+
+        let request = meta_extension_import_request(&test_session(), &args)
+            .expect("extension import args should parse");
+
+        let LocalDaemonRequest::ImportProviderCapabilities(request) = request else {
+            panic!("unexpected request");
+        };
+        assert_eq!(request.workspace_id.as_deref(), Some("workspace"));
+        assert_eq!(request.providers, vec!["codex", "claude"]);
+        assert_eq!(request.kind.as_deref(), Some("skill"));
+        assert_eq!(request.name.as_deref(), Some("docs-helper"));
+        assert!(request.dry_run);
     }
 
     #[test]

@@ -107,6 +107,7 @@ impl CommandRouter {
             | LocalDaemonRequest::UpdateMcpServer(_)
             | LocalDaemonRequest::UninstallMcpServer(_)
             | LocalDaemonRequest::ImportMcpServers(_)
+            | LocalDaemonRequest::ImportProviderCapabilities(_)
             | LocalDaemonRequest::GetMcpServer(_)
             | LocalDaemonRequest::ListMcpServers(_)
             | LocalDaemonRequest::RegisterEnvironment(_)

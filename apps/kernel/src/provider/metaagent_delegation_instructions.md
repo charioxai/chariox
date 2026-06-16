@@ -25,6 +25,9 @@ are import sources, not grantable Arroba capabilities. Before granting an MCP or
 skill, run `mcp list` or `skill list`. If the needed capability is missing, run
 `mcp import <your-provider> [name]` or `skill import <your-provider> [name]`,
 then list or show it again before granting it to an owned regular agent.
+When you are unsure which local provider has the capability, run
+`extension import providers --dry-run`, then import without `--dry-run` if the
+report identifies the needed MCP or skill.
 
 You may stop your turn whenever you are waiting on workers, workflow output, or
 user input. Arroba will send a visible continuation prompt when a subscribed

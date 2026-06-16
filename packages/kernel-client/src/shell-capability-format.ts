@@ -7,6 +7,7 @@ import type {
   ArrobaSkillMetadata,
   ExtensionKind,
   McpImportOutcome,
+  ProviderCapabilityImportReport,
   SkillImportOutcome,
 } from "./kernel-types.js"
 import {
@@ -81,6 +82,24 @@ export function formatSkillImportOutcome(outcome: SkillImportOutcome): string {
     lines.push(...outcome.skipped.map((skip) => `- ${skip.name}: ${skip.reason}`))
   }
   return lines.length === 0 ? "No skills imported." : lines.join("\n")
+}
+
+export function formatProviderCapabilityImportReport(report: ProviderCapabilityImportReport): string {
+  const s = report.summary
+  const lines = [
+    `${report.dry_run ? "Provider capability import dry run" : "Provider capability import"}: providers=${report.providers.join(", ") || "none"} candidates=${s.candidates} imported=${s.imported} updated=${s.updated} already_installed=${s.already_installed} deduped=${s.deduped} skipped=${s.skipped} errors=${s.errors}`,
+  ]
+  const entries = [...(report.mcps ?? []), ...(report.skills ?? [])]
+  if (entries.length === 0) {
+    lines.push("No provider capabilities found.")
+    return lines.join("\n")
+  }
+  for (const entry of entries) {
+    const source = entry.source ? ` from ${entry.source}` : ""
+    const duplicateCount = entry.duplicates?.length ? ` (${entry.duplicates.length} duplicate${entry.duplicates.length === 1 ? "" : "s"})` : ""
+    lines.push(`- ${entry.action} ${entry.kind} ${entry.name} [${entry.provider}]${source}${duplicateCount}: ${entry.reason}`)
+  }
+  return lines.join("\n")
 }
 
 export function formatEnvironmentList(environments: ArrobaEnvironmentConfig[]): string {

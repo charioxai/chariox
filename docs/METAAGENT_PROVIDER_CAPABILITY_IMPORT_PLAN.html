@@ -215,13 +215,18 @@
           </tr>
           <tr>
             <td>Claude MCP import</td>
-            <td>Documented as desired, not implemented.</td>
-            <td>Must be first-class before the shared provider import command ships.</td>
+            <td>Landed through <code>mcp import claude [name]</code>.</td>
+            <td>Unsupported OAuth/SSE/static secret shapes are skipped with explicit reasons.</td>
           </tr>
           <tr>
             <td>Claude skill import</td>
-            <td>Documented as desired, not implemented.</td>
-            <td>Must scan Claude skill roots and copy into Arroba-owned roots.</td>
+            <td>Landed through <code>skill import claude [name]</code>.</td>
+            <td>Scans project and personal Claude skill roots.</td>
+          </tr>
+          <tr>
+            <td><code>extension import providers</code></td>
+            <td>Landed through the shared local daemon protocol.</td>
+            <td>Discovers, deduplicates, dry-runs, imports, and updates provider MCPs and skills.</td>
           </tr>
           <tr>
             <td>Metaagent guidance</td>
@@ -299,7 +304,7 @@
         <h3>Discovery and import service</h3>
         <p>
           Refactor Codex, OpenCode, and Claude import paths behind one kernel-owned
-          service.
+          service. This is now implemented as <code>extension import providers</code>.
         </p>
         <ul>
           <li>Discover provider MCP candidates.</li>

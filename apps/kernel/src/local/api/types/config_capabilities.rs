@@ -97,6 +97,73 @@ pub struct ImportMcpServersRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportProviderCapabilitiesRequest {
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilityImportReport {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    pub summary: ProviderCapabilityImportSummary,
+    #[serde(default)]
+    pub mcps: Vec<ProviderCapabilityImportEntry>,
+    #[serde(default)]
+    pub skills: Vec<ProviderCapabilityImportEntry>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilityImportSummary {
+    #[serde(default)]
+    pub candidates: usize,
+    #[serde(default)]
+    pub imported: usize,
+    #[serde(default)]
+    pub updated: usize,
+    #[serde(default)]
+    pub already_installed: usize,
+    #[serde(default)]
+    pub deduped: usize,
+    #[serde(default)]
+    pub skipped: usize,
+    #[serde(default)]
+    pub errors: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilityImportEntry {
+    pub kind: String,
+    pub name: String,
+    pub provider: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    pub action: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub duplicates: Vec<ProviderCapabilityImportDuplicate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilityImportDuplicate {
+    pub provider: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetMcpServerRequest {
     pub workspace_id: Option<String>,
     pub name: String,

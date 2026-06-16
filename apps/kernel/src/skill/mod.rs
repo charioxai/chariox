@@ -36,6 +36,24 @@ pub struct SkillImportOutcome {
     pub skipped: Vec<SkillImportSkip>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSkillImportCandidate {
+    pub provider: String,
+    pub name: String,
+    pub source: String,
+    pub source_path: PathBuf,
+    pub skill_md_path: PathBuf,
+    pub source_modified_ms: u64,
+    pub version_hash: String,
+    pub metadata: ArrobaSkillMetadata,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderSkillImportDiscovery {
+    pub candidates: Vec<ProviderSkillImportCandidate>,
+    pub skipped: Vec<SkillImportSkip>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrobaSkillPackage {
     pub metadata: ArrobaSkillMetadata,
@@ -577,6 +595,88 @@ pub fn import_claude_skills(
     requested_name: Option<&str>,
 ) -> Result<SkillImportOutcome, DaemonError> {
     import_skills_from_roots(registry, claude_skill_roots(workspace), requested_name)
+}
+
+pub fn discover_provider_skill_import_candidates(
+    provider: &str,
+    workspace: &Path,
+    requested_name: Option<&str>,
+) -> Result<ProviderSkillImportDiscovery, DaemonError> {
+    let roots = match provider {
+        "codex" => codex_skill_roots(workspace),
+        "opencode" => opencode_skill_roots(workspace),
+        "claude" | "claude-headless" | "claude-p" => claude_skill_roots(workspace),
+        _ => {
+            return Err(DaemonError::InvalidConfig {
+                field: "provider",
+                message: "only Codex, OpenCode, and Claude skill import are supported",
+            });
+        }
+    };
+    let canonical_provider = match provider {
+        "claude-headless" | "claude-p" => "claude",
+        other => other,
+    };
+    discover_provider_skill_import_candidates_from_roots(canonical_provider, roots, requested_name)
+}
+
+fn discover_provider_skill_import_candidates_from_roots(
+    provider: &str,
+    roots: Vec<PathBuf>,
+    requested_name: Option<&str>,
+) -> Result<ProviderSkillImportDiscovery, DaemonError> {
+    if let Some(name) = requested_name {
+        validate_registry_name(name, "skill name")?;
+    }
+    let mut discovery = ProviderSkillImportDiscovery::default();
+    let mut found_requested = false;
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        for skill_md in find_skill_markdown_files(&root)? {
+            let source_dir = skill_md.parent().unwrap_or(&root).to_path_buf();
+            let package = match package_skill_directory(&source_dir) {
+                Ok(package) => package,
+                Err(error) => {
+                    discovery.skipped.push(SkillImportSkip {
+                        name: source_dir
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        path: skill_md,
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if requested_name.is_some_and(|requested| requested != package.metadata.name) {
+                continue;
+            }
+            found_requested = true;
+            discovery.candidates.push(ProviderSkillImportCandidate {
+                provider: provider.to_string(),
+                name: package.metadata.name.clone(),
+                source: source_dir.display().to_string(),
+                source_modified_ms: source_modified_ms(&source_dir),
+                source_path: source_dir,
+                skill_md_path: skill_md,
+                version_hash: package.version_hash,
+                metadata: package.metadata,
+            });
+        }
+    }
+    if let Some(name) = requested_name {
+        if !found_requested {
+            discovery.skipped.push(SkillImportSkip {
+                name: name.to_string(),
+                path: PathBuf::new(),
+                reason: "not found in provider skill roots".to_string(),
+            });
+        }
+    }
+    Ok(discovery)
 }
 
 fn import_skills_from_roots(
@@ -1307,6 +1407,15 @@ fn managed_capability_root() -> Option<PathBuf> {
     std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn source_modified_ms(path: &Path) -> u64 {
+    path.metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 fn workspace_registry_hash(workspace: &Path) -> String {

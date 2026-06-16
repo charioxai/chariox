@@ -370,6 +370,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UpdateMcpServer(_) => "mcp.update",
         LocalDaemonRequest::UninstallMcpServer(_) => "mcp.uninstall",
         LocalDaemonRequest::ImportMcpServers(_) => "mcp.import",
+        LocalDaemonRequest::ImportProviderCapabilities(_) => "extension.import.providers",
         LocalDaemonRequest::GetMcpServer(_) => "mcp.get",
         LocalDaemonRequest::ListMcpServers(_) => "mcp.list",
         LocalDaemonRequest::RegisterEnvironment(_) => "env.register",

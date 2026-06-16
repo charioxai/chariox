@@ -391,6 +391,79 @@ test("executeShellCommand imports MCP servers and skills", async () => {
   ])
 })
 
+test("executeShellCommand imports provider capabilities through extension command", async () => {
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return {
+          ProviderCapabilitiesImported: {
+            report: {
+              dry_run: true,
+              providers: ["codex", "claude"],
+              summary: {
+                candidates: 2,
+                imported: 0,
+                updated: 0,
+                already_installed: 1,
+                deduped: 1,
+                skipped: 0,
+                errors: 0,
+              },
+              mcps: [{
+                kind: "mcp",
+                name: "docs",
+                provider: "claude",
+                source: "/repo/.mcp.json",
+                hash: "hash-1",
+                action: "would_import",
+                reason: "would import newest provider definition",
+                duplicates: [],
+              }],
+              skills: [{
+                kind: "skill",
+                name: "qa",
+                provider: "codex",
+                source: "/repo/.codex/skills/qa",
+                hash: "hash-2",
+                action: "already_installed",
+                reason: "matching skill package already installed in Arroba",
+                duplicates: [{
+                  provider: "claude",
+                  source: "/repo/.claude/skills/qa",
+                  hash: "hash-2",
+                  reason: "same package hash",
+                }],
+              }],
+            },
+          },
+        }
+      },
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const result = await executeShellCommand(
+    parseShellCommand("extension import providers --provider codex --provider claude --kind all --dry-run"),
+    context,
+    { client: fake.client },
+  )
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /Provider capability import dry run: providers=codex, claude/)
+  assert.match(result.message ?? "", /would_import mcp docs \[claude\]/)
+  assert.match(result.message ?? "", /already_installed skill qa \[codex\].*1 duplicate/)
+  assert.deepEqual(requests, [{
+    ImportProviderCapabilities: {
+      workspace_id: "/repo",
+      providers: ["codex", "claude"],
+      kind: "all",
+      name: null,
+      dry_run: true,
+    },
+  }])
+})
+
 test("executeShellCommand grants, revokes, and lists agent extensions", async () => {
   const agent = makeAgent({
     extension_grants: [
