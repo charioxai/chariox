@@ -519,6 +519,10 @@ mod tests {
             Some(&json!("http://127.0.0.1:43120/mcp"))
         );
         assert_eq!(
+            overrides.get("mcp_servers.arroba.transport"),
+            Some(&json!("streamable_http"))
+        );
+        assert_eq!(
             overrides.get("mcp_servers.arroba.http_headers.Authorization"),
             Some(&json!("Bearer token-123"))
         );
@@ -591,25 +595,29 @@ mod tests {
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
         assert_eq!(
-            overrides.get("mcp_servers.browser.url"),
+            overrides.get("mcp_servers.arroba_mcp_browser.url"),
             Some(&json!("http://127.0.0.1:43120/mcp/proxy/browser"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.browser.http_headers.Authorization"),
+            overrides.get("mcp_servers.arroba_mcp_browser.transport"),
+            Some(&json!("streamable_http"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.arroba_mcp_browser.http_headers.Authorization"),
             Some(&json!("Bearer token-123"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.browser.bearer_token_env_var"),
+            overrides.get("mcp_servers.arroba_mcp_browser.bearer_token_env_var"),
             None
         );
         assert_eq!(overrides.get("mcp_servers.browser.command"), None);
         assert_eq!(overrides.get("mcp_servers.browser.args"), None);
         assert_eq!(
-            overrides.get("mcp_servers.browser.required"),
+            overrides.get("mcp_servers.arroba_mcp_browser.required"),
             Some(&json!(true))
         );
         assert_eq!(
-            overrides.get("mcp_servers.browser.tool_timeout_sec"),
+            overrides.get("mcp_servers.arroba_mcp_browser.tool_timeout_sec"),
             Some(&json!(25))
         );
     }

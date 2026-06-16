@@ -6,7 +6,10 @@ use serde_json::{json, Value};
 use crate::error::DaemonError;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, ProviderWriteAccessMode};
 
-use super::mcp_config::{append_codex_mcp_overrides, append_runtime_mcp_overrides};
+use super::mcp_config::{
+    append_codex_mcp_overrides, append_runtime_mcp_overrides,
+    codex_provider_facing_mcp_proxy_configs,
+};
 use super::permission::codex_permission_policy;
 use super::permission::CodexPermissionPolicy;
 use super::{CodexClient, CodexNotification, CodexSocket};
@@ -263,7 +266,7 @@ impl CodexClient {
         policy: &CodexPermissionPolicy,
     ) -> Result<BTreeMap<String, Value>, DaemonError> {
         let mut overrides = policy.config_overrides.clone();
-        let provider_mcp_servers = crate::provider::mcp_proxy::provider_facing_mcp_proxy_configs(
+        let provider_mcp_servers = codex_provider_facing_mcp_proxy_configs(
             &self.mcp_servers,
             self.runtime_mcp_server_url.as_deref(),
             self.runtime_mcp_auth_token.as_deref(),

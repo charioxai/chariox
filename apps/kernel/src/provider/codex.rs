@@ -318,6 +318,10 @@ mod tests {
         assert!(launch
             .pty_args
             .iter()
+            .any(|arg| arg == "mcp_servers.arroba.transport=\"streamable_http\""));
+        assert!(launch
+            .pty_args
+            .iter()
             .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var")));
         assert!(launch
             .pty_args
@@ -376,6 +380,10 @@ mod tests {
             .pty_args
             .iter()
             .any(|arg| arg.contains("mcp_servers.arroba.url")));
+        assert!(launch
+            .pty_args
+            .iter()
+            .any(|arg| arg == "mcp_servers.arroba.transport=\"streamable_http\""));
         assert!(!launch
             .pty_args
             .iter()
@@ -463,8 +471,9 @@ mod tests {
         let browser_config = launch
             .pty_args
             .iter()
-            .find(|arg| arg.starts_with("mcp_servers.browser={"))
+            .find(|arg| arg.starts_with("mcp_servers.arroba_mcp_browser={"))
             .expect("browser MCP should be rendered as one streamable HTTP table");
+        assert!(browser_config.contains("transport=\"streamable_http\""));
         assert!(browser_config.contains("url=\"http://127.0.0.1:43120/mcp/proxy/browser\""));
         assert!(browser_config.contains("bearer_token_env_var=\"ARROBA_MCP_TOKEN\""));
         assert!(!browser_config.contains("http_headers"));

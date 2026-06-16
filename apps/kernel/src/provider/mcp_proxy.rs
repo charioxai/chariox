@@ -20,8 +20,22 @@ pub(crate) fn provider_facing_mcp_proxy_config(
     runtime_mcp_url: &str,
     runtime_mcp_auth_token: &str,
 ) -> Result<ArrobaMcpServerConfig, DaemonError> {
+    provider_facing_mcp_proxy_config_named(
+        backing,
+        &backing.name,
+        runtime_mcp_url,
+        runtime_mcp_auth_token,
+    )
+}
+
+pub(crate) fn provider_facing_mcp_proxy_config_named(
+    backing: &ArrobaMcpServerConfig,
+    provider_visible_name: &str,
+    runtime_mcp_url: &str,
+    runtime_mcp_auth_token: &str,
+) -> Result<ArrobaMcpServerConfig, DaemonError> {
     let proxy = ArrobaMcpServerConfig {
-        name: backing.name.clone(),
+        name: provider_visible_name.to_string(),
         transport: ArrobaMcpTransportConfig::StreamableHttp {
             url: provider_facing_mcp_proxy_url(runtime_mcp_url, &backing.name)?,
             bearer_token_env_var: None,
@@ -203,6 +217,27 @@ mod tests {
                     http_headers.get("Authorization").map(String::as_str),
                     Some("Bearer token-123")
                 );
+            }
+            other => panic!("expected streamable HTTP proxy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proxy_config_can_use_provider_visible_alias() {
+        let backing = ArrobaMcpServerConfig::stdio("node_repl", "node", Vec::new());
+
+        let proxy = provider_facing_mcp_proxy_config_named(
+            &backing,
+            "arroba_mcp_node_repl",
+            "http://127.0.0.1:43120/mcp",
+            "token-123",
+        )
+        .expect("proxy config should build");
+
+        assert_eq!(proxy.name, "arroba_mcp_node_repl");
+        match proxy.transport {
+            ArrobaMcpTransportConfig::StreamableHttp { url, .. } => {
+                assert_eq!(url, "http://127.0.0.1:43120/mcp/proxy/node_repl");
             }
             other => panic!("expected streamable HTTP proxy, got {other:?}"),
         }

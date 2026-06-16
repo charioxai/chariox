@@ -45,24 +45,25 @@ pub(super) fn runtime_mcp_config(
         );
     }
     let mut env = inherited_codex_auth_env();
-    let provider_mcp_servers =
-        super::super::mcp_proxy::provider_facing_mcp_proxy_configs_with_bearer_env(
-            &request.mcp_servers,
-            request
-                .runtime_mcp_binding
-                .as_ref()
-                .map(|binding| binding.server_url.as_str()),
-            request
-                .runtime_mcp_binding
-                .as_ref()
-                .map(|binding| binding.auth_token.as_str()),
-            CODEX_MCP_TOKEN_ENV,
-        )?;
+    let provider_mcp_servers = codex_provider_facing_mcp_proxy_configs_with_bearer_env(
+        &request.mcp_servers,
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.server_url.as_str()),
+        request
+            .runtime_mcp_binding
+            .as_ref()
+            .map(|binding| binding.auth_token.as_str()),
+        CODEX_MCP_TOKEN_ENV,
+    )?;
     for server in &provider_mcp_servers {
         append_codex_mcp_config(&mut args, server);
     }
     if let Some(binding) = request.runtime_mcp_binding.as_ref() {
         args.extend([
+            "-c".to_string(),
+            "mcp_servers.arroba.transport=\"streamable_http\"".to_string(),
             "-c".to_string(),
             format!("mcp_servers.arroba.url={:?}", binding.server_url),
             "-c".to_string(),
@@ -91,6 +92,47 @@ fn inherited_codex_auth_env() -> BTreeMap<String, String> {
                 .map(|value| ((*name).to_string(), value))
         })
         .collect()
+}
+
+pub(super) fn codex_provider_facing_mcp_proxy_name(name: &str) -> String {
+    format!("arroba_mcp_{name}")
+}
+
+fn codex_provider_facing_mcp_proxy_configs_with_bearer_env(
+    backing_servers: &[ArrobaMcpServerConfig],
+    runtime_mcp_url: Option<&str>,
+    runtime_mcp_auth_token: Option<&str>,
+    bearer_token_env_var: &str,
+) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+    let Some(runtime_mcp_url) = runtime_mcp_url else {
+        return Ok(backing_servers.to_vec());
+    };
+    let Some(runtime_mcp_auth_token) = runtime_mcp_auth_token else {
+        return Ok(backing_servers.to_vec());
+    };
+    let mut servers = backing_servers
+        .iter()
+        .map(|server| {
+            super::super::mcp_proxy::provider_facing_mcp_proxy_config_named(
+                server,
+                &codex_provider_facing_mcp_proxy_name(&server.name),
+                runtime_mcp_url,
+                runtime_mcp_auth_token,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for server in &mut servers {
+        if let ArrobaMcpTransportConfig::StreamableHttp {
+            bearer_token_env_var: env_var,
+            http_headers,
+            ..
+        } = &mut server.transport
+        {
+            http_headers.remove("Authorization");
+            *env_var = Some(bearer_token_env_var.to_string());
+        }
+    }
+    Ok(servers)
 }
 
 fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfig) {
@@ -129,7 +171,10 @@ fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfi
             credential_http_headers: _,
             env_http_headers,
         } => {
-            let mut fields = vec![format!("url={url:?}")];
+            let mut fields = vec![
+                "transport=\"streamable_http\"".to_string(),
+                format!("url={url:?}"),
+            ];
             if let Some(env_var) = bearer_token_env_var {
                 fields.push(format!("bearer_token_env_var={env_var:?}"));
             }

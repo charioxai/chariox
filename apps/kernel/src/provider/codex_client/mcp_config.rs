@@ -12,6 +12,10 @@ pub(super) fn append_runtime_mcp_overrides(
     auth_token: &str,
 ) {
     overrides.insert(
+        "mcp_servers.arroba.transport".to_string(),
+        json!("streamable_http"),
+    );
+    overrides.insert(
         "mcp_servers.arroba.url".to_string(),
         json!(server_url.to_string()),
     );
@@ -28,6 +32,34 @@ pub(super) fn append_runtime_mcp_overrides(
         "mcp_servers.arroba.tool_timeout_sec".to_string(),
         json!(300),
     );
+}
+
+pub(super) fn codex_provider_facing_mcp_proxy_configs(
+    backing_servers: &[ArrobaMcpServerConfig],
+    runtime_mcp_url: Option<&str>,
+    runtime_mcp_auth_token: Option<&str>,
+) -> Result<Vec<ArrobaMcpServerConfig>, crate::error::DaemonError> {
+    let Some(runtime_mcp_url) = runtime_mcp_url else {
+        return Ok(backing_servers.to_vec());
+    };
+    let Some(runtime_mcp_auth_token) = runtime_mcp_auth_token else {
+        return Ok(backing_servers.to_vec());
+    };
+    backing_servers
+        .iter()
+        .map(|server| {
+            crate::provider::mcp_proxy::provider_facing_mcp_proxy_config_named(
+                server,
+                &codex_provider_facing_mcp_proxy_name(&server.name),
+                runtime_mcp_url,
+                runtime_mcp_auth_token,
+            )
+        })
+        .collect()
+}
+
+fn codex_provider_facing_mcp_proxy_name(name: &str) -> String {
+    format!("arroba_mcp_{name}")
 }
 
 pub(super) fn append_codex_mcp_overrides(
@@ -67,6 +99,7 @@ pub(super) fn append_codex_mcp_overrides(
                 credential_http_headers: _,
                 env_http_headers,
             } => {
+                overrides.insert(format!("{prefix}.transport"), json!("streamable_http"));
                 overrides.insert(format!("{prefix}.url"), json!(url));
                 if let Some(env_var) = bearer_token_env_var {
                     overrides.insert(format!("{prefix}.bearer_token_env_var"), json!(env_var));
