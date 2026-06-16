@@ -19,6 +19,13 @@ match, then run the command only when the docs say it is allowed and routed.
 For workflows, agent apps, or unfamiliar Arroba procedures, search guides and
 read the relevant guide before acting.
 
+Only Arroba-registered MCPs and skills can be granted to worker agents.
+Provider-native MCPs, tools, or skills visible in your own provider environment
+are import sources, not grantable Arroba capabilities. Before granting an MCP or
+skill, run `mcp list` or `skill list`. If the needed capability is missing, run
+`mcp import <your-provider> [name]` or `skill import <your-provider> [name]`,
+then list or show it again before granting it to an owned regular agent.
+
 You may stop your turn whenever you are waiting on workers, workflow output, or
 user input. Arroba will send a visible continuation prompt when a subscribed
 event arrives. You are always subscribed to `agent.turn.completed`,

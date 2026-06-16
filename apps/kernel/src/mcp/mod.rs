@@ -387,6 +387,46 @@ pub fn import_opencode_mcp_servers(
     Ok(outcome)
 }
 
+pub fn import_claude_mcp_servers(
+    registry: &ArrobaMcpRegistry,
+    workspace: &Path,
+    requested_name: Option<&str>,
+) -> Result<McpImportOutcome, DaemonError> {
+    if let Some(name) = requested_name {
+        validate_registry_name(name, "mcp name")?;
+    }
+    let mut outcome = McpImportOutcome::default();
+    let mut found_config = false;
+    for config_path in claude_mcp_config_paths(workspace) {
+        if !config_path.exists() {
+            continue;
+        }
+        found_config = true;
+        let partial = import_claude_mcp_servers_from_config_path(
+            registry,
+            &config_path,
+            workspace,
+            requested_name,
+        )?;
+        outcome.imported.extend(partial.imported);
+        outcome.skipped.extend(partial.skipped);
+    }
+    if !found_config {
+        return Ok(outcome);
+    }
+    if let Some(name) = requested_name {
+        let found = outcome.imported.iter().any(|mcp| mcp.name == name)
+            || outcome.skipped.iter().any(|skip| skip.name == name);
+        if !found {
+            outcome.skipped.push(McpImportSkip {
+                name: name.to_string(),
+                reason: "not found in Claude MCP config".to_string(),
+            });
+        }
+    }
+    Ok(outcome)
+}
+
 pub fn import_opencode_mcp_servers_from_config_path(
     registry: &ArrobaMcpRegistry,
     config_path: &Path,
@@ -443,6 +483,59 @@ pub fn import_opencode_mcp_servers_from_config_path(
                 name: name.clone(),
                 reason,
             }),
+        }
+    }
+    Ok(outcome)
+}
+
+pub fn import_claude_mcp_servers_from_config_path(
+    registry: &ArrobaMcpRegistry,
+    config_path: &Path,
+    workspace: &Path,
+    requested_name: Option<&str>,
+) -> Result<McpImportOutcome, DaemonError> {
+    if let Some(name) = requested_name {
+        validate_registry_name(name, "mcp name")?;
+    }
+    let payload = fs::read_to_string(config_path).map_err(|error| DaemonError::LocalTransport {
+        operation: "mcp.import.claude",
+        message: format!(
+            "failed to read Claude MCP config `{}`: {error}",
+            config_path.display()
+        ),
+    })?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&payload).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.import.claude",
+            message: format!(
+                "failed to parse Claude MCP config `{}`: {error}",
+                config_path.display()
+            ),
+        })?;
+    let mut outcome = McpImportOutcome::default();
+    let server_sets = claude_mcp_server_sets(&parsed, config_path, workspace);
+    for (scope, servers) in server_sets {
+        for (name, value) in servers {
+            if requested_name.is_some_and(|requested| requested != name) {
+                continue;
+            }
+            if registry.get(name)?.is_some() {
+                outcome.skipped.push(McpImportSkip {
+                    name: name.clone(),
+                    reason: format!("already installed in Arroba registry ({scope})"),
+                });
+                continue;
+            }
+            match claude_mcp_to_arroba(name, value) {
+                Ok(config) => {
+                    registry.install(&config)?;
+                    outcome.imported.push(config);
+                }
+                Err(reason) => outcome.skipped.push(McpImportSkip {
+                    name: name.clone(),
+                    reason: format!("{scope}: {reason}"),
+                }),
+            }
         }
     }
     Ok(outcome)
@@ -814,12 +907,65 @@ fn opencode_config_paths(workspace: &Path) -> Vec<PathBuf> {
     paths
 }
 
+fn claude_mcp_config_paths(workspace: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(custom) = std::env::var_os("ARROBA_CLAUDE_CONFIG") {
+        paths.push(PathBuf::from(custom));
+    } else if let Some(home) = home_dir() {
+        paths.push(home.join(".claude.json"));
+    }
+    paths.push(workspace.join(".mcp.json"));
+    paths
+}
+
 fn opencode_files_in_dir(dir: &Path) -> Vec<PathBuf> {
     vec![
         dir.join("opencode.jsonc"),
         dir.join("opencode.json"),
         dir.join("config.json"),
     ]
+}
+
+fn claude_mcp_server_sets<'a>(
+    parsed: &'a serde_json::Value,
+    config_path: &Path,
+    workspace: &Path,
+) -> Vec<(String, &'a serde_json::Map<String, serde_json::Value>)> {
+    let mut sets = Vec::new();
+    if let Some(servers) = parsed
+        .get("mcpServers")
+        .and_then(serde_json::Value::as_object)
+    {
+        sets.push((config_path.display().to_string(), servers));
+    }
+    if config_path.file_name().and_then(|name| name.to_str()) == Some(".claude.json") {
+        let workspace_key = workspace.to_string_lossy();
+        let canonical_workspace = workspace.canonicalize().ok();
+        if let Some(projects) = parsed
+            .get("projects")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (project_path, project) in projects {
+                let direct_match = project_path == workspace_key.as_ref();
+                let canonical_match = canonical_workspace
+                    .as_ref()
+                    .is_some_and(|canonical| Path::new(project_path) == canonical.as_path());
+                if !direct_match && !canonical_match {
+                    continue;
+                }
+                if let Some(servers) = project
+                    .get("mcpServers")
+                    .and_then(serde_json::Value::as_object)
+                {
+                    sets.push((
+                        format!("{} projects[{project_path}]", config_path.display()),
+                        servers,
+                    ));
+                }
+            }
+        }
+    }
+    sets
 }
 
 fn opencode_mcp_to_arroba(
@@ -920,6 +1066,140 @@ fn opencode_remote_mcp_to_arroba(
     Ok(config)
 }
 
+fn claude_mcp_to_arroba(
+    name: &str,
+    value: &serde_json::Value,
+) -> Result<ArrobaMcpServerConfig, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "MCP entry must be an object".to_string())?;
+    if object.contains_key("oauth")
+        || object.contains_key("oauthScopes")
+        || object.contains_key("oauthResource")
+    {
+        return Err("Claude OAuth MCP config is not imported yet".to_string());
+    }
+    let mcp_type = object
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| {
+            if object.contains_key("command") {
+                "stdio"
+            } else if object.contains_key("url") {
+                "http"
+            } else {
+                ""
+            }
+        });
+    match mcp_type {
+        "stdio" => claude_stdio_mcp_to_arroba(name, object),
+        "http" | "streamable_http" => claude_http_mcp_to_arroba(name, object),
+        "sse" => Err("Claude SSE MCP config is not imported yet".to_string()),
+        "" => Err("missing Claude MCP type, command, or url".to_string()),
+        other => Err(format!("unsupported Claude MCP type `{other}`")),
+    }
+}
+
+fn claude_stdio_mcp_to_arroba(
+    name: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<ArrobaMcpServerConfig, String> {
+    if object.contains_key("url") {
+        return Err("stdio MCP entry also contains url".to_string());
+    }
+    let command = object
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "stdio MCP command must be a string".to_string())?;
+    let args = optional_json_string_array(object.get("args"), "args")?.unwrap_or_default();
+    let mut config = ArrobaMcpServerConfig::stdio(name, command, args);
+    config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
+    config.required = optional_json_bool(object.get("required"), "required")?.unwrap_or(false);
+    config.startup_timeout_sec =
+        optional_json_timeout_secs(object.get("startup_timeout_sec"), "startup_timeout_sec")?;
+    config.tool_timeout_sec =
+        optional_json_timeout_secs(object.get("tool_timeout_sec"), "tool_timeout_sec")?;
+    if let ArrobaMcpTransportConfig::Stdio {
+        env, env_vars, cwd, ..
+    } = &mut config.transport
+    {
+        let environment = optional_json_string_map(object.get("env"), "env")?.unwrap_or_default();
+        for (key, value) in environment {
+            if let Some(var_name) = env_reference(&value) {
+                if var_name == key {
+                    env_vars.push(key);
+                } else {
+                    return Err(format!(
+                        "env `{key}` references env var `{var_name}`, which cannot be represented in Arroba stdio env_vars"
+                    ));
+                }
+            } else {
+                env.insert(key, value);
+            }
+        }
+        *cwd = object
+            .get("cwd")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "cwd must be a string".to_string())
+            })
+            .transpose()?;
+    }
+    config.enabled_tools = optional_json_string_array(object.get("enabledTools"), "enabledTools")?;
+    config.disabled_tools =
+        optional_json_string_array(object.get("disabledTools"), "disabledTools")?;
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
+fn claude_http_mcp_to_arroba(
+    name: &str,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<ArrobaMcpServerConfig, String> {
+    if object.contains_key("command") {
+        return Err("HTTP MCP entry also contains command".to_string());
+    }
+    let url = object
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "HTTP MCP url must be a string".to_string())?;
+    let mut config = ArrobaMcpServerConfig::streamable_http(name, url);
+    config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
+    config.required = optional_json_bool(object.get("required"), "required")?.unwrap_or(false);
+    config.startup_timeout_sec =
+        optional_json_timeout_secs(object.get("startup_timeout_sec"), "startup_timeout_sec")?;
+    config.tool_timeout_sec =
+        optional_json_timeout_secs(object.get("tool_timeout_sec"), "tool_timeout_sec")?;
+    if let ArrobaMcpTransportConfig::StreamableHttp {
+        http_headers,
+        env_http_headers,
+        ..
+    } = &mut config.transport
+    {
+        let headers =
+            optional_json_string_map(object.get("headers"), "headers")?.unwrap_or_default();
+        for (key, value) in headers {
+            if let Some(var_name) = env_reference(&value) {
+                env_http_headers.insert(key, var_name);
+            } else if key.eq_ignore_ascii_case("authorization") {
+                return Err(
+                    "static Authorization headers are not imported; use an environment reference"
+                        .to_string(),
+                );
+            } else {
+                http_headers.insert(key, value);
+            }
+        }
+    }
+    config.enabled_tools = optional_json_string_array(object.get("enabledTools"), "enabledTools")?;
+    config.disabled_tools =
+        optional_json_string_array(object.get("disabledTools"), "disabledTools")?;
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
 fn optional_json_bool(
     value: Option<&serde_json::Value>,
     field: &str,
@@ -947,6 +1227,44 @@ fn optional_json_timeout_ms(
         return Err(format!("{field} must be positive"));
     }
     Ok(Some((millis + 999) / 1000))
+}
+
+fn optional_json_timeout_secs(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Option<u64>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let secs = value
+        .as_f64()
+        .ok_or_else(|| format!("{field} must be a positive number of seconds"))?;
+    if !secs.is_finite() || secs <= 0.0 {
+        return Err(format!("{field} must be positive"));
+    }
+    Ok(Some(secs.ceil() as u64))
+}
+
+fn optional_json_string_array(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let array = value
+        .as_array()
+        .ok_or_else(|| format!("{field} must be an array of strings"))?;
+    array
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{field} entries must be strings"))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 fn optional_json_string_map(
@@ -1335,6 +1653,183 @@ oauth_resource = "unsupported"
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(opencode_root);
+    }
+
+    #[test]
+    fn imports_claude_mcp_servers_from_config() {
+        let root = temp_root("claude-import-registry");
+        let workspace = temp_root("claude-import-workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join(".mcp.json"),
+            r#"
+{
+  "mcpServers": {
+    "docs": {
+      "type": "stdio",
+      "command": "docs-server",
+      "args": ["--verbose"],
+      "env": {
+        "ALPHA": "1",
+        "DOCS_TOKEN": "{env:DOCS_TOKEN}"
+      },
+      "cwd": "/tmp/docs",
+      "startup_timeout_sec": 2.2,
+      "enabledTools": ["search"]
+    },
+    "web": {
+      "type": "http",
+      "url": "https://example.test/mcp",
+      "headers": {
+        "X-Static": "42",
+        "Authorization": "{env:WEB_TOKEN}"
+      },
+      "disabledTools": ["write"]
+    },
+    "oauth": {
+      "type": "sse",
+      "url": "https://example.test/sse"
+    },
+    "inline_auth": {
+      "type": "http",
+      "url": "https://example.test/mcp",
+      "headers": {
+        "Authorization": "Bearer secret"
+      }
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+        let outcome = import_claude_mcp_servers_from_config_path(
+            &registry,
+            &workspace.join(".mcp.json"),
+            &workspace,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome
+                .imported
+                .iter()
+                .map(|mcp| mcp.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs", "web"]
+        );
+        let mut skipped_names = outcome
+            .skipped
+            .iter()
+            .map(|skip| skip.name.as_str())
+            .collect::<Vec<_>>();
+        skipped_names.sort_unstable();
+        assert_eq!(skipped_names, vec!["inline_auth", "oauth"]);
+        assert!(outcome
+            .skipped
+            .iter()
+            .any(|skip| skip.reason.contains("Authorization")));
+
+        let docs = registry.get("docs").unwrap().expect("docs import");
+        assert_eq!(docs.startup_timeout_sec, Some(3));
+        assert_eq!(docs.enabled_tools, Some(vec!["search".to_string()]));
+        match docs.transport {
+            ArrobaMcpTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+                cwd,
+                ..
+            } => {
+                assert_eq!(command, "docs-server");
+                assert_eq!(args, vec!["--verbose"]);
+                assert_eq!(env.get("ALPHA"), Some(&"1".to_string()));
+                assert_eq!(env_vars, vec!["DOCS_TOKEN"]);
+                assert_eq!(cwd, Some(PathBuf::from("/tmp/docs")));
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+        let web = registry.get("web").unwrap().expect("web import");
+        assert_eq!(web.disabled_tools, Some(vec!["write".to_string()]));
+        match web.transport {
+            ArrobaMcpTransportConfig::StreamableHttp {
+                http_headers,
+                env_http_headers,
+                ..
+            } => {
+                assert_eq!(http_headers.get("X-Static"), Some(&"42".to_string()));
+                assert_eq!(
+                    env_http_headers.get("Authorization"),
+                    Some(&"WEB_TOKEN".to_string())
+                );
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn imports_matching_project_mcp_servers_from_claude_user_config() {
+        let root = temp_root("claude-project-import-registry");
+        let workspace = temp_root("claude-project-import-workspace");
+        let config_root = temp_root("claude-project-import-config");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&config_root).unwrap();
+        let config_path = config_root.join(".claude.json");
+        fs::write(
+            &config_path,
+            format!(
+                r#"{{
+  "mcpServers": {{
+    "global_docs": {{
+      "command": "global-docs"
+    }}
+  }},
+  "projects": {{
+    "{}": {{
+      "mcpServers": {{
+        "project_docs": {{
+          "command": "project-docs"
+        }}
+      }}
+    }},
+    "/elsewhere": {{
+      "mcpServers": {{
+        "other_docs": {{
+          "command": "other-docs"
+        }}
+      }}
+    }}
+  }}
+}}"#,
+                workspace.display()
+            ),
+        )
+        .unwrap();
+
+        let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+        let outcome =
+            import_claude_mcp_servers_from_config_path(&registry, &config_path, &workspace, None)
+                .unwrap();
+
+        assert_eq!(
+            outcome
+                .imported
+                .iter()
+                .map(|mcp| mcp.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["global_docs", "project_docs"]
+        );
+        assert!(registry.get("other_docs").unwrap().is_none());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(config_root);
     }
 
     #[test]

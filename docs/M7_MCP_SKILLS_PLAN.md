@@ -6,17 +6,17 @@ Current decision: the repo-local isolation spike in `docs/M7_MCP_ISOLATION_SPIKE
 
 ## Implementation Status
 
-Updated: 2026-04-19
+Updated: 2026-06-16
 
 Landed:
 
 - M7.1/M7.2: Arroba-owned MCP config model and registry for project/user roots, including update and uninstall lifecycle operations.
 - M7.3 partial: interactive `/mcp list`, `/mcp show`, `/mcp install`, `/mcp update`, `/mcp uninstall`, `/mcp import`, `/mcp grant`, `/mcp revoke`, and `/mcp grants`.
-- M7.4 partial: `/mcp import codex [name]` and `/mcp import opencode [name]` import supported provider MCP config entries into Arroba-owned MCP registry roots and report skipped entries.
+- M7.4 partial: `/mcp import codex [name]`, `/mcp import opencode [name]`, and `/mcp import claude [name]` import supported provider MCP config entries into Arroba-owned MCP registry roots and report skipped entries.
 - M7.5 partial: agent model now stores `mcp_grants`; grant/revoke IPC validates installed MCPs before mutating the agent; interactive grant inspection is landed.
 - M7.6 partial: local Codex and OpenCode provider launches render only the target agent's granted Arroba MCPs into provider-native MCP config, while keeping Arroba runtime MCP separate. When the runtime MCP binding is available, granted third-party MCPs are rendered as provider-facing Arroba proxy entries instead of raw backing definitions.
 - M7.7/M7.8: Codex-style `SKILL.md` metadata parsing and Arroba-owned skill registry over project/user roots, including update and uninstall lifecycle operations.
-- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill update`, `/skill uninstall`, `/skill import codex|opencode [name]`, `/skill grant`, `/skill revoke`, and `/skill grants`.
+- M7.9 partial: interactive `/skill list`, `/skill show`, `/skill install`, `/skill update`, `/skill uninstall`, `/skill import codex|opencode|claude [name]`, `/skill grant`, `/skill revoke`, and `/skill grants`.
 - M7.11 partial: agent model now stores `skill_grants`; grant/revoke IPC validates installed skills before mutating the agent; interactive grant inspection is landed.
 - M7.12 partial: local provider prompts receive a short granted-skills summary for the target agent only. Stored prompt history remains the original user prompt.
 - M7.13 partial: local provider prompts inject the full `SKILL.md` body for granted skills that are explicitly selected, mentioned, or requested.
@@ -29,8 +29,8 @@ Still open in M7:
 
 - Regular non-interactive `arroba mcp ...` / `arroba skill ...` CLI command surfaces, if we keep them separate from slash commands.
 - Regular non-interactive agent grant inspection commands, for example `arroba agent mcps` / `arroba agent skills`.
-- Provider MCP import from Claude-owned configs, plus regular non-interactive Codex/OpenCode import aliases.
-- Provider skill import from Claude-owned skill locations, plus regular non-interactive Codex/OpenCode import aliases.
+- Shared provider capability import service with all-provider dry-run/import reporting and deduplication.
+- Regular non-interactive Codex/OpenCode/Claude provider import aliases, if we keep them separate from slash commands.
 - Skill MCP dependency validation.
 - MCP provider activation. V1 uses Arroba-managed provider conversation relaunch/reload rather than relying on provider-global hot reload APIs, preserving the provider-native conversation/thread and re-rendering agent-scoped MCP config.
 
@@ -94,7 +94,7 @@ Registry entries are Arroba-owned copies. Installing an MCP registers it; it doe
 
 ## M7.3 MCP CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/update/uninstall/grant/revoke/grants and Codex/OpenCode import are landed; regular command aliases, Claude import, and test/start remain open.
+Status: partial. Interactive slash commands for install/list/show/update/uninstall/grant/revoke/grants and Codex/OpenCode/Claude import are landed; regular command aliases and test/start remain open.
 
 Expose MCP management through regular CLI commands and the interactive slash-command surface.
 
@@ -128,7 +128,7 @@ Expected `/mcp` actions:
 
 ## M7.4 Provider MCP Import
 
-Status: partial. Codex and OpenCode MCP import are landed through `/mcp import codex [name]` and `/mcp import opencode [name]`. Claude import and regular command aliases remain open.
+Status: partial. Codex, OpenCode, and Claude MCP import are landed through `/mcp import codex [name]`, `/mcp import opencode [name]`, and `/mcp import claude [name]`. The shared all-provider import service and regular command aliases remain open.
 
 Add provider import commands so users can reuse existing provider installs without reinstalling manually:
 
@@ -242,7 +242,7 @@ Arroba-managed skills are not stored in `.agents/skills` by default because prov
 
 ## M7.9 Skill CLI Commands
 
-Status: partial. Interactive slash commands for install/list/show/update/uninstall/import/grant/revoke/grants are landed; regular command aliases, Claude import, and validation commands remain open.
+Status: partial. Interactive slash commands for install/list/show/update/uninstall/import/grant/revoke/grants are landed; regular command aliases and validation commands remain open.
 
 Expose skill management through regular CLI commands and the interactive slash-command surface.
 
@@ -278,7 +278,7 @@ Expected `/skill` actions:
 
 ## M7.10 Provider Skill Import
 
-Status: partial. Codex and OpenCode skill import are landed through `/skill import codex [name]` and `/skill import opencode [name]`. Claude import and regular command aliases remain open.
+Status: partial. Codex, OpenCode, and Claude skill import are landed through `/skill import codex [name]`, `/skill import opencode [name]`, and `/skill import claude [name]`. The shared all-provider import service and regular command aliases remain open.
 
 Add provider import commands so users can reuse existing provider skills:
 

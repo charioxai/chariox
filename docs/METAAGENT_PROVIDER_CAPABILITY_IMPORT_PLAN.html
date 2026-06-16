@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metaagent Provider Capability Import Plan</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --ink: #17202f;
+        --muted: #596579;
+        --line: #d8deea;
+        --panel: #ffffff;
+        --accent: #0f766e;
+        --accent-soft: #e7f4f2;
+        --warn: #8a4b09;
+        --warn-soft: #fff3df;
+        --code: #f0f3f8;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 22px;
+        margin-top: 34px;
+        padding-top: 28px;
+        border-top: 1px solid var(--line);
+      }
+
+      h3 {
+        font-size: 17px;
+        margin-top: 22px;
+      }
+
+      p {
+        margin: 10px 0;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0 22px;
+        padding: 0;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: var(--code);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.93em;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #eef2f8;
+        font-weight: 700;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .hero {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 28px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .summary {
+        margin-top: 14px;
+        color: var(--muted);
+        max-width: 850px;
+      }
+
+      .callout {
+        margin-top: 18px;
+        border: 1px solid #b7d8d3;
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        border-radius: 8px;
+        padding: 14px 16px;
+      }
+
+      .warning {
+        border-color: #f0c98a;
+        border-left-color: var(--warn);
+        background: var(--warn-soft);
+      }
+
+      .phase {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 18px;
+        margin-top: 14px;
+      }
+
+      .phase h3 {
+        margin-top: 0;
+      }
+
+      .status {
+        display: inline-block;
+        margin-left: 8px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .mono-list li {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.94em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Metaagent capability plan</p>
+        <h1>Provider MCP and Skill Import for Arroba Grants</h1>
+        <p class="summary">
+          Metaagents must grant only Arroba-registered MCPs and skills to regular
+          worker agents. Provider-native MCPs and skills visible to the metaagent
+          are import sources, not the source of truth. This plan makes that rule
+          explicit, adds Claude import parity, and introduces a shared import
+          command for users and metaagents.
+        </p>
+        <div class="callout">
+          <strong>Core rule:</strong> Arroba registry state is authoritative for
+          grants. If a capability is not installed in Arroba, a metaagent may
+          import it from its provider, verify it with <code>mcp list</code> or
+          <code>skill list</code>, and only then grant it to an owned regular
+          worker.
+        </div>
+      </section>
+
+      <h2>Current State</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Surface</th>
+            <th>Status</th>
+            <th>Gap</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>mcp import codex|opencode</code></td>
+            <td>Landed through existing provider import parsers.</td>
+            <td>Not centralized with skill import or all-provider sync.</td>
+          </tr>
+          <tr>
+            <td><code>skill import codex|opencode</code></td>
+            <td>Landed through existing provider skill-root scanners.</td>
+            <td>Not centralized with MCP import or all-provider sync.</td>
+          </tr>
+          <tr>
+            <td>Claude MCP import</td>
+            <td>Documented as desired, not implemented.</td>
+            <td>Must be first-class before the shared provider import command ships.</td>
+          </tr>
+          <tr>
+            <td>Claude skill import</td>
+            <td>Documented as desired, not implemented.</td>
+            <td>Must scan Claude skill roots and copy into Arroba-owned roots.</td>
+          </tr>
+          <tr>
+            <td>Metaagent guidance</td>
+            <td>Mentions provisioning MCPs, skills, and vault handles.</td>
+            <td>Does not clearly distinguish provider-visible tools from Arroba-grantable capabilities.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Design Principles</h2>
+      <ul>
+        <li>Only Arroba-installed MCPs and skills can be granted to agents.</li>
+        <li>Provider configs are import sources. Arroba does not mutate provider-owned config during import.</li>
+        <li>Import and grant are separate operations. Import makes a capability available; grant remains per agent.</li>
+        <li>The kernel owns discovery, deduplication, import policy, and protocol results.</li>
+        <li>UI clients render kernel state. Do not add stdin-only startup prompts as the product mechanism.</li>
+      </ul>
+
+      <h2>Phase 1: Metaagent Prompt</h2>
+      <div class="phase">
+        <h3>Prompt update <span class="status">Required first</span></h3>
+        <p>
+          Update <code>apps/kernel/src/provider/metaagent_delegation_instructions.md</code>
+          with concise rules:
+        </p>
+        <ul>
+          <li>Only Arroba-registered MCPs and skills can be granted.</li>
+          <li>Provider-native tools visible to the metaagent are not automatically grantable.</li>
+          <li>Before granting, run <code>mcp list</code> or <code>skill list</code>.</li>
+          <li>If missing, import from the metaagent's provider, then list/show again.</li>
+          <li>Never grant MCPs or skills to yourself; grant only to owned regular agents.</li>
+        </ul>
+      </div>
+
+      <h2>Phase 2: Claude Import Parity</h2>
+      <div class="phase">
+        <h3>Claude MCP import</h3>
+        <p>
+          Implement <code>import_claude_mcp_servers</code> and wire
+          <code>mcp import claude [name]</code>.
+        </p>
+        <ul>
+          <li>Read user MCPs from <code>~/.claude.json</code>.</li>
+          <li>Read project MCPs from <code>.mcp.json</code>.</li>
+          <li>Respect configured Claude config overrides where Arroba already supports them.</li>
+          <li>Convert supported Claude MCP definitions into <code>ArrobaMcpServerConfig</code>.</li>
+          <li>Skip unsupported auth/OAuth/unknown shapes with explicit reasons.</li>
+        </ul>
+      </div>
+
+      <div class="phase">
+        <h3>Claude skill import</h3>
+        <p>
+          Implement <code>import_claude_skills</code> and wire
+          <code>skill import claude [name]</code>.
+        </p>
+        <ul>
+          <li>Scan personal skills under <code>~/.claude/skills/&lt;name&gt;/SKILL.md</code>.</li>
+          <li>Scan project skills under <code>.claude/skills/&lt;name&gt;/SKILL.md</code>.</li>
+          <li>Copy full skill directories into Arroba-owned skill roots.</li>
+          <li>Preserve <code>SKILL.md</code>, references, assets, scripts, and metadata.</li>
+        </ul>
+      </div>
+
+      <div class="callout warning">
+        <strong>Claude source notes:</strong> Claude Code documentation identifies
+        MCP server locations as <code>~/.claude.json</code> for user/local scopes
+        and <code>.mcp.json</code> for project scope. Claude Code skills live under
+        personal <code>~/.claude/skills/</code> and project
+        <code>.claude/skills/</code> directories.
+      </div>
+
+      <h2>Phase 3: Shared Provider Capability Service</h2>
+      <div class="phase">
+        <h3>Discovery and import service</h3>
+        <p>
+          Refactor Codex, OpenCode, and Claude import paths behind one kernel-owned
+          service.
+        </p>
+        <ul>
+          <li>Discover provider MCP candidates.</li>
+          <li>Discover provider skill candidates.</li>
+          <li>Normalize candidate names.</li>
+          <li>Compute MCP definition hashes and skill package hashes.</li>
+          <li>Compare candidates with current Arroba registries.</li>
+          <li>Apply deduplication before writing.</li>
+          <li>Return a structured report for dry-run and import modes.</li>
+        </ul>
+      </div>
+
+      <h2>Deduplication Policy</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Case</th>
+            <th>Behavior</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Same kind, same normalized name, same hash</td>
+            <td>Collapse duplicates; report identical sources.</td>
+          </tr>
+          <tr>
+            <td>Same kind, same normalized name, different hash</td>
+            <td>Choose newest source by source file or directory modified time.</td>
+          </tr>
+          <tr>
+            <td>Timestamp unavailable or tied</td>
+            <td>Use deterministic provider/source ordering and report the tie.</td>
+          </tr>
+          <tr>
+            <td>Already installed in Arroba</td>
+            <td>Skip by default; do not overwrite existing Arroba entries.</td>
+          </tr>
+          <tr>
+            <td>Unsupported provider shape</td>
+            <td>Skip with a typed reason visible in CLI/meta command output.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Phase 4: Slash Command and Protocol</h2>
+      <div class="phase">
+        <h3>Command</h3>
+        <p>Add a single user-facing import command:</p>
+        <ul class="mono-list">
+          <li>/extension import providers [--provider codex|opencode|claude|all] [--kind mcp|skill|all] [--dry-run]</li>
+        </ul>
+        <p>Defaults are <code>--provider all</code> and <code>--kind all</code>.</p>
+      </div>
+
+      <div class="phase">
+        <h3>Protocol</h3>
+        <p>Add versioned local daemon request/response shapes:</p>
+        <ul>
+          <li><code>ImportProviderCapabilitiesRequest</code></li>
+          <li><code>ProviderCapabilitiesImported</code></li>
+        </ul>
+        <p>The report should include imported, already-installed, deduped, skipped, and unsupported entries.</p>
+      </div>
+
+      <h2>Phase 5: Metaagent Command Discovery</h2>
+      <div class="phase">
+        <h3>Command docs</h3>
+        <p>
+          Update metaagent command docs and search terms so queries like
+          "grant browser tool", "give worker skill", "missing MCP", or
+          "import provider capability" surface the intended flow.
+        </p>
+        <ol>
+          <li><code>mcp list</code> or <code>skill list</code></li>
+          <li><code>mcp import &lt;provider&gt; [name]</code> or <code>skill import &lt;provider&gt; [name]</code> when missing</li>
+          <li><code>mcp show &lt;name&gt;</code> or <code>skill show &lt;name&gt;</code> to verify</li>
+          <li><code>mcp grant &lt;worker&gt; &lt;name&gt;</code> or <code>skill grant &lt;worker&gt; &lt;name&gt;</code></li>
+        </ol>
+      </div>
+
+      <h2>Validation Drills</h2>
+      <div class="phase">
+        <h3>Drill A: Real provider import</h3>
+        <ul>
+          <li>Use real MCPs and skills already installed in Codex.</li>
+          <li>Run <code>/extension import providers --provider codex --kind all --dry-run</code>.</li>
+          <li>Run actual import without <code>--dry-run</code>.</li>
+          <li>Verify <code>mcp list</code> and <code>skill list</code> show the imported entries.</li>
+          <li>Run the import again and verify duplicates are reported as already installed or collapsed.</li>
+        </ul>
+      </div>
+
+      <div class="phase">
+        <h3>Drill B: Arroba-only grant path</h3>
+        <ul>
+          <li>Install one MCP and one skill directly into Arroba that do not exist in provider configs.</li>
+          <li>Spawn a real metaagent and a regular worker.</li>
+          <li>Ask the metaagent to give the worker the needed capability.</li>
+          <li>Pass only if it uses Arroba list/show/grant and does not rely on provider-native tools.</li>
+        </ul>
+      </div>
+
+      <div class="phase">
+        <h3>Drill C: Missing capability imported by metaagent</h3>
+        <ul>
+          <li>Choose a real Codex capability present in Codex but absent from Arroba.</li>
+          <li>Prompt the metaagent at a high level.</li>
+          <li>Pass only if it lists Arroba capabilities, imports from its provider, verifies the result, grants to a regular worker, and supervises worker use.</li>
+        </ul>
+      </div>
+
+      <h2>Implementation Order</h2>
+      <ol>
+        <li>Update the metaagent delegation prompt.</li>
+        <li>Add Claude MCP import.</li>
+        <li>Add Claude skill import.</li>
+        <li>Refactor provider import into shared discovery/import service.</li>
+        <li>Add dedup report model and tests.</li>
+        <li>Add protocol request/response and bump protocol version.</li>
+        <li>Add CLI slash command and kernel-client formatting.</li>
+        <li>Update metaagent command docs/search.</li>
+        <li>Run unit tests and the three live drills.</li>
+      </ol>
+    </main>
+  </body>
+</html>

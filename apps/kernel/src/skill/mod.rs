@@ -571,6 +571,14 @@ pub fn import_opencode_skills(
     import_skills_from_roots(registry, opencode_skill_roots(workspace), requested_name)
 }
 
+pub fn import_claude_skills(
+    registry: &ArrobaSkillRegistry,
+    workspace: &Path,
+    requested_name: Option<&str>,
+) -> Result<SkillImportOutcome, DaemonError> {
+    import_skills_from_roots(registry, claude_skill_roots(workspace), requested_name)
+}
+
 fn import_skills_from_roots(
     registry: &ArrobaSkillRegistry,
     roots: Vec<PathBuf>,
@@ -670,6 +678,16 @@ fn opencode_skill_roots(workspace: &Path) -> Vec<PathBuf> {
     }
     for config_path in opencode_config_paths(workspace) {
         roots.extend(opencode_extra_skill_paths(&config_path, workspace));
+    }
+    roots
+}
+
+fn claude_skill_roots(workspace: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![workspace.join(".claude").join("skills")];
+    if let Some(claude_home) = std::env::var_os("CLAUDE_HOME") {
+        roots.push(PathBuf::from(claude_home).join("skills"));
+    } else if let Some(home) = home_dir() {
+        roots.push(home.join(".claude").join("skills"));
     }
     roots
 }
@@ -1517,8 +1535,10 @@ mod tests {
             .join(".opencode")
             .join("skills")
             .join("opencode-qa");
+        let claude_skill = workspace.join(".claude").join("skills").join("claude-qa");
         fs::create_dir_all(codex_skill.join("assets")).unwrap();
         fs::create_dir_all(&opencode_skill).unwrap();
+        fs::create_dir_all(&claude_skill).unwrap();
         fs::write(
             codex_skill.join("SKILL.md"),
             "---\nname: codex-qa\ndescription: Codex QA\n---\nUse Codex QA.\n",
@@ -1528,6 +1548,11 @@ mod tests {
         fs::write(
             opencode_skill.join("SKILL.md"),
             "---\nname: opencode-qa\ndescription: OpenCode QA\n---\nUse OpenCode QA.\n",
+        )
+        .unwrap();
+        fs::write(
+            claude_skill.join("SKILL.md"),
+            "---\nname: claude-qa\ndescription: Claude QA\n---\nUse Claude QA.\n",
         )
         .unwrap();
 
@@ -1549,6 +1574,10 @@ mod tests {
         let opencode = import_opencode_skills(&registry, &workspace, Some("opencode-qa")).unwrap();
         assert_eq!(opencode.imported.len(), 1);
         assert_eq!(opencode.imported[0].name, "opencode-qa");
+
+        let claude = import_claude_skills(&registry, &workspace, Some("claude-qa")).unwrap();
+        assert_eq!(claude.imported.len(), 1);
+        assert_eq!(claude.imported[0].name, "claude-qa");
 
         let duplicate = import_codex_skills(&registry, &workspace, Some("codex-qa")).unwrap();
         assert!(duplicate.imported.is_empty());

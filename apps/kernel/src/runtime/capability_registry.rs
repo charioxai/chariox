@@ -286,10 +286,14 @@ pub(crate) fn execute_import_mcp_servers_request(
             let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
             crate::mcp::import_opencode_mcp_servers(&registry, &workspace, request.name.as_deref())?
         }
+        "claude" | "claude-headless" | "claude-p" => {
+            let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
+            crate::mcp::import_claude_mcp_servers(&registry, &workspace, request.name.as_deref())?
+        }
         _ => {
             return Err(DaemonError::InvalidConfig {
                 field: "provider",
-                message: "only Codex and OpenCode MCP import are supported",
+                message: "only Codex, OpenCode, and Claude MCP import are supported",
             });
         }
     };
@@ -503,10 +507,13 @@ pub(crate) fn execute_import_skills_request(
         "opencode" => {
             crate::skill::import_opencode_skills(&registry, &workspace, request.name.as_deref())?
         }
+        "claude" | "claude-headless" | "claude-p" => {
+            crate::skill::import_claude_skills(&registry, &workspace, request.name.as_deref())?
+        }
         _ => {
             return Err(DaemonError::InvalidConfig {
                 field: "provider",
-                message: "only Codex and OpenCode skill import are supported",
+                message: "only Codex, OpenCode, and Claude skill import are supported",
             });
         }
     };
