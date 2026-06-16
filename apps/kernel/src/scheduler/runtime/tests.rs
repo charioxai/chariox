@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use crate::agent::CreateAgentRequest;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::provider::LaunchProviderRequest;
-use crate::session::{CreateSessionRequest, RuntimeSession, WorkflowMessage, WorkflowRun};
+use crate::session::{
+    CreateSessionRequest, RuntimeSession, WorkflowMessage, WorkflowRun, WorkflowRunStatus,
+};
 use crate::{DaemonApp, DaemonConfig};
 
 use super::prepare_workflow_turn_prompt;
@@ -169,6 +171,33 @@ fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
     );
     assert_eq!(workflow_run.node_runs().len(), 1);
     assert_eq!(workflow_run.node_runs()[0].node_id(), first_node_id);
+}
+
+#[test]
+fn workflow_notice_uses_current_run_after_dispatch_failure() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-scheduler-failed-notice");
+    let (workflow_id, node_id) =
+        create_workflow_node(&mut app, session.id(), "wf-failed-notice", &agent_id);
+    let stale_workflow_run = invoke_workflow_node(&mut app, session.id(), &workflow_id, &node_id);
+    let node_run_id = stale_workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .fail_workflow_node_run(session.id(), stale_workflow_run.id(), &node_run_id)
+        .expect("workflow node should fail");
+
+    let current = super::lifecycle::current_workflow_run_for_notice(
+        &app,
+        session.id(),
+        stale_workflow_run.clone(),
+    );
+
+    assert_eq!(stale_workflow_run.status(), WorkflowRunStatus::Running);
+    assert_eq!(current.status(), WorkflowRunStatus::Failed);
+    assert_eq!(
+        super::lifecycle::workflow_run_status_notice_suffix(current.status()),
+        "failed"
+    );
 }
 
 #[test]

@@ -247,16 +247,11 @@ pub fn on_workflow_prompt_completed(
         workflow_node_run_id,
     );
     schedule_workflow_dispatches(app, session_id, workflow_run.id(), &dispatches);
+    let workflow_run = current_workflow_run_for_notice(app, session_id, workflow_run);
     if released_claim || released_workflow_claim {
         let _ = retry_blocked_workflow_claims(app);
     }
-    let state_suffix = match workflow_run.status() {
-        WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
-        WorkflowRunStatus::Completing => "is completing",
-        WorkflowRunStatus::Completed => "completed",
-        WorkflowRunStatus::Stopped => "stopped",
-        _ => "updated",
-    };
+    let state_suffix = workflow_run_status_notice_suffix(workflow_run.status());
     app.record_notice(
         session_id,
         None,
@@ -270,6 +265,27 @@ pub fn on_workflow_prompt_completed(
         maybe_start_next_queued_workflow_prompt(app, session_id);
     }
     Ok(())
+}
+
+pub(super) fn current_workflow_run_for_notice(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run: WorkflowRun,
+) -> WorkflowRun {
+    app.sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run.id())
+        .unwrap_or(workflow_run)
+}
+
+pub(super) fn workflow_run_status_notice_suffix(status: WorkflowRunStatus) -> &'static str {
+    match status {
+        WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
+        WorkflowRunStatus::Completing => "is completing",
+        WorkflowRunStatus::Completed => "completed",
+        WorkflowRunStatus::Failed => "failed",
+        WorkflowRunStatus::Stopped => "stopped",
+        _ => "updated",
+    }
 }
 
 pub fn on_workflow_provider_failure(

@@ -288,6 +288,30 @@ async function readHistoryEntries(historyDir) {
   return entries
 }
 
+function isRecoverableObserverTransportError(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /kernel websocket closed|kernel websocket heartbeat|ECONNRESET|EPIPE/i.test(message)
+}
+
+async function sendObserverReadOnly(client, request, label) {
+  let lastError = null
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      return await client.send(request)
+    } catch (error) {
+      lastError = error
+      if (!isRecoverableObserverTransportError(error) || attempt === 4) break
+      log('observer-read-retry', {
+        label,
+        attempt,
+        message: error instanceof Error ? error.message : String(error),
+      })
+      await sleep(250 * attempt)
+    }
+  }
+  throw lastError
+}
+
 function parseProviderToolText(text) {
   if (typeof text !== 'string' || !text.trim().startsWith('{')) return null
   try {
@@ -319,7 +343,11 @@ function listMetaagentEventsRequest(sessionId, metaagentId, limit = 100) {
 }
 
 async function getSession(client, requests, sessionId) {
-  return unwrapVariant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState', 'SessionStateLoaded').session
+  return unwrapVariant(
+    await sendObserverReadOnly(client, requests.getSessionStateRequest(sessionId), 'session.state.get'),
+    'SessionState',
+    'SessionStateLoaded',
+  ).session
 }
 
 async function waitForProviderRun(client, requests, providerRunId, timeoutMs, pollMs) {
@@ -531,7 +559,14 @@ async function observeUntilComplete({
       })
     }
 
-    const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
+    const eventsPayload = unwrap(
+      await sendObserverReadOnly(
+        client,
+        listMetaagentEventsRequest(sessionId, metaagentId, 100),
+        'metaagent.event.list',
+      ),
+      'MetaagentEventsListed',
+    )
     finalEvents = eventsPayload.events ?? []
     for (const event of finalEvents) {
       if (seenEvents.has(event.event_id)) continue
@@ -683,6 +718,7 @@ async function main() {
     ARROBA_CODEX_PORT: String(ports.codexPort),
     ARROBA_DAEMON_ID: `${drillSlug}-${process.pid}-${Date.now()}`,
     ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    ARROBA_LOG_DIR: path.join(rootDir, 'logs'),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
 
