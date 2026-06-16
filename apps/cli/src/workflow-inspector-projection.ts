@@ -356,11 +356,12 @@ function buildEditBody(
       `- intermediate-output-schema: ${selectedNode.intermediate_output_schema_ref ?? "none"}`,
       `- can-complete-run: ${String(selectedNode.can_complete_workflow_run ?? false)}`,
       `- can-emit-intermediate-output: ${String(selectedNode.can_emit_intermediate_run_output ?? false)}`,
+      `- wait-for-all-inputs: ${String(selectedNode.wait_for_all_inputs ?? false)}`,
       `- max-turns: ${selectedNode.max_turns ?? "none"}`,
       "",
       "Use /workflow node instructions set to edit instructions.",
       "Use /workflow node intermediate-output-schema to edit schema refs.",
-      "Use /workflow node can-complete-run, can-emit-intermediate-output, or max-turns for runtime settings.",
+      "Use /workflow node can-complete-run, can-emit-intermediate-output, wait-for-all-inputs, or max-turns for runtime settings.",
     ].join("\n")
   }
   if (selection.kind === "edge") {

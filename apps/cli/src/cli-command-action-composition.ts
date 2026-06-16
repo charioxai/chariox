@@ -233,6 +233,7 @@ export type CliCommandActionCompositionDeps = {
   updateWorkflowNodeInstructions: AnyFn
   setWorkflowNodeCanCompleteRun: AnyFn
   setWorkflowNodeCanEmitIntermediateOutput: AnyFn
+  setWorkflowNodeWaitForAllInputs: AnyFn
   setWorkflowNodeIntermediateOutputSchema: AnyFn
   setWorkflowNodeMaxTurns: AnyFn
   invokeWorkflowEndpoint: AnyFn
@@ -321,6 +322,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     updateWorkflowNodeInstructions,
     setWorkflowNodeCanCompleteRun,
     setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeWaitForAllInputs,
     setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,
@@ -712,6 +714,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     updateWorkflowNodeInstructions,
     setWorkflowNodeCanCompleteRun,
     setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeWaitForAllInputs,
     setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,

@@ -160,6 +160,8 @@ pub struct WaitingRoomPublicWorkflowNodeSummary {
     pub id: String,
     pub agent_id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wait_for_all_inputs: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

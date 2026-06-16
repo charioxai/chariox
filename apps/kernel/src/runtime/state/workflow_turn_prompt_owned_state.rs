@@ -133,6 +133,7 @@ impl KernelRuntimeOwnedState {
                             max_turns: node.max_turns(),
                             can_complete_workflow_run: node.can_complete_workflow_run(),
                             can_emit_intermediate_output: node.can_emit_intermediate_run_output(),
+                            wait_for_all_inputs: node.wait_for_all_inputs(),
                         }
                     }),
                     base_directory,

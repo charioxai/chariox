@@ -36,6 +36,25 @@ test("workflow node add and remove mutate the selected workflow", async () => {
   ])
 })
 
+test("workflow node add can enable wait-for-all-inputs immediately", async () => {
+  const harness = createHarness({
+    agentsByRef: {
+      joiner: agent({ id: "agent-joiner", alias: "joiner" }),
+    },
+  })
+
+  await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "add", "workflow-1", "joiner", "--wait-for-all-inputs"])
+
+  assert.deepEqual(harness.calls, [
+    "add:workflow-1:agent-joiner",
+    "set-wait-inputs:workflow-1:node-1:true",
+    "apply:session-1",
+    "select:workflow-1",
+    "footer:info:added workflow node node-1 for agent joiner",
+  ])
+})
+
+
 test("workflow add node all adds only missing session agents", async () => {
   const harness = createHarness({
     sessionAgents: [
@@ -83,6 +102,7 @@ test("workflow node runtime settings apply returned workflow state", async () =>
 
   await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "can-complete-run", "workflow-1", "node-1", "true"])
   await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "can-emit-intermediate-output", "node-1", "false"])
+  await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "wait-for-all-inputs", "node-1", "true"])
   await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "intermediate-output-schema", "node-1", "none"])
   await handleWorkflowNodeCommand(harness.deps, harness.context, ["node", "max-turns", "workflow-1", "node-1", "2"])
 
@@ -95,6 +115,10 @@ test("workflow node runtime settings apply returned workflow state", async () =>
     "apply:session-1",
     "upsert:workflow-1",
     "footer:info:workflow node node-1 can-emit-intermediate-output set to false",
+    "set-wait-inputs:workflow-1:node-1:true",
+    "apply:session-1",
+    "upsert:workflow-1",
+    "footer:info:workflow node node-1 wait-for-all-inputs set to true",
     "set-schema:workflow-1:node-1:null",
     "apply:session-1",
     "upsert:workflow-1",
@@ -218,6 +242,10 @@ function runtimeSettingDeps(calls: string[], enabled: boolean): Partial<Workflow
     setWorkflowNodeCanEmitIntermediateOutput: async (workflowRef, nodeId, value) => {
       calls.push(`set-intermediate:${workflowRef}:${nodeId}:${String(value)}`)
       return { node: node({ id: nodeId, can_emit_intermediate_run_output: value }), workflow: workflow({ id: workflowRef }), session: session() }
+    },
+    setWorkflowNodeWaitForAllInputs: async (workflowRef, nodeId, value) => {
+      calls.push(`set-wait-inputs:${workflowRef}:${nodeId}:${String(value)}`)
+      return { node: node({ id: nodeId, wait_for_all_inputs: value }), workflow: workflow({ id: workflowRef }), session: session() }
     },
     setWorkflowNodeIntermediateOutputSchema: async (workflowRef, nodeId, schemaRef) => {
       calls.push(`set-schema:${workflowRef}:${nodeId}:${schemaRef ?? "null"}`)

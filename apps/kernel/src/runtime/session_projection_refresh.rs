@@ -244,6 +244,7 @@ pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSe
         | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }

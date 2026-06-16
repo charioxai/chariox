@@ -268,6 +268,15 @@ pub(crate) fn redact_response_for_user(
             workflow: workflow.redacted_for_user(caller_user_id),
             session: session.redacted_for_user(caller_user_id),
         },
+        LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated {
+            node,
+            workflow,
+            session,
+        } => LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated {
+            node: node.redacted_for_user(caller_user_id),
+            workflow: workflow.redacted_for_user(caller_user_id),
+            session: session.redacted_for_user(caller_user_id),
+        },
         LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated {
             node,
             workflow,

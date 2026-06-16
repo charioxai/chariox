@@ -45,12 +45,29 @@ test("workflow topology controller updates node runtime settings", async () => {
         session: session(),
       },
     },
+    SetWorkflowNodeWaitForAllInputs: {
+      WorkflowNodeWaitForAllInputsUpdated: {
+        node: node("node-1"),
+        workflow: workflow(),
+        session: session(),
+      },
+    },
   })
 
   const payload = await harness.controller.setWorkflowNodeMaxTurns("workflow-1", "node-1", 5)
+  const waitPayload = await harness.controller.setWorkflowNodeWaitForAllInputs("workflow-1", "node-1", true)
 
   assert.equal(payload.node.id, "node-1")
+  assert.equal(waitPayload.node.id, "node-1")
   assert.deepEqual(harness.requests.at(-1), {
+    SetWorkflowNodeWaitForAllInputs: {
+      session_id: "session-1",
+      workflow_ref: "workflow-1",
+      node_id: "node-1",
+      wait_for_all_inputs: true,
+    },
+  })
+  assert.deepEqual(harness.requests.at(-2), {
     SetWorkflowNodeMaxTurns: {
       session_id: "session-1",
       workflow_ref: "workflow-1",

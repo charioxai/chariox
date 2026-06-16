@@ -559,6 +559,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(_) => {
             "workflow_node.can_emit_intermediate_output.set"
         }
+        LocalDaemonRequest::SetWorkflowNodeWaitForAllInputs(_) => {
+            "workflow_node.wait_for_all_inputs.set"
+        }
         LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(_) => {
             "workflow_node.intermediate_output_schema.set"
         }

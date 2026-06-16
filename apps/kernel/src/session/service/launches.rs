@@ -42,6 +42,7 @@ impl SessionService {
             self.next_workflow_node_run_id(),
             entry_node.id().to_string(),
             entry_node.agent_id().to_string(),
+            1,
             WorkflowNodeRunStatus::Ready,
         );
         let messages = prompt

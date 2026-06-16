@@ -791,7 +791,9 @@ Required rules:
 
 - Execution policy MUST be derived from the graph the user created, not from a separate user-declared topology flag.
 - Nodes with indegree `<= 1` are serial with respect to input gating by default.
-- Nodes with indegree `> 1` require explicit barrier/fan-in handling.
+- Nodes with indegree `> 1` run once per incoming message by default.
+- Nodes that must combine parallel branch outputs require explicit barrier/fan-in handling.
+- Barrier/fan-in handling synchronizes incoming handoffs by source node iteration so faster loop branches do not pair with slower outputs from a different iteration.
 - Nodes with outdegree `> 1` are branching points and may release outputs to multiple children.
 - Cycles are a separate graph property and MUST be handled independently from input/output synchronization policy.
 - The runtime SHOULD support per-node execution policy rather than a workflow-wide sync/async switch.

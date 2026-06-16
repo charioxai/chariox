@@ -130,9 +130,9 @@ Recommended initial execution policy:
 
 Status:
 
-- the first scheduler slice is landed for the entry node, simple downstream routing, and default join-node buffering
+- the first scheduler slice is landed for the entry node, simple downstream routing, and explicit join-node buffering
 - endpoint invocation now submits a workflow-owned prompt onto the existing prompt queue and auto-launches a provider run for the bound agent if needed
-- node completion now creates one structured handoff message per outgoing edge, stores those messages on the target side, and consumes them into exactly one downstream node run once the target's required upstream set is present
+- node completion now creates one structured handoff message per outgoing edge, stores those messages on the target side, and consumes messages into downstream node runs; nodes marked `wait_for_all_inputs` consume one synchronized same-iteration set from every incoming source
 - runs become `Completed` when no downstream work remains, or `Running`/`Waiting` as downstream node work is scheduled
 
 ### Phase 4. Node completion and handoff contract
@@ -181,16 +181,16 @@ Target model:
 
 Default derivation:
 
-- indegree `<= 1` => `first_input`
-- indegree `> 1` => `all_inputs`
+- all nodes default to `first_input`
+- explicit `wait_for_all_inputs = true` => `all_inputs`
 - default `output_release = on_completion`
 
 Status:
 
 - docs now align on graph-derived execution and per-node policy
 - the current runtime still behaves like `output_release = on_completion`
-- default `all_inputs` barrier enforcement is now landed for join nodes (indegree `> 1`)
-- explicit per-node policy overrides and true `output_release = immediate` are still pending
+- explicit `all_inputs` barrier enforcement is landed for nodes marked `wait_for_all_inputs`
+- true `output_release = immediate` is still pending
 
 ### Phase 5. CLI run visibility
 

@@ -36,13 +36,12 @@ pub(super) fn collect_ready_workflow_dispatches(
                 message: "target node does not exist",
             }
         })?;
-        let expected_source_node_ids = workflow
+        let incoming_edges = workflow
             .edges()
             .iter()
             .filter(|edge| edge.to_node_id() == target_node_id)
-            .map(|edge| edge.from_node_id().to_string())
-            .collect::<BTreeSet<_>>();
-        if expected_source_node_ids.is_empty() {
+            .collect::<Vec<_>>();
+        if incoming_edges.is_empty() {
             continue;
         }
 
@@ -51,70 +50,42 @@ pub(super) fn collect_ready_workflow_dispatches(
             .iter()
             .map(|node_run| (node_run.id().to_string(), node_run.node_id().to_string()))
             .collect::<BTreeMap<_, _>>();
-
-        let mut latest_message_index_by_source = BTreeMap::new();
-        for (index, message) in workflow_run.messages().iter().enumerate() {
-            if message.target_node_id() != target_node_id
-                || message.consumed_by_node_run_id().is_some()
-            {
-                continue;
-            }
-            let Some(source_node_run_id) = message.source_node_run_id() else {
-                continue;
-            };
-            let Some(source_node_id) = source_node_by_run_id.get(source_node_run_id) else {
-                continue;
-            };
-            let should_replace = latest_message_index_by_source
-                .get(source_node_id.as_str())
-                .and_then(|existing_index| workflow_run.messages().get(*existing_index))
-                .is_none_or(|existing_message: &WorkflowMessage| {
-                    existing_message.created_at_ms() <= message.created_at_ms()
-                });
-            if should_replace {
-                latest_message_index_by_source.insert(source_node_id.to_string(), index);
-            }
-        }
-
-        if !expected_source_node_ids
+        let source_iteration_by_run_id = workflow_run
+            .node_runs()
             .iter()
-            .all(|source_node_id| latest_message_index_by_source.contains_key(source_node_id))
-        {
+            .map(|node_run| (node_run.id().to_string(), node_run.iteration_index()))
+            .collect::<BTreeMap<_, _>>();
+        let selected_indices = if target_node.wait_for_all_inputs() {
+            select_synchronized_workflow_message_indices(
+                workflow_run,
+                &target_node_id,
+                &incoming_edges,
+                &source_node_by_run_id,
+                &source_iteration_by_run_id,
+            )
+        } else {
+            select_next_workflow_message_index(workflow_run, &target_node_id)
+                .map(|index| vec![index])
+        };
+        let Some(selected_indices) = selected_indices else {
             continue;
-        }
+        };
 
         let node_run = WorkflowNodeRun::new(
             next_workflow_node_run_id(next_workflow_node_run_number),
             target_node.id().to_string(),
             target_node.agent_id().to_string(),
+            next_workflow_node_iteration_index(workflow_run, target_node.id()),
             WorkflowNodeRunStatus::Ready,
         );
-        let selected_indices = expected_source_node_ids
-            .iter()
-            .filter_map(|source_node_id| {
-                latest_message_index_by_source.get(source_node_id).copied()
-            })
-            .collect::<Vec<_>>();
         let selected_messages = selected_indices
             .iter()
             .filter_map(|index| workflow_run.messages().get(*index).cloned())
             .collect::<Vec<_>>();
-        for (_index, message) in workflow_run.messages_mut().iter_mut().enumerate() {
-            if message.target_node_id() != target_node_id
-                || message.consumed_by_node_run_id().is_some()
-            {
-                continue;
+        for index in selected_indices {
+            if let Some(message) = workflow_run.messages_mut().get_mut(index) {
+                message.set_consumed_by_node_run_id(node_run.id().to_string());
             }
-            let Some(source_node_run_id) = message.source_node_run_id() else {
-                continue;
-            };
-            let Some(source_node_id) = source_node_by_run_id.get(source_node_run_id) else {
-                continue;
-            };
-            if !expected_source_node_ids.contains(source_node_id) {
-                continue;
-            }
-            message.set_consumed_by_node_run_id(node_run.id().to_string());
         }
         let node_run = workflow_run.add_node_run(node_run);
         dispatches.push(WorkflowDispatch {
@@ -126,9 +97,102 @@ pub(super) fn collect_ready_workflow_dispatches(
     Ok(dispatches)
 }
 
+fn select_next_workflow_message_index(
+    workflow_run: &WorkflowRun,
+    target_node_id: &str,
+) -> Option<usize> {
+    workflow_run
+        .messages()
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            message.target_node_id() == target_node_id
+                && message.consumed_by_node_run_id().is_none()
+        })
+        .min_by_key(|(_, message)| message.created_at_ms())
+        .map(|(index, _)| index)
+}
+
+fn select_synchronized_workflow_message_indices(
+    workflow_run: &WorkflowRun,
+    target_node_id: &str,
+    incoming_edges: &[&WorkflowEdgeDefinition],
+    source_node_by_run_id: &BTreeMap<String, String>,
+    source_iteration_by_run_id: &BTreeMap<String, u64>,
+) -> Option<Vec<usize>> {
+    let expected_source_node_ids = incoming_edges
+        .iter()
+        .map(|edge| edge.from_node_id().to_string())
+        .collect::<BTreeSet<_>>();
+    if expected_source_node_ids.is_empty() {
+        return None;
+    }
+
+    let mut index_by_iteration_and_source: BTreeMap<u64, BTreeMap<String, usize>> = BTreeMap::new();
+    for (index, message) in workflow_run.messages().iter().enumerate() {
+        if message.target_node_id() != target_node_id || message.consumed_by_node_run_id().is_some()
+        {
+            continue;
+        }
+        let Some(source_node_run_id) = message.source_node_run_id() else {
+            continue;
+        };
+        let Some(source_node_id) = source_node_by_run_id.get(source_node_run_id) else {
+            continue;
+        };
+        if !expected_source_node_ids.contains(source_node_id) {
+            continue;
+        }
+        let iteration_index = message
+            .source_node_iteration_index()
+            .or_else(|| source_iteration_by_run_id.get(source_node_run_id).copied())
+            .unwrap_or(1);
+        let by_source = index_by_iteration_and_source
+            .entry(iteration_index)
+            .or_default();
+        let should_replace = by_source
+            .get(source_node_id)
+            .and_then(|existing_index| workflow_run.messages().get(*existing_index))
+            .is_none_or(|existing_message| {
+                existing_message.created_at_ms() > message.created_at_ms()
+            });
+        if should_replace {
+            by_source.insert(source_node_id.clone(), index);
+        }
+    }
+
+    index_by_iteration_and_source
+        .into_iter()
+        .find_map(|(_iteration, by_source)| {
+            if !expected_source_node_ids
+                .iter()
+                .all(|source_node_id| by_source.contains_key(source_node_id))
+            {
+                return None;
+            }
+            Some(
+                expected_source_node_ids
+                    .iter()
+                    .filter_map(|source_node_id| by_source.get(source_node_id).copied())
+                    .collect::<Vec<_>>(),
+            )
+        })
+}
+
 fn next_workflow_node_run_id(next_workflow_node_run_number: &mut u64) -> String {
     *next_workflow_node_run_number += 1;
     format!("workflow-node-run-{}", next_workflow_node_run_number)
+}
+
+fn next_workflow_node_iteration_index(workflow_run: &WorkflowRun, node_id: &str) -> u64 {
+    workflow_run
+        .node_runs()
+        .iter()
+        .filter(|node_run| node_run.node_id() == node_id)
+        .map(WorkflowNodeRun::iteration_index)
+        .max()
+        .unwrap_or(0)
+        + 1
 }
 
 pub(super) fn validate_workflow_edge_handoff(

@@ -218,6 +218,16 @@ pub struct SetWorkflowNodeCanEmitIntermediateOutputRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeWaitForAllInputsRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    pub wait_for_all_inputs: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetWorkflowNodeIntermediateOutputSchemaRequest {
     pub session_id: String,
     pub workflow_ref: String,
@@ -508,6 +518,8 @@ pub struct WorkflowDesignNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_emit_intermediate_run_output: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_all_inputs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intermediate_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
@@ -523,6 +535,8 @@ pub struct WorkflowDesignNodePatch {
     pub can_complete_workflow_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_emit_intermediate_run_output: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_all_inputs: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intermediate_output_schema_ref: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

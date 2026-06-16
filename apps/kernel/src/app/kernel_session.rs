@@ -352,6 +352,7 @@ mod tests {
                 "node-run-stale",
                 "node-1",
                 agent.id(),
+                1,
                 WorkflowNodeRunStatus::Running,
             );
             let mut workflow_run = WorkflowRun::new(

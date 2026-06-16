@@ -8,6 +8,10 @@ use super::workflow_turns::{WorkflowNodeRunStatus, WorkflowTurnEnvelope};
 pub struct WorkflowMessage {
     id: String,
     source_node_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_node_iteration_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edge_id: Option<String>,
     target_node_id: String,
     message_type: String,
     summary: String,
@@ -29,6 +33,8 @@ impl WorkflowMessage {
         Self {
             id: id.into(),
             source_node_run_id,
+            source_node_iteration_index: None,
+            edge_id: None,
             target_node_id: target_node_id.into(),
             message_type: message_type.into(),
             summary: summary.into(),
@@ -44,6 +50,14 @@ impl WorkflowMessage {
 
     pub fn source_node_run_id(&self) -> Option<&str> {
         self.source_node_run_id.as_deref()
+    }
+
+    pub fn source_node_iteration_index(&self) -> Option<u64> {
+        self.source_node_iteration_index
+    }
+
+    pub fn edge_id(&self) -> Option<&str> {
+        self.edge_id.as_deref()
     }
 
     pub fn target_node_id(&self) -> &str {
@@ -72,6 +86,14 @@ impl WorkflowMessage {
 
     pub fn set_consumed_by_node_run_id(&mut self, workflow_node_run_id: impl Into<String>) {
         self.consumed_by_node_run_id = Some(workflow_node_run_id.into());
+    }
+
+    pub fn set_source_node_iteration_index(&mut self, iteration_index: u64) {
+        self.source_node_iteration_index = Some(iteration_index);
+    }
+
+    pub fn set_edge_id(&mut self, edge_id: impl Into<String>) {
+        self.edge_id = Some(edge_id.into());
     }
 }
 
@@ -109,6 +131,8 @@ pub struct WorkflowNodeRun {
     id: String,
     node_id: String,
     agent_id: String,
+    #[serde(default = "default_workflow_node_run_iteration_index")]
+    iteration_index: u64,
     status: WorkflowNodeRunStatus,
     summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,12 +151,14 @@ impl WorkflowNodeRun {
         id: impl Into<String>,
         node_id: impl Into<String>,
         agent_id: impl Into<String>,
+        iteration_index: u64,
         status: WorkflowNodeRunStatus,
     ) -> Self {
         Self {
             id: id.into(),
             node_id: node_id.into(),
             agent_id: agent_id.into(),
+            iteration_index,
             status,
             summary: None,
             completion: None,
@@ -158,6 +184,10 @@ impl WorkflowNodeRun {
 
     pub fn status(&self) -> WorkflowNodeRunStatus {
         self.status
+    }
+
+    pub fn iteration_index(&self) -> u64 {
+        self.iteration_index
     }
 
     pub fn summary(&self) -> Option<&str> {
@@ -256,4 +286,8 @@ impl WorkflowNodeRun {
         }
         self
     }
+}
+
+fn default_workflow_node_run_iteration_index() -> u64 {
+    1
 }

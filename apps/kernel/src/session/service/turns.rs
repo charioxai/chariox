@@ -1021,8 +1021,10 @@ impl SessionService {
             let payload = WorkflowHandoffPayload::new(
                 context.workflow_run.id().to_string(),
                 context.workflow.id().to_string(),
+                Some(edge.id().to_string()),
                 context.source_node_run.id().to_string(),
                 context.source_node_run.node_id().to_string(),
+                Some(context.source_node_run.iteration_index()),
                 context.source_node_run.agent_id().to_string(),
                 target_node.id().to_string(),
                 context.workflow_run.invocation_prompt().map(str::to_string),
@@ -1045,6 +1047,9 @@ impl SessionService {
                     message: error.to_string(),
                 })?,
             );
+            let mut message = message;
+            message.set_edge_id(edge.id().to_string());
+            message.set_source_node_iteration_index(context.source_node_run.iteration_index());
             emitted_messages.push(message);
         }
         Ok((emitted_messages, validation_warnings))

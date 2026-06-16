@@ -21,6 +21,7 @@ import {
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   setWorkflowNodeIntermediateOutputSchemaRequest,
   setWorkflowNodeMaxTurnsRequest,
+  setWorkflowNodeWaitForAllInputsRequest,
   applyWorkflowDesignOpRequest,
   getSessionStateRequest,
   grantAgentExtensionRequest,
@@ -139,6 +140,7 @@ export async function executeWorkflowNodeCommand(
   if (
     action === "can-complete-run"
     || action === "can-emit-intermediate-output"
+    || action === "wait-for-all-inputs"
     || action === "intermediate-output-schema"
     || action === "max-turns"
   ) {
@@ -147,21 +149,27 @@ export async function executeWorkflowNodeCommand(
     const nodeId = explicitWorkflowRef ? args[2] : args[1]
     const value = explicitWorkflowRef ? args[3] : args[2]
     if (!workflowRef || !nodeId || value === undefined) {
-      return { ok: false, message: "usage: workflow node can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns [workflow-ref] <node-id> <value>" }
+      return { ok: false, message: "usage: workflow node can-complete-run|can-emit-intermediate-output|wait-for-all-inputs|intermediate-output-schema|max-turns [workflow-ref] <node-id> <value>" }
     }
     let request: Record<string, unknown>
     let variant: string
     let renderedValue: string
-    if (action === "can-complete-run" || action === "can-emit-intermediate-output") {
+    if (action === "can-complete-run" || action === "can-emit-intermediate-output" || action === "wait-for-all-inputs") {
       const normalized = value.trim().toLowerCase()
       if (normalized !== "true" && normalized !== "false") {
         return { ok: false, message: `usage: workflow node ${action} [workflow-ref] <node-id> <true|false>` }
       }
       const bool = normalized === "true"
-      request = action === "can-complete-run"
-        ? setWorkflowNodeCanCompleteRunRequest(sessionId, workflowRef, nodeId, bool)
-        : setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowRef, nodeId, bool)
-      variant = action === "can-complete-run" ? "WorkflowNodeCanCompleteRunUpdated" : "WorkflowNodeCanEmitIntermediateOutputUpdated"
+      if (action === "can-complete-run") {
+        request = setWorkflowNodeCanCompleteRunRequest(sessionId, workflowRef, nodeId, bool)
+        variant = "WorkflowNodeCanCompleteRunUpdated"
+      } else if (action === "can-emit-intermediate-output") {
+        request = setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowRef, nodeId, bool)
+        variant = "WorkflowNodeCanEmitIntermediateOutputUpdated"
+      } else {
+        request = setWorkflowNodeWaitForAllInputsRequest(sessionId, workflowRef, nodeId, bool)
+        variant = "WorkflowNodeWaitForAllInputsUpdated"
+      }
       renderedValue = normalized
     } else if (action === "intermediate-output-schema") {
       const schemaRef = value.trim().toLowerCase() === "none" ? null : value

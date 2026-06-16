@@ -302,6 +302,22 @@ export function setWorkflowNodeCanEmitIntermediateOutputRequest(
   }
 }
 
+export function setWorkflowNodeWaitForAllInputsRequest(
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+  waitForAllInputs: boolean,
+) {
+  return {
+    SetWorkflowNodeWaitForAllInputs: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      node_id: nodeId,
+      wait_for_all_inputs: waitForAllInputs,
+    },
+  }
+}
+
 export function setWorkflowNodeIntermediateOutputSchemaRequest(
   sessionId: string,
   workflowRef: string,

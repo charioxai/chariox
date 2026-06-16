@@ -1059,7 +1059,9 @@ When a session runs in multi-agent workflow mode:
 
 - the daemon MUST treat the workflow as a general directed graph
 - execution policy MUST be derived from the graph rather than from a separate user-declared topology label
-- nodes with indegree `> 1` require explicit barrier/fan-in state
+- nodes with indegree `> 1` MAY run once per incoming message by default
+- nodes that must combine parallel branch outputs MUST opt into explicit barrier/fan-in state
+- barrier/fan-in state MUST synchronize handoffs by source node iteration so faster loop branches do not get paired with slower branch outputs from a different iteration
 - nodes with outdegree `> 1` are branching points and may release outputs to multiple children
 - cycles are a separate graph property and require bounded-cycle handling independent of input/output synchronization policy
 

@@ -32,6 +32,14 @@ const DIRECT_USER_PROMPT = [
   'Decide the plan yourself, use regular agents as needed, supervise their results, and complete the task only when the app builds and the implementation has been reviewed.',
 ].join('\n')
 
+const DIRECT_NO_WORKFLOW_USER_PROMPT = [
+  'Build a small local web app for managing a personal kanban board.',
+  '',
+  'The app should let a user create, edit, delete, and move tasks across Todo, Doing, and Done columns. It should persist locally in the browser, work without any external services, and include enough validation or tests for a reviewer to trust the result.',
+  '',
+  'Do not use workflows for this task. Decide the plan yourself, use regular agents as needed, supervise their results, and complete the task only when the app builds and the implementation has been reviewed.',
+].join('\n')
+
 function parseArgs(argv) {
   const options = {
     provider: DEFAULT_PROVIDER,
@@ -43,6 +51,7 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     withoutWorkflowRequirement: false,
+    forbidWorkflows: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -58,6 +67,10 @@ function parseArgs(argv) {
     else if (arg === '--preserve-on-success') options.preserveOnSuccess = true
     else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--without-workflow-requirement') options.withoutWorkflowRequirement = true
+    else if (arg === '--forbid-workflows') {
+      options.withoutWorkflowRequirement = true
+      options.forbidWorkflows = true
+    }
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-metaagent-workflow-webapp-drill.mjs [options]',
@@ -79,6 +92,7 @@ function parseArgs(argv) {
         '  --keep-artifacts-on-failure',
         '  --discard-artifacts-on-failure',
         '  --without-workflow-requirement',
+        '  --forbid-workflows',
         '  --preserve-on-success',
         '  --discard-artifacts-on-success',
       ].join('\n'))
@@ -538,6 +552,9 @@ async function observeUntilComplete({
           throw new Error(`metaagent used direct execution/file tool ${tool.tool} at ${entry.file}:${entry.line}`)
         }
         const commandCompleted = tool.status === 'completed'
+        if (options.forbidWorkflows && commandHits(command, /^workflow\b/)) {
+          throw new Error(`metaagent used forbidden workflow command ${JSON.stringify(command)} at ${entry.file}:${entry.line}`)
+        }
         commandDiscoveryEvidence.searched ||= /search_commands/.test(tool.tool)
         commandDiscoveryEvidence.docsRead ||= /command_docs/.test(tool.tool)
         workflowEvidence.created ||= commandCompleted && commandHits(command, /^workflow\s+(new|create)\b/)
@@ -694,13 +711,21 @@ async function noExternalServices(workspace) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const drillSlug = options.withoutWorkflowRequirement
+  const drillSlug = options.forbidWorkflows
+    ? 'live-metaagent-webapp-no-workflow-drill'
+    : options.withoutWorkflowRequirement
     ? 'live-metaagent-webapp-direct-drill'
     : 'live-metaagent-workflow-webapp-drill'
-  const drillMode = options.withoutWorkflowRequirement
+  const drillMode = options.forbidWorkflows
+    ? 'metaagent-webapp-no-workflow-drill'
+    : options.withoutWorkflowRequirement
     ? 'metaagent-webapp-direct-drill'
     : 'metaagent-workflow-webapp-drill'
-  const taskPrompt = options.withoutWorkflowRequirement ? DIRECT_USER_PROMPT : WORKFLOW_USER_PROMPT
+  const taskPrompt = options.forbidWorkflows
+    ? DIRECT_NO_WORKFLOW_USER_PROMPT
+    : options.withoutWorkflowRequirement
+    ? DIRECT_USER_PROMPT
+    : WORKFLOW_USER_PROMPT
   logPrefix = drillSlug
   const rootDir = path.join(repoRoot, 'target', drillSlug, `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
@@ -843,6 +868,7 @@ async function main() {
       model: options.model,
       effort: options.effort,
       workflowRequired: !options.withoutWorkflowRequirement,
+      workflowsForbidden: options.forbidWorkflows,
       promptCount: 1,
       taskPrompt,
       harnessRuntimeMcpCallsAfterPrompt: 0,

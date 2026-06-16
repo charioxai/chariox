@@ -15,9 +15,6 @@ impl KernelRuntimeOwnedState {
     ) -> WorkflowPromptDispatches {
         let mut prepared = WorkflowPromptDispatches::default();
         for dispatch in dispatches {
-            if !self.workflow_dispatch_has_all_inputs(session_id, workflow_run_id, &dispatch) {
-                continue;
-            }
             self.record_notice(
                 session_id,
                 None,
@@ -203,58 +200,5 @@ impl KernelRuntimeOwnedState {
         );
         self.workflow_maybe_start_next_queued_prompt(session_id);
         let _ = self.session_snapshot(session_id);
-    }
-
-    pub(super) fn workflow_dispatch_has_all_inputs(
-        &self,
-        session_id: &str,
-        workflow_run_id: &str,
-        dispatch: &crate::session::WorkflowDispatch,
-    ) -> bool {
-        let workflow_id = match self
-            .session_store
-            .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_id)
-        {
-            Ok(run) => run.workflow_id().to_string(),
-            Err(_) => return true,
-        };
-        let workflow = match self
-            .session_store
-            .read()
-            .resolve_workflow_ref(session_id, &workflow_id)
-        {
-            Ok(workflow) => workflow,
-            Err(_) => return true,
-        };
-        let expected = workflow
-            .edges()
-            .iter()
-            .filter(|edge| edge.to_node_id() == dispatch.node_run.node_id())
-            .map(|edge| edge.from_node_id().to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        if expected.len() <= 1 {
-            return true;
-        }
-        let run = match self
-            .session_store
-            .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_id)
-        {
-            Ok(run) => run,
-            Err(_) => return true,
-        };
-        let run_node_by_id = run
-            .node_runs()
-            .iter()
-            .map(|node_run| (node_run.id().to_string(), node_run.node_id().to_string()))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let delivered = dispatch
-            .messages
-            .iter()
-            .filter_map(|message| message.source_node_run_id())
-            .filter_map(|node_run_id| run_node_by_id.get(node_run_id).cloned())
-            .collect::<std::collections::BTreeSet<_>>();
-        expected.is_subset(&delivered)
     }
 }

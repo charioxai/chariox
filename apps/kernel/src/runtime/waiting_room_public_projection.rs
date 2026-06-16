@@ -251,6 +251,7 @@ fn waiting_room_public_workflow_summaries(
                     id: node.id().to_string(),
                     agent_id: node.agent_id().to_string(),
                     label: node.public_label().to_string(),
+                    wait_for_all_inputs: node.wait_for_all_inputs(),
                 })
                 .collect(),
             edges: workflow

@@ -42,6 +42,11 @@ export type WorkflowNodeCommandDeps = WorkflowNodeInstructionsCommandDeps & {
     nodeId: string,
     canEmitIntermediateWorkflowRunOutput: boolean,
   ) => Promise<WorkflowNodePayload>
+  setWorkflowNodeWaitForAllInputs?: (
+    workflowRef: string,
+    nodeId: string,
+    waitForAllInputs: boolean,
+  ) => Promise<WorkflowNodePayload>
   setWorkflowNodeIntermediateOutputSchema?: (
     workflowRef: string,
     nodeId: string,
@@ -125,6 +130,17 @@ export async function handleWorkflowNodeCommand(
     )
     return
   }
+  if (action === "wait-for-all-inputs") {
+    await handleWorkflowNodeBooleanSettingCommand(
+      deps,
+      context,
+      args,
+      "wait-for-all-inputs",
+      deps.setWorkflowNodeWaitForAllInputs,
+      "wait_for_all_inputs",
+    )
+    return
+  }
   if (action === "intermediate-output-schema") {
     await handleWorkflowNodeSchemaCommand(deps, context, args)
     return
@@ -142,7 +158,7 @@ export async function handleWorkflowNodeCommand(
     return
   }
   deps.flashFooter(
-    "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none> | extensions [workflow-ref] <node-id> | extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name>",
+    "usage: /workflow node add [workflow-ref] <agent-id|all> | remove [workflow-ref] <node-id> | instructions ... | can-complete-run [workflow-ref] <node-id> <true|false> | can-emit-intermediate-output [workflow-ref] <node-id> <true|false> | wait-for-all-inputs [workflow-ref] <node-id> <true|false> | intermediate-output-schema [workflow-ref] <node-id> <schema-ref|none> | max-turns [workflow-ref] <node-id> <count|none> | extensions [workflow-ref] <node-id> | extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name>",
     "error",
   )
 }
@@ -152,14 +168,20 @@ async function handleWorkflowNodeAddCommand(
   context: Pick<WorkflowNodeCommandContext, "workflowRefOrSelected">,
   args: readonly string[],
 ): Promise<void> {
-  const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+  const waitForAllInputs = args.includes("--wait-for-all-inputs")
+  const positionalArgs = args.filter((arg) => arg !== "--wait-for-all-inputs")
+  const explicitWorkflowRef = positionalArgs.length >= 4 ? positionalArgs[2] : null
   const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
-  const agentRef = explicitWorkflowRef ? args[3] : args[2]
+  const agentRef = explicitWorkflowRef ? positionalArgs[3] : positionalArgs[2]
   if (!workflowRef || !agentRef) {
-    deps.flashFooter("usage: /workflow node add [workflow-ref] <agent-id|all>", "error")
+    deps.flashFooter("usage: /workflow node add [workflow-ref] <agent-id|all> [--wait-for-all-inputs]", "error")
     return
   }
   if (agentRef === "all") {
+    if (waitForAllInputs) {
+      deps.flashFooter("--wait-for-all-inputs can only be used when adding one node", "error")
+      return
+    }
     await addAllRemainingWorkflowNodes(deps, workflowRef)
     return
   }
@@ -168,7 +190,14 @@ async function handleWorkflowNodeAddCommand(
     deps.flashFooter(resolvedAgent.error ?? `agent '${agentRef}' not found`, "error")
     return
   }
-  const payload = await deps.addWorkflowNode(workflowRef, resolvedAgent.agent.id)
+  let payload = await deps.addWorkflowNode(workflowRef, resolvedAgent.agent.id)
+  if (waitForAllInputs) {
+    if (!deps.setWorkflowNodeWaitForAllInputs) {
+      deps.flashFooter("workflow runtime commands unavailable", "error")
+      return
+    }
+    payload = await deps.setWorkflowNodeWaitForAllInputs(workflowRef, payload.node.id, true)
+  }
   deps.applySessionState(payload.session)
   deps.selectWorkflowCanvas(payload.workflow.id)
   deps.flashFooter(`added workflow node ${payload.node.id} for agent ${deps.formatAgentLabel(resolvedAgent.agent)}`, "info")
@@ -196,9 +225,9 @@ async function handleWorkflowNodeBooleanSettingCommand(
   deps: WorkflowNodeCommandDeps,
   context: Pick<WorkflowNodeCommandContext, "workflowRefOrSelected">,
   args: readonly string[],
-  action: "can-complete-run" | "can-emit-intermediate-output",
+  action: "can-complete-run" | "can-emit-intermediate-output" | "wait-for-all-inputs",
   setter: WorkflowNodeCommandDeps["setWorkflowNodeCanCompleteRun"],
-  resultKey: "can_complete_workflow_run" | "can_emit_intermediate_run_output",
+  resultKey: "can_complete_workflow_run" | "can_emit_intermediate_run_output" | "wait_for_all_inputs",
 ): Promise<void> {
   const explicitWorkflowRef = args.length >= 5 ? args[2] : null
   const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)

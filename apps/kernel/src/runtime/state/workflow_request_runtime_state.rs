@@ -108,6 +108,11 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::SetWorkflowNodeWaitForAllInputs(request) => {
+                let result = owned.workflow_set_node_wait_for_all_inputs(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
                 let result =
                     owned.workflow_set_node_intermediate_output_schema(request, &caller_user_id);
@@ -266,6 +271,7 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowNodeInstructionsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeCanCompleteRunUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeCanEmitIntermediateOutputUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeIntermediateOutputSchemaUpdated { session, .. }
         | LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { session, .. }
         | LocalDaemonResponse::WorkflowEdgeAdded { session, .. }

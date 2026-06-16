@@ -17,6 +17,7 @@ import {
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   setWorkflowNodeIntermediateOutputSchemaRequest,
   setWorkflowNodeMaxTurnsRequest,
+  setWorkflowNodeWaitForAllInputsRequest,
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
@@ -146,6 +147,25 @@ export function createWorkflowTopologyController(deps: WorkflowTopologyControlle
     )
   }
 
+  const setWorkflowNodeWaitForAllInputs = async (
+    workflowRef: string,
+    nodeId: string,
+    waitForAllInputs: boolean,
+  ) => {
+    const response = await deps.sendRequest(
+      setWorkflowNodeWaitForAllInputsRequest(
+        deps.sessionId(),
+        workflowRef,
+        nodeId,
+        waitForAllInputs,
+      ),
+    )
+    return expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(
+      response,
+      "WorkflowNodeWaitForAllInputsUpdated",
+    )
+  }
+
   const setWorkflowNodeIntermediateOutputSchema = async (
     workflowRef: string,
     nodeId: string,
@@ -197,6 +217,7 @@ export function createWorkflowTopologyController(deps: WorkflowTopologyControlle
     updateWorkflowNodeInstructions,
     setWorkflowNodeCanCompleteRun,
     setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeWaitForAllInputs,
     setWorkflowNodeIntermediateOutputSchema,
     setWorkflowNodeMaxTurns,
     addWorkflowEdge,

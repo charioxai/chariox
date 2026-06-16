@@ -335,6 +335,7 @@ export const COMMAND_TREE: CommandNode[] = [
           { id: "workflow-node-add-all", label: "add all", description: "Add every session agent that is not already a workflow node", value: "/workflow node add all" },
           { id: "workflow-node-remove", label: "remove", description: "Remove a workflow node", value: "/workflow node remove " },
           { id: "workflow-node-can-complete-run", label: "can-complete-run", description: "Allow a node to complete the workflow run", value: "/workflow node can-complete-run " },
+          { id: "workflow-node-wait-for-all-inputs", label: "wait-for-all-inputs", description: "Wait until every incoming edge has a same-iteration input", value: "/workflow node wait-for-all-inputs " },
           { id: "workflow-node-max-turns", label: "max-turns", description: "Set the node turn budget for one workflow run", value: "/workflow node max-turns " },
           {
             id: "workflow-node-instructions",

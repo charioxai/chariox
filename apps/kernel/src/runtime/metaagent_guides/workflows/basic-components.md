@@ -16,3 +16,5 @@ Before building, use `search_commands` or `command_docs` for the exact command s
 - `endpoints` contains the trigger the run will use.
 
 Trigger with `workflow run <workflow-ref> <endpoint-ref> [prompt]`. Inspect progress with `workflow runs <workflow-ref>` or `workflow get-run <run-id>`.
+
+Multi-input nodes run once per incoming handoff by default. For a join node that must combine every incoming branch before it runs, enable `workflow node wait-for-all-inputs <workflow-ref> <node-id> true`.

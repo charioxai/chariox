@@ -307,6 +307,29 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         description: "Control whether a node may emit intermediate workflow output while the run continues.",
     },
     MetaCommandDoc {
+        name: "workflow node wait-for-all-inputs",
+        aliases: &[
+            "workflow node wait-for-all-inputs",
+            "workflow node wait-all",
+            "workflow node join",
+        ],
+        usage: "workflow node wait-for-all-inputs <workflow-ref> <node-id> <true|false>",
+        examples: &["workflow node wait-for-all-inputs qa-flow node_123 true"],
+        tags: &["workflow", "node", "join", "inputs", "orchestration"],
+        intents: &[
+            "wait for all workflow inputs",
+            "join parallel workflow branches",
+            "synchronize workflow inputs",
+            "combine branch outputs by iteration",
+        ],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "session workflow policy",
+        routed: true,
+        description: "Control whether a node waits until every incoming edge has an unconsumed handoff from the same source-node iteration before it runs. Use this for join nodes that combine parallel branches.",
+    },
+    MetaCommandDoc {
         name: "workflow node intermediate-output-schema",
         aliases: &[
             "workflow node intermediate-output-schema",
@@ -1287,6 +1310,9 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                             | "complete"
                             | "intermediate-output"
                             | "intermediate"
+                            | "wait-for-all-inputs"
+                            | "wait-all"
+                            | "join"
                             | "max-turns"
                     )
                 ) =>
@@ -1314,7 +1340,7 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                     Some(policy_for_documented_command(documented))
                 } else {
                     Some(MetaCommandExecutionPolicy::NotRouted {
-                        message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow node add/remove/instructions/can-complete/intermediate-output/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
+                        message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow node add/remove/instructions/can-complete/intermediate-output/wait-for-all-inputs/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
                     })
                 }
             }
@@ -1423,6 +1449,7 @@ const ROUTED_COMMAND_CASES: &[&str] = &[
     "workflow node instructions qa-flow node-1 Review the implementation",
     "workflow node can-complete qa-flow node-1 true",
     "workflow node intermediate-output qa-flow node-1 false",
+    "workflow node wait-for-all-inputs qa-flow node-1 true",
     "workflow node max-turns qa-flow node-1 3",
     "workflow endpoint new qa-flow node-1 default",
     "workflow endpoint create qa-flow node-1 default",

@@ -17,3 +17,5 @@ If a workflow run stays on the first node or never reaches a reviewer, inspect `
 - `failure_events` explains failed or missing handoffs.
 
 Missing edges are fixed by adding the edge and starting a new run, or resuming if the run is paused and repairable.
+
+If a downstream node should wait for all incoming branches before it runs, mark that node with `workflow node wait-for-all-inputs <workflow-ref> <node-id> true`. The kernel then releases only same-iteration inputs together, so looped branches that move at different speeds do not get mixed.

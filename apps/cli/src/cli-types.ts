@@ -288,6 +288,7 @@ export type WaitingRoomPublicWorkflowNodeSummary = {
   id: string
   agent_id: string
   label: string
+  wait_for_all_inputs?: boolean
 }
 
 export type WaitingRoomPublicWorkflowEdgeSummary = {
@@ -1050,6 +1051,7 @@ export type WorkflowNodeDefinition = {
   instructions?: string | null
   can_complete_workflow_run?: boolean
   can_emit_intermediate_run_output?: boolean
+  wait_for_all_inputs?: boolean
   intermediate_output_schema_ref?: string | null
   max_turns?: number | null
 }
@@ -1065,6 +1067,8 @@ export type WorkflowEdgeDefinition = {
 export type WorkflowMessage = {
   id: string
   source_node_run_id: string | null
+  source_node_iteration_index?: number | null
+  edge_id?: string | null
   target_node_id: string
   message_type: string
   summary: string
@@ -1076,6 +1080,7 @@ export type WorkflowNodeRun = {
   id: string
   node_id: string
   agent_id: string
+  iteration_index?: number
   status: string
   summary: string | null
   completion?: {

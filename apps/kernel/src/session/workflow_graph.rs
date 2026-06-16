@@ -18,6 +18,10 @@ fn default_workflow_node_can_emit_intermediate_run_output() -> bool {
     false
 }
 
+fn default_workflow_node_wait_for_all_inputs() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEndpointDefinition {
     id: String,
@@ -86,6 +90,8 @@ pub struct WorkflowNodeDefinition {
     can_complete_workflow_run: bool,
     #[serde(default = "default_workflow_node_can_emit_intermediate_run_output")]
     can_emit_intermediate_run_output: bool,
+    #[serde(default = "default_workflow_node_wait_for_all_inputs")]
+    wait_for_all_inputs: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     intermediate_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +111,7 @@ impl WorkflowNodeDefinition {
             can_complete_workflow_run: default_workflow_node_can_complete_workflow_run(),
             can_emit_intermediate_run_output:
                 default_workflow_node_can_emit_intermediate_run_output(),
+            wait_for_all_inputs: default_workflow_node_wait_for_all_inputs(),
             intermediate_output_schema_ref: None,
             max_turns: None,
         }
@@ -168,6 +175,14 @@ impl WorkflowNodeDefinition {
 
     pub fn set_can_emit_intermediate_run_output(&mut self, value: bool) {
         self.can_emit_intermediate_run_output = value;
+    }
+
+    pub fn wait_for_all_inputs(&self) -> bool {
+        self.wait_for_all_inputs
+    }
+
+    pub fn set_wait_for_all_inputs(&mut self, value: bool) {
+        self.wait_for_all_inputs = value;
     }
 
     pub fn intermediate_output_schema_ref(&self) -> Option<&str> {

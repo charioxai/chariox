@@ -167,6 +167,11 @@ export type WorkflowCommandHandlerDeps = {
     nodeId: string,
     canEmitIntermediateWorkflowRunOutput: boolean,
   ) => Promise<WorkflowNodePayload>
+  setWorkflowNodeWaitForAllInputs?: (
+    workflowRef: string,
+    nodeId: string,
+    waitForAllInputs: boolean,
+  ) => Promise<WorkflowNodePayload>
   setWorkflowNodeIntermediateOutputSchema?: (
     workflowRef: string,
     nodeId: string,

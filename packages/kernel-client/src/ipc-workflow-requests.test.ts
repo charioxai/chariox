@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   exportWorkflowPublicationPackageRequest,
+  setWorkflowNodeWaitForAllInputsRequest,
 } from "./ipc-workflow-requests.js"
 
 test("export workflow publication package request matches kernel shape", () => {
@@ -25,4 +26,18 @@ test("export workflow publication package request matches kernel shape", () => {
       agent_app_assets_dir: "/repo/dist",
     },
   })
+})
+
+test("set workflow node wait-for-all-inputs request matches kernel shape", () => {
+  assert.deepEqual(
+    setWorkflowNodeWaitForAllInputsRequest("session-1", "workflow-1", "node-1", true),
+    {
+      SetWorkflowNodeWaitForAllInputs: {
+        session_id: "session-1",
+        workflow_ref: "workflow-1",
+        node_id: "node-1",
+        wait_for_all_inputs: true,
+      },
+    },
+  )
 })

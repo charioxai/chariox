@@ -227,8 +227,12 @@ impl WorkflowCompletionSnapshot {
 pub struct WorkflowHandoffPayload {
     workflow_run_id: String,
     workflow_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edge_id: Option<String>,
     source_node_run_id: String,
     source_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_node_iteration_index: Option<u64>,
     source_agent_id: String,
     target_node_id: String,
     invocation_prompt: Option<String>,
@@ -244,8 +248,10 @@ impl WorkflowHandoffPayload {
     pub fn new(
         workflow_run_id: impl Into<String>,
         workflow_id: impl Into<String>,
+        edge_id: Option<String>,
         source_node_run_id: impl Into<String>,
         source_node_id: impl Into<String>,
+        source_node_iteration_index: Option<u64>,
         source_agent_id: impl Into<String>,
         target_node_id: impl Into<String>,
         invocation_prompt: Option<String>,
@@ -256,8 +262,10 @@ impl WorkflowHandoffPayload {
         Self {
             workflow_run_id: workflow_run_id.into(),
             workflow_id: workflow_id.into(),
+            edge_id,
             source_node_run_id: source_node_run_id.into(),
             source_node_id: source_node_id.into(),
+            source_node_iteration_index,
             source_agent_id: source_agent_id.into(),
             target_node_id: target_node_id.into(),
             invocation_prompt,
@@ -275,12 +283,20 @@ impl WorkflowHandoffPayload {
         &self.workflow_id
     }
 
+    pub fn edge_id(&self) -> Option<&str> {
+        self.edge_id.as_deref()
+    }
+
     pub fn source_node_run_id(&self) -> &str {
         &self.source_node_run_id
     }
 
     pub fn source_node_id(&self) -> &str {
         &self.source_node_id
+    }
+
+    pub fn source_node_iteration_index(&self) -> Option<u64> {
+        self.source_node_iteration_index
     }
 
     pub fn source_agent_id(&self) -> &str {

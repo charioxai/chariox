@@ -15,9 +15,9 @@ use crate::local::{
     RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest, ResolveWorkflowRequest,
     ResumeWorkflowRunRequest, RevokeAgentExtensionRequest, SetWorkflowNodeCanCompleteRunRequest,
     SetWorkflowNodeCanEmitIntermediateOutputRequest, SetWorkflowNodeMaxTurnsRequest,
-    SliceRefRequest, SpawnAgentRequest, UninstallMcpServerRequest, UninstallSkillRequest,
-    UpdateMcpServerRequest, UpdateSkillRequest, UpdateWorkflowNodeInstructionsRequest,
-    UpsertCredentialRequest,
+    SetWorkflowNodeWaitForAllInputsRequest, SliceRefRequest, SpawnAgentRequest,
+    UninstallMcpServerRequest, UninstallSkillRequest, UpdateMcpServerRequest, UpdateSkillRequest,
+    UpdateWorkflowNodeInstructionsRequest, UpsertCredentialRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
@@ -1277,6 +1277,22 @@ fn meta_workflow_request(
                     },
                 ))
             }
+            Some("wait-for-all-inputs" | "wait-all" | "join") => {
+                if args.len() != 5 {
+                    return Err(meta_command_error(
+                        "usage: workflow node wait-for-all-inputs <workflow-ref> <node-id> <true|false>",
+                    ));
+                }
+                Ok(LocalDaemonRequest::SetWorkflowNodeWaitForAllInputs(
+                    SetWorkflowNodeWaitForAllInputsRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        node_id: args[3].clone(),
+                        wait_for_all_inputs: parse_meta_bool(&args[4])?,
+                        expected_workflow_revision: None,
+                    },
+                ))
+            }
             Some("max-turns") => {
                 if args.len() != 5 {
                     return Err(meta_command_error(
@@ -1300,7 +1316,7 @@ fn meta_workflow_request(
                 ))
             }
             _ => Err(meta_command_error(
-                "usage: workflow node <add|remove|instructions|can-complete|intermediate-output|max-turns> ...",
+                "usage: workflow node <add|remove|instructions|can-complete|intermediate-output|wait-for-all-inputs|max-turns> ...",
             )),
         },
         Some("endpoint") => match args.get(1).map(String::as_str) {
@@ -1886,6 +1902,13 @@ fn summarize_meta_command_response(response: &LocalDaemonResponse) -> serde_json
             "node": summarize_meta_workflow_node(node),
             "workflow": summarize_meta_workflow(workflow),
         }),
+        LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated { node, workflow, .. } => {
+            serde_json::json!({
+                "type": "WorkflowNodeWaitForAllInputsUpdated",
+                "node": summarize_meta_workflow_node(node),
+                "workflow": summarize_meta_workflow(workflow),
+            })
+        }
         LocalDaemonResponse::WorkflowNodeMaxTurnsUpdated { node, workflow, .. } => {
             serde_json::json!({
                 "type": "WorkflowNodeMaxTurnsUpdated",
@@ -1997,6 +2020,7 @@ fn summarize_meta_workflow_node(
         "public_label": node.public_label(),
         "can_complete_workflow_run": node.can_complete_workflow_run(),
         "can_emit_intermediate_run_output": node.can_emit_intermediate_run_output(),
+        "wait_for_all_inputs": node.wait_for_all_inputs(),
     })
 }
 

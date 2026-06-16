@@ -337,6 +337,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => {
             request.session_id.clone()
         }
+        LocalDaemonRequest::SetWorkflowNodeWaitForAllInputs(request) => request.session_id.clone(),
         LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => {
             request.session_id.clone()
         }

@@ -26,3 +26,5 @@ workflow run app-build default Build the requested app and hand off for review.
 ```
 
 Do not implement directly. Your job as a metaagent is to build and supervise the execution path.
+
+For parallel branches that converge into one reviewer or aggregator, add all branch edges into that node and then run `workflow node wait-for-all-inputs <workflow-ref> <join-node-id> true`.

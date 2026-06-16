@@ -115,6 +115,9 @@ impl SessionService {
                 if let Some(value) = node.can_emit_intermediate_run_output {
                     definition.set_can_emit_intermediate_run_output(value);
                 }
+                if let Some(value) = node.wait_for_all_inputs {
+                    definition.set_wait_for_all_inputs(value);
+                }
                 if node.intermediate_output_schema_ref.is_some() {
                     definition
                         .set_intermediate_output_schema_ref(node.intermediate_output_schema_ref);
@@ -173,6 +176,9 @@ impl SessionService {
                 }
                 if let Some(value) = patch.can_emit_intermediate_run_output {
                     node.set_can_emit_intermediate_run_output(value);
+                }
+                if let Some(value) = patch.wait_for_all_inputs {
+                    node.set_wait_for_all_inputs(value);
                 }
                 if let Some(value) = patch.intermediate_output_schema_ref {
                     node.set_intermediate_output_schema_ref(value);

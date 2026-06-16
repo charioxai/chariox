@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 143;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 144;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -354,6 +354,7 @@ pub enum LocalDaemonRequest {
     UpdateWorkflowNodeInstructions(UpdateWorkflowNodeInstructionsRequest),
     SetWorkflowNodeCanCompleteRun(SetWorkflowNodeCanCompleteRunRequest),
     SetWorkflowNodeCanEmitIntermediateOutput(SetWorkflowNodeCanEmitIntermediateOutputRequest),
+    SetWorkflowNodeWaitForAllInputs(SetWorkflowNodeWaitForAllInputsRequest),
     SetWorkflowNodeIntermediateOutputSchema(SetWorkflowNodeIntermediateOutputSchemaRequest),
     SetWorkflowNodeMaxTurns(SetWorkflowNodeMaxTurnsRequest),
     AddWorkflowEdge(AddWorkflowEdgeRequest),
@@ -1143,6 +1144,11 @@ pub enum LocalDaemonResponse {
         session: RuntimeSession,
     },
     WorkflowNodeCanEmitIntermediateOutputUpdated {
+        node: WorkflowNodeDefinition,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowNodeWaitForAllInputsUpdated {
         node: WorkflowNodeDefinition,
         workflow: WorkflowDefinition,
         session: RuntimeSession,

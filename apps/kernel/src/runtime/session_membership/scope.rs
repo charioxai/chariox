@@ -255,6 +255,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::SetWorkflowNodeWaitForAllInputs(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

@@ -29,6 +29,7 @@ pub(crate) struct WorkflowNodeTurnPromptContext {
     pub max_turns: Option<u32>,
     pub can_complete_workflow_run: bool,
     pub can_emit_intermediate_output: bool,
+    pub wait_for_all_inputs: bool,
 }
 
 pub(crate) struct MetaagentEventPromptContext {
@@ -372,6 +373,7 @@ fn workflow_node_prompt_context(
         max_turns: node.max_turns(),
         can_complete_workflow_run: node.can_complete_workflow_run(),
         can_emit_intermediate_output: node.can_emit_intermediate_run_output(),
+        wait_for_all_inputs: node.wait_for_all_inputs(),
     })
 }
 
@@ -411,6 +413,9 @@ fn workflow_node_turn_index_block(context: &WorkflowNodeTurnPromptContext) -> St
     );
     if let Some(max_turns) = context.max_turns {
         block.push_str(&format!("- node max turns: {max_turns}\n"));
+    }
+    if context.wait_for_all_inputs {
+        block.push_str("- this node starts only after every incoming edge has an input for the same source iteration\n");
     }
     block.push('\n');
     block
@@ -821,6 +826,7 @@ mod tests {
             max_turns: Some(2),
             can_complete_workflow_run: true,
             can_emit_intermediate_output: true,
+            wait_for_all_inputs: false,
         });
         let assembly = build_workflow_turn_prompt_assembly(context);
         restore_arroba_home(previous_home);
