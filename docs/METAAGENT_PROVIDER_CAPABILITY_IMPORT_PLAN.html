@@ -380,6 +380,7 @@
         <ol>
           <li><code>mcp list</code> or <code>skill list</code></li>
           <li><code>mcp import &lt;provider&gt; [name]</code> or <code>skill import &lt;provider&gt; [name]</code> when missing</li>
+          <li><code>extension import providers --dry-run</code> when the provider source is unknown</li>
           <li><code>mcp show &lt;name&gt;</code> or <code>skill show &lt;name&gt;</code> to verify</li>
           <li><code>mcp grant &lt;worker&gt; &lt;name&gt;</code> or <code>skill grant &lt;worker&gt; &lt;name&gt;</code></li>
         </ol>
@@ -390,7 +391,7 @@
         <h3>Drill A: Real provider import</h3>
         <ul>
           <li>Use real MCPs and skills already installed in Codex.</li>
-          <li>Run <code>/extension import providers --provider codex --kind all --dry-run</code>.</li>
+          <li>Run <code>extension import providers --provider codex --kind all --dry-run</code>.</li>
           <li>Run actual import without <code>--dry-run</code>.</li>
           <li>Verify <code>mcp list</code> and <code>skill list</code> show the imported entries.</li>
           <li>Run the import again and verify duplicates are reported as already installed or collapsed.</li>
