@@ -31,6 +31,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             message.clone(),
         );
+        self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
             Err(error) => {

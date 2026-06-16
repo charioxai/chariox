@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +36,21 @@ pub(crate) struct MetaagentTraceSubscription {
 struct MetaagentTraceState {
     next_sequence: u64,
     subscriptions: BTreeMap<String, MetaagentTraceSubscription>,
+    target_activity: BTreeMap<(String, String), MetaagentTraceTargetActivity>,
+}
+
+struct MetaagentTraceTargetActivity {
+    sequence: u64,
+    notify: Arc<Notify>,
+}
+
+impl Default for MetaagentTraceTargetActivity {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            notify: Arc::new(Notify::new()),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -157,5 +173,54 @@ impl MetaagentTraceSubscriptionStore {
             })
             .map(|subscription| subscription.recipient_attachment_id.clone())
             .collect()
+    }
+
+    pub(crate) fn watch_target_activity(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+    ) -> (u64, Arc<Notify>) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("metaagent trace subscription store poisoned");
+        let activity = state
+            .target_activity
+            .entry((session_id.to_string(), target_agent_id.to_string()))
+            .or_default();
+        (activity.sequence, Arc::clone(&activity.notify))
+    }
+
+    pub(crate) fn target_activity_sequence(&self, session_id: &str, target_agent_id: &str) -> u64 {
+        let state = self
+            .state
+            .lock()
+            .expect("metaagent trace subscription store poisoned");
+        state
+            .target_activity
+            .get(&(session_id.to_string(), target_agent_id.to_string()))
+            .map(|activity| activity.sequence)
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn record_target_activity(&self, session_id: &str, target_agent_id: &str) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("metaagent trace subscription store poisoned");
+        if !state.subscriptions.values().any(|subscription| {
+            subscription.session_id == session_id && subscription.target_agent_id == target_agent_id
+        }) {
+            return false;
+        }
+        let activity = state
+            .target_activity
+            .entry((session_id.to_string(), target_agent_id.to_string()))
+            .or_default();
+        activity.sequence = activity.sequence.saturating_add(1);
+        let notify = Arc::clone(&activity.notify);
+        drop(state);
+        notify.notify_waiters();
+        true
     }
 }

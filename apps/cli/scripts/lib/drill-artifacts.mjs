@@ -142,10 +142,18 @@ export async function finalizeDrillArtifacts({
   passed,
   log = null,
   preserveOnFailure = true,
+  preserveOnSuccess = false,
   failure = null,
   metadata = {},
 }) {
   const resolvedRootDir = resolvedDrillRootDir(rootDir)
+  if (passed && preserveOnSuccess) {
+    if (log) {
+      log("preserved-successful-run", { rootDir: resolvedRootDir })
+    }
+    return { preserved: true, rootDir: resolvedRootDir }
+  }
+
   if (passed || !preserveOnFailure) {
     await rm(resolvedRootDir, { recursive: true, force: true }).catch(() => {})
     if (!passed && log) {

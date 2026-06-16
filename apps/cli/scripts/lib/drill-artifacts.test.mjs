@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -105,6 +105,27 @@ test("drill artifacts are removed after a passing run", async () => {
   assert.equal(result.preserved, false)
   assert.equal(result.rootDir, root)
   await assert.rejects(stat(root), /ENOENT/)
+})
+
+test("drill artifacts can be preserved after a passing run", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-pass-preserved-"))
+  const events = []
+  await prepareDrillArtifacts(root)
+  await writeFile(path.join(root, "evidence.txt"), "kept\n", "utf8")
+
+  const result = await finalizeDrillArtifacts({
+    rootDir: root,
+    passed: true,
+    preserveOnSuccess: true,
+    log: (name, details) => events.push({ name, details }),
+  })
+
+  assert.equal(result.preserved, true)
+  assert.equal(result.rootDir, root)
+  assert.equal(await readFile(path.join(root, "evidence.txt"), "utf8"), "kept\n")
+  assert.deepEqual(events, [{ name: "preserved-successful-run", details: { rootDir: root } }])
+
+  await rm(root, { recursive: true, force: true })
 })
 
 test("normalizes drill artifact lifecycle roots to absolute paths", async () => {

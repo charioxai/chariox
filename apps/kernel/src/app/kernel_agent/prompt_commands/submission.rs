@@ -133,7 +133,7 @@ impl<'a> KernelAgentService<'a> {
         Ok(submitted.outcome)
     }
 
-    fn finish_compat_prompt_dispatch(
+    pub(super) fn finish_compat_prompt_dispatch(
         &mut self,
         dispatch: Option<KernelPromptDispatch>,
     ) -> Result<(), DaemonError> {

@@ -14,9 +14,22 @@ const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_TRACE_POLL_PROVIDER ?? 'co
 const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_TRACE_POLL_MODEL ?? 'gpt-5.5'
 const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_TRACE_POLL_EFFORT ?? 'medium'
 const TRACE_PHRASE = 'TRACE_POLL_DRILL_WORKER_VISIBLE'
+const ORPHAN_RECOVERY_PHRASE = 'ORPHAN_RECOVERY_DRILL_COMPLETE'
 let logPrefix = 'metaagent-trace-poll-drill'
 
 function buildUserPrompt(options) {
+  if (options.supervisionMode === 'orphan-recovery') {
+    return [
+      'This is a tiny metaagent task lifecycle check.',
+      'In your first turn, do not call any tools, do not spawn agents, do not prompt workers, do not use workflows, and do not mark the task complete or blocked.',
+      'For the first turn, send exactly this normal assistant reply and nothing else: ACK_ORPHAN_RECOVERY_READY',
+      'That first reply should end the turn with the task still active.',
+      'Arroba should send you a continuation prompt because the active task has no delegated work running.',
+      'On that continuation, inspect the event/task state if needed, then call `arroba.meta.complete_task`.',
+      `The completion summary must include the exact phrase ${ORPHAN_RECOVERY_PHRASE}.`,
+    ].join('\n')
+  }
+
   const workerPlacementInstruction = options.workerPlacement === 'new-headless-slice'
     ? 'Place the worker in a new headless slice using the agent spawn slice option.'
     : 'Keep the worker in this current session worktree; do not place it in a slice, remote kernel, separate directory, or new worktree.'
@@ -69,7 +82,7 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: true,
-    preserveOnSuccess: false,
+    preserveOnSuccess: true,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -88,6 +101,7 @@ function parseArgs(argv) {
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--discard-artifacts-on-failure') options.keepArtifactsOnFailure = false
     else if (arg === '--preserve-on-success') options.preserveOnSuccess = true
+    else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-metaagent-trace-poll-drill.mjs [options]',
@@ -97,6 +111,7 @@ function parseArgs(argv) {
         'Supervision modes:',
         '  trace               Subscribe and wait on live worker trace output.',
         '  event-continuation  Yield after delegation, then rely on kernel event continuation.',
+        '  orphan-recovery     Yield with an active task and no workers, then rely on kernel orphan recovery.',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -114,8 +129,8 @@ function parseArgs(argv) {
   if (!['current-worktree', 'new-headless-slice'].includes(options.workerPlacement)) {
     throw new Error('--worker-placement must be current-worktree or new-headless-slice')
   }
-  if (!['trace', 'event-continuation'].includes(options.supervisionMode)) {
-    throw new Error('--supervision-mode must be trace or event-continuation')
+  if (!['trace', 'event-continuation', 'orphan-recovery'].includes(options.supervisionMode)) {
+    throw new Error('--supervision-mode must be trace, event-continuation, or orphan-recovery')
   }
   return options
 }
@@ -327,6 +342,10 @@ function workerCompletionWasWakeup(status) {
   return status === 'submitted' || status === 'delivered'
 }
 
+function orphanRecoveryWasWakeup(status) {
+  return status === 'submitted' || status === 'delivered'
+}
+
 function modelMatches(actual, expected, provider) {
   if (actual === expected) return true
   if (!actual || !expected || !provider) return false
@@ -344,11 +363,17 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
   let sawWorkerPrompt = false
   let sawWorkerCompletionEvent = false
   let sawInjectedContinuationPrompt = false
+  let sawOrphanedTaskEvent = false
+  let sawInjectedOrphanContinuationPrompt = false
+  let orphanRecoveryDeliveryStatus = null
   let sawMetaagentYieldedBeforeWorkerEvent = false
+  let sawMetaagentYieldedBeforeOrphanEvent = false
   let workerCompletionDeliveryStatus = null
   let sawReviewTool = false
   let sawPostEventReview = false
   let sawCompleteBeforeEvent = false
+  let sawCompleteBeforeOrphanEvent = false
+  let sawDelegationInOrphanMode = false
   let finalTask = null
   let workers = []
   while (Date.now() < deadline) {
@@ -379,19 +404,30 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
       })
       if (tool.tool.includes('subscribe_trace')) {
         sawSubscribeTrace = true
-        if (options.supervisionMode === 'event-continuation') sawForbiddenTraceTool = true
+        if (options.supervisionMode === 'event-continuation' || options.supervisionMode === 'orphan-recovery') sawForbiddenTraceTool = true
       }
       if (tool.tool.includes('wait_trace') || tool.tool.includes('poll_trace')) {
-        if (options.supervisionMode === 'event-continuation') sawForbiddenTraceTool = true
+        if (options.supervisionMode === 'event-continuation' || options.supervisionMode === 'orphan-recovery') sawForbiddenTraceTool = true
         if (tool.tool.includes('wait_trace')) sawTraceWait = true
         if (traceItems(tool).some(traceItemContainsWorkerPhrase)) sawTracePhrase = true
       }
       if (tool.tool.includes('run_command') && tool.input?.command?.trim().startsWith('prompt ')) {
         sawWorkerPrompt = true
       }
+      if (options.supervisionMode === 'orphan-recovery'
+        && ((tool.tool === 'spawnAgent' || tool.tool.includes('run_command')))) {
+        const command = String(tool.input?.command ?? '')
+        if (tool.tool === 'spawnAgent'
+          || command.trim().startsWith('agent spawn')
+          || command.trim().startsWith('prompt ')
+          || command.trim().startsWith('workflow ')) {
+          sawDelegationInOrphanMode = true
+        }
+      }
       if (tool.tool.includes('complete_task') && !sawWorkerCompletionEvent) {
         sawCompleteBeforeEvent = true
       }
+      if (tool.tool.includes('complete_task') && !sawOrphanedTaskEvent) sawCompleteBeforeOrphanEvent = true
       if (tool.tool.includes('turn_overview') || tool.tool.includes('turn_blob') || tool.tool.includes('read_event')) {
         sawReviewTool = true
       }
@@ -434,6 +470,39 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
         }
       }
     }
+    if (options.supervisionMode === 'orphan-recovery') {
+      if (!sawOrphanedTaskEvent && !sawMetaagentYieldedBeforeOrphanEvent && agentIsIdle(session, metaagent)) {
+        sawMetaagentYieldedBeforeOrphanEvent = true
+        log('metaagent-yielded-before-orphan-event', {
+          metaagentId,
+          state: metaagent?.state ?? null,
+          isProcessing: metaagent?.is_processing ?? null,
+          activePrompt: agentActivePrompt(session, metaagentId)?.id ?? null,
+        })
+      }
+      const eventsPayload = unwrap(await client.send(listMetaagentEventsRequest(sessionId, metaagentId, 100)), 'MetaagentEventsListed')
+      const events = eventsPayload.events ?? []
+      for (const event of events) {
+        if (!seenEvents.has(event.event_id)) {
+          seenEvents.add(event.event_id)
+          log('metaagent-event-observed', {
+            eventId: event.event_id,
+            kind: event.kind,
+            sourceAgentId: event.source_agent_id ?? null,
+            injectedPromptId: event.injected_prompt_id ?? null,
+            deliveryStatus: event.prompt_delivery_status ?? null,
+          })
+        }
+        if (event.kind === 'metaagent.task.orphaned') {
+          sawOrphanedTaskEvent = true
+          orphanRecoveryDeliveryStatus = event.prompt_delivery_status ?? null
+          if (event.injected_prompt_id) sawInjectedOrphanContinuationPrompt = true
+          if (orphanRecoveryDeliveryStatus === 'steered') {
+            throw new Error('orphan recovery event was steered into an active metaagent turn; expected a submitted continuation after yield')
+          }
+        }
+      }
+    }
     if (finalTask?.status) {
       log('task-observed', {
         status: finalTask.status,
@@ -444,6 +513,37 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
       throw new Error(`metaagent task ended as ${finalTask.status}: ${finalTask.blocked_reason ?? finalTask.aborted_reason ?? 'no reason'}`)
     }
     const profileMatched = workers.some((agent) => workerMatchesProfile(agent, options))
+    if (options.supervisionMode === 'orphan-recovery') {
+      if (sawForbiddenTraceTool) throw new Error('metaagent used trace tools in orphan-recovery mode')
+      if (sawDelegationInOrphanMode) throw new Error('metaagent delegated work in orphan-recovery mode')
+      if (sawCompleteBeforeOrphanEvent && !sawOrphanedTaskEvent) throw new Error('metaagent completed task before kernel orphan recovery event')
+      if (finalTask?.status === 'completed'
+        && (sawMetaagentYieldedBeforeOrphanEvent || orphanRecoveryDeliveryStatus === 'submitted')
+        && sawOrphanedTaskEvent
+        && sawInjectedOrphanContinuationPrompt
+        && orphanRecoveryWasWakeup(orphanRecoveryDeliveryStatus)
+        && (finalTask.completion_summary ?? '').includes(ORPHAN_RECOVERY_PHRASE)) {
+        return {
+          task: finalTask,
+          workers,
+          sawMetaagentYieldedBeforeOrphanEvent,
+          sawOrphanedTaskEvent,
+          sawInjectedOrphanContinuationPrompt,
+          orphanRecoveryDeliveryStatus,
+        }
+      }
+      if (finalTask?.status === 'completed') {
+        throw new Error(`metaagent task completed without validated orphan recovery: ${JSON.stringify({
+          sawMetaagentYieldedBeforeOrphanEvent,
+          sawOrphanedTaskEvent,
+          sawInjectedOrphanContinuationPrompt,
+          orphanRecoveryDeliveryStatus,
+          summary: finalTask.completion_summary ?? null,
+        }, null, 2)}`)
+      }
+      await sleep(pollMs)
+      continue
+    }
     if (options.supervisionMode === 'event-continuation') {
       if (sawForbiddenTraceTool) throw new Error('metaagent used trace tools in event-continuation mode')
       if (sawCompleteBeforeEvent) throw new Error('metaagent completed task before worker completion event')
@@ -545,9 +645,14 @@ async function observe({ client, requests, sessionId, metaagentId, historyDir, b
     sawMetaagentYieldedBeforeWorkerEvent,
     sawWorkerCompletionEvent,
     sawInjectedContinuationPrompt,
+    sawMetaagentYieldedBeforeOrphanEvent,
+    sawOrphanedTaskEvent,
+    sawInjectedOrphanContinuationPrompt,
+    orphanRecoveryDeliveryStatus,
     workerCompletionDeliveryStatus,
     sawPostEventReview,
     sawForbiddenTraceTool,
+    sawDelegationInOrphanMode,
   }, null, 2)}`)
 }
 
@@ -555,9 +660,13 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   logPrefix = options.supervisionMode === 'event-continuation'
     ? 'metaagent-event-continuation-drill'
+    : options.supervisionMode === 'orphan-recovery'
+      ? 'metaagent-orphan-recovery-drill'
     : 'metaagent-trace-poll-drill'
   const artifactName = options.supervisionMode === 'event-continuation'
     ? 'live-metaagent-event-continuation-drill'
+    : options.supervisionMode === 'orphan-recovery'
+      ? 'live-metaagent-orphan-recovery-drill'
     : 'live-metaagent-trace-poll-drill'
   const rootDir = path.join(repoRoot, 'target', artifactName, `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
@@ -717,27 +826,24 @@ async function main() {
     if (client) await client.close().catch(() => {})
     await cleanupSession(kernelUrl, sessionId)
     await terminateChild(daemon)
-    if (succeeded && options.preserveOnSuccess) {
-      log('preserved-successful-run', { rootDir })
-    } else {
-      await finalizeDrillArtifacts({
-        rootDir,
-        passed: succeeded,
-        preserveOnFailure: options.keepArtifactsOnFailure,
-        failure,
-        metadata: {
-          drill: 'metaagent-trace-poll',
-          supervisionMode: options.supervisionMode,
-          provider: options.provider,
-          model: options.model,
-          effort: options.effort,
-          kernelUrl,
-          sessionId,
-          workspace,
-        },
-        log,
-      })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      preserveOnSuccess: options.preserveOnSuccess,
+      failure,
+      metadata: {
+        drill: 'metaagent-trace-poll',
+        supervisionMode: options.supervisionMode,
+        provider: options.provider,
+        model: options.model,
+        effort: options.effort,
+        kernelUrl,
+        sessionId,
+        workspace,
+      },
+      log,
+    })
   }
   log('passed')
 }

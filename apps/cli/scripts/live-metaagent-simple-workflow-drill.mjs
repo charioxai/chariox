@@ -10,10 +10,20 @@ const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const DEFAULT_TIMEOUT_MS = 900_000
 const DEFAULT_POLL_MS = 1_000
-const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_CODE_FIX_PROVIDER ?? 'codex'
-const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_CODE_FIX_MODEL ?? 'gpt-5.5'
-const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_CODE_FIX_EFFORT ?? 'medium'
-const USER_PROMPT = 'The repo has a small failing JavaScript project. Delegate the investigation, fix, and verification to regular agent(s), get the project to a passing state, then mark this task complete with a concise report of what changed and how it was verified.'
+const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_SIMPLE_WORKFLOW_PROVIDER ?? 'codex'
+const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_SIMPLE_WORKFLOW_MODEL ?? 'gpt-5.5'
+const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_SIMPLE_WORKFLOW_EFFORT ?? 'medium'
+const MARKER = 'SIMPLE_WORKFLOW_DRILL_OK'
+const RESULT_FILE = 'workflow-result.txt'
+const logPrefix = 'metaagent-simple-workflow-drill'
+
+const TASK_PROMPT = [
+  'Use a minimal workflow suitable for this small task.',
+  '',
+  `The workflow should produce a file named ${RESULT_FILE} containing the exact marker ${MARKER} and one or two sentences explaining what this fixture repo is for.`,
+  '',
+  'A one-node workflow is enough if you think that fits. Build the result by running the workflow, then inspect the workflow/run result and complete this metaagent task only after the local validation passes.',
+].join('\n')
 
 function parseArgs(argv) {
   const options = {
@@ -21,10 +31,10 @@ function parseArgs(argv) {
     model: DEFAULT_MODEL,
     effort: DEFAULT_EFFORT,
     accountProfile: 'default',
-    keepArtifactsOnFailure: true,
-    preserveOnSuccess: true,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
+    keepArtifactsOnFailure: true,
+    preserveOnSuccess: true,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -41,20 +51,17 @@ function parseArgs(argv) {
     else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--help' || arg === '-h') {
       console.log([
-        'Usage: node apps/cli/scripts/live-metaagent-code-fix-drill.mjs [options]',
+        'Usage: node apps/cli/scripts/live-metaagent-simple-workflow-drill.mjs [options]',
         '',
-        'Runs an observe-only live metaagent behavior drill against a real provider:',
-        '- creates a tiny JavaScript project with one real bug and one failing test',
+        'Runs an observe-only live metaagent drill for a minimal workflow task:',
+        '- creates a tiny repo whose validation fails until workflow-result.txt exists',
         '- starts a real metaagent in plan mode',
-        '- submits exactly one high-level prompt to that metaagent',
-        '- observes kernel/session/metaagent events only after the prompt',
-        '- passes only if a regular worker fixes the source and npm test passes',
+        '- submits exactly one high-level task prompt',
+        '- passes only if the metaagent creates and runs a workflow, reviews it, and completes after validation passes',
         '',
-        'Options:',
         `  --provider ${DEFAULT_PROVIDER}`,
         `  --model ${DEFAULT_MODEL}`,
         `  --effort ${DEFAULT_EFFORT}`,
-        '  --account-profile default',
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
         '  --keep-artifacts-on-failure',
@@ -68,7 +75,7 @@ function parseArgs(argv) {
     }
   }
   if (!options.provider || options.provider === 'dev-stub') {
-    throw new Error('metaagent code-fix drill requires a real provider; dev-stub is not valid evidence')
+    throw new Error('simple workflow metaagent drill requires a real provider; dev-stub is not valid evidence')
   }
   if (!options.model) throw new Error('--model is required')
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error('--timeout-ms must be positive')
@@ -77,7 +84,7 @@ function parseArgs(argv) {
 }
 
 function makePorts() {
-  const kernelPort = 60400 + Math.floor(Math.random() * 900)
+  const kernelPort = 61900 + Math.floor(Math.random() * 700)
   return {
     kernelPort,
     mcpPort: kernelPort + 1000,
@@ -87,9 +94,11 @@ function makePorts() {
 }
 
 function log(name, details) {
-  if (details === undefined) console.log(`[metaagent-code-fix-drill] ${name}`)
-  else console.log(`[metaagent-code-fix-drill] ${name}`, JSON.stringify(details))
+  if (details === undefined) console.log(`[${logPrefix}] ${name}`)
+  else console.log(`[${logPrefix}] ${name}`, JSON.stringify(details))
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function run(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
@@ -115,52 +124,84 @@ async function runChecked(command, args, options = {}) {
   return result
 }
 
+function assert(condition, message, details) {
+  if (!condition) throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
+}
+
+function requireOutput(output, pattern, label) {
+  if (!pattern.test(output)) throw new Error(`missing ${label}: ${pattern}\n--- output ---\n${output}`)
+}
+
+function unwrap(response, key) {
+  return response?.[key] ?? response
+}
+
+function unwrapVariant(response, ...keys) {
+  return keys.map((key) => response?.[key]).find((value) => value != null) ?? response
+}
+
+function fileHash(text) {
+  return createHash('sha256').update(text).digest('hex')
+}
+
+async function hashFile(file) {
+  return fileHash(await readFile(file, 'utf8').catch(() => ''))
+}
+
 async function initGitWorktree(root) {
   await runChecked('git', ['init', '-b', 'main'], { cwd: root })
-  await runChecked('git', ['config', 'user.email', 'metaagent-code-fix-drill@example.com'], { cwd: root })
-  await runChecked('git', ['config', 'user.name', 'Metaagent Code Fix Drill'], { cwd: root })
+  await runChecked('git', ['config', 'user.email', 'metaagent-simple-workflow-drill@example.com'], { cwd: root })
+  await runChecked('git', ['config', 'user.name', 'Metaagent Simple Workflow Drill'], { cwd: root })
 }
 
 async function writeFixture(workspace) {
-  await mkdir(path.join(workspace, 'src'), { recursive: true })
+  await mkdir(path.join(workspace, 'scripts'), { recursive: true })
   await mkdir(path.join(workspace, 'test'), { recursive: true })
   await writeFile(path.join(workspace, '.gitignore'), [
     '.arroba-wait.arroba',
     '.arrobaignore',
+    'node_modules/',
+    '',
+  ].join('\n'), 'utf8')
+  await writeFile(path.join(workspace, 'README.md'), [
+    '# Simple Workflow Drill Fixture',
+    '',
+    `A workflow worker should create \`${RESULT_FILE}\` with marker \`${MARKER}\`.`,
     '',
   ].join('\n'), 'utf8')
   await writeFile(path.join(workspace, 'package.json'), `${JSON.stringify({
     type: 'module',
-    scripts: { test: 'node --test' },
+    scripts: {
+      build: 'node scripts/validate-result.mjs',
+      test: 'node --test',
+    },
+    dependencies: {},
+    devDependencies: {},
   }, null, 2)}\n`, 'utf8')
-  await writeFile(path.join(workspace, 'README.md'), [
-    '# Todo Bug Fixture',
-    '',
-    'This tiny package has one failing test. The intended implementation is small; use `npm test` to verify the fix.',
-    '',
-  ].join('\n'), 'utf8')
-  await writeFile(path.join(workspace, 'src', 'todo.mjs'), [
-    'export function completeTodo(todos, id) {',
-    '  return todos.map((todo) => todo.id === id ? { ...todo, done: false } : todo)',
-    '}',
-    '',
-    'export function openTodos(todos) {',
-    '  return todos.filter((todo) => !todo.done)',
-    '}',
-    '',
-  ].join('\n'), 'utf8')
-  await writeFile(path.join(workspace, 'test', 'todo.test.mjs'), [
+  await writeFile(path.join(workspace, 'scripts', 'validate-result.mjs'), [
     "import assert from 'node:assert/strict'",
+    "import { readFile, stat } from 'node:fs/promises'",
+    '',
+    `const resultFile = '${RESULT_FILE}'`,
+    `const marker = '${MARKER}'`,
+    'const info = await stat(resultFile).catch(() => null)',
+    'assert.ok(info?.isFile(), `${resultFile} must exist`)',
+    "const text = await readFile(resultFile, 'utf8')",
+    'assert.match(text, new RegExp(marker), `result file must include ${marker}`)',
+    "assert.match(text, /workflow/i, 'result should mention workflow context')",
+    "assert.ok(text.trim().split(/\\s+/).length >= 8, 'result should contain a short explanation')",
+    '',
+  ].join('\n'), 'utf8')
+  await writeFile(path.join(workspace, 'test', 'workflow-result.test.mjs'), [
+    "import assert from 'node:assert/strict'",
+    "import { readFile } from 'node:fs/promises'",
     "import test from 'node:test'",
-    "import { completeTodo, openTodos } from '../src/todo.mjs'",
     '',
-    "test('completeTodo marks only the selected item done', () => {",
-    "  const todos = [{ id: 'a', done: false }, { id: 'b', done: false }]",
-    "  assert.deepEqual(completeTodo(todos, 'a'), [{ id: 'a', done: true }, { id: 'b', done: false }])",
-    '})',
-    '',
-    "test('openTodos returns unfinished items', () => {",
-    "  assert.deepEqual(openTodos([{ id: 'a', done: true }, { id: 'b', done: false }]), [{ id: 'b', done: false }])",
+    "test('workflow result marker exists', async () => {",
+    `  const text = await readFile('${RESULT_FILE}', 'utf8')`,
+    `  assert.match(text, /${MARKER}/)`,
+    "  assert.match(text, /fixture|repo|repository/i)",
+    "  assert.match(text, /workflow/i)",
     '})',
     '',
   ].join('\n'), 'utf8')
@@ -169,8 +210,8 @@ async function writeFixture(workspace) {
 async function buildKernel() {
   const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
   await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
-  const existing = await stat(binary).then((info) => info.isFile()).catch(() => false)
-  if (!existing) throw new Error(`kernel build did not produce ${binary}`)
+  const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
+  if (!exists) throw new Error(`kernel build did not produce ${binary}`)
   return binary
 }
 
@@ -187,39 +228,12 @@ async function waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env) {
   throw new Error(`daemon did not become ready\nstdout:\n${last?.stdout ?? ''}\nstderr:\n${last?.stderr ?? ''}`)
 }
 
-function requireOutput(output, pattern, label) {
-  if (!pattern.test(output)) {
-    throw new Error(`missing ${label}: ${pattern}\n--- output ---\n${output}`)
-  }
-}
-
-function unwrap(response, key) {
-  return response?.[key] ?? response
-}
-
-function unwrapVariant(response, ...keys) {
-  return keys.map((key) => response?.[key]).find((value) => value != null) ?? response
-}
-
-function assert(condition, message, details) {
-  if (!condition) {
-    throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
-  }
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-function fileHash(text) {
-  return createHash('sha256').update(text).digest('hex')
-}
-
-async function hashFile(file) {
-  return fileHash(await readFile(file, 'utf8'))
-}
-
 async function gitChangedFiles(workspace) {
-  const result = await runChecked('git', ['diff', '--name-only'], { cwd: workspace })
-  return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const result = await runChecked('git', ['status', '--porcelain', '-uall'], { cwd: workspace })
+  return result.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.replace(/^.. ?/, '').trim())
 }
 
 async function readHistoryEntries(historyDir) {
@@ -250,11 +264,19 @@ function parseProviderToolText(text) {
   }
 }
 
+function commandHits(commandText, pattern) {
+  return typeof commandText === 'string' && pattern.test(commandText)
+}
+
 function metaagentToolIsAllowed(toolName) {
   if (typeof toolName !== 'string') return false
   return toolName.startsWith('arroba.')
     || toolName.startsWith('mcp__arroba__')
     || toolName.startsWith('mcp__arroba.')
+}
+
+function metaagentToolIsDirectExecution(toolName) {
+  return /(?:^|\.|__)(write_artifact|edit_artifact|delete_artifact|exec|shell|bash|apply_patch)$/.test(toolName)
 }
 
 function listMetaagentEventsRequest(sessionId, metaagentId, limit = 100) {
@@ -276,7 +298,7 @@ async function waitForProviderRun(client, requests, providerRunId, timeoutMs, po
   let last = null
   while (Date.now() < deadline) {
     last = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
-    if (last?.state === 'Running' || last?.state === 'Active' || last?.runtime_mcp_server_url) return last
+    if (last?.state === 'Running' || last?.state === 'Active') return last
     if (last?.state === 'Ended') throw new Error(`provider run ended before becoming active: ${JSON.stringify(last)}`)
     await sleep(pollMs)
   }
@@ -343,6 +365,10 @@ function summarizeEvent(event) {
   }
 }
 
+function workflowRunIsCompleted(run) {
+  return String(run?.status ?? '').toLowerCase() === 'completed'
+}
+
 async function observeUntilComplete({
   client,
   requests,
@@ -351,22 +377,36 @@ async function observeUntilComplete({
   workspace,
   historyDir,
   beforeAgentIds,
-  baselineSourceHash,
-  baselineTestHash,
+  baselineHash,
   options,
   env,
 }) {
   const deadline = Date.now() + options.timeoutMs
   const seenEvents = new Set()
+  const seenHistoryTools = new Set()
+  const workerHistoryToolEvidence = new Set()
+  const workflowEvidence = {
+    created: false,
+    nodeAddCount: 0,
+    endpointCreated: false,
+    run: false,
+    runInspected: false,
+  }
+  const commandDiscoveryEvidence = {
+    searched: false,
+    docsRead: false,
+  }
   let lastTaskKey = null
   let lastWorkerKey = null
   let lastDiffKey = null
+  let lastRunKey = null
+  let lastValidationDiffKey = null
+  let buildPassed = false
   let testPassed = false
+  let buildResult = null
   let testResult = null
   let finalSession = null
   let finalEvents = []
-  const seenHistoryTools = new Set()
-  const workerHistoryToolEvidence = new Set()
 
   while (Date.now() < deadline) {
     const session = await getSession(client, requests, sessionId)
@@ -375,15 +415,18 @@ async function observeUntilComplete({
     const task = (session.metaagent_tasks ?? []).find((entry) => entry.metaagent_id === metaagentId)
     const workers = (session.agents ?? []).filter((agent) => !beforeAgentIds.has(agent.id) && agent.id !== metaagentId && agent.role !== 'meta')
     const workerIds = new Set(workers.map((agent) => agent.id))
+    const workflowRuns = session.workflow_runs ?? []
+    const completedWorkflowRuns = workflowRuns.filter(workflowRunIsCompleted)
 
     const taskKey = task
-      ? `${task.status}:${task.revision}:${task.plan_markdown?.length ?? 0}:${task.completion_summary ?? ''}:${task.blocked_reason ?? ''}:${task.aborted_reason ?? ''}`
+      ? `${task.status}:${task.revision}:${task.task_markdown?.length ?? 0}:${task.plan_markdown?.length ?? 0}:${task.completion_summary ?? ''}:${task.blocked_reason ?? ''}:${task.aborted_reason ?? ''}`
       : 'none'
     if (taskKey !== lastTaskKey) {
       lastTaskKey = taskKey
       log('task-observed', {
         status: task?.status ?? null,
         revision: task?.revision ?? null,
+        taskLength: task?.task_markdown?.length ?? 0,
         planLength: task?.plan_markdown?.length ?? 0,
         completed: Boolean(task?.completed_at_ms),
         summary: task?.completion_summary ?? task?.blocked_reason ?? task?.aborted_reason ?? null,
@@ -402,6 +445,18 @@ async function observeUntilComplete({
       })))
     }
 
+    const runKey = workflowRuns.map((run) => `${run.id}:${run.workflow_id}:${run.status}:${run.node_runs?.length ?? 0}:${run.final_output?.message ?? ''}`).join('|')
+    if (runKey !== lastRunKey) {
+      lastRunKey = runKey
+      log('workflow-runs-observed', workflowRuns.map((run) => ({
+        id: run.id,
+        workflowId: run.workflow_id,
+        status: run.status,
+        nodeRuns: run.node_runs?.length ?? 0,
+        finalOutput: run.final_output?.message ?? null,
+      })))
+    }
+
     const historyEntries = await readHistoryEntries(historyDir)
     for (const entry of historyEntries) {
       if (entry.kind !== 'provider_tool') continue
@@ -411,18 +466,31 @@ async function observeUntilComplete({
       const historyKey = `${entry.file}:${entry.line}:${entry.agent_id}:${entry.merge_key ?? ''}:${tool.status ?? ''}`
       if (seenHistoryTools.has(historyKey)) continue
       seenHistoryTools.add(historyKey)
-      if (workerIds.has(entry.agent_id) && tool.status === 'completed') {
+      const command = tool.input?.command ?? null
+      if (entry.agent_id === metaagentId) {
+        if (!metaagentToolIsAllowed(tool.tool)) {
+          throw new Error(`metaagent used disallowed provider-native tool ${tool.tool} at ${entry.file}:${entry.line}`)
+        }
+        if (metaagentToolIsDirectExecution(tool.tool)) {
+          throw new Error(`metaagent used direct execution/file tool ${tool.tool} at ${entry.file}:${entry.line}`)
+        }
+        const commandCompleted = tool.status === 'completed'
+        commandDiscoveryEvidence.searched ||= /search_commands/.test(tool.tool)
+        commandDiscoveryEvidence.docsRead ||= /command_docs/.test(tool.tool)
+        workflowEvidence.created ||= commandCompleted && commandHits(command, /^workflow\s+(new|create)\b/)
+        if (commandCompleted && commandHits(command, /^workflow\s+node\s+add\b/)) workflowEvidence.nodeAddCount += 1
+        workflowEvidence.endpointCreated ||= commandCompleted && commandHits(command, /^workflow\s+endpoint\s+(new|create)\b/)
+        workflowEvidence.run ||= commandCompleted && commandHits(command, /^workflow\s+(run|start)\b/)
+        workflowEvidence.runInspected ||= commandCompleted && commandHits(command, /^workflow\s+(runs|get-run|show)\b/)
+      } else if (workerIds.has(entry.agent_id) && tool.status === 'completed') {
         workerHistoryToolEvidence.add(historyKey)
-      }
-      if (entry.agent_id === metaagentId && !metaagentToolIsAllowed(tool.tool)) {
-        throw new Error(`metaagent used disallowed provider-native tool ${tool.tool} at ${entry.file}:${entry.line}`)
       }
       log('history-tool-observed', {
         agentId: entry.agent_id,
         role: entry.agent_id === metaagentId ? 'meta' : 'worker',
         tool: tool.tool,
         status: tool.status ?? null,
-        command: tool.input?.command ?? null,
+        command,
         path: tool.input?.path ?? null,
       })
     }
@@ -442,19 +510,35 @@ async function observeUntilComplete({
       log('workspace-diff-observed', { changedFiles })
     }
 
-    const currentSourceHash = await hashFile(path.join(workspace, 'src', 'todo.mjs'))
-    const currentTestHash = await hashFile(path.join(workspace, 'test', 'todo.test.mjs'))
-    if (currentSourceHash !== baselineSourceHash && currentTestHash === baselineTestHash && !testPassed) {
-      testResult = await run('npm', ['test'], { cwd: workspace, env })
-      if (testResult.code === 0) {
-        testPassed = true
-        log('tests-now-pass', { command: 'npm test' })
-      } else {
-        log('tests-still-failing', {
-          code: testResult.code,
-          stdoutTail: testResult.stdout.slice(-500),
-          stderrTail: testResult.stderr.slice(-500),
-        })
+    const currentHash = await hashFile(path.join(workspace, RESULT_FILE))
+    const resultChanged = currentHash !== baselineHash
+    if (resultChanged && (!buildPassed || !testPassed) && diffKey !== lastValidationDiffKey) {
+      lastValidationDiffKey = diffKey
+      if (!buildPassed) {
+        buildResult = await run('npm', ['run', 'build'], { cwd: workspace, env })
+        if (buildResult.code === 0) {
+          buildPassed = true
+          log('build-now-passes', { command: 'npm run build' })
+        } else {
+          log('build-still-failing', {
+            code: buildResult.code,
+            stdoutTail: buildResult.stdout.slice(-500),
+            stderrTail: buildResult.stderr.slice(-500),
+          })
+        }
+      }
+      if (!testPassed) {
+        testResult = await run('npm', ['test'], { cwd: workspace, env })
+        if (testResult.code === 0) {
+          testPassed = true
+          log('tests-now-pass', { command: 'npm test' })
+        } else {
+          log('tests-still-failing', {
+            code: testResult.code,
+            stdoutTail: testResult.stdout.slice(-500),
+            stderrTail: testResult.stderr.slice(-500),
+          })
+        }
       }
     }
 
@@ -462,27 +546,39 @@ async function observeUntilComplete({
       throw new Error(`metaagent task ended as ${task.status}: ${task.blocked_reason ?? task.aborted_reason ?? 'no reason'}`)
     }
 
+    const workflowComplete = workflowEvidence.created
+      && workflowEvidence.nodeAddCount >= 1
+      && workflowEvidence.endpointCreated
+      && workflowEvidence.run
+      && workflowEvidence.runInspected
+      && completedWorkflowRuns.length > 0
     const workerEventCount = finalEvents.filter((event) => event.source_agent_id && workerIds.has(event.source_agent_id)).length
     const workerEvidenceCount = workerEventCount + workerHistoryToolEvidence.size
-    const sourceFixed = currentSourceHash !== baselineSourceHash
-    const testsUnchanged = currentTestHash === baselineTestHash
+    const resultFileChanged = changedFiles.includes(RESULT_FILE)
     if (
       task?.status === 'completed'
+      && metaagent?.role === 'meta'
       && workers.length > 0
+      && workers.every((agent) => agent.provider !== 'dev-stub')
       && workerEvidenceCount > 0
       && task.plan_markdown?.trim()
-      && sourceFixed
-      && testsUnchanged
+      && workflowComplete
+      && resultFileChanged
+      && buildPassed
       && testPassed
-      && metaagent?.role === 'meta'
     ) {
       return {
         session,
         task,
         workers,
         events: finalEvents,
+        workflowRuns,
+        completedWorkflowRuns,
         workerEventCount,
         workerHistoryToolEvidenceCount: workerHistoryToolEvidence.size,
+        workflowEvidence,
+        commandDiscoveryEvidence,
+        buildResult,
         testResult,
         changedFiles,
       }
@@ -491,16 +587,29 @@ async function observeUntilComplete({
     await sleep(options.pollMs)
   }
 
-  throw new Error(`timed out waiting for metaagent code-fix completion\nlast session=${JSON.stringify({
+  throw new Error(`timed out waiting for simple workflow metaagent completion\nlast session=${JSON.stringify({
     task: finalSession?.metaagent_tasks?.find((entry) => entry.metaagent_id === metaagentId) ?? null,
     agents: finalSession?.agents?.map((agent) => ({ id: agent.id, alias: agent.alias, role: agent.role, provider: agent.provider })),
+    workflowRuns: finalSession?.workflow_runs?.map((run) => ({
+      id: run.id,
+      workflowId: run.workflow_id,
+      status: run.status,
+      nodeRuns: run.node_runs?.length ?? 0,
+      finalOutput: run.final_output?.message ?? null,
+    })),
     events: finalEvents.map(summarizeEvent),
   }, null, 2)}`)
 }
 
+async function validateNoDependencies(workspace) {
+  const packageJson = JSON.parse(await readFile(path.join(workspace, 'package.json'), 'utf8'))
+  assert(Object.keys(packageJson.dependencies ?? {}).length === 0, 'drill must not add runtime dependencies', packageJson.dependencies)
+  assert(Object.keys(packageJson.devDependencies ?? {}).length === 0, 'drill must not add dev dependencies', packageJson.devDependencies)
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const rootDir = path.join(repoRoot, 'target', 'live-metaagent-code-fix-drill', `${process.pid}-${Date.now()}`)
+  const rootDir = path.join(repoRoot, 'target', 'live-metaagent-simple-workflow-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
   const scriptsDir = path.join(rootDir, 'scripts')
@@ -514,7 +623,7 @@ async function main() {
     ARROBA_MCP_PORT: String(ports.mcpPort),
     ARROBA_OPENCODE_PORT: String(ports.opencodePort),
     ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `metaagent-code-fix-drill-${process.pid}-${Date.now()}`,
+    ARROBA_DAEMON_ID: `metaagent-simple-workflow-drill-${process.pid}-${Date.now()}`,
     ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
     ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
@@ -532,16 +641,20 @@ async function main() {
     await writeFixture(workspace)
     await initGitWorktree(workspace)
 
-    const failing = await run('npm', ['test'], { cwd: workspace, env })
-    assert(failing.code !== 0, 'fixture should start with one failing test', { stdout: failing.stdout, stderr: failing.stderr })
+    const initiallyFailingBuild = await run('npm', ['run', 'build'], { cwd: workspace, env })
+    assert(initiallyFailingBuild.code !== 0, 'fixture should start without workflow result', {
+      stdout: initiallyFailingBuild.stdout,
+      stderr: initiallyFailingBuild.stderr,
+    })
     await runChecked('git', ['add', '.'], { cwd: workspace })
-    await runChecked('git', ['commit', '-m', 'Add failing todo fixture'], { cwd: workspace })
-
-    const baselineSourceHash = await hashFile(path.join(workspace, 'src', 'todo.mjs'))
-    const baselineTestHash = await hashFile(path.join(workspace, 'test', 'todo.test.mjs'))
+    await runChecked('git', ['commit', '-m', 'Add simple workflow drill fixture'], { cwd: workspace })
+    const baselineHash = await hashFile(path.join(workspace, RESULT_FILE))
 
     const kernelBinary = await buildKernel()
     daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+    daemon.once('exit', (code, signal) => {
+      log('daemon-exited', { code, signal })
+    })
     await waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env)
     log('daemon-ready', { kernelUrl, provider: options.provider, model: options.model, effort: options.effort })
 
@@ -575,8 +688,10 @@ async function main() {
 
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
     const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
-    client = new LocalIpcClient(kernelUrl)
-    const attachment = unwrap(await client.send(requests.attachToSessionRequest(sessionId, `metaagent-code-fix-drill-${Date.now()}`)), 'SessionAttached').attachment
+    client = new LocalIpcClient(kernelUrl, {
+      kernelMaxMissedPongs: Math.max(120, Math.ceil(options.timeoutMs / 5_000)),
+    })
+    const attachment = unwrap(await client.send(requests.attachToSessionRequest(sessionId, `metaagent-simple-workflow-drill-${Date.now()}`)), 'SessionAttached').attachment
     const initialSession = await getSession(client, requests, sessionId)
     const metaagent = (initialSession.agents ?? []).find((agent) => agent.role === 'meta')
     assert(metaagent, 'session should contain a metaagent', initialSession)
@@ -591,8 +706,8 @@ async function main() {
       permissionLevel: metaRun.permission_level ?? null,
     })
 
-    await client.send(requests.submitPromptRequest(sessionId, attachment.id, metaagent.id, USER_PROMPT, []))
-    log('single-prompt-submitted', { metaagentId: metaagent.id, prompt: USER_PROMPT })
+    await client.send(requests.submitPromptRequest(sessionId, attachment.id, metaagent.id, TASK_PROMPT, []))
+    log('single-prompt-submitted', { metaagentId: metaagent.id, prompt: TASK_PROMPT })
 
     const observed = await observeUntilComplete({
       client,
@@ -602,20 +717,21 @@ async function main() {
       workspace,
       historyDir: env.ARROBA_SESSION_HISTORY_DIR,
       beforeAgentIds,
-      baselineSourceHash,
-      baselineTestHash,
+      baselineHash,
       options,
       env,
     })
 
-    const fixedSource = await readFile(path.join(workspace, 'src', 'todo.mjs'), 'utf8')
-    assert(fixedSource.includes('done: true'), 'source fix should mark the selected todo done', fixedSource)
-    assert(observed.changedFiles.includes('src/todo.mjs'), 'source file must be changed', observed.changedFiles)
-    assert(!observed.changedFiles.includes('test/todo.test.mjs'), 'test file must not be changed', observed.changedFiles)
+    await validateNoDependencies(workspace)
+    const finalBuild = await runChecked('npm', ['run', 'build'], { cwd: workspace, env })
+    const finalTest = await runChecked('npm', ['test'], { cwd: workspace, env })
+    const resultText = await readFile(path.join(workspace, RESULT_FILE), 'utf8')
 
-    console.log(JSON.stringify({
+    const result = {
       status: 'ok',
-      mode: 'metaagent-code-fix-drill',
+      mode: 'metaagent-simple-workflow-drill',
+      rootDir,
+      workspace,
       kernelUrl,
       sessionId,
       metaagentId: metaagent.id,
@@ -623,18 +739,32 @@ async function main() {
       model: options.model,
       effort: options.effort,
       promptCount: 1,
-      harnessRuntimeMcpCallsAfterPrompt: 0,
-      harnessWorkspaceWritesAfterPrompt: 0,
+      taskPrompt: TASK_PROMPT,
       workerIds: observed.workers.map((agent) => agent.id),
       workerAliases: observed.workers.map((agent) => agent.alias),
       workerEventCount: observed.workerEventCount,
       workerHistoryToolEvidenceCount: observed.workerHistoryToolEvidenceCount,
       taskStatus: observed.task.status,
+      completionSummary: observed.task.completion_summary ?? null,
       planLength: observed.task.plan_markdown.length,
+      workflowEvidence: observed.workflowEvidence,
+      commandDiscoveryEvidence: observed.commandDiscoveryEvidence,
+      workflowRuns: observed.workflowRuns.map((run) => ({
+        id: run.id,
+        workflowId: run.workflow_id,
+        status: run.status,
+        nodeRuns: run.node_runs?.length ?? 0,
+        finalOutput: run.final_output?.message ?? null,
+      })),
       changedFiles: observed.changedFiles,
-      verifiedCommand: 'npm test',
+      resultText,
+      verifiedCommands: ['npm run build', 'npm test'],
+      finalBuildTail: finalBuild.stdout.slice(-800),
+      finalTestTail: finalTest.stdout.slice(-800),
       metaagentEventCount: observed.events.length,
-    }, null, 2))
+    }
+    await writeFile(path.join(rootDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
+    console.log(JSON.stringify(result, null, 2))
     succeeded = true
   } catch (error) {
     failure = error
@@ -650,7 +780,7 @@ async function main() {
       preserveOnSuccess: options.preserveOnSuccess,
       failure,
       metadata: {
-        drill: 'metaagent-code-fix',
+        drill: 'live-metaagent-simple-workflow-drill',
         provider: options.provider,
         model: options.model,
         effort: options.effort,

@@ -308,10 +308,15 @@ impl<'a> KernelAgentService<'a> {
         crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(&completion.session_id)?;
 
-        Ok(PromptCompletion {
+        let prompt_completion = PromptCompletion {
             completed: completion.completed,
             started_next,
-        })
+        };
+        self.inject_orphaned_metaagent_task_event_after_turn(
+            &completion.agent_id,
+            &prompt_completion,
+        )?;
+        Ok(prompt_completion)
     }
 
     pub(crate) fn advance_next_queued_prompt_remote(

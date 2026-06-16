@@ -22,6 +22,27 @@ impl Drop for TestMetaRuntimeEnv {
     }
 }
 
+fn run_large_stack_async_test<Fut>(name: &str, test: fn() -> Fut)
+where
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(16 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("test runtime should build")
+                .block_on(test());
+        })
+        .expect("test thread should spawn")
+        .join()
+        .expect("test thread should not panic");
+}
+
 #[tokio::test]
 async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
     let env = TestMetaRuntimeEnv::new("tool-visibility");
@@ -342,6 +363,128 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|summary| summary.contains("worker output trace-visible"))
         }),
+        "{:?}",
+        waited.payload
+    );
+}
+
+#[tokio::test]
+async fn metaagent_wait_trace_wakes_when_worker_output_arrives_after_wait_starts() {
+    let env = TestMetaRuntimeEnv::new("trace-wait-notify");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, worker) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let subscribed = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_SUBSCRIBE_TRACE_TOOL,
+            serde_json::json!({ "agent_ref": worker.id() }),
+        )
+        .await
+        .expect("subscribe_trace should dispatch");
+    assert!(subscribed.ok, "{:?}", subscribed.payload);
+    let subscription_id = subscribed
+        .payload
+        .pointer("/subscription/subscription_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("subscribe_trace should return subscription id")
+        .to_string();
+
+    let wait_runtime = router.runtime_state.clone();
+    let wait_auth_token = meta_auth_token.clone();
+    let wait_subscription_id = subscription_id.clone();
+    let wait_task = tokio::spawn(async move {
+        wait_runtime
+            .dispatch_authenticated_runtime_tool_call(
+                &wait_auth_token,
+                crate::transport::runtime_tools::META_WAIT_TRACE_TOOL,
+                serde_json::json!({
+                    "subscription_id": wait_subscription_id,
+                    "until": "worker_output",
+                    "wait_ms": 100,
+                    "limit": 10
+                }),
+            )
+            .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    {
+        let mut app = app.lock().await;
+        app.fan_out_output(
+            session.id(),
+            worker_run.id(),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            Vec::new(),
+            b"worker output after wait started",
+        );
+    }
+
+    let waited = tokio::time::timeout(std::time::Duration::from_millis(150), wait_task)
+        .await
+        .expect("wait_trace should wake promptly from terminal fanout")
+        .expect("wait task should join")
+        .expect("wait_trace should dispatch");
+    assert!(waited.ok, "{:?}", waited.payload);
+    assert_eq!(
+        waited
+            .payload
+            .get("matched")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "{:?}",
+        waited.payload
+    );
+    assert!(
+        waited
+            .payload
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| {
+                item.get("kind").and_then(serde_json::Value::as_str) == Some("provider_output")
+                    && item
+                        .get("summary")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|summary| summary.contains("after wait started"))
+            })),
         "{:?}",
         waited.payload
     );
@@ -1496,8 +1639,15 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .is_some_and(|body| body.contains("Do not implement directly")));
 }
 
-#[tokio::test]
-async fn metaagent_run_command_submits_prompts_through_router_path() {
+#[test]
+fn metaagent_run_command_submits_prompts_through_router_path() {
+    run_large_stack_async_test(
+        "metaagent-run-command-prompt",
+        metaagent_run_command_submits_prompts_through_router_path_inner,
+    );
+}
+
+async fn metaagent_run_command_submits_prompts_through_router_path_inner() {
     let env = TestMetaRuntimeEnv::new("run-command-prompt");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -1656,8 +1806,15 @@ async fn metaagent_run_command_submits_prompts_through_router_path() {
     );
 }
 
-#[tokio::test]
-async fn metaagent_prompt_command_does_not_steer_active_workflow_turns() {
+#[test]
+fn metaagent_prompt_command_does_not_steer_active_workflow_turns() {
+    run_large_stack_async_test(
+        "metaagent-prompt-active-workflow-guard",
+        metaagent_prompt_command_does_not_steer_active_workflow_turns_inner,
+    );
+}
+
+async fn metaagent_prompt_command_does_not_steer_active_workflow_turns_inner() {
     let env = TestMetaRuntimeEnv::new("run-command-workflow-prompt-guard");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -1797,8 +1954,15 @@ async fn metaagent_prompt_command_does_not_steer_active_workflow_turns() {
     );
 }
 
-#[tokio::test]
-async fn metaagent_prompt_command_does_not_queue_over_workflow_turns() {
+#[test]
+fn metaagent_prompt_command_does_not_queue_over_workflow_turns() {
+    run_large_stack_async_test(
+        "metaagent-prompt-queued-workflow-guard",
+        metaagent_prompt_command_does_not_queue_over_workflow_turns_inner,
+    );
+}
+
+async fn metaagent_prompt_command_does_not_queue_over_workflow_turns_inner() {
     let env = TestMetaRuntimeEnv::new("run-command-queued-workflow-prompt-guard");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -1885,8 +2049,15 @@ async fn metaagent_prompt_command_does_not_queue_over_workflow_turns() {
     );
 }
 
-#[tokio::test]
-async fn metaagent_run_command_routes_core_workflow_commands() {
+#[test]
+fn metaagent_run_command_routes_core_workflow_commands() {
+    run_large_stack_async_test(
+        "metaagent-run-command-workflow",
+        metaagent_run_command_routes_core_workflow_commands_inner,
+    );
+}
+
+async fn metaagent_run_command_routes_core_workflow_commands_inner() {
     let env = TestMetaRuntimeEnv::new("run-command-workflow");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -2101,8 +2272,15 @@ async fn metaagent_run_command_routes_core_workflow_commands() {
     );
 }
 
-#[tokio::test]
-async fn metaagent_workflow_run_commands_expose_execution_visibility() {
+#[test]
+fn metaagent_workflow_run_commands_expose_execution_visibility() {
+    run_large_stack_async_test(
+        "metaagent-workflow-run-visibility",
+        metaagent_workflow_run_commands_expose_execution_visibility_inner,
+    );
+}
+
+async fn metaagent_workflow_run_commands_expose_execution_visibility_inner() {
     let env = TestMetaRuntimeEnv::new("workflow-run-visibility");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -2320,8 +2498,15 @@ async fn metaagent_workflow_run_commands_expose_execution_visibility() {
         .is_some_and(|counts| !counts.is_empty()));
 }
 
-#[tokio::test]
-async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
+#[test]
+fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
+    run_large_stack_async_test(
+        "metaagent-run-command-agent-lifecycle",
+        metaagent_run_command_routes_owned_agent_lifecycle_commands_inner,
+    );
+}
+
+async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
     let env = TestMetaRuntimeEnv::new("run-command-agent-lifecycle");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -2428,22 +2613,10 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
 
 #[test]
 fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy() {
-    std::thread::Builder::new()
-        .name("metaagent-slice-placement-policy".to_string())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("test runtime should build")
-                .block_on(
-                    metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(),
-                );
-        })
-        .expect("test thread should spawn")
-        .join()
-        .expect("test thread should not panic");
+    run_large_stack_async_test(
+        "metaagent-slice-placement-policy",
+        metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner,
+    );
 }
 
 async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(
@@ -2555,8 +2728,15 @@ async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_man
     );
 }
 
-#[tokio::test]
-async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
+#[test]
+fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
+    run_large_stack_async_test(
+        "collaborator-metaagent-scope",
+        collaborator_metaagents_are_one_per_user_and_owner_scoped_inner,
+    );
+}
+
+async fn collaborator_metaagents_are_one_per_user_and_owner_scoped_inner() {
     let env = TestMetaRuntimeEnv::new("collaborator-metaagent-scope");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -2738,8 +2918,15 @@ async fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
     assert_eq!(peer_worker.alias(), Some("peer-renamed"));
 }
 
-#[tokio::test]
-async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not() {
+#[test]
+fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not() {
+    run_large_stack_async_test(
+        "user-agent-lifecycle-events",
+        user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not_inner,
+    );
+}
+
+async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not_inner() {
     let env = TestMetaRuntimeEnv::new("agent-lifecycle-events");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -2961,8 +3148,15 @@ async fn forged_metaagent_caller_id_does_not_suppress_lifecycle_events() {
     );
 }
 
-#[tokio::test]
-async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands() {
+#[test]
+fn metaagent_run_command_returns_structured_denials_for_forbidden_commands() {
+    run_large_stack_async_test(
+        "metaagent-run-command-denials",
+        metaagent_run_command_returns_structured_denials_for_forbidden_commands_inner,
+    );
+}
+
+async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands_inner() {
     let env = TestMetaRuntimeEnv::new("run-command-deny");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -3154,8 +3348,15 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
     );
 }
 
-#[tokio::test]
-async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry() {
+#[test]
+fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry() {
+    run_large_stack_async_test(
+        "regular-agent-turn-completion-meta-event",
+        regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry_inner,
+    );
+}
+
+async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry_inner() {
     let env = TestMetaRuntimeEnv::new("turn-event");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -3319,9 +3520,270 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry()
     );
 }
 
-#[tokio::test]
-async fn local_metaagent_command_search_request_enforces_owner_scope() {
-    Box::pin(local_metaagent_command_search_request_enforces_owner_scope_impl()).await
+#[test]
+fn idle_metaagent_turn_with_active_task_injects_orphaned_task_event() {
+    run_large_stack_async_test(
+        "metaagent-orphaned-task-event",
+        idle_metaagent_turn_with_active_task_injects_orphaned_task_event_inner,
+    );
+}
+
+async fn idle_metaagent_turn_with_active_task_injects_orphaned_task_event_inner() {
+    let env = TestMetaRuntimeEnv::new("metaagent-orphaned-task-event");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let attach = attach_request(session.id(), "client-meta-orphaned-task");
+    let attachment_id = match router
+        .dispatch(
+            KernelCommand::from_local_request("attach", None, None, &attach),
+            attach,
+        )
+        .await
+        .expect("client should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+    let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id,
+        target_agent_id: Some(metaagent.id().to_string()),
+        prompt: "Start a task, then stop without marking it complete.".to_string(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("submit-meta", None, None, &submit),
+            submit,
+        )
+        .await
+        .expect("metaagent prompt should submit");
+    let complete = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+        session_id: session.id().to_string(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("complete-meta", None, None, &complete),
+            complete,
+        )
+        .await
+        .expect("metaagent completion should inject orphan recovery prompt");
+
+    let listed = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "metaagent.task.orphaned" }),
+        )
+        .await
+        .expect("meta list_events should dispatch");
+    assert!(listed.ok);
+    let event = listed
+        .payload
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|events| events.first())
+        .expect("orphaned task event should be listed");
+    assert_eq!(
+        event.get("kind").and_then(serde_json::Value::as_str),
+        Some("metaagent.task.orphaned")
+    );
+    assert!(
+        event
+            .get("injected_prompt_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "orphaned task event should inject a continuation prompt: {event:?}"
+    );
+    assert!(
+        event
+            .get("prompt_delivery_status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|status| matches!(status, "submitted" | "delivered")),
+        "orphaned task event should be delivered to the metaagent: {event:?}"
+    );
+    let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        session_id: session.id().to_string(),
+    });
+    let session_after = router
+        .dispatch(
+            KernelCommand::from_local_request("session-get", None, None, &state_request),
+            state_request,
+        )
+        .await
+        .expect("session should load");
+    let LocalDaemonResponse::SessionState { session, .. } = session_after else {
+        panic!("unexpected session response: {session_after:?}");
+    };
+    assert_eq!(
+        session
+            .metaagent_task(metaagent.id())
+            .map(|task| task.status()),
+        Some(crate::session::MetaagentTaskStatus::Active)
+    );
+    assert!(
+        session.active_prompt_for_agent(metaagent.id()).is_some(),
+        "orphan recovery prompt should leave the metaagent active"
+    );
+}
+
+#[test]
+fn metaagent_turn_with_active_worker_does_not_inject_orphaned_task_event() {
+    run_large_stack_async_test(
+        "metaagent-active-worker-no-orphaned-task-event",
+        metaagent_turn_with_active_worker_does_not_inject_orphaned_task_event_inner,
+    );
+}
+
+async fn metaagent_turn_with_active_worker_does_not_inject_orphaned_task_event_inner() {
+    let env = TestMetaRuntimeEnv::new("metaagent-active-worker-no-orphaned");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+        .expect("worker should spawn");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let _worker_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let attach = attach_request(session.id(), "client-meta-active-worker");
+    let attachment_id = match router
+        .dispatch(
+            KernelCommand::from_local_request("attach", None, None, &attach),
+            attach,
+        )
+        .await
+        .expect("client should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+    let submit_worker = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id: attachment_id.clone(),
+        target_agent_id: Some(worker.id().to_string()),
+        prompt: "keep working".to_string(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("submit-worker", None, None, &submit_worker),
+            submit_worker,
+        )
+        .await
+        .expect("worker prompt should submit");
+    let submit_meta = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id,
+        target_agent_id: Some(metaagent.id().to_string()),
+        prompt: "Start a task while the worker is still active.".to_string(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("submit-meta", None, None, &submit_meta),
+            submit_meta,
+        )
+        .await
+        .expect("metaagent prompt should submit");
+    let complete_meta = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+        session_id: session.id().to_string(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("complete-meta", None, None, &complete_meta),
+            complete_meta,
+        )
+        .await
+        .expect("metaagent completion should not inject orphan recovery while worker is active");
+
+    let listed = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_LIST_EVENTS_TOOL,
+            serde_json::json!({ "kind": "metaagent.task.orphaned" }),
+        )
+        .await
+        .expect("meta list_events should dispatch");
+    assert!(listed.ok);
+    assert_eq!(
+        listed
+            .payload
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "active worker should suppress orphan recovery: {:?}",
+        listed.payload
+    );
+}
+
+#[test]
+fn local_metaagent_command_search_request_enforces_owner_scope() {
+    run_large_stack_async_test(
+        "local-metaagent-command-search",
+        local_metaagent_command_search_request_enforces_owner_scope_impl,
+    );
 }
 
 async fn local_metaagent_command_search_request_enforces_owner_scope_impl() {
@@ -3409,9 +3871,12 @@ async fn local_metaagent_command_search_request_enforces_owner_scope_impl() {
     );
 }
 
-#[tokio::test]
-async fn local_metaagent_turn_inspection_requests_enforce_owner_scope() {
-    Box::pin(local_metaagent_turn_inspection_requests_enforce_owner_scope_impl()).await
+#[test]
+fn local_metaagent_turn_inspection_requests_enforce_owner_scope() {
+    run_large_stack_async_test(
+        "local-metaagent-turn-inspection",
+        local_metaagent_turn_inspection_requests_enforce_owner_scope_impl,
+    );
 }
 
 async fn local_metaagent_turn_inspection_requests_enforce_owner_scope_impl() {
@@ -3601,9 +4066,12 @@ async fn local_metaagent_turn_inspection_requests_enforce_owner_scope_impl() {
     );
 }
 
-#[tokio::test]
-async fn local_metaagent_event_requests_enforce_owner_and_mutate_inbox() {
-    Box::pin(local_metaagent_event_requests_enforce_owner_and_mutate_inbox_impl()).await
+#[test]
+fn local_metaagent_event_requests_enforce_owner_and_mutate_inbox() {
+    run_large_stack_async_test(
+        "local-metaagent-event-requests",
+        local_metaagent_event_requests_enforce_owner_and_mutate_inbox_impl,
+    );
 }
 
 async fn local_metaagent_event_requests_enforce_owner_and_mutate_inbox_impl() {
@@ -4307,8 +4775,15 @@ async fn metaagent_event_subscription_rejects_unknown_kinds_with_suggestions() {
     }));
 }
 
-#[tokio::test]
-async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_event() {
+#[test]
+fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_event() {
+    run_large_stack_async_test(
+        "subscribed-collaborator-workflow-output",
+        subscribed_collaborator_workflow_output_records_and_injects_metaagent_event_inner,
+    );
+}
+
+async fn subscribed_collaborator_workflow_output_records_and_injects_metaagent_event_inner() {
     let env = TestMetaRuntimeEnv::new("workflow-output-event");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");

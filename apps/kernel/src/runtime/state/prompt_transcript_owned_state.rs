@@ -43,6 +43,7 @@ impl KernelRuntimeOwnedState {
             message_id,
             completed_at_ms,
         );
+        self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 
     pub(super) fn fan_out_terminal_output(
@@ -75,6 +76,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             bytes,
         );
+        self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
         if kind != crate::terminal::TerminalOutputKind::PromptEcho {
             let text = String::from_utf8_lossy(bytes).into_owned();
             if kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
@@ -337,6 +339,7 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             &bytes,
         );
+        self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 
     pub(super) fn private_recipient_attachment_ids(
@@ -375,6 +378,13 @@ impl KernelRuntimeOwnedState {
             }
         }
         recipient_attachment_ids
+    }
+
+    pub(super) fn notify_metaagent_trace_activity(&self, session_id: &str, agent_id: Option<&str>) {
+        if let Some(agent_id) = agent_id {
+            self.metaagent_trace_subscriptions
+                .record_target_activity(session_id, agent_id);
+        }
     }
 }
 

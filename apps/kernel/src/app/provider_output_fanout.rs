@@ -91,6 +91,7 @@ impl ProviderOutputFanout {
             recipient_attachment_ids,
             bytes,
         );
+        self.notify_metaagent_trace_activity(session_id, agent_id);
         if kind != TerminalOutputKind::PromptEcho {
             let text = String::from_utf8_lossy(bytes).into_owned();
             if kind == TerminalOutputKind::ProviderReasoning {
@@ -202,6 +203,7 @@ impl ProviderOutputFanout {
             recipient_attachment_ids,
             message.clone(),
         );
+        self.notify_metaagent_trace_activity(session_id, agent_id);
         self.append_history_entry(
             session_id,
             SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message),
@@ -253,6 +255,7 @@ impl ProviderOutputFanout {
             message_id,
             completed_at_ms,
         );
+        self.notify_metaagent_trace_activity(session_id, agent_id);
     }
 
     fn private_recipient_attachment_ids(
@@ -291,6 +294,13 @@ impl ProviderOutputFanout {
             }
         }
         recipient_attachment_ids
+    }
+
+    fn notify_metaagent_trace_activity(&self, session_id: &str, agent_id: Option<&str>) {
+        if let Some(agent_id) = agent_id {
+            self.metaagent_trace_subscriptions
+                .record_target_activity(session_id, agent_id);
+        }
     }
 
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {

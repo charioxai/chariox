@@ -433,7 +433,7 @@ impl KernelRuntimeOwnedState {
         dispatches
     }
 
-    fn metaagent_event_prompt_for_metaagent(
+    pub(super) fn metaagent_event_prompt_for_metaagent(
         &self,
         session_id: &str,
         metaagent: &crate::agent::AgentInstance,

@@ -156,6 +156,11 @@ impl KernelRuntimeState {
             )
             .await?
         {
+            self.inject_orphaned_metaagent_task_event_after_turn(
+                session_id,
+                target_agent_id,
+                &completion,
+            )?;
             return Ok(completion);
         }
         if next_queued_prompt.is_none() {
@@ -188,6 +193,11 @@ impl KernelRuntimeState {
                             owned.workflow_retry_blocked_claims(),
                         );
                     }
+                    self.inject_orphaned_metaagent_task_event_after_turn(
+                        session_id,
+                        target_agent_id,
+                        &completion.completion,
+                    )?;
                     return Ok(completion.completion);
                 }
             }
@@ -226,6 +236,11 @@ impl KernelRuntimeState {
                         let _ = self.fail_prompt_dispatch(dispatch, error).await;
                     }
                 }
+                self.inject_orphaned_metaagent_task_event_after_turn(
+                    session_id,
+                    target_agent_id,
+                    &completion_result,
+                )?;
                 return Ok(completion_result);
             }
         }

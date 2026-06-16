@@ -18,7 +18,6 @@ use crate::transport::runtime_tools::{
     META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
 };
 
-const META_TRACE_WAIT_POLL_INTERVAL_MS: u64 = 250;
 const META_TRACE_WAIT_DEFAULT_MS: u64 = 30_000;
 const META_TRACE_WAIT_MAX_MS: u64 = 60_000;
 
@@ -288,12 +287,12 @@ impl KernelRuntimeState {
             META_POLL_TRACE_TOOL => {
                 let args = serde_json::from_value::<MetaPollTraceArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                self.meta_poll_trace(session, agent, args, false)
+                Box::pin(self.meta_poll_trace(session, agent, args, false)).await
             }
             META_WAIT_TRACE_TOOL => {
                 let args = serde_json::from_value::<MetaPollTraceArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                self.meta_poll_trace(session, agent, args, true)
+                Box::pin(self.meta_poll_trace(session, agent, args, true)).await
             }
             META_UNSUBSCRIBE_TRACE_TOOL => {
                 let args = serde_json::from_value::<MetaUnsubscribeTraceArgs>(arguments)
@@ -812,7 +811,7 @@ impl KernelRuntimeState {
         })
     }
 
-    fn meta_poll_trace(
+    async fn meta_poll_trace(
         &self,
         session: &crate::session::RuntimeSession,
         metaagent: &crate::agent::AgentInstance,
@@ -900,9 +899,34 @@ impl KernelRuntimeState {
             if !wait || matched || started_at.elapsed().as_millis() >= wait_ms as u128 {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(
-                META_TRACE_WAIT_POLL_INTERVAL_MS,
-            ));
+            let Some(remaining) = meta_trace_wait_remaining(started_at, wait_ms) else {
+                break;
+            };
+            let (observed_sequence, notify) = self
+                .owned
+                .metaagent_trace_subscriptions
+                .watch_target_activity(session.id(), &subscription.target_agent_id);
+
+            let batch = self.meta_drain_trace_batch(session.id(), &subscription, mode, limit);
+            drained_count += batch.drained_count;
+            matched = matched || batch.matches_until(until);
+            extend_meta_trace_items(&mut items, batch.items, limit);
+            if matched || started_at.elapsed().as_millis() >= wait_ms as u128 {
+                break;
+            }
+
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            let latest_sequence = self
+                .owned
+                .metaagent_trace_subscriptions
+                .target_activity_sequence(session.id(), &subscription.target_agent_id);
+            if latest_sequence > observed_sequence {
+                continue;
+            }
+            if tokio::time::timeout(remaining, notified).await.is_err() {
+                break;
+            }
         }
         let agent_activity = self.agent_activity_for_session(session);
         let worker_activity = agent_activity.get(&subscription.target_agent_id).cloned();
@@ -1401,6 +1425,17 @@ impl MetaTraceBatch {
             }
         })
     }
+}
+
+fn meta_trace_wait_remaining(
+    started_at: std::time::Instant,
+    wait_ms: u64,
+) -> Option<std::time::Duration> {
+    let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if elapsed_ms >= wait_ms {
+        return None;
+    }
+    Some(std::time::Duration::from_millis(wait_ms - elapsed_ms))
 }
 
 fn item_kind(item: &serde_json::Value) -> Option<&str> {

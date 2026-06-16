@@ -32,6 +32,99 @@ impl KernelRuntimeState {
         Ok(Some(self.project_metaagent_task_session(session)))
     }
 
+    pub(crate) fn inject_orphaned_metaagent_task_event_after_turn(
+        &self,
+        session_id: &str,
+        metaagent_id: &str,
+        completion: &crate::session::PromptCompletion,
+    ) -> Result<(), DaemonError> {
+        let metaagent = self.owned.agent_store.get_agent(metaagent_id)?;
+        if metaagent.session_id() != session_id || !metaagent.is_metaagent() {
+            return Ok(());
+        }
+        if completion.started_next.is_some() {
+            return Ok(());
+        }
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(task) = session.metaagent_task(metaagent.id()) else {
+            return Ok(());
+        };
+        if task.status() != MetaagentTaskStatus::Active {
+            return Ok(());
+        }
+        if self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, metaagent.id())
+            .is_some()
+        {
+            return Ok(());
+        }
+        if self.metaagent_has_active_owned_regular_agent_work(&session, &metaagent) {
+            return Ok(());
+        }
+
+        let source_attachment_id =
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(&format!(
+                "metaagent-task-orphaned-{}-{}",
+                metaagent.id(),
+                task.revision()
+            ));
+        let title = "Metaagent task needs a final decision".to_string();
+        let summary = format!(
+            "Your last turn ended while task `{}` is still active and no same-owner regular agents have active or queued work. Decide the task state now: if it is done, call `arroba.meta.complete_task`; if it cannot be completed after exhausting options, call `arroba.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
+            task.task_id()
+        );
+        let dispatches = self.owned.metaagent_event_prompt_for_metaagent(
+            session_id,
+            &metaagent,
+            "metaagent.task.orphaned",
+            None,
+            &source_attachment_id,
+            title,
+            summary,
+            serde_json::json!({
+                "metaagent_id": metaagent.id(),
+                "task_id": task.task_id(),
+                "task_revision": task.revision(),
+                "completed_prompt_id": completion.completed.id(),
+                "completed_prompt_source_attachment_id": completion.completed.source_attachment_id(),
+            }),
+            "runtime".to_string(),
+        );
+        self.spawn_workflow_prompt_dispatches(dispatches);
+        Ok(())
+    }
+
+    fn metaagent_has_active_owned_regular_agent_work(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+    ) -> bool {
+        let activity = self.agent_activity_for_session(session);
+        self.owned
+            .agent_store
+            .get_session_agents(session.id())
+            .into_iter()
+            .filter(|agent| !agent.is_metaagent())
+            .filter(|agent| agent.owner_user_id() == metaagent.owner_user_id())
+            .any(|agent| {
+                activity
+                    .get(agent.id())
+                    .is_some_and(|agent_activity| agent_activity.busy)
+                    || self
+                        .owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(session, agent.id())
+                        .is_some()
+                    || self
+                        .owned
+                        .prompt_state_owner
+                        .queued_prompt_count_for_agent(session, agent.id())
+                        > 0
+            })
+    }
+
     pub(crate) async fn execute_metaagent_task_request(
         &self,
         request: LocalDaemonRequest,

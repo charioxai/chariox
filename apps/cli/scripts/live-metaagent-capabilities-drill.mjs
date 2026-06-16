@@ -12,7 +12,8 @@ const DEFAULT_POLL_MS = 250
 
 function parseArgs(argv) {
   const options = {
-    keepArtifactsOnFailure: false,
+    keepArtifactsOnFailure: true,
+    preserveOnSuccess: true,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
   }
@@ -20,6 +21,9 @@ function parseArgs(argv) {
     const arg = argv[index]
     if (arg === '--') continue
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--discard-artifacts-on-failure') options.keepArtifactsOnFailure = false
+    else if (arg === '--preserve-on-success') options.preserveOnSuccess = true
+    else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++index])
     else if (arg === '--help' || arg === '-h') {
@@ -39,6 +43,9 @@ function parseArgs(argv) {
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
         '  --keep-artifacts-on-failure',
+        '  --discard-artifacts-on-failure',
+        '  --preserve-on-success',
+        '  --discard-artifacts-on-success',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -555,6 +562,7 @@ async function main() {
       rootDir,
       passed: succeeded,
       preserveOnFailure: options.keepArtifactsOnFailure,
+      preserveOnSuccess: options.preserveOnSuccess,
       failure,
       metadata: {
         drill: 'metaagent-capabilities',

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,7 +39,7 @@ function parseArgs(argv) {
     effort: DEFAULT_EFFORT,
     accountProfile: 'default',
     keepArtifactsOnFailure: true,
-    preserveOnSuccess: false,
+    preserveOnSuccess: true,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     withoutWorkflowRequirement: false,
@@ -55,6 +56,7 @@ function parseArgs(argv) {
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
     else if (arg === '--discard-artifacts-on-failure') options.keepArtifactsOnFailure = false
     else if (arg === '--preserve-on-success') options.preserveOnSuccess = true
+    else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--without-workflow-requirement') options.withoutWorkflowRequirement = true
     else if (arg === '--help' || arg === '-h') {
       console.log([
@@ -74,8 +76,11 @@ function parseArgs(argv) {
         '  --account-profile default',
         `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
         `  --poll-ms ${DEFAULT_POLL_MS}`,
+        '  --keep-artifacts-on-failure',
+        '  --discard-artifacts-on-failure',
         '  --without-workflow-requirement',
         '  --preserve-on-success',
+        '  --discard-artifacts-on-success',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -299,6 +304,10 @@ function metaagentToolIsAllowed(toolName) {
     || toolName.startsWith('mcp__arroba.')
 }
 
+function metaagentToolIsDirectExecution(toolName) {
+  return /(?:^|\.|__)(write_artifact|edit_artifact|delete_artifact|exec|shell|bash|apply_patch)$/.test(toolName)
+}
+
 function listMetaagentEventsRequest(sessionId, metaagentId, limit = 100) {
   return {
     ListMetaagentEvents: {
@@ -318,7 +327,7 @@ async function waitForProviderRun(client, requests, providerRunId, timeoutMs, po
   let last = null
   while (Date.now() < deadline) {
     last = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
-    if (last?.state === 'Running' || last?.state === 'Active' || last?.runtime_mcp_server_url) return last
+    if (last?.state === 'Running' || last?.state === 'Active') return last
     if (last?.state === 'Ended') throw new Error(`provider run ended before becoming active: ${JSON.stringify(last)}`)
     await sleep(pollMs)
   }
@@ -385,6 +394,10 @@ function summarizeEvent(event) {
   }
 }
 
+function workflowRunIsCompleted(run) {
+  return String(run?.status ?? '').toLowerCase() === 'completed'
+}
+
 function commandHits(commandText, pattern) {
   return typeof commandText === 'string' && pattern.test(commandText)
 }
@@ -407,9 +420,11 @@ async function observeUntilComplete({
   const workerHistoryToolEvidence = new Set()
   const workflowEvidence = {
     created: false,
-    nodeAdded: false,
+    nodeAddCount: 0,
+    edgeAdded: false,
     endpointCreated: false,
     run: false,
+    runInspected: false,
   }
   const commandDiscoveryEvidence = {
     searched: false,
@@ -417,6 +432,7 @@ async function observeUntilComplete({
   }
   let lastTaskKey = null
   let lastWorkerKey = null
+  let lastRunKey = null
   let lastDiffKey = null
   let buildPassed = false
   let testPassed = false
@@ -433,6 +449,8 @@ async function observeUntilComplete({
     const task = (session.metaagent_tasks ?? []).find((entry) => entry.metaagent_id === metaagentId)
     const workers = (session.agents ?? []).filter((agent) => !beforeAgentIds.has(agent.id) && agent.id !== metaagentId && agent.role !== 'meta')
     const workerIds = new Set(workers.map((agent) => agent.id))
+    const workflowRuns = session.workflow_runs ?? []
+    const completedWorkflowRuns = workflowRuns.filter(workflowRunIsCompleted)
 
     const taskKey = task
       ? `${task.status}:${task.revision}:${task.task_markdown?.length ?? 0}:${task.plan_markdown?.length ?? 0}:${task.completion_summary ?? ''}:${task.blocked_reason ?? ''}:${task.aborted_reason ?? ''}`
@@ -461,6 +479,19 @@ async function observeUntilComplete({
       })))
     }
 
+    const runKey = workflowRuns.map((run) => `${run.id}:${run.workflow_id}:${run.status}:${run.node_runs?.length ?? 0}:${run.final_output?.message ?? ''}`).join('|')
+    if (runKey !== lastRunKey) {
+      lastRunKey = runKey
+      log('workflow-runs-observed', workflowRuns.map((run) => ({
+        id: run.id,
+        workflowId: run.workflow_id,
+        status: run.status,
+        nodeRuns: run.node_runs?.length ?? 0,
+        finalOutput: run.final_output?.message ?? null,
+        finalOutputValid: run.final_output_valid ?? null,
+      })))
+    }
+
     const historyEntries = await readHistoryEntries(historyDir)
     for (const entry of historyEntries) {
       if (entry.kind !== 'provider_tool') continue
@@ -475,12 +506,18 @@ async function observeUntilComplete({
         if (!metaagentToolIsAllowed(tool.tool)) {
           throw new Error(`metaagent used disallowed provider-native tool ${tool.tool} at ${entry.file}:${entry.line}`)
         }
+        if (metaagentToolIsDirectExecution(tool.tool)) {
+          throw new Error(`metaagent used direct execution/file tool ${tool.tool} at ${entry.file}:${entry.line}`)
+        }
+        const commandCompleted = tool.status === 'completed'
         commandDiscoveryEvidence.searched ||= /search_commands/.test(tool.tool)
         commandDiscoveryEvidence.docsRead ||= /command_docs/.test(tool.tool)
-        workflowEvidence.created ||= commandHits(command, /^workflow\s+(new|create)\b/)
-        workflowEvidence.nodeAdded ||= commandHits(command, /^workflow\s+node\s+add\b/)
-        workflowEvidence.endpointCreated ||= commandHits(command, /^workflow\s+endpoint\s+(new|create)\b/)
-        workflowEvidence.run ||= commandHits(command, /^workflow\s+(run|start)\b/)
+        workflowEvidence.created ||= commandCompleted && commandHits(command, /^workflow\s+(new|create)\b/)
+        if (commandCompleted && commandHits(command, /^workflow\s+node\s+add\b/)) workflowEvidence.nodeAddCount += 1
+        workflowEvidence.edgeAdded ||= commandCompleted && commandHits(command, /^workflow\s+edge\s+add\b/)
+        workflowEvidence.endpointCreated ||= commandCompleted && commandHits(command, /^workflow\s+endpoint\s+(new|create)\b/)
+        workflowEvidence.run ||= commandCompleted && commandHits(command, /^workflow\s+(run|start)\b/)
+        workflowEvidence.runInspected ||= commandCompleted && commandHits(command, /^workflow\s+(runs|get-run|show)\b/)
       } else if (workerIds.has(entry.agent_id) && tool.status === 'completed') {
         workerHistoryToolEvidence.add(historyKey)
       }
@@ -552,9 +589,13 @@ async function observeUntilComplete({
     }
 
     const workflowComplete = workflowEvidence.created
-      && workflowEvidence.nodeAdded
+      && workflowEvidence.nodeAddCount >= 2
+      && workflowEvidence.edgeAdded
       && workflowEvidence.endpointCreated
       && workflowEvidence.run
+      && workflowEvidence.runInspected
+      && completedWorkflowRuns.length > 0
+      && completedWorkflowRuns.some((run) => run.final_output && run.final_output_valid !== false)
     const workflowRequirementMet = options.withoutWorkflowRequirement || workflowComplete
     const requiredFiles = ['index.html', 'src/app.js', 'src/styles.css']
     const requiredFilesChanged = requiredFiles.every((file) => changedFiles.includes(file))
@@ -583,6 +624,8 @@ async function observeUntilComplete({
         commandDiscoveryEvidence,
         buildResult,
         testResult,
+        workflowRuns,
+        completedWorkflowRuns,
         changedFiles,
       }
     }
@@ -593,6 +636,14 @@ async function observeUntilComplete({
   throw new Error(`timed out waiting for metaagent workflow webapp completion\nlast session=${JSON.stringify({
     task: finalSession?.metaagent_tasks?.find((entry) => entry.metaagent_id === metaagentId) ?? null,
     agents: finalSession?.agents?.map((agent) => ({ id: agent.id, alias: agent.alias, role: agent.role, provider: agent.provider })),
+    workflowRuns: finalSession?.workflow_runs?.map((run) => ({
+      id: run.id,
+      workflowId: run.workflow_id,
+      status: run.status,
+      nodeRuns: run.node_runs?.length ?? 0,
+      finalOutput: run.final_output?.message ?? null,
+      finalOutputValid: run.final_output_valid ?? null,
+    })),
     events: finalEvents.map(summarizeEvent),
   }, null, 2)}`)
 }
@@ -662,7 +713,14 @@ async function main() {
     }
 
     const kernelBinary = await buildKernel()
-    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+    const daemonStdout = createWriteStream(path.join(rootDir, 'daemon.stdout.log'), { flags: 'a' })
+    const daemonStderr = createWriteStream(path.join(rootDir, 'daemon.stderr.log'), { flags: 'a' })
+    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    daemon.stdout.pipe(daemonStdout)
+    daemon.stderr.pipe(daemonStderr)
+    daemon.once('exit', (code, signal) => {
+      log('daemon-exited', { code, signal })
+    })
     await waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env)
     log('daemon-ready', { kernelUrl, provider: options.provider, model: options.model, effort: options.effort })
 
@@ -697,6 +755,11 @@ async function main() {
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
     const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
     client = new LocalIpcClient(kernelUrl)
+    const disposeKernelEventLog = client.onKernelEvent((event) => {
+      if (event.event === 'transport_closed' || event.event === 'transport_resumed') {
+        log('client-transport-event', event)
+      }
+    })
     const attachment = unwrap(await client.send(requests.attachToSessionRequest(sessionId, `${drillSlug}-${Date.now()}`)), 'SessionAttached').attachment
     const initialSession = await getSession(client, requests, sessionId)
     const metaagent = (initialSession.agents ?? []).find((agent) => agent.role === 'meta')
@@ -757,6 +820,14 @@ async function main() {
       planLength: observed.task.plan_markdown.length,
       workflowEvidence: observed.workflowEvidence,
       commandDiscoveryEvidence: observed.commandDiscoveryEvidence,
+      workflowRuns: observed.workflowRuns.map((run) => ({
+        id: run.id,
+        workflowId: run.workflow_id,
+        status: run.status,
+        nodeRuns: run.node_runs?.length ?? 0,
+        finalOutput: run.final_output?.message ?? null,
+        finalOutputValid: run.final_output_valid ?? null,
+      })),
       changedFiles: observed.changedFiles,
       verifiedCommands: ['npm run build', 'npm test'],
       finalBuildTail: finalBuild.stdout.slice(-800),
@@ -773,29 +844,26 @@ async function main() {
     if (client) await client.close().catch(() => {})
     await cleanupSession(kernelUrl, sessionId)
     await terminateChild(daemon)
-    if (!succeeded || !options.preserveOnSuccess) {
-      await finalizeDrillArtifacts({
-        rootDir,
-        passed: succeeded,
-        preserveOnFailure: options.keepArtifactsOnFailure,
-        failure,
-        metadata: {
-          drill: drillSlug,
-          mode: drillMode,
-          provider: options.provider,
-          model: options.model,
-          effort: options.effort,
-          timeoutMs: options.timeoutMs,
-          pollMs: options.pollMs,
-          kernelUrl,
-          sessionId,
-          workspace,
-        },
-        log,
-      })
-    } else {
-      log('preserved-successful-run', { rootDir, workspace })
-    }
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      preserveOnSuccess: options.preserveOnSuccess,
+      failure,
+      metadata: {
+        drill: drillSlug,
+        mode: drillMode,
+        provider: options.provider,
+        model: options.model,
+        effort: options.effort,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        kernelUrl,
+        sessionId,
+        workspace,
+      },
+      log,
+    })
   }
   log('passed')
 }

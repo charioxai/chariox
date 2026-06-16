@@ -1,4 +1,5 @@
 use crate::agent::RemoteAgentBinding;
+use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::error::DaemonError;
 use crate::session::{PromptCompletion, PromptQueueItem};
 use crate::transport::flow_control;
@@ -192,10 +193,15 @@ impl<'a> KernelAgentService<'a> {
         crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(&completion.session_id)?;
 
-        Ok(PromptCompletion {
+        let prompt_completion = PromptCompletion {
             completed: completion.completed,
             started_next,
-        })
+        };
+        self.inject_orphaned_metaagent_task_event_after_turn(
+            &completion.agent_id,
+            &prompt_completion,
+        )?;
+        Ok(prompt_completion)
     }
 
     pub(super) fn record_assistant_message_completion(
@@ -213,5 +219,223 @@ impl<'a> KernelAgentService<'a> {
             message_id,
             completed_at_ms,
         );
+    }
+
+    pub(super) fn inject_orphaned_metaagent_task_event_after_turn(
+        &mut self,
+        metaagent_id: &str,
+        completion: &PromptCompletion,
+    ) -> Result<(), DaemonError> {
+        let metaagent = self.app.agents.get_agent(metaagent_id)?;
+        if !metaagent.is_metaagent() {
+            return Ok(());
+        }
+        if completion.started_next.is_some() {
+            return Ok(());
+        }
+        let session_id = metaagent.session_id().to_string();
+        let mut session = self.app.sessions.get_session(&session_id)?;
+        let Some(task) = session.metaagent_task(metaagent.id()).cloned() else {
+            return Ok(());
+        };
+        if task.status() != crate::session::MetaagentTaskStatus::Active {
+            return Ok(());
+        }
+        if self
+            .app
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, metaagent.id())
+            .is_some()
+        {
+            return Ok(());
+        }
+        session.set_agents(self.app.agents.get_session_agents(&session_id));
+        if self.metaagent_has_active_owned_regular_agent_work(&session, &metaagent) {
+            return Ok(());
+        }
+
+        let source_attachment_id =
+            self.ensure_metaagent_task_attachment(&session_id, &metaagent)?;
+        let prompt_id = self.app.sessions_mut().reserve_prompt_id();
+        let title = "Metaagent task needs a final decision".to_string();
+        let summary = format!(
+            "Your last turn ended while task `{}` is still active and no same-owner regular agents have active or queued work. Decide the task state now: if it is done, call `arroba.meta.complete_task`; if it cannot be completed after exhausting options, call `arroba.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
+            task.task_id()
+        );
+        let record = self.app.metaagent_event_store().record(
+            crate::runtime::metaagent_event::NewMetaagentEvent {
+                session_id: session_id.clone(),
+                metaagent_id: metaagent.id().to_string(),
+                owner_user_id: metaagent.owner_user_id().to_string(),
+                kind: "metaagent.task.orphaned".to_string(),
+                source_agent_id: None,
+                title: title.clone(),
+                summary: summary.clone(),
+                detail: serde_json::json!({
+                    "metaagent_id": metaagent.id(),
+                    "task_id": task.task_id(),
+                    "task_revision": task.revision(),
+                    "completed_prompt_id": completion.completed.id(),
+                    "completed_prompt_source_attachment_id": completion.completed.source_attachment_id(),
+                }),
+                injected_prompt_id: Some(prompt_id.clone()),
+            },
+        );
+        self.persist_metaagent_event_record("metaagent.event.recorded", &record);
+        let assembly = crate::scheduler::prompt_injection::render_metaagent_event_prompt_assembly(
+            crate::scheduler::prompt_injection::MetaagentEventPromptContext {
+                event_id: record.event_id.clone(),
+                event_kind: record.kind.clone(),
+                source: "runtime".to_string(),
+                title,
+                body: summary,
+            },
+        );
+        let prompt = PromptQueueItem::new(
+            prompt_id,
+            &source_attachment_id,
+            metaagent.id(),
+            assembly.visible_user_prompt,
+            crate::session::PromptStatus::Queued,
+        );
+        let submitted = match self.submit_prepared_prompt_for_kernel(
+            crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt,
+                force_queue: false,
+            },
+        ) {
+            Ok(submitted) => submitted,
+            Err(error) => {
+                self.update_metaagent_event_prompt_delivery(
+                    &record.event_id,
+                    crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+        let delivery_status = match &submitted.outcome {
+            crate::session::PromptSubmissionOutcome::Started { .. } => {
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Submitted
+            }
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Queued
+            }
+        };
+        self.update_metaagent_event_prompt_delivery(&record.event_id, delivery_status, None);
+        if let Err(error) = self
+            .finish_compat_prompt_dispatch(submitted.dispatch)
+            .and_then(|_| self.finish_compat_remote_prompt_dispatch(submitted.remote_dispatch))
+        {
+            self.update_metaagent_event_prompt_delivery(
+                &record.event_id,
+                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn metaagent_has_active_owned_regular_agent_work(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+    ) -> bool {
+        let prompt_activity = self.app.prompt_activity.read();
+        let active_turns = self.app.active_turns.snapshot();
+        let activity = crate::runtime::projection::agent_activity_for_session_projection(
+            session,
+            |agent_id| self.app.providers.get_run_for_agent(session.id(), agent_id),
+            &prompt_activity,
+            &active_turns,
+            None,
+        );
+        self.app
+            .agents
+            .get_session_agents(session.id())
+            .into_iter()
+            .filter(|agent| !agent.is_metaagent())
+            .filter(|agent| agent.owner_user_id() == metaagent.owner_user_id())
+            .any(|agent| {
+                activity
+                    .get(agent.id())
+                    .is_some_and(|agent_activity| agent_activity.busy)
+                    || self
+                        .app
+                        .prompt_state_owner
+                        .active_prompt_for_agent(session, agent.id())
+                        .is_some()
+                    || self
+                        .app
+                        .prompt_state_owner
+                        .queued_prompt_count_for_agent(session, agent.id())
+                        > 0
+            })
+    }
+
+    fn ensure_metaagent_task_attachment(
+        &mut self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+    ) -> Result<String, DaemonError> {
+        let client_id = format!("metaagent:{}:task", metaagent.id());
+        if let Some(attachment) = self
+            .app
+            .attachments
+            .list_client_attachments(&client_id)
+            .into_iter()
+            .find(|attachment| attachment.session_id() == session_id)
+        {
+            return Ok(attachment.id().to_string());
+        }
+        let attachment = self.app.attach(AttachRequest::for_user(
+            session_id,
+            client_id,
+            ClientCapabilityLevel::AutomationOnly,
+            metaagent.owner_user_id(),
+        ))?;
+        Ok(attachment.id().to_string())
+    }
+
+    fn update_metaagent_event_prompt_delivery(
+        &self,
+        event_id: &str,
+        status: crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus,
+        error: Option<String>,
+    ) {
+        if let Some(record) = self
+            .app
+            .metaagent_event_store()
+            .update_prompt_delivery_status(event_id, status, error)
+        {
+            self.persist_metaagent_event_record("metaagent.event.delivery_updated", &record);
+        }
+    }
+
+    fn persist_metaagent_event_record(
+        &self,
+        kind: &'static str,
+        record: &crate::runtime::metaagent_event::MetaagentEventRecord,
+    ) {
+        if let Err(error) = self.app.durable_state_store().append_event(
+            kind,
+            Some(record.event_id.clone()),
+            serde_json::json!({
+                "record": record,
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.event",
+                "failed to persist metaagent event record",
+                serde_json::json!({
+                    "kind": kind,
+                    "event_id": &record.event_id,
+                    "metaagent_id": &record.metaagent_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 }
