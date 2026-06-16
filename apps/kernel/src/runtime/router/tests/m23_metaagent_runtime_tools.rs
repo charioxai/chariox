@@ -273,6 +273,53 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
         polled.payload
     );
 
+    {
+        let mut app = app.lock().await;
+        app.fan_out_output(
+            session.id(),
+            worker_run.id(),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            None,
+            Vec::new(),
+            serde_json::json!({
+                "tool": "bash",
+                "status": "running",
+                "input": {"command": "printf trace-visible"}
+            })
+            .to_string()
+            .as_bytes(),
+        );
+    }
+
+    let duplicate = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_POLL_TRACE_TOOL,
+            serde_json::json!({ "subscription_id": subscription_id, "limit": 10 }),
+        )
+        .await
+        .expect("duplicate poll_trace should dispatch");
+    assert!(duplicate.ok, "{:?}", duplicate.payload);
+    assert_eq!(
+        duplicate
+            .payload
+            .get("empty")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "compact trace should suppress repeated identical lifecycle records: {:?}",
+        duplicate.payload
+    );
+    assert_eq!(
+        duplicate
+            .payload
+            .get("suppressed_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "{:?}",
+        duplicate.payload
+    );
+
     let drained = router
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
@@ -692,6 +739,44 @@ async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
             .and_then(serde_json::Value::as_str),
         Some("1. Delegate implementation.")
     );
+    let app_guard = app.lock().await;
+    let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        session_id: session.id().to_string(),
+    });
+    let state_command =
+        KernelCommand::from_local_request("meta-task-projection-state", None, None, &state_request);
+    let state_router = router.clone();
+    let state_task =
+        tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
+    tokio::task::yield_now().await;
+    assert!(
+        state_task.is_finished(),
+        "meta task runtime tool updates should publish a complete session projection"
+    );
+    drop(app_guard);
+    let state_response = state_task
+        .await
+        .expect("state task should join")
+        .expect("state should resolve");
+    match state_response {
+        LocalDaemonResponse::SessionState { session, .. } => {
+            assert!(
+                session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == metaagent.id()),
+                "projected session should retain agent membership"
+            );
+            assert_eq!(
+                session
+                    .metaagent_task(metaagent.id())
+                    .map(|task| task.plan_markdown()),
+                Some("1. Delegate implementation."),
+                "projected session should retain the metaagent task"
+            );
+        }
+        other => panic!("unexpected state response: {other:?}"),
+    }
 
     let blocked = router
         .runtime_state

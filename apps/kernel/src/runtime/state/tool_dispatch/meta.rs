@@ -378,9 +378,10 @@ impl KernelRuntimeState {
             META_READ_TASK_TOOL => {
                 let _args = serde_json::from_value::<MetaReadTaskArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let session = self.meta_coherent_session_snapshot(session, agent)?;
                 Ok(RuntimeToolResult {
                     ok: true,
-                    payload: metaagent_task_payload(session, agent),
+                    payload: metaagent_task_payload(&session, agent),
                 })
             }
             META_UPDATE_TASK_TOOL => {
@@ -391,18 +392,19 @@ impl KernelRuntimeState {
                     .session_store
                     .write()
                     .update_metaagent_task_markdown(session.id(), agent.id(), args.markdown)?;
-                self.owned.session_projection.update(updated.clone());
+                let projected = self.owned.session_snapshot(updated.id())?;
                 Ok(RuntimeToolResult {
                     ok: true,
-                    payload: metaagent_task_payload(&updated, agent),
+                    payload: metaagent_task_payload(&projected, agent),
                 })
             }
             META_READ_PLAN_TOOL => {
                 let _args = serde_json::from_value::<MetaReadPlanArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let session = self.meta_coherent_session_snapshot(session, agent)?;
                 Ok(RuntimeToolResult {
                     ok: true,
-                    payload: metaagent_plan_payload(session, agent),
+                    payload: metaagent_plan_payload(&session, agent),
                 })
             }
             META_UPDATE_PLAN_TOOL => {
@@ -413,10 +415,10 @@ impl KernelRuntimeState {
                     .session_store
                     .write()
                     .update_metaagent_plan_markdown(session.id(), agent.id(), args.markdown)?;
-                self.owned.session_projection.update(updated.clone());
+                let projected = self.owned.session_snapshot(updated.id())?;
                 Ok(RuntimeToolResult {
                     ok: true,
-                    payload: metaagent_plan_payload(&updated, agent),
+                    payload: metaagent_plan_payload(&projected, agent),
                 })
             }
             META_COMPLETE_TASK_TOOL => {
@@ -427,10 +429,10 @@ impl KernelRuntimeState {
                     agent.id(),
                     args.summary,
                 )?;
-                self.owned.session_projection.update(updated.clone());
+                let projected = self.owned.session_snapshot(updated.id())?;
                 Ok(RuntimeToolResult {
                     ok: true,
-                    payload: metaagent_task_payload(&updated, agent),
+                    payload: metaagent_task_payload(&projected, agent),
                 })
             }
             META_MARK_BLOCKED_TOOL => {
@@ -441,10 +443,10 @@ impl KernelRuntimeState {
                     agent.id(),
                     args.reason,
                 )?;
-                self.owned.session_projection.update(updated.clone());
+                let projected = self.owned.session_snapshot(updated.id())?;
                 Ok(RuntimeToolResult {
                     ok: true,
-                    payload: metaagent_task_payload(&updated, agent),
+                    payload: metaagent_task_payload(&projected, agent),
                 })
             }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
@@ -593,6 +595,7 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let include_workflows = args.include_workflows.unwrap_or(true);
         let include_events = args.include_events.unwrap_or(true);
+        let session = self.meta_coherent_session_snapshot(session, agent)?;
         let session_agents = self.owned.agent_store.get_session_agents(session.id());
         let owned_agents = session_agents
             .iter()
@@ -634,6 +637,7 @@ impl KernelRuntimeState {
                     "status": agent.state(),
                     "is_processing": agent.is_processing(),
                 },
+                "task": metaagent_task_payload(&session, agent),
                 "agents": {
                     "total": session_agents.len(),
                     "owned_total": owned_agents.len(),
@@ -655,6 +659,27 @@ impl KernelRuntimeState {
                 },
             }),
         })
+    }
+
+    fn meta_coherent_session_snapshot(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let projected = self.owned.session_snapshot(session.id())?;
+        if self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&projected, agent.id())
+            .is_some()
+            && projected.metaagent_task(agent.id()).is_none()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_meta.session_snapshot",
+                message: "metaagent task snapshot is temporarily unavailable while the kernel projection catches up; retry shortly".to_string(),
+            });
+        }
+        Ok(projected)
     }
 
     async fn meta_turn_overview(
@@ -890,10 +915,12 @@ impl KernelRuntimeState {
         let started_at = std::time::Instant::now();
         let mut items = Vec::new();
         let mut drained_count = 0usize;
+        let mut suppressed_count = 0usize;
         let mut matched = false;
         loop {
             let batch = self.meta_drain_trace_batch(session.id(), &subscription, mode, limit);
             drained_count += batch.drained_count;
+            suppressed_count += batch.suppressed_count;
             matched = matched || batch.matches_until(until);
             extend_meta_trace_items(&mut items, batch.items, limit);
             if !wait || matched || started_at.elapsed().as_millis() >= wait_ms as u128 {
@@ -909,6 +936,7 @@ impl KernelRuntimeState {
 
             let batch = self.meta_drain_trace_batch(session.id(), &subscription, mode, limit);
             drained_count += batch.drained_count;
+            suppressed_count += batch.suppressed_count;
             matched = matched || batch.matches_until(until);
             extend_meta_trace_items(&mut items, batch.items, limit);
             if matched || started_at.elapsed().as_millis() >= wait_ms as u128 {
@@ -940,6 +968,7 @@ impl KernelRuntimeState {
                 "timed_out": wait && !matched,
                 "matched": matched,
                 "drained_count": drained_count,
+                "suppressed_count": suppressed_count,
                 "items": items,
                 "empty": items.is_empty(),
                 "worker_activity": worker_activity,
@@ -969,11 +998,16 @@ impl KernelRuntimeState {
         let mut items = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut drained_count = 0usize;
+        let mut suppressed_count = 0usize;
         for record in records {
             drained_count += 1;
             let item = meta_trace_output_item(record, mode);
-            if seen.insert(meta_trace_item_key(&item)) {
+            if self.meta_trace_should_emit_item(&subscription.subscription_id, mode, &item)
+                && seen.insert(meta_trace_item_key(&item))
+            {
                 extend_meta_trace_items(&mut items, vec![item], limit);
+            } else {
+                suppressed_count += 1;
             }
         }
         for completion in completions {
@@ -986,8 +1020,12 @@ impl KernelRuntimeState {
                 "completed_at_ms": completion.completed_at_ms,
                 "worker_generated": true,
             });
-            if seen.insert(meta_trace_item_key(&item)) {
+            if self.meta_trace_should_emit_item(&subscription.subscription_id, mode, &item)
+                && seen.insert(meta_trace_item_key(&item))
+            {
                 extend_meta_trace_items(&mut items, vec![item], limit);
+            } else {
+                suppressed_count += 1;
             }
         }
         for notice in notices {
@@ -1004,14 +1042,33 @@ impl KernelRuntimeState {
                 },
                 "worker_generated": false,
             });
-            if seen.insert(meta_trace_item_key(&item)) {
+            if self.meta_trace_should_emit_item(&subscription.subscription_id, mode, &item)
+                && seen.insert(meta_trace_item_key(&item))
+            {
                 extend_meta_trace_items(&mut items, vec![item], limit);
+            } else {
+                suppressed_count += 1;
             }
         }
         MetaTraceBatch {
             items,
             drained_count,
+            suppressed_count,
         }
+    }
+
+    fn meta_trace_should_emit_item(
+        &self,
+        subscription_id: &str,
+        mode: crate::runtime::metaagent_trace::MetaagentTraceMode,
+        item: &serde_json::Value,
+    ) -> bool {
+        if mode == crate::runtime::metaagent_trace::MetaagentTraceMode::Verbose {
+            return true;
+        }
+        self.owned
+            .metaagent_trace_subscriptions
+            .remember_compact_item_key(subscription_id, meta_trace_item_key(item))
     }
 
     fn meta_unsubscribe_trace(
@@ -1404,6 +1461,7 @@ impl MetaTraceWaitUntil {
 struct MetaTraceBatch {
     items: Vec<serde_json::Value>,
     drained_count: usize,
+    suppressed_count: usize,
 }
 
 impl MetaTraceBatch {

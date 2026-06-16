@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ struct MetaagentTraceState {
     next_sequence: u64,
     subscriptions: BTreeMap<String, MetaagentTraceSubscription>,
     target_activity: BTreeMap<(String, String), MetaagentTraceTargetActivity>,
+    emitted_compact_item_keys: BTreeMap<String, BTreeSet<String>>,
 }
 
 struct MetaagentTraceTargetActivity {
@@ -113,9 +114,22 @@ impl MetaagentTraceSubscriptionStore {
             .get(subscription_id)
             .is_some_and(|subscription| subscription.metaagent_id == metaagent_id)
         {
+            state.emitted_compact_item_keys.remove(subscription_id);
             return state.subscriptions.remove(subscription_id);
         }
         None
+    }
+
+    pub(crate) fn remember_compact_item_key(&self, subscription_id: &str, key: String) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("metaagent trace subscription store poisoned");
+        state
+            .emitted_compact_item_keys
+            .entry(subscription_id.to_string())
+            .or_default()
+            .insert(key)
     }
 
     pub(crate) fn get_for_metaagent(
