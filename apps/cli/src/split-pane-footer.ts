@@ -1,5 +1,5 @@
 import { getSessionStatusLabel } from "./runtime.js"
-import { formatPromptMetaParts, type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
+import { type PromptMetaPart, type PromptMetaTone } from "./prompt-meta.js"
 
 export type StatusBadgeTone = "idle" | "working" | "disconnected" | "error"
 
@@ -119,21 +119,13 @@ export function formatSplitPaneFooterParts(
     return []
   }
 
-  const aliasLabel = agent.alias?.trim() || agent.agent_ref
-  const hasActiveRun = activeRun?.agentInstanceId === agent.id
-  const effectiveModel = hasActiveRun
-    ? activeRun.model
-    : override?.model ?? agent.model ?? fallbackModel ?? "default"
-  const effectiveVariant = hasActiveRun
-    ? activeRun.variant ?? agent.effort ?? override?.variant ?? ""
-    : override?.variant ?? agent.effort ?? ""
-  const metaRef = splitProviderModelRef(effectiveModel ?? "default")
-  const provider = metaRef?.providerId ?? agent.provider
-  const model = metaRef?.modelId ?? effectiveModel ?? "default"
-  const executionMode = agent.execution_mode ?? "build"
-  const permissionLevel = agent.permission_level ?? "yolo"
-
-  const substitutePart = formatSubstituteFooterPart(agent)
+  void activeRun
+  void fallbackModel
+  void override
+  const aliasLabel = agent.alias?.trim() || "agent"
+  const slicePart = agent.location_label?.trim().toLowerCase().startsWith("slice")
+    ? { kind: "location" as const, text: "view slice", tone: "accent" as const }
+    : null
   return [
     {
       kind: "agent",
@@ -141,33 +133,8 @@ export function formatSplitPaneFooterParts(
       tone: toneForAgent(aliasLabel),
     },
     ...(agent.role === "meta" ? [{ kind: "role" as const, text: "meta", tone: "accent" as const }] : []),
-    ...formatPromptMetaParts(provider, model, effectiveVariant ?? ""),
-    ...(agent.location_label ? [{ kind: "location" as const, text: agent.location_label, tone: "accent" as const }] : []),
-    ...(substitutePart ? [substitutePart] : []),
-    { kind: "mode", text: executionMode, tone: "info" },
-    { kind: "permission", text: permissionLevel, tone: "warning" },
+    ...(slicePart ? [slicePart] : []),
   ]
-}
-
-function formatSubstituteFooterPart(agent: SplitPaneFooterAgent): SplitPaneFooterPart | null {
-  const count = agent.substitutes?.length ?? 0
-  if (count === 0) {
-    return null
-  }
-  const active = agent.active_substitute_index
-  if (active != null && active >= 0) {
-    const reason = agent.last_substitution?.reason
-    return {
-      kind: "mode",
-      text: reason && reason !== "manual" ? `sub: ${reason}` : `sub ${active + 1}/${count}`,
-      tone: "accent",
-    }
-  }
-  return {
-    kind: "mode",
-    text: `${count} sub${count === 1 ? "" : "s"}`,
-    tone: "secondary",
-  }
 }
 
 export function buildSplitPaneFooterState<T extends SplitPaneFooterAgent>(options: {
@@ -222,16 +189,4 @@ function toneForAgent(value: string): PromptMetaTone {
     hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0
   }
   return tones[hash % tones.length] ?? "text"
-}
-
-function splitProviderModelRef(modelRef: string) {
-  const parts = modelRef.split("/").filter(Boolean)
-  if (parts.length < 2) {
-    return null
-  }
-
-  return {
-    providerId: parts.at(-2)!,
-    modelId: parts.at(-1)!,
-  }
 }

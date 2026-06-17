@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Pane Footer Dropdown Plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171a21;
+      --text: #e7e9ee;
+      --muted: #a0a7b4;
+      --line: #303642;
+      --accent: #f28c45;
+      --code: #222734;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+    }
+
+    h1, h2 {
+      line-height: 1.2;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 30px;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      margin-top: 32px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      font-size: 20px;
+    }
+
+    p {
+      color: var(--muted);
+      margin: 8px 0 0;
+    }
+
+    ol {
+      margin: 14px 0 0;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 10px 0;
+    }
+
+    code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--code);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .summary {
+      margin-top: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: var(--panel);
+    }
+
+    .shape {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 8px 10px;
+      border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+      border-radius: 6px;
+      color: var(--text);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .repo {
+      color: var(--accent);
+      font-weight: 650;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Agent Pane Footer Dropdown Plan</h1>
+    <p>
+      Updated plan for simplifying crowded agent pane footers in both the local TUI and the web terminal.
+    </p>
+
+    <section class="summary">
+      <strong>Target footer shape</strong>
+      <div class="shape">STATUS | alias | view slice? | dropdown</div>
+      <p>
+        All clickable controls except the optional slice screen link should live under the dropdown at every pane width.
+      </p>
+    </section>
+
+    <h2>Scope</h2>
+    <ol>
+      <li>
+        Cover the OSS/local TUI in <span class="repo">arroba</span>:
+        <code>apps/cli/src/split-pane-footer.ts</code> and
+        <code>apps/cli/src/split-pane-footer-renderer.ts</code>.
+      </li>
+      <li>
+        Cover the web terminal in <span class="repo">arroba-cloud</span>:
+        <code>apps/web/src/react/terminal/FreeformPaneShellMount.tsx</code>,
+        <code>apps/web/src/react/terminal/FreeformFooterControlsMount.tsx</code>,
+        <code>apps/web/src/terminal/freeform-footer-controls-controller.ts</code>,
+        <code>apps/web/src/terminal/freeform-agent-projection.ts</code>, and
+        <code>apps/web/src/styles/freeform.ts</code>.
+      </li>
+    </ol>
+
+    <h2>Footer Behavior</h2>
+    <ol>
+      <li>
+        Keep only the status badge, visible alias, optional <code>view slice</code> link, and dropdown trigger inline.
+      </li>
+      <li>
+        Remove the visible agent ID or <code>agentRef</code> from the footer row. The alias remains the identity shown there.
+      </li>
+      <li>
+        Remove inline runtime facts: <code>home machine...</code>, <code>local wt...</code>, <code>local run</code>,
+        provider run, worktree, worker run, auth, manifest, and extension badges.
+      </li>
+      <li>
+        Preserve runtime facts in inspect/detail surfaces, not in the pane footer.
+      </li>
+      <li>
+        Show <code>view slice</code> before the dropdown only when the agent is in a slice with a display URL.
+      </li>
+    </ol>
+
+    <h2>Dropdown Rules</h2>
+    <ol>
+      <li>
+        Always render the dropdown, regardless of pane width.
+      </li>
+      <li>
+        Move provider, model, variant, mode, and permission controls into the dropdown.
+      </li>
+      <li>
+        Move alias edit, <code>add substitute</code>, substitute status/actions, slice save/restart/start actions,
+        and any worktree/provider-run actions into the dropdown.
+      </li>
+      <li>
+        Remove the responsive behavior where wide panes show inline controls and narrow panes use the dropdown.
+      </li>
+    </ol>
+
+    <h2>Web Terminal Changes</h2>
+    <ol>
+      <li>
+        In <code>FreeformPaneShellMount.tsx</code>, remove <code>.freeform-agent-id</code> from the visible footer
+        and make alias display non-clickable inline text.
+      </li>
+      <li>
+        Keep only the slice screen link, if available, before the dropdown trigger.
+      </li>
+      <li>
+        In <code>freeform-agent-projection.ts</code>, split slice screen link projection from other runtime badges.
+      </li>
+      <li>
+        In <code>freeform-footer-controls-controller.ts</code>, mount controls into
+        <code>.freeform-footer-menu-panel</code> only.
+      </li>
+      <li>
+        In <code>freeform.ts</code>, remove or neutralize inline footer control responsive rules so controls cannot
+        re-expand into the old crowded layout.
+      </li>
+    </ol>
+
+    <h2>Local TUI Changes</h2>
+    <ol>
+      <li>
+        Update footer part generation to produce alias-only identity plus optional slice action.
+      </li>
+      <li>
+        Remove provider/model/mode/permission/location/substitute fields from the inline rendered footer slots.
+      </li>
+      <li>
+        Ensure the local footer action menu follows the same rule: all actions under the dropdown/menu, not inline.
+      </li>
+    </ol>
+
+    <h2>Tests</h2>
+    <ol>
+      <li>
+        Update <code>apps/cli/src/split-pane-footer.test.ts</code> in <span class="repo">arroba</span>.
+      </li>
+      <li>
+        Update <code>apps/web/src/terminal/freeform-pane-footer-controller.test.ts</code>,
+        <code>apps/web/src/freeform-footer-controls.test.ts</code>, and
+        <code>apps/web/src/terminal/live-freeform-pane-controller.test.ts</code> in <span class="repo">arroba-cloud</span>.
+      </li>
+      <li>
+        Add assertions that inline controls are absent and menu controls are present at all widths.
+      </li>
+    </ol>
+
+    <h2>Visual Verification</h2>
+    <ol>
+      <li>
+        Run the web terminal locally.
+      </li>
+      <li>
+        Capture screenshots for wide pane local agent, narrow pane local agent, wide pane slice agent with
+        <code>view slice</code>, and narrow pane slice agent with dropdown open.
+      </li>
+      <li>
+        Paste the screenshots into the conversation for evaluation.
+      </li>
+      <li>
+        Confirm there is no footer overlap and no crowded clickable targets.
+      </li>
+    </ol>
+  </main>
+</body>
+</html>
