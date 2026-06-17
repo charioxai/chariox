@@ -1,5 +1,6 @@
 use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 
 use super::identity::load_or_create_runtime_identity;
 use super::{
@@ -45,6 +46,19 @@ impl DaemonConfig {
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| runtime_identity.daemon_id.clone());
+        let default_machine_alias = runtime_display_machine_name();
+        let host_machine_alias = env::var("ARROBA_MACHINE_ALIAS")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or(runtime_identity.machine_alias)
+            .or(default_machine_alias.clone());
+        let daemon_alias = env::var("ARROBA_DAEMON_ALIAS")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or(runtime_identity.daemon_alias)
+            .or_else(|| default_kernel_alias(host_machine_alias.as_deref(), kernel_websocket_port));
         Self {
             user_config_path,
             user_config,
@@ -96,21 +110,13 @@ impl DaemonConfig {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| runtime_identity.machine_id.clone()),
-            host_machine_alias: env::var("ARROBA_MACHINE_ALIAS")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .or(runtime_identity.machine_alias),
+            host_machine_alias,
             os_name: env::var("ARROBA_OS_NAME")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(default_os_name),
-            daemon_alias: env::var("ARROBA_DAEMON_ALIAS")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .or(runtime_identity.daemon_alias),
+            daemon_alias,
             relay_url: env_relay_url
                 .or_else(|| persisted_config.clone().and_then(|config| config.relay_url)),
             relay_token: env_relay_token.or_else(|| {
@@ -150,6 +156,72 @@ impl DaemonConfig {
                 .or_else(|_| env::var("USERNAME"))
                 .unwrap_or_else(|_| "unknown".to_string()),
         }
+    }
+}
+
+pub(super) fn runtime_display_machine_name() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    if let Some(name) = command_output("scutil", &["--get", "LocalHostName"]) {
+        return Some(name);
+    }
+    command_output("hostname", &[]).map(normalize_hostname)
+}
+
+fn command_output(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_hostname(value: String) -> String {
+    value
+        .strip_suffix(".local")
+        .unwrap_or(value.as_str())
+        .trim()
+        .to_string()
+}
+
+fn default_kernel_alias(machine_alias: Option<&str>, port: u16) -> Option<String> {
+    let alias = machine_alias?.trim();
+    if alias.is_empty() {
+        None
+    } else {
+        Some(format!("{alias}.{port}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_kernel_alias, normalize_hostname};
+
+    #[test]
+    fn normalize_hostname_removes_bonjour_suffix() {
+        assert_eq!(
+            normalize_hostname("Miguels-MacBook-Pro.local".to_string()),
+            "Miguels-MacBook-Pro"
+        );
+        assert_eq!(
+            normalize_hostname("linux-worker".to_string()),
+            "linux-worker"
+        );
+    }
+
+    #[test]
+    fn default_kernel_alias_uses_machine_alias_and_port() {
+        assert_eq!(
+            default_kernel_alias(Some("Miguels-MacBook-Pro"), 43118).as_deref(),
+            Some("Miguels-MacBook-Pro.43118"),
+        );
+        assert_eq!(default_kernel_alias(Some(" "), 43118), None);
+        assert_eq!(default_kernel_alias(None, 43118), None);
     }
 }
 
