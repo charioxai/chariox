@@ -470,6 +470,20 @@ impl RuntimeProviderRun {
         self.id = projected_id.into();
         self.projected_for_home_agent(session_id, agent_id)
     }
+
+    pub(crate) fn project_leased_for_home_agent(
+        self,
+        leased_agent_id: &str,
+        session_id: impl Into<String>,
+        agent_id: impl Into<String>,
+    ) -> (String, Self) {
+        let worker_provider_run_id = self.id().to_string();
+        let projected_id =
+            projected_leased_provider_run_id(leased_agent_id, &worker_provider_run_id);
+        let projected_run =
+            self.projected_for_home_agent_with_id(projected_id, session_id, agent_id);
+        (worker_provider_run_id, projected_run)
+    }
 }
 
 pub(crate) fn projected_leased_provider_run_id(
@@ -636,13 +650,14 @@ mod tests {
         let worker_run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
         let projected_id = projected_leased_provider_run_id("home-agent-1", worker_run.id());
 
-        let projected_run = worker_run.projected_for_home_agent_with_id(
-            projected_id.clone(),
+        let (worker_provider_run_id, projected_run) = worker_run.project_leased_for_home_agent(
+            "home-agent-1",
             "home-session",
             "home-agent-1",
         );
 
         assert_eq!(projected_id, "leased:home-agent-1:provider-run-1");
+        assert_eq!(worker_provider_run_id, "provider-run-1");
         assert_eq!(projected_run.id(), projected_id);
         assert_eq!(projected_run.session_id(), "home-session");
         assert_eq!(projected_run.agent_instance_id(), Some("home-agent-1"));

@@ -38,6 +38,8 @@ struct KernelRegistry {
     #[serde(default)]
     machine_id: String,
     #[serde(default)]
+    machine_alias: Option<String>,
+    #[serde(default)]
     kernels: BTreeMap<String, KernelIdentityRecord>,
 }
 
@@ -74,6 +76,7 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
         .unwrap_or_else(|| KernelRegistry {
             version: kernel_registry_version(),
             machine_id: machine_identity.machine_id.clone(),
+            machine_alias: machine_identity.machine_alias.clone(),
             kernels: BTreeMap::new(),
         });
     if registry.version == 0 {
@@ -81,6 +84,9 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     }
     if registry.machine_id.trim().is_empty() {
         registry.machine_id = machine_identity.machine_id.clone();
+    }
+    if registry.machine_alias.is_none() {
+        registry.machine_alias = machine_identity.machine_alias.clone();
     }
 
     let now_ms = now_unix_ms();
@@ -137,6 +143,33 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     persist_kernel_registry(&registry_path, &registry);
     persist_kernel_identity(&identity, &record_snapshot);
     identity
+}
+
+pub(super) fn persist_runtime_display_aliases(
+    host: &str,
+    port: u16,
+    machine_alias: Option<&str>,
+    kernel_alias: Option<&str>,
+) {
+    let registry_path = DaemonConfig::default_kernel_registry_path();
+    let Some(mut registry) = fs::read_to_string(&registry_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<KernelRegistry>(&contents).ok())
+    else {
+        return;
+    };
+    registry.machine_alias = machine_alias
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .map(str::to_string);
+    let endpoint_key = kernel_identity_key(host, port);
+    if let Some(record) = registry.kernels.get_mut(&endpoint_key) {
+        record.kernel_alias = kernel_alias
+            .map(str::trim)
+            .filter(|alias| !alias.is_empty())
+            .map(str::to_string);
+    }
+    persist_kernel_registry(&registry_path, &registry);
 }
 
 fn load_or_create_machine_identity() -> MachineIdentity {

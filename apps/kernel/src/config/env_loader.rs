@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::identity::load_or_create_runtime_identity;
+use super::identity::{load_or_create_runtime_identity, persist_runtime_display_aliases};
 use super::{
     default_os_name, load_user_config_from_path,
     persisted_daemon::{
@@ -59,6 +59,12 @@ impl DaemonConfig {
             .filter(|value| !value.is_empty())
             .or(runtime_identity.daemon_alias)
             .or_else(|| default_kernel_alias(host_machine_alias.as_deref(), kernel_websocket_port));
+        persist_runtime_display_aliases(
+            &kernel_websocket_host,
+            kernel_websocket_port,
+            host_machine_alias.as_deref(),
+            daemon_alias.as_deref(),
+        );
         Self {
             user_config_path,
             user_config,

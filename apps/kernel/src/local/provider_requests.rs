@@ -118,6 +118,7 @@ impl DaemonApp {
             relay_url: self.config().relay_url.clone(),
             relay_token_configured: self.config().relay_token.is_some(),
             daemon_id: self.config().daemon_id.clone(),
+            daemon_alias: self.config().daemon_alias.clone(),
             machine_id: self.config().host_machine_id.clone(),
             machine_alias: self.config().host_machine_alias.clone(),
         })
@@ -276,7 +277,7 @@ fn remote_native_provider_run_response(
             daemon_alias: None,
         },
         RelayPeerRequest::LaunchLeasedNativeProviderRun {
-            leased_agent_id: remote_execution.leased_agent_id,
+            leased_agent_id: remote_execution.leased_agent_id.clone(),
             adapter_key: crate::provider::adapter_key_for_provider(&request.provider).to_string(),
             provider: request.provider.clone(),
             account_profile: request.account_profile.clone(),
@@ -312,13 +313,17 @@ fn remote_native_provider_run_response(
                     ),
                 })?;
             let home_agent_id = agent_id.clone();
-            let provider_run =
-                provider_run.projected_for_home_agent(request.session_id.clone(), agent_id);
+            let (worker_provider_run_id, provider_run) = provider_run
+                .project_leased_for_home_agent(
+                    &remote_execution.leased_agent_id,
+                    request.session_id.clone(),
+                    agent_id,
+                );
             let _ = app
                 .agents()
                 .set_remote_execution_active_worker_provider_run_id(
                     &home_agent_id,
-                    Some(provider_run.id().to_string()),
+                    Some(worker_provider_run_id),
                 )?;
             app.update_provider_run_projection(provider_run.clone());
             app.sessions_mut().set_active_provider_run(

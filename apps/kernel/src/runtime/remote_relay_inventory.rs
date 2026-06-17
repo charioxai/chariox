@@ -132,6 +132,7 @@ pub(crate) async fn projected_relay_status(
         relay_url: config.relay_url,
         relay_token_configured: config.relay_token.is_some(),
         daemon_id: config.daemon_id,
+        daemon_alias: config.daemon_alias,
         machine_id: config.host_machine_id,
         machine_alias: config.host_machine_alias,
     }

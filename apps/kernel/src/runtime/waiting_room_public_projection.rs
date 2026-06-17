@@ -450,6 +450,7 @@ mod tests {
                 relay_url: None,
                 relay_token_configured: false,
                 daemon_id: "daemon".to_string(),
+                daemon_alias: None,
                 machine_id: "machine".to_string(),
                 machine_alias: None,
             },

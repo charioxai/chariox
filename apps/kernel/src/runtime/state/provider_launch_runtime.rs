@@ -175,16 +175,12 @@ impl KernelRuntimeState {
         match response {
             RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
                 let home_agent_id = agent_id.clone();
-                let worker_provider_run_id = provider_run.id().to_string();
-                let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
-                    &leased_agent_id,
-                    &worker_provider_run_id,
-                );
-                let projected_run = provider_run.clone().projected_for_home_agent_with_id(
-                    projected_provider_run_id,
-                    request.session_id.clone(),
-                    agent_id,
-                );
+                let (worker_provider_run_id, projected_run) = provider_run
+                    .project_leased_for_home_agent(
+                        &leased_agent_id,
+                        request.session_id.clone(),
+                        agent_id,
+                    );
                 let _ = self
                     .owned
                     .agent_store

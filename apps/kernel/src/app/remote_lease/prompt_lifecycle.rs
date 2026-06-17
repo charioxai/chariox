@@ -91,6 +91,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
+        if let Some(mode) = git_context
+            .as_ref()
+            .and_then(|context| context.workspace_live_sync_mode)
+        {
+            let backing_session = self
+                .app
+                .sessions
+                .get_session(&leased_agent.backing_session_id)?;
+            if backing_session.workspace_live_sync_mode() != Some(mode) {
+                self.app
+                    .sessions
+                    .write()
+                    .set_workspace_live_sync_mode(&leased_agent.backing_session_id, mode)?;
+            }
+        }
         let provider_run = match self.prepare_leased_provider_run_matches_mcps(
             &leased_agent,
             &required_mcps,

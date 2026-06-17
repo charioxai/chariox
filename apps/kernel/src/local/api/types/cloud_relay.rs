@@ -231,6 +231,7 @@ pub struct RelayStatus {
     pub relay_url: Option<String>,
     pub relay_token_configured: bool,
     pub daemon_id: String,
+    pub daemon_alias: Option<String>,
     pub machine_id: String,
     pub machine_alias: Option<String>,
 }
