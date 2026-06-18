@@ -961,7 +961,11 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   } catch {
     return
   }
-  const requiresRuntimeSignalManifest = runtimeSignalsFromMetadata(metadata).length > 0
+  const requiresRuntimeSignalManifest = [
+    "runtimeSignals",
+    "requiredRuntimeSignals",
+    "missingRuntimeSignals",
+  ].some((key) => metadataListFromMetadata(metadata, key).length > 0)
   const requiresRuntimeAuthorityManifest = [
     "runtimeAuthorityInvariants",
     "requiredRuntimeAuthorityInvariants",
