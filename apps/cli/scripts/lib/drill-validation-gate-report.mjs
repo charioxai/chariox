@@ -145,6 +145,8 @@ function validateArtifactIndexCheck(check, source) {
   validateArtifactKindArray(check.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(check.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(check.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateArtifactEvidenceRepoArray(check.requiredArtifactGeneratedEvidenceRepos ?? [], `${source}.requiredArtifactGeneratedEvidenceRepos`)
+  validateArtifactEvidenceRepoArray(check.missingArtifactGeneratedEvidenceRepos ?? [], `${source}.missingArtifactGeneratedEvidenceRepos`)
   validateStringArray(check.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)
   validateStringArray(check.missingArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.missingArtifactGeneratedMatrixArtifactIndexes`)
   validateGeneratedMatrixLimitationArray(check.requiredArtifactGeneratedMatrixLimitations ?? [], `${source}.requiredArtifactGeneratedMatrixLimitations`)

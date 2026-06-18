@@ -87,6 +87,7 @@ function configuration(overrides = {}) {
     requiredArtifactSchemas: [],
     requiredArtifactKinds: [],
     requiredArtifactGeneratedEvidenceKinds: [],
+    requiredArtifactGeneratedEvidenceRepos: [],
     requiredArtifactGeneratedMatrixArtifactIndexes: [],
     requiredArtifactGeneratedMatrixLimitations: [],
     requiredArtifactGeneratedMatrixNames: [],

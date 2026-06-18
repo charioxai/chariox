@@ -169,6 +169,7 @@ async function main() {
       requiredArtifactSchemas: options.requiredArtifactSchemas,
       requiredArtifactKinds: options.requiredArtifactKinds,
       requiredArtifactGeneratedEvidenceKinds: options.requiredArtifactGeneratedEvidenceKinds,
+      requiredArtifactGeneratedEvidenceRepos: options.requiredArtifactGeneratedEvidenceRepos,
       requiredArtifactGeneratedMatrixArtifactIndexes: options.requiredArtifactGeneratedMatrixArtifactIndexes,
       requiredArtifactGeneratedMatrixLimitations: options.requiredArtifactGeneratedMatrixLimitations,
       requiredArtifactGeneratedMatrixNames: options.requiredArtifactGeneratedMatrixNames,

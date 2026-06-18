@@ -126,6 +126,7 @@ async function readPlatformBundleValidationSuite(platformBundleDir) {
       requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
       requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
       requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
+      requiredArtifactGeneratedEvidenceRepos: [...(preset.requiredArtifactGeneratedEvidenceRepos ?? [])],
       requiredArtifactGeneratedMatrixArtifactIndexes: [...(preset.requiredArtifactGeneratedMatrixArtifactIndexes ?? [])],
       requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
       requiredArtifactGeneratedMatrixNames: [...(preset.requiredArtifactGeneratedMatrixNames ?? [])],
