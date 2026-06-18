@@ -22,6 +22,10 @@ import { writeDrillArtifactIndex } from "./drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 import { drillValidationSuiteManifest } from "./drill-validation-suite.mjs"
 import {
+  distributedStateHealthPartialMatrixReport,
+  runtimeAuthorityMatrixReportFixtures,
+} from "./focused-runtime-fixtures.mjs"
+import {
   workspaceLiveSyncRequiredScenarioDescriptors,
   workspaceLiveSyncRequiredScenarioIds,
 } from "./workspace-live-sync-fixtures.mjs"
@@ -377,7 +381,12 @@ test("runtime authority preset gates shared kernel-owned path evidence", async (
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
-    const matrixReports = await writeRuntimeAuthorityMatrixReports(rootDir)
+    const matrixReports = []
+    for (const fixture of runtimeAuthorityMatrixReportFixtures()) {
+      const reportPath = path.join(rootDir, fixture.fileName)
+      await writeMatrixReport(reportPath, fixture.report)
+      matrixReports.push(reportPath)
+    }
 
     const report = await runDrillValidationGate({
       platformBundleDir: bundleDir,
@@ -418,19 +427,7 @@ test("distributed state health preset reports owner-routed missing diagnostics",
     const bundleDir = path.join(rootDir, "bundle")
     const reportPath = path.join(rootDir, "remote-agent-runtime.json")
     await writeDrillPlatformBundle(bundleDir)
-    await writeMatrixReport(reportPath, matrixReport({
-      matrix: "remote-agent-runtime-matrix",
-      metadata: {
-        deploymentPresets: "local",
-        providers: "codex",
-      },
-      scenarios: [
-        scenario("lease-reconnect", "passed", {
-          classification: "kernel-authority",
-          runtimeSignals: ["lease-health", "provider-run-lifecycle"],
-        }),
-      ],
-    }))
+    await writeMatrixReport(reportPath, distributedStateHealthPartialMatrixReport())
 
     const report = await runDrillValidationGate({
       platformBundleDir: bundleDir,
@@ -1708,108 +1705,6 @@ function workspaceLiveSyncRequiredScenarios() {
   return workspaceLiveSyncRequiredScenarioDescriptors().map(({ id, classification, runtimeSignals }) => {
     return scenario(id, "passed", { classification, runtimeSignals })
   })
-}
-
-async function writeRuntimeAuthorityMatrixReports(rootDir) {
-  const nativeReport = path.join(rootDir, "native-provider-tui.json")
-  const remoteReport = path.join(rootDir, "remote-agent-runtime.json")
-  const sliceReport = path.join(rootDir, "slice-runtime.json")
-  await writeMatrixReport(nativeReport, matrixReport({
-    matrix: "native-provider-tui-matrix",
-    metadata: {
-      deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
-      providers: "claude,codex,opencode",
-    },
-    scenarios: [
-      scenario("local-native-tui", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["provider-run-lifecycle", "session-authority"],
-      }),
-      scenario("permission-visibility", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["permission-interaction", "session-authority"],
-      }),
-      scenario("remote-native-tui", "passed", {
-        classification: "relay-runtime",
-        runtimeSignals: ["provider-run-lifecycle", "runtime-projection-health", "session-authority"],
-      }),
-      scenario("slice-native-tui", "passed", {
-        classification: "worker-execution",
-        runtimeSignals: ["agent-lifecycle", "lease-health", "provider-run-lifecycle"],
-      }),
-      scenario("transcript-parity", "passed", {
-        classification: "ui-client-projection",
-        runtimeSignals: ["client-projection-health", "runtime-projection-health"],
-      }),
-    ],
-  }))
-  await writeMatrixReport(remoteReport, matrixReport({
-    matrix: "remote-agent-runtime-matrix",
-    metadata: {
-      deploymentPresets: "hetzner,hosted-cloud,same-host-remote,self-hosted-relay",
-      providers: "claude,codex,opencode",
-    },
-    scenarios: [
-      scenario("collab-remote-agent", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["lease-health", "session-authority"],
-      }),
-      scenario("hetzner-collab-remote-agent", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["lease-health", "session-authority"],
-      }),
-      scenario("hetzner-single-user-remote-agent", "passed", {
-        classification: "worker-execution",
-        runtimeSignals: ["agent-lifecycle", "lease-health", "provider-run-lifecycle"],
-      }),
-      scenario("hosted-collab-remote-agent", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["lease-health", "session-authority"],
-      }),
-      scenario("hosted-single-user-remote-agent", "passed", {
-        classification: "relay-runtime",
-        runtimeSignals: ["lease-health", "runtime-projection-health"],
-      }),
-      scenario("lease-reconnect", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["lease-health", "session-authority"],
-      }),
-      scenario("provider-run-binding", "passed", {
-        classification: "provider-error",
-        runtimeSignals: ["provider-run-lifecycle", "session-authority"],
-      }),
-      scenario("remote-prompt-dispatch", "passed", {
-        classification: "provider-auth",
-        runtimeSignals: ["provider-run-lifecycle", "session-authority"],
-      }),
-      scenario("single-user-remote-agent", "passed", {
-        classification: "ui-client-projection",
-        runtimeSignals: ["agent-lifecycle", "client-projection-health", "runtime-projection-health", "session-authority"],
-      }),
-    ],
-  }))
-  await writeMatrixReport(sliceReport, matrixReport({
-    matrix: "slice-runtime-matrix",
-    metadata: {
-      deploymentPresets: "local,self-hosted-relay",
-      providers: "claude,codex,opencode",
-    },
-    scenarios: [
-      scenario("agent-reuse", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["agent-lifecycle", "session-authority"],
-      }),
-      scenario("session-start", "passed", {
-        classification: "kernel-authority",
-        runtimeSignals: ["agent-lifecycle", "session-authority"],
-      }),
-      scenario("ui-projection", "passed", {
-        classification: "ui-client-projection",
-        runtimeSignals: ["client-projection-health", "runtime-projection-health"],
-      }),
-    ],
-  }))
-  return [nativeReport, remoteReport, sliceReport]
 }
 
 function platformValidationPresetSummaries() {
