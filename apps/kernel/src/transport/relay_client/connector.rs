@@ -64,6 +64,16 @@ fn should_start_cloud_token_refresh(task: Option<&JoinHandle<()>>) -> bool {
     task.is_none_or(|task| task.is_finished())
 }
 
+fn should_start_leased_projection_pump(task: Option<&JoinHandle<()>>) -> bool {
+    task.is_none_or(|task| task.is_finished())
+}
+
+fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
+    if let Some(handle) = task.take() {
+        handle.abort();
+    }
+}
+
 fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> JoinHandle<()> {
     tokio::spawn(async move {
         match timeout(
@@ -101,6 +111,29 @@ fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> J
                     }),
                 );
             }
+        }
+    })
+}
+
+fn spawn_leased_projection_pump(
+    router: Arc<CommandRouter>,
+    outgoing_tx: RelayOutgoingSender,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if timeout(
+            RELAY_HEARTBEAT_APP_WORK_TIMEOUT,
+            pump_leased_projection_events(&router, &outgoing_tx),
+        )
+        .await
+        .is_err()
+        {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "leased projection pump timed out",
+                serde_json::json!({
+                    "timeout_ms": RELAY_HEARTBEAT_APP_WORK_TIMEOUT.as_millis(),
+                }),
+            );
         }
     })
 }
@@ -380,6 +413,7 @@ async fn run_daemon_relay_connector_inner(
                     tokio::time::interval(CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL);
                 token_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 let mut token_refresh_task = None;
+                let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
 
                 loop {
@@ -397,6 +431,7 @@ async fn run_daemon_relay_connector_inner(
                                     reason: "daemon shutting down".to_string(),
                                 });
                                 sleep(Duration::from_millis(25)).await;
+                                abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
@@ -421,6 +456,9 @@ async fn run_daemon_relay_connector_inner(
                                     .await
                                     .is_err()
                                     {
+                                        abort_leased_projection_pump_task(
+                                            &mut leased_projection_pump_task,
+                                        );
                                         abort_inventory_refresh_task(&mut inventory_refresh_task);
                                         abort_subscription_tasks(&subscription_tasks).await;
                                         writer_task.abort();
@@ -430,6 +468,9 @@ async fn run_daemon_relay_connector_inner(
                                     }
                                 }
                                 Some(Ok(Message::Close(_))) => {
+                                    abort_leased_projection_pump_task(
+                                        &mut leased_projection_pump_task,
+                                    );
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
@@ -439,6 +480,9 @@ async fn run_daemon_relay_connector_inner(
                                 }
                                 Some(Ok(_)) => {}
                                 Some(Err(_)) | None => {
+                                    abort_leased_projection_pump_task(
+                                        &mut leased_projection_pump_task,
+                                    );
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
@@ -450,6 +494,7 @@ async fn run_daemon_relay_connector_inner(
                         }
                         writer_done = &mut writer_done_rx => {
                             let _ = writer_done;
+                            abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                             abort_subscription_tasks(&subscription_tasks).await;
                             writer_task.abort();
@@ -498,6 +543,7 @@ async fn run_daemon_relay_connector_inner(
                                     let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                         reason: "relay configuration changed".to_string(),
                                     });
+                                    abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
                                     abort_subscription_tasks(&subscription_tasks).await;
                                     writer_task.abort();
@@ -539,6 +585,9 @@ async fn run_daemon_relay_connector_inner(
                                         let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                             reason: "relay configuration changed".to_string(),
                                         });
+                                        abort_leased_projection_pump_task(
+                                            &mut leased_projection_pump_task,
+                                        );
                                         abort_inventory_refresh_task(&mut inventory_refresh_task);
                                         abort_subscription_tasks(&subscription_tasks).await;
                                         writer_task.abort();
@@ -565,6 +614,7 @@ async fn run_daemon_relay_connector_inner(
                                 registration: None,
                             };
                             if send_outgoing_envelope(&outgoing_tx, heartbeat_frame).is_err() {
+                                abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
                                 abort_subscription_tasks(&subscription_tasks).await;
                                 writer_task.abort();
@@ -572,11 +622,14 @@ async fn run_daemon_relay_connector_inner(
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
                                 break;
                             }
-                            let _ = timeout(
-                                RELAY_HEARTBEAT_APP_WORK_TIMEOUT,
-                                pump_leased_projection_events(&router, &outgoing_tx),
-                            )
-                            .await;
+                            if should_start_leased_projection_pump(
+                                leased_projection_pump_task.as_ref(),
+                            ) {
+                                leased_projection_pump_task = Some(spawn_leased_projection_pump(
+                                    Arc::clone(&router),
+                                    outgoing_tx.clone(),
+                                ));
+                            }
                             if last_cloud_presence_publish.elapsed()
                                 >= CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
                             {
@@ -718,5 +771,28 @@ mod tests {
 
         assert!(should_start_cloud_token_refresh(None));
         assert!(should_start_cloud_token_refresh(Some(&task)));
+    }
+
+    #[tokio::test]
+    async fn leased_projection_pump_gate_skips_running_task() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = rx.await;
+        });
+
+        assert!(!should_start_leased_projection_pump(Some(&task)));
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn leased_projection_pump_gate_allows_finished_or_missing_task() {
+        let task = tokio::spawn(async {});
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(should_start_leased_projection_pump(None));
+        assert!(should_start_leased_projection_pump(Some(&task)));
     }
 }
