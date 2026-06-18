@@ -33,6 +33,7 @@ import {
   validateDrillRuntimeSignal,
   validateDrillRuntimeSignalOwner,
 } from "./drill-runtime-signals.mjs"
+import { validateDrillRuntimeAuthorityInvariant } from "./drill-runtime-authority-invariants.mjs"
 
 export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
 
@@ -90,6 +91,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactProviderAccountAliases: new Map(),
     requiredArtifactValidationPresets: new Map(),
     missingArtifactValidationPresets: new Map(),
+    requiredArtifactRuntimeAuthorityInvariants: new Map(),
+    missingArtifactRuntimeAuthorityInvariants: new Map(),
     requiredArtifactRuntimeSignals: new Map(),
     missingArtifactRuntimeSignals: new Map(),
     requiredArtifactRuntimeSignalOwners: new Map(),
@@ -112,6 +115,7 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactCoverageAreas: new Map(),
     artifactSchemas: new Map(),
     artifactCoverageAreas: new Map(),
+    artifactRuntimeAuthorityInvariants: new Map(),
     artifactRuntimeSignals: new Map(),
     artifactRuntimeSignalOwners: new Map(),
     artifactOwners: new Map(),
@@ -344,6 +348,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactProviderAccountAliases: missingRequirements.missingArtifactProviderAccountAliases,
     requiredArtifactValidationPresets: normalizedAggregateRequirements.requiredArtifactValidationPresets,
     missingArtifactValidationPresets: missingRequirements.missingArtifactValidationPresets,
+    requiredArtifactRuntimeAuthorityInvariants: normalizedAggregateRequirements.requiredArtifactRuntimeAuthorityInvariants,
+    missingArtifactRuntimeAuthorityInvariants: missingRequirements.missingArtifactRuntimeAuthorityInvariants,
     requiredArtifactRuntimeSignals: normalizedAggregateRequirements.requiredArtifactRuntimeSignals,
     missingArtifactRuntimeSignals: missingRequirements.missingArtifactRuntimeSignals,
     requiredArtifactRuntimeSignalOwners: normalizedAggregateRequirements.requiredArtifactRuntimeSignalOwners,
@@ -449,6 +455,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_artifact_evidence_repos", aggregate.requiredArtifactEvidenceRepos, aggregate.missingArtifactEvidenceRepos)
   appendAggregateRequirementLine(lines, "required_artifact_provider_account_aliases", aggregate.requiredArtifactProviderAccountAliases, aggregate.missingArtifactProviderAccountAliases)
   appendAggregateRequirementLine(lines, "required_artifact_validation_presets", aggregate.requiredArtifactValidationPresets, aggregate.missingArtifactValidationPresets)
+  appendAggregateRequirementLine(lines, "required_artifact_runtime_authority_invariants", aggregate.requiredArtifactRuntimeAuthorityInvariants, aggregate.missingArtifactRuntimeAuthorityInvariants)
   appendAggregateRequirementLine(lines, "required_artifact_runtime_signals", aggregate.requiredArtifactRuntimeSignals, aggregate.missingArtifactRuntimeSignals)
   appendAggregateRequirementLine(lines, "required_artifact_runtime_signal_owners", aggregate.requiredArtifactRuntimeSignalOwners, aggregate.missingArtifactRuntimeSignalOwners)
   appendAggregateRequirementLine(lines, "required_artifact_owners", aggregate.requiredArtifactOwners, aggregate.missingArtifactOwners)
@@ -535,6 +542,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateProviderAccountAliasArray(aggregate.missingArtifactProviderAccountAliases ?? [], `${source}.missingArtifactProviderAccountAliases`)
   validateArtifactValidationPresetArray(aggregate.requiredArtifactValidationPresets ?? [], `${source}.requiredArtifactValidationPresets`)
   validateArtifactValidationPresetArray(aggregate.missingArtifactValidationPresets ?? [], `${source}.missingArtifactValidationPresets`)
+  validateRuntimeAuthorityInvariantArray(aggregate.requiredArtifactRuntimeAuthorityInvariants ?? [], `${source}.requiredArtifactRuntimeAuthorityInvariants`)
+  validateRuntimeAuthorityInvariantArray(aggregate.missingArtifactRuntimeAuthorityInvariants ?? [], `${source}.missingArtifactRuntimeAuthorityInvariants`)
   validateRuntimeSignalArray(aggregate.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
   validateRuntimeSignalArray(aggregate.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateRuntimeSignalOwnerArray(aggregate.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -629,6 +638,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredArtifactEvidenceRepos: aggregate.requiredArtifactEvidenceRepos ?? [],
     requiredArtifactProviderAccountAliases: aggregate.requiredArtifactProviderAccountAliases ?? [],
     requiredArtifactValidationPresets: aggregate.requiredArtifactValidationPresets ?? [],
+    requiredArtifactRuntimeAuthorityInvariants: aggregate.requiredArtifactRuntimeAuthorityInvariants ?? [],
     requiredArtifactRuntimeSignals: aggregate.requiredArtifactRuntimeSignals ?? [],
     requiredArtifactRuntimeSignalOwners: aggregate.requiredArtifactRuntimeSignalOwners ?? [],
     requiredArtifactOwners: aggregate.requiredArtifactOwners ?? [],
@@ -713,6 +723,8 @@ function validationGateReportArtifactCoverage(report) {
     missingArtifactProviderAccountAliases: [...(report.checks.artifacts.missingArtifactProviderAccountAliases ?? [])],
     requiredArtifactValidationPresets: [...(report.checks.artifacts.requiredArtifactValidationPresets ?? [])],
     missingArtifactValidationPresets: [...(report.checks.artifacts.missingArtifactValidationPresets ?? [])],
+    requiredArtifactRuntimeAuthorityInvariants: [...(report.checks.artifacts.requiredArtifactRuntimeAuthorityInvariants ?? [])],
+    missingArtifactRuntimeAuthorityInvariants: [...(report.checks.artifacts.missingArtifactRuntimeAuthorityInvariants ?? [])],
     requiredArtifactRuntimeSignals: [...(report.checks.artifacts.requiredArtifactRuntimeSignals ?? [])],
     missingArtifactRuntimeSignals: [...(report.checks.artifacts.missingArtifactRuntimeSignals ?? [])],
     requiredArtifactRuntimeSignalOwners: [...(report.checks.artifacts.requiredArtifactRuntimeSignalOwners ?? [])],
@@ -733,6 +745,7 @@ function validationGateReportArtifactCoverage(report) {
     missingArtifactIncompleteExitCriterionStatuses: [...(report.checks.artifacts.missingArtifactIncompleteExitCriterionStatuses ?? [])],
     schemas: { ...(report.checks.artifacts.aggregate?.schemas ?? {}) },
     coverageAreas: { ...(report.checks.artifacts.aggregate?.coverageAreas ?? {}) },
+    runtimeAuthorityInvariants: { ...(report.checks.artifacts.aggregate?.runtimeAuthorityInvariants ?? {}) },
     runtimeSignals: { ...(report.checks.artifacts.aggregate?.runtimeSignals ?? {}) },
     runtimeSignalOwners: { ...(report.checks.artifacts.aggregate?.runtimeSignalOwners ?? {}) },
     owners: { ...(report.checks.artifacts.aggregate?.owners ?? {}) },
@@ -785,6 +798,8 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countStringValues(coverage.missingArtifactProviderAccountAliases, artifactCoverage.missingArtifactProviderAccountAliases)
   countStringValues(coverage.requiredArtifactValidationPresets, artifactCoverage.requiredArtifactValidationPresets)
   countStringValues(coverage.missingArtifactValidationPresets, artifactCoverage.missingArtifactValidationPresets)
+  countStringValues(coverage.requiredArtifactRuntimeAuthorityInvariants, artifactCoverage.requiredArtifactRuntimeAuthorityInvariants)
+  countStringValues(coverage.missingArtifactRuntimeAuthorityInvariants, artifactCoverage.missingArtifactRuntimeAuthorityInvariants)
   countStringValues(coverage.requiredArtifactRuntimeSignals, artifactCoverage.requiredArtifactRuntimeSignals)
   countStringValues(coverage.missingArtifactRuntimeSignals, artifactCoverage.missingArtifactRuntimeSignals)
   countStringValues(coverage.requiredArtifactRuntimeSignalOwners, artifactCoverage.requiredArtifactRuntimeSignalOwners)
@@ -807,6 +822,7 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countStringValues(coverage.missingArtifactCoverageAreas, artifactCoverage.missingArtifactCoverageAreas)
   countObjectValues(coverage.artifactSchemas, artifactCoverage.schemas)
   countObjectValues(coverage.artifactCoverageAreas, artifactCoverage.coverageAreas)
+  countObjectValues(coverage.artifactRuntimeAuthorityInvariants, artifactCoverage.runtimeAuthorityInvariants)
   countObjectValues(coverage.artifactRuntimeSignals, artifactCoverage.runtimeSignals)
   countObjectValues(coverage.artifactRuntimeSignalOwners, artifactCoverage.runtimeSignalOwners)
   countObjectValues(coverage.artifactOwners, artifactCoverage.owners)
@@ -907,6 +923,7 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingArtifactEvidenceRepos: missingCoverageRequirements(coverage.artifactEvidenceRepos, requirements.requiredArtifactEvidenceRepos ?? []),
     missingArtifactProviderAccountAliases: missingCoverageRequirements(coverage.artifactProviderAccountAliases, requirements.requiredArtifactProviderAccountAliases ?? []),
     missingArtifactValidationPresets: missingCoverageRequirements(coverage.artifactValidationPresets, requirements.requiredArtifactValidationPresets ?? []),
+    missingArtifactRuntimeAuthorityInvariants: missingCoverageRequirements(coverage.artifactRuntimeAuthorityInvariants, requirements.requiredArtifactRuntimeAuthorityInvariants ?? []),
     missingArtifactRuntimeSignals: missingCoverageRequirements(coverage.artifactRuntimeSignals, requirements.requiredArtifactRuntimeSignals ?? []),
     missingArtifactRuntimeSignalOwners: missingCoverageRequirements(coverage.artifactRuntimeSignalOwners, requirements.requiredArtifactRuntimeSignalOwners ?? []),
     missingArtifactOwners: missingCoverageRequirements(coverage.artifactOwners, requirements.requiredArtifactOwners ?? []),
@@ -954,6 +971,7 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingArtifactEvidenceRepos", "artifact-coverage", "provide validation gate reports with artifact evidence repos"],
     ["missingArtifactProviderAccountAliases", "artifact-coverage", "provide validation gate reports with artifact provider account aliases"],
     ["missingArtifactValidationPresets", "artifact-coverage", "provide validation gate reports with artifact validation presets"],
+    ["missingArtifactRuntimeAuthorityInvariants", "artifact-coverage", "provide validation gate reports with artifact runtime authority invariants"],
     ["missingArtifactRuntimeSignals", "artifact-coverage", "provide validation gate reports with artifact runtime signals"],
     ["missingArtifactRuntimeSignalOwners", "artifact-coverage", "provide validation gate reports with artifact runtime signal owners"],
     ["missingArtifactOwners", "artifact-coverage", "provide validation gate reports with artifact owners"],
@@ -1024,6 +1042,7 @@ function assertValidationGateAggregateMissingRequirementsMatch(aggregate, expect
     "missingArtifactEvidenceRepos",
     "missingArtifactProviderAccountAliases",
     "missingArtifactValidationPresets",
+    "missingArtifactRuntimeAuthorityInvariants",
     "missingArtifactRuntimeSignals",
     "missingArtifactRuntimeSignalOwners",
     "missingArtifactOwners",
@@ -1086,6 +1105,8 @@ function formatValidationGateCoverageCounts(coverage) {
     missingArtifactProviderAccountAliases: countMapToObject(coverage.missingArtifactProviderAccountAliases),
     requiredArtifactValidationPresets: countMapToObject(coverage.requiredArtifactValidationPresets),
     missingArtifactValidationPresets: countMapToObject(coverage.missingArtifactValidationPresets),
+    requiredArtifactRuntimeAuthorityInvariants: countMapToObject(coverage.requiredArtifactRuntimeAuthorityInvariants),
+    missingArtifactRuntimeAuthorityInvariants: countMapToObject(coverage.missingArtifactRuntimeAuthorityInvariants),
     requiredArtifactRuntimeSignals: countMapToObject(coverage.requiredArtifactRuntimeSignals),
     missingArtifactRuntimeSignals: countMapToObject(coverage.missingArtifactRuntimeSignals),
     requiredArtifactRuntimeSignalOwners: countMapToObject(coverage.requiredArtifactRuntimeSignalOwners),
@@ -1106,6 +1127,7 @@ function formatValidationGateCoverageCounts(coverage) {
     missingArtifactIncompleteExitCriterionStatuses: countMapToObject(coverage.missingArtifactIncompleteExitCriterionStatuses),
     artifactSchemas: countMapToObject(coverage.artifactSchemas),
     artifactCoverageAreas: countMapToObject(coverage.artifactCoverageAreas),
+    artifactRuntimeAuthorityInvariants: countMapToObject(coverage.artifactRuntimeAuthorityInvariants),
     requiredRuntimeSignals: countMapToObject(coverage.requiredRuntimeSignals),
     missingRuntimeSignals: countMapToObject(coverage.missingRuntimeSignals),
     requiredRuntimeSignalOwners: countMapToObject(coverage.requiredRuntimeSignalOwners),
@@ -1211,6 +1233,8 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_artifact_provider_account_aliases", coverage.missingArtifactProviderAccountAliases)
   appendCoverageLine(lines, "required_artifact_validation_presets", coverage.requiredArtifactValidationPresets)
   appendCoverageLine(lines, "missing_artifact_validation_presets", coverage.missingArtifactValidationPresets)
+  appendCoverageLine(lines, "required_artifact_runtime_authority_invariants", coverage.requiredArtifactRuntimeAuthorityInvariants)
+  appendCoverageLine(lines, "missing_artifact_runtime_authority_invariants", coverage.missingArtifactRuntimeAuthorityInvariants)
   appendCoverageLine(lines, "required_artifact_runtime_signals", coverage.requiredArtifactRuntimeSignals)
   appendCoverageLine(lines, "missing_artifact_runtime_signals", coverage.missingArtifactRuntimeSignals)
   appendCoverageLine(lines, "required_artifact_runtime_signal_owners", coverage.requiredArtifactRuntimeSignalOwners)
@@ -1231,6 +1255,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_artifact_incomplete_exit_criterion_statuses", coverage.missingArtifactIncompleteExitCriterionStatuses)
   appendCoverageLine(lines, "artifact_schemas", coverage.artifactSchemas)
   appendCoverageLine(lines, "artifact_coverage_areas", coverage.artifactCoverageAreas)
+  appendCoverageLine(lines, "artifact_runtime_authority_invariants", coverage.artifactRuntimeAuthorityInvariants)
   appendCoverageLine(lines, "required_runtime_signals", coverage.requiredRuntimeSignals)
   appendCoverageLine(lines, "missing_runtime_signals", coverage.missingRuntimeSignals)
   appendCoverageLine(lines, "required_runtime_signal_owners", coverage.requiredRuntimeSignalOwners)
@@ -1365,6 +1390,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateProviderAccountAliasCountObject(coverage.missingArtifactProviderAccountAliases ?? {}, `${source}.missingArtifactProviderAccountAliases`)
   validateArtifactValidationPresetCountObject(coverage.requiredArtifactValidationPresets ?? {}, `${source}.requiredArtifactValidationPresets`)
   validateArtifactValidationPresetCountObject(coverage.missingArtifactValidationPresets ?? {}, `${source}.missingArtifactValidationPresets`)
+  validateRuntimeAuthorityInvariantCountObject(coverage.requiredArtifactRuntimeAuthorityInvariants ?? {}, `${source}.requiredArtifactRuntimeAuthorityInvariants`)
+  validateRuntimeAuthorityInvariantCountObject(coverage.missingArtifactRuntimeAuthorityInvariants ?? {}, `${source}.missingArtifactRuntimeAuthorityInvariants`)
   validateRuntimeSignalCountObject(coverage.requiredArtifactRuntimeSignals ?? {}, `${source}.requiredArtifactRuntimeSignals`)
   validateRuntimeSignalCountObject(coverage.missingArtifactRuntimeSignals ?? {}, `${source}.missingArtifactRuntimeSignals`)
   validateRuntimeSignalOwnerCountObject(coverage.requiredArtifactRuntimeSignalOwners ?? {}, `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -1385,6 +1412,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateExitCriterionStatusCountObject(coverage.missingArtifactIncompleteExitCriterionStatuses ?? {}, `${source}.missingArtifactIncompleteExitCriterionStatuses`)
   validateCountObject(coverage.artifactSchemas ?? {}, `${source}.artifactSchemas`)
   validateCountObject(coverage.artifactCoverageAreas ?? {}, `${source}.artifactCoverageAreas`)
+  validateRuntimeAuthorityInvariantCountObject(coverage.artifactRuntimeAuthorityInvariants ?? {}, `${source}.artifactRuntimeAuthorityInvariants`)
   validateRuntimeSignalCountObject(coverage.requiredRuntimeSignals ?? {}, `${source}.requiredRuntimeSignals`)
   validateRuntimeSignalCountObject(coverage.missingRuntimeSignals ?? {}, `${source}.missingRuntimeSignals`)
   validateRuntimeSignalOwnerCountObject(coverage.requiredRuntimeSignalOwners ?? {}, `${source}.requiredRuntimeSignalOwners`)
@@ -1589,6 +1617,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingArtifactProviderAccountAliases: new Map(),
     requiredArtifactValidationPresets: new Map(),
     missingArtifactValidationPresets: new Map(),
+    requiredArtifactRuntimeAuthorityInvariants: new Map(),
+    missingArtifactRuntimeAuthorityInvariants: new Map(),
     requiredArtifactRuntimeSignals: new Map(),
     missingArtifactRuntimeSignals: new Map(),
     requiredArtifactRuntimeSignalOwners: new Map(),
@@ -1609,6 +1639,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingArtifactIncompleteExitCriterionStatuses: new Map(),
     artifactSchemas: new Map(),
     artifactCoverageAreas: new Map(),
+    artifactRuntimeAuthorityInvariants: new Map(),
     requiredRuntimeSignals: new Map(),
     missingRuntimeSignals: new Map(),
     requiredRuntimeSignalOwners: new Map(),
@@ -1723,6 +1754,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactProviderAccountAliases, report.artifactCoverage?.missingArtifactProviderAccountAliases ?? [])
     countStringValues(expected.requiredArtifactValidationPresets, report.artifactCoverage?.requiredArtifactValidationPresets ?? [])
     countStringValues(expected.missingArtifactValidationPresets, report.artifactCoverage?.missingArtifactValidationPresets ?? [])
+    countStringValues(expected.requiredArtifactRuntimeAuthorityInvariants, report.artifactCoverage?.requiredArtifactRuntimeAuthorityInvariants ?? [])
+    countStringValues(expected.missingArtifactRuntimeAuthorityInvariants, report.artifactCoverage?.missingArtifactRuntimeAuthorityInvariants ?? [])
     countStringValues(expected.requiredArtifactRuntimeSignals, report.artifactCoverage?.requiredArtifactRuntimeSignals ?? [])
     countStringValues(expected.missingArtifactRuntimeSignals, report.artifactCoverage?.missingArtifactRuntimeSignals ?? [])
     countStringValues(expected.requiredArtifactRuntimeSignalOwners, report.artifactCoverage?.requiredArtifactRuntimeSignalOwners ?? [])
@@ -1743,6 +1776,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactIncompleteExitCriterionStatuses, report.artifactCoverage?.missingArtifactIncompleteExitCriterionStatuses ?? [])
     countObjectValues(expected.artifactSchemas, report.artifactCoverage?.schemas)
     countObjectValues(expected.artifactCoverageAreas, report.artifactCoverage?.coverageAreas)
+    countObjectValues(expected.artifactRuntimeAuthorityInvariants, report.artifactCoverage?.runtimeAuthorityInvariants)
     countObjectValues(expected.artifactRuntimeSignals, report.artifactCoverage?.runtimeSignals)
     countObjectValues(expected.artifactRuntimeSignalOwners, report.artifactCoverage?.runtimeSignalOwners)
     countObjectValues(expected.artifactOwners, report.artifactCoverage?.owners)
@@ -1843,6 +1877,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactProviderAccountAliases, input.artifactCoverage?.missingArtifactProviderAccountAliases ?? [])
     countStringValues(expected.requiredArtifactValidationPresets, input.artifactCoverage?.requiredArtifactValidationPresets ?? [])
     countStringValues(expected.missingArtifactValidationPresets, input.artifactCoverage?.missingArtifactValidationPresets ?? [])
+    countStringValues(expected.requiredArtifactRuntimeAuthorityInvariants, input.artifactCoverage?.requiredArtifactRuntimeAuthorityInvariants ?? [])
+    countStringValues(expected.missingArtifactRuntimeAuthorityInvariants, input.artifactCoverage?.missingArtifactRuntimeAuthorityInvariants ?? [])
     countStringValues(expected.requiredArtifactRuntimeSignals, input.artifactCoverage?.requiredArtifactRuntimeSignals ?? [])
     countStringValues(expected.missingArtifactRuntimeSignals, input.artifactCoverage?.missingArtifactRuntimeSignals ?? [])
     countStringValues(expected.requiredArtifactRuntimeSignalOwners, input.artifactCoverage?.requiredArtifactRuntimeSignalOwners ?? [])
@@ -1863,6 +1899,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactIncompleteExitCriterionStatuses, input.artifactCoverage?.missingArtifactIncompleteExitCriterionStatuses ?? [])
     countObjectValues(expected.artifactSchemas, input.artifactCoverage?.schemas)
     countObjectValues(expected.artifactCoverageAreas, input.artifactCoverage?.coverageAreas)
+    countObjectValues(expected.artifactRuntimeAuthorityInvariants, input.artifactCoverage?.runtimeAuthorityInvariants)
     countObjectValues(expected.artifactRuntimeSignals, input.artifactCoverage?.runtimeSignals)
     countObjectValues(expected.artifactRuntimeSignalOwners, input.artifactCoverage?.runtimeSignalOwners)
     countObjectValues(expected.artifactOwners, input.artifactCoverage?.owners)
@@ -2190,6 +2227,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateProviderAccountAliasArray(coverage.missingArtifactProviderAccountAliases ?? [], `${source}.missingArtifactProviderAccountAliases`)
   validateArtifactValidationPresetArray(coverage.requiredArtifactValidationPresets ?? [], `${source}.requiredArtifactValidationPresets`)
   validateArtifactValidationPresetArray(coverage.missingArtifactValidationPresets ?? [], `${source}.missingArtifactValidationPresets`)
+  validateRuntimeAuthorityInvariantArray(coverage.requiredArtifactRuntimeAuthorityInvariants ?? [], `${source}.requiredArtifactRuntimeAuthorityInvariants`)
+  validateRuntimeAuthorityInvariantArray(coverage.missingArtifactRuntimeAuthorityInvariants ?? [], `${source}.missingArtifactRuntimeAuthorityInvariants`)
   validateRuntimeSignalArray(coverage.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
   validateRuntimeSignalArray(coverage.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateRuntimeSignalOwnerArray(coverage.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -2210,6 +2249,7 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateExitCriterionStatusArray(coverage.missingArtifactIncompleteExitCriterionStatuses ?? [], `${source}.missingArtifactIncompleteExitCriterionStatuses`)
   validateCountObject(coverage.schemas ?? {}, `${source}.schemas`)
   validateCountObject(coverage.coverageAreas ?? {}, `${source}.coverageAreas`)
+  validateRuntimeAuthorityInvariantCountObject(coverage.runtimeAuthorityInvariants ?? {}, `${source}.runtimeAuthorityInvariants`)
   validateRuntimeSignalCountObject(coverage.runtimeSignals ?? {}, `${source}.runtimeSignals`)
   validateRuntimeSignalOwnerCountObject(coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(coverage.owners ?? {}, `${source}.owners`)
@@ -2335,6 +2375,13 @@ function validateRuntimeSignalOwnerArray(value, source) {
   }
 }
 
+function validateRuntimeAuthorityInvariantArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, invariant] of value.entries()) {
+    validateDrillRuntimeAuthorityInvariant(invariant, `${source}[${index}]`)
+  }
+}
+
 function validateFailureClassificationArray(value, source) {
   validateStringArray(value, source)
   for (const [index, classification] of value.entries()) {
@@ -2445,6 +2492,13 @@ function validateRuntimeSignalCountObject(value, source) {
   validateCountObject(value, source)
   for (const signal of Object.keys(value)) {
     validateDrillRuntimeSignal(signal, source)
+  }
+}
+
+function validateRuntimeAuthorityInvariantCountObject(value, source) {
+  validateCountObject(value, source)
+  for (const invariant of Object.keys(value)) {
+    validateDrillRuntimeAuthorityInvariant(invariant, source)
   }
 }
 

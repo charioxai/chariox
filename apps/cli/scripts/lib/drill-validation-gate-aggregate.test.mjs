@@ -20,6 +20,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
       requiredArtifactEvidenceRepos: ["oss"],
       requiredArtifactProviderAccountAliases: ["codex=work"],
       requiredArtifactValidationPresets: ["distributed-runtime"],
+      requiredArtifactRuntimeAuthorityInvariants: ["home-session-authority"],
       requiredFailureClassifications: ["kernel-authority"],
       requiredMatrices: ["workspace-live-sync-matrix"],
       requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -40,6 +41,9 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.coverage.artifactRuntimeSignals, {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
+  })
+  assert.deepEqual(aggregate.coverage.artifactRuntimeAuthorityInvariants, {
+    "home-session-authority": 1,
   })
   assert.deepEqual(aggregate.coverage.artifactGeneratedMatrixLimitations, {
     "dry-run-classification-coverage": 1,
@@ -111,12 +115,18 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.missingArtifactEvidenceRepos, [])
   assert.deepEqual(aggregate.missingArtifactProviderAccountAliases, [])
   assert.deepEqual(aggregate.missingArtifactValidationPresets, [])
+  assert.deepEqual(aggregate.requiredArtifactRuntimeAuthorityInvariants, ["home-session-authority"])
+  assert.deepEqual(aggregate.missingArtifactRuntimeAuthorityInvariants, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactKinds, ["validation-suite-run"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactEvidenceRepos, ["oss"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactProviderAccountAliases, ["codex=work"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactValidationPresets, ["distributed-runtime"])
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactRuntimeAuthorityInvariants, ["home-session-authority"])
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeAuthorityInvariants, {
+    "home-session-authority": 1,
+  })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.runtimeSignals, {
     "session-authority": 2,
     "workspace-live-sync-state": 1,
@@ -800,6 +810,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       requiredArtifactSchemas: ["arroba.drill.matrix.v1"],
       requiredArtifactKinds: ["matrix-report"],
       requiredArtifactEvidenceRepos: ["cloud"],
+      requiredArtifactRuntimeAuthorityInvariants: ["worker-execution-authority"],
       requiredFailureClassifications: ["remote-extension-sync"],
       requiredMatrices: ["remote-home-extension-matrix"],
       requiredMatrixClassifications: ["remote-extension-sync"],
@@ -819,6 +830,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.deepEqual(aggregate.missingArtifactSchemas, ["arroba.drill.matrix.v1"])
   assert.deepEqual(aggregate.missingArtifactKinds, ["matrix-report"])
   assert.deepEqual(aggregate.missingArtifactEvidenceRepos, ["cloud"])
+  assert.deepEqual(aggregate.missingArtifactRuntimeAuthorityInvariants, ["worker-execution-authority"])
   assert.deepEqual(aggregate.missingMatrixRuntimeSignals, ["home-extension-manifest-sync"])
   assert.deepEqual(aggregate.missingProviders, ["claude"])
   assert.deepEqual(aggregate.missingScenarios, ["hetzner-collab"])
@@ -834,6 +846,10 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       {
         classification: "artifact-coverage",
         nextAction: "provide validation gate reports with artifact kinds: matrix-report",
+      },
+      {
+        classification: "artifact-coverage",
+        nextAction: "provide validation gate reports with artifact runtime authority invariants: worker-execution-authority",
       },
       {
         classification: "artifact-coverage",
@@ -1620,6 +1636,8 @@ function reportFixture(overrides = {}) {
         missingArtifactProviderAccountAliases: [],
         requiredArtifactValidationPresets: ["distributed-runtime"],
         missingArtifactValidationPresets: [],
+        requiredArtifactRuntimeAuthorityInvariants: ["home-session-authority"],
+        missingArtifactRuntimeAuthorityInvariants: [],
         aggregate: {
           schemas: {
             "arroba.drill.validation_suite_run.v1": 1,
@@ -1632,6 +1650,13 @@ function reportFixture(overrides = {}) {
             "kernel-authority": 1,
             "runtime-state": 1,
           },
+          runtimeAuthorityInvariants: {
+            "home-session-authority": 1,
+          },
+          requiredRuntimeAuthorityInvariants: {
+            "home-session-authority": 1,
+          },
+          missingRuntimeAuthorityInvariants: {},
           owners: {
             "validation-platform": 1,
           },
