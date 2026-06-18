@@ -1092,13 +1092,18 @@ pub(crate) async fn handle_connection(
     }
     .await;
 
-    let (disconnect_errors, disconnect_peer_errors, disconnect_subscription_senders) =
-        remove_peer(&registry, peer_addr, registered_daemon_key.as_ref()).await;
+    let (
+        disconnect_errors,
+        disconnect_peer_errors,
+        disconnect_subscription_senders,
+        dropped_client_pending_requests,
+    ) = remove_peer(&registry, peer_addr, registered_daemon_key.as_ref()).await;
     if connection_result.is_err()
         || registered_daemon_key.is_some()
         || !disconnect_errors.is_empty()
         || !disconnect_peer_errors.is_empty()
         || !disconnect_subscription_senders.is_empty()
+        || dropped_client_pending_requests > 0
     {
         relay_log(
             if connection_result.is_err() {
@@ -1113,6 +1118,7 @@ pub(crate) async fn handle_connection(
                 "client_request_errors": disconnect_errors.len(),
                 "daemon_peer_request_errors": disconnect_peer_errors.len(),
                 "subscription_closes": disconnect_subscription_senders.len(),
+                "client_pending_request_drops": dropped_client_pending_requests,
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
             }),
         );
@@ -1299,6 +1305,7 @@ async fn remove_peer(
     Vec<(RelaySender, String)>,
     Vec<(RelaySender, String, String)>,
     Vec<RelaySender>,
+    usize,
 ) {
     let mut guard = registry.write().await;
     let removed_peer = guard.peers.remove(&peer_addr);
@@ -1311,6 +1318,18 @@ async fn remove_peer(
     for subscription_id in client_subscription_ids {
         guard.subscriptions.remove(&subscription_id);
     }
+    let dropped_client_pending_requests = if removed_peer
+        .as_ref()
+        .is_some_and(|peer| peer.role == RelayConnectionRole::Client)
+    {
+        let before = guard.pending_requests.len();
+        guard
+            .pending_requests
+            .retain(|_, pending| pending.client_addr != peer_addr);
+        before.saturating_sub(guard.pending_requests.len())
+    } else {
+        0
+    };
     if let Some(daemon_key) = daemon_key {
         let removed_current_daemon = removed_peer.as_ref().is_some_and(|peer| {
             peer.role == RelayConnectionRole::Daemon
@@ -1322,7 +1341,12 @@ async fn remove_peer(
                     == Some(daemon_key.daemon_id.as_str())
         });
         if !removed_current_daemon {
-            return (Vec::new(), Vec::new(), Vec::new());
+            return (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                dropped_client_pending_requests,
+            );
         }
         guard.daemons.remove(daemon_key);
         guard.daemon_peers.remove(daemon_key);
@@ -1392,9 +1416,19 @@ async fn remove_peer(
                 }
             }
         }
-        return (client_errors, daemon_errors, subscription_client_senders);
+        return (
+            client_errors,
+            daemon_errors,
+            subscription_client_senders,
+            dropped_client_pending_requests,
+        );
     }
-    (Vec::new(), Vec::new(), Vec::new())
+    (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        dropped_client_pending_requests,
+    )
 }
 
 fn verify_relay_token(
