@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::auth::DEFAULT_RELAY_REALM_ID;
+use crate::auth::{RelayAction, DEFAULT_RELAY_REALM_ID};
 use crate::protocol::{
     DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayDisplayTunnelHeader,
     RelayError, RelayKernelPresence, RelayMachinePresence, RelayProviderAccountSummary,
@@ -19,6 +19,7 @@ pub(crate) struct PeerHandle {
     pub(crate) role: RelayConnectionRole,
     pub(crate) realm_id: Option<String>,
     pub(crate) identity: Option<RelayCallerIdentity>,
+    pub(crate) allowed_actions: Vec<RelayAction>,
     pub(crate) daemon_registration: Option<DaemonRegistration>,
     pub(crate) client_daemon_key: Option<DaemonKey>,
 }

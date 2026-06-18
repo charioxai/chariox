@@ -126,6 +126,7 @@ pub(crate) async fn handle_connection(
                                 identity.realm_id.clone(),
                                 registration.daemon_id.clone(),
                             );
+                            let allowed_actions = identity.allowed_actions.clone();
                             if registered_daemon_key
                                 .as_ref()
                                 .is_some_and(|current_key| current_key != &daemon_key)
@@ -160,6 +161,7 @@ pub(crate) async fn handle_connection(
                                     role: RelayConnectionRole::Daemon,
                                     realm_id: Some(identity.realm_id.clone()),
                                     identity: Some(identity.into()),
+                                    allowed_actions,
                                     daemon_registration: Some(registration.clone()),
                                     client_daemon_key: None,
                                 },
@@ -213,6 +215,7 @@ pub(crate) async fn handle_connection(
                                     .as_deref()
                                     .or(target.daemon_alias.as_deref()),
                             )?;
+                            let allowed_actions = identity.allowed_actions.clone();
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &identity.realm_id, &target)
                                     .await
@@ -264,6 +267,7 @@ pub(crate) async fn handle_connection(
                                     role: RelayConnectionRole::Client,
                                     realm_id: Some(identity.realm_id.clone()),
                                     identity: Some(identity.into()),
+                                    allowed_actions,
                                     daemon_registration: None,
                                     client_daemon_key: Some(daemon_key.clone()),
                                 },
@@ -331,6 +335,24 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
+                            if !peer_allows_action(&registry, peer_addr, RelayAction::PeerRequest)
+                                .await
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::DaemonPeerResponse {
+                                        request_id,
+                                        from_daemon_id: String::new(),
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "action_not_allowed",
+                                            "daemon token does not allow peer requests",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            }
                             let Some(target_daemon_key) = resolve_target_daemon_key(
                                 &registry,
                                 &requester_daemon_key.realm_id,
@@ -427,6 +449,11 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
+                            if !peer_allows_action(&registry, peer_addr, RelayAction::PeerEvent)
+                                .await
+                            {
+                                continue;
+                            }
                             let Some(target_daemon_key) = resolve_target_daemon_key(
                                 &registry,
                                 &requester_daemon_key.realm_id,
@@ -473,6 +500,23 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
+                            if !peer_allows_action(&registry, peer_addr, RelayAction::PacketRoute)
+                                .await
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "action_not_allowed",
+                                            "client token does not allow packet routing",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            }
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &realm_id, &target).await
                             else {
@@ -586,6 +630,23 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
+                            if !peer_allows_action(&registry, peer_addr, RelayAction::PacketRoute)
+                                .await
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "action_not_allowed",
+                                            "client token does not allow packet routing",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            }
                             relay_log(
                                 "info",
                                 "client_subscribe_received",
@@ -768,6 +829,23 @@ pub(crate) async fn handle_connection(
                                     "client must connect before unsubscribing".to_string(),
                                 );
                                 break;
+                            }
+                            if !peer_allows_action(&registry, peer_addr, RelayAction::PacketRoute)
+                                .await
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "action_not_allowed",
+                                            "client token does not allow packet routing",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
                             }
                             let relay_request_id = format!(
                                 "relay-request-{}",
@@ -1388,6 +1466,23 @@ async fn peer_identity(
         .and_then(|peer| peer.identity.clone())
 }
 
+async fn peer_allows_action(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+    action: RelayAction,
+) -> bool {
+    let guard = registry.read().await;
+    let Some(peer) = guard.peers.get(&peer_addr) else {
+        return false;
+    };
+    let scoped_token = peer
+        .identity
+        .as_ref()
+        .and_then(|identity| identity.token_id.as_ref())
+        .is_some();
+    !scoped_token || peer.allowed_actions.contains(&action)
+}
+
 fn resolve_daemon_sender_locked(
     registry: &RelayRegistry,
     daemon_key: &DaemonKey,
@@ -1666,6 +1761,7 @@ mod tests {
             role: RelayConnectionRole::Daemon,
             realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
             identity: None,
+            allowed_actions: Vec::new(),
             daemon_registration: Some(registration),
             client_daemon_key: None,
         }
@@ -1677,6 +1773,7 @@ mod tests {
             role: RelayConnectionRole::Client,
             realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
             identity: None,
+            allowed_actions: Vec::new(),
             daemon_registration: None,
             client_daemon_key: None,
         }
