@@ -1,11 +1,22 @@
 //! Remote relay inventory projection refresh and liveness probing.
 
+use std::future::Future;
+
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 use super::*;
+
+const REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RemoteInventoryRefreshResult {
+    Refreshed,
+    Failed(String),
+    TimedOut,
+}
 
 pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<()>>) {
     if let Some(handle) = task.take() {
@@ -21,16 +32,48 @@ pub(super) fn spawn_remote_inventory_projection_refresh(
     router: Arc<CommandRouter>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(error) = router.refresh_remote_relay_inventory_projection().await {
-            crate::logging::warn_with_fields(
-                "daemon.relay_client",
-                "remote relay inventory refresh failed",
-                serde_json::json!({
-                    "error": error.to_string(),
-                }),
-            );
+        match bounded_remote_inventory_refresh(
+            router.refresh_remote_relay_inventory_projection(),
+            REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT,
+        )
+        .await
+        {
+            RemoteInventoryRefreshResult::Refreshed => {}
+            RemoteInventoryRefreshResult::Failed(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "remote relay inventory refresh failed",
+                    serde_json::json!({
+                        "error": error,
+                    }),
+                );
+            }
+            RemoteInventoryRefreshResult::TimedOut => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "remote relay inventory refresh timed out",
+                    serde_json::json!({
+                        "timeout_ms": REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT.as_millis(),
+                    }),
+                );
+            }
         }
     })
+}
+
+async fn bounded_remote_inventory_refresh<F, E>(
+    refresh: F,
+    refresh_timeout: Duration,
+) -> RemoteInventoryRefreshResult
+where
+    F: Future<Output = Result<(), E>>,
+    E: ToString,
+{
+    match timeout(refresh_timeout, refresh).await {
+        Ok(Ok(())) => RemoteInventoryRefreshResult::Refreshed,
+        Ok(Err(error)) => RemoteInventoryRefreshResult::Failed(error.to_string()),
+        Err(_) => RemoteInventoryRefreshResult::TimedOut,
+    }
 }
 
 pub(crate) async fn refresh_remote_inventory_projection(
@@ -111,4 +154,45 @@ async fn validate_live_relay_kernels(
         }
     }
     validated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bounded_remote_inventory_refresh_reports_success() {
+        let result = bounded_remote_inventory_refresh(
+            async { Ok::<(), &'static str>(()) },
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(result, RemoteInventoryRefreshResult::Refreshed);
+    }
+
+    #[tokio::test]
+    async fn bounded_remote_inventory_refresh_reports_failure() {
+        let result = bounded_remote_inventory_refresh(
+            async { Err::<(), &'static str>("relay unavailable") },
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            RemoteInventoryRefreshResult::Failed("relay unavailable".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_remote_inventory_refresh_times_out() {
+        let result = bounded_remote_inventory_refresh(
+            std::future::pending::<Result<(), &'static str>>(),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        assert_eq!(result, RemoteInventoryRefreshResult::TimedOut);
+    }
 }
