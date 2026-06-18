@@ -315,6 +315,7 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
       }
       : {}),
     runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
+    requiredRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
     ...(requiredFailureClassifications.length > 0
       ? { requiredFailureClassifications: requiredFailureClassifications.join(",") }
       : {}),

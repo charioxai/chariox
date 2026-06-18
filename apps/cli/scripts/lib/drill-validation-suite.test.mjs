@@ -205,6 +205,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
+    requiredRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
     requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
   assert.deepEqual(drillValidationSuiteArtifactMetadata({
@@ -227,6 +228,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
+    requiredRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
     requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
   assert.throws(() => drillValidationSuiteArtifactMetadata({

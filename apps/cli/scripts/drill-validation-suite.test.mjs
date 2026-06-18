@@ -184,6 +184,7 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(artifactIndex.metadata.requiredRuntimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))
     assert.equal(artifactIndex.metadata.requiredRuntimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
     assert.equal(artifactIndex.metadata.runtimeAuthorityInvariants, DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","))
+    assert.equal(artifactIndex.metadata.requiredRuntimeAuthorityInvariants, DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","))
     assert.equal(artifactIndex.metadata.requiredFailureClassifications, EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS)
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
