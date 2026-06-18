@@ -703,6 +703,8 @@ test("summarizes drill artifact indexes", async () => {
         missingGeneratedEvidenceKinds: "matrix-report",
         requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
         missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
+        requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
+        missingGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/missing-run",
         providerAccountAliases: "codex=work,opencode=zen",
         evidenceRepos: "oss",
       },
@@ -879,6 +881,12 @@ test("summarizes drill artifact indexes", async () => {
     assert.deepEqual(aggregate.missingGeneratedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/missing-artifacts.json": 1,
     })
+    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, {
+      "/tmp/generated-suite/failed-run": 1,
+    })
+    assert.deepEqual(aggregate.missingGeneratedValidationSuiteFailureRoots, {
+      "/tmp/generated-suite/missing-run": 1,
+    })
     assert.deepEqual(aggregate.providerAccountAliases, {
       "claude=team": 1,
       "codex=work": 2,
@@ -948,6 +956,7 @@ test("summarizes drill artifact indexes", async () => {
       missingRuntimeSignalOwners: "runtime-network",
       missingRuntimeSignals: "relay-target-freshness",
       missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
+      missingGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/missing-run",
       owners: "runtime-network,validation-harness",
       plannedClassifications: "workspace-live-sync-conflict",
       plannedOwners: "runtime-state",
@@ -958,6 +967,7 @@ test("summarizes drill artifact indexes", async () => {
       requiredGeneratedMatrixNames: "workspace-live-sync-matrix",
       requiredGeneratedMatrixRepos: "oss",
       requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+      requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       requiredRuntimeSignalOwners: "kernel-authority,provider-runtime",
       requiredRuntimeSignals: "lease-health,provider-run-lifecycle,session-authority",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
@@ -1001,6 +1011,8 @@ test("summarizes drill artifact indexes", async () => {
       "missingGeneratedMatrixRepos",
       "requiredGeneratedValidationSuiteArtifactIndexes",
       "missingGeneratedValidationSuiteArtifactIndexes",
+      "requiredGeneratedValidationSuiteFailureRoots",
+      "missingGeneratedValidationSuiteFailureRoots",
       "providerAccountAliases",
       "evidenceRepos",
       "artifactCoverageInputSources",

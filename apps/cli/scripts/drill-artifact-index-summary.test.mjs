@@ -135,6 +135,12 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.deepEqual(stdoutAggregate.missingGeneratedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/missing-artifacts.json": 1,
     })
+    assert.deepEqual(stdoutAggregate.requiredGeneratedValidationSuiteFailureRoots, {
+      "/tmp/generated-suite/failed-run": 1,
+    })
+    assert.deepEqual(stdoutAggregate.missingGeneratedValidationSuiteFailureRoots, {
+      "/tmp/generated-suite/missing-run": 1,
+    })
     assert.deepEqual(stdoutAggregate.indexes.map((index) => index.source), [
       firstIndexPath,
       secondIndexPath,
@@ -166,6 +172,8 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/arroba-drill-artifacts.json")
     assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/missing-artifacts.json")
+    assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
+    assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteFailureRoots, "/tmp/generated-suite/missing-run")
     assert.equal(artifactIndex.metadata.evidenceRepos, "cloud,oss")
     assert.equal(artifactIndex.metadata.providerAccountAliases, "codex=work,opencode=zen")
     assert.equal(artifactIndex.metadata.artifactCoverageInputCount, "1")
@@ -306,10 +314,10 @@ test("drill artifact index summary gates generated validation-suite failure root
     const aggregate = JSON.parse(stdout)
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
-    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, ["/tmp/generated-suite/failed-run"])
-    assert.deepEqual(aggregate.missingGeneratedValidationSuiteFailureRoots, [])
+    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRootRequirements, ["/tmp/generated-suite/failed-run"])
+    assert.deepEqual(aggregate.missingGeneratedValidationSuiteFailureRootRequirements, [])
     assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
-    assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteFailureRoots, undefined)
+    assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteFailureRoots, "/tmp/generated-suite/missing-run")
 
     await assert.rejects(
       execFile(process.execPath, [
@@ -1205,6 +1213,12 @@ async function writeIndexedReport(rootDir, name, schema) {
         : "",
       missingGeneratedValidationSuiteArtifactIndexes: name === "one"
         ? "/tmp/generated-suite/missing-artifacts.json"
+        : "",
+      requiredGeneratedValidationSuiteFailureRoots: name === "one"
+        ? "/tmp/generated-suite/failed-run"
+        : "",
+      missingGeneratedValidationSuiteFailureRoots: name === "one"
+        ? "/tmp/generated-suite/missing-run"
         : "",
       evidenceRepos: name === "one"
         ? "oss"

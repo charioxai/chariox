@@ -78,6 +78,8 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "missingGeneratedMatrixRepos",
   "requiredGeneratedValidationSuiteArtifactIndexes",
   "missingGeneratedValidationSuiteArtifactIndexes",
+  "requiredGeneratedValidationSuiteFailureRoots",
+  "missingGeneratedValidationSuiteFailureRoots",
   "providerAccountAliases",
   "evidenceRepos",
   "artifactCoverageInputSources",
@@ -124,6 +126,8 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   missingGeneratedMatrixRepos: "missing_generated_matrix_repos",
   requiredGeneratedValidationSuiteArtifactIndexes: "required_generated_validation_suite_artifact_indexes",
   missingGeneratedValidationSuiteArtifactIndexes: "missing_generated_validation_suite_artifact_indexes",
+  requiredGeneratedValidationSuiteFailureRoots: "required_generated_validation_suite_failure_roots",
+  missingGeneratedValidationSuiteFailureRoots: "missing_generated_validation_suite_failure_roots",
   providerAccountAliases: "provider_account_aliases",
   evidenceRepos: "evidence_repos",
   artifactCoverageInputSources: "artifact_coverage_input_sources",
@@ -136,6 +140,8 @@ const DRILL_GENERATED_EVIDENCE_PATH_METADATA_KEYS = Object.freeze([
   "missingGeneratedMatrixArtifactIndexes",
   "requiredGeneratedValidationSuiteArtifactIndexes",
   "missingGeneratedValidationSuiteArtifactIndexes",
+  "requiredGeneratedValidationSuiteFailureRoots",
+  "missingGeneratedValidationSuiteFailureRoots",
 ])
 
 export async function prepareDrillArtifacts(rootDir) {
@@ -304,6 +310,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const missingGeneratedMatrixRepos = new Map()
   const requiredGeneratedValidationSuiteArtifactIndexes = new Map()
   const missingGeneratedValidationSuiteArtifactIndexes = new Map()
+  const requiredGeneratedValidationSuiteFailureRoots = new Map()
+  const missingGeneratedValidationSuiteFailureRoots = new Map()
   const providerAccountAliases = new Map()
   const evidenceRepos = new Map()
   const artifactCoverageInputSources = new Map()
@@ -350,6 +358,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexMissingGeneratedMatrixRepos = metadataListFromMetadata(index.metadata, "missingGeneratedMatrixRepos")
     const indexRequiredGeneratedValidationSuiteArtifactIndexes = metadataListFromMetadata(index.metadata, "requiredGeneratedValidationSuiteArtifactIndexes")
     const indexMissingGeneratedValidationSuiteArtifactIndexes = metadataListFromMetadata(index.metadata, "missingGeneratedValidationSuiteArtifactIndexes")
+    const indexRequiredGeneratedValidationSuiteFailureRoots = metadataListFromMetadata(index.metadata, "requiredGeneratedValidationSuiteFailureRoots")
+    const indexMissingGeneratedValidationSuiteFailureRoots = metadataListFromMetadata(index.metadata, "missingGeneratedValidationSuiteFailureRoots")
     const indexProviderAccountAliases = metadataListFromMetadata(index.metadata, "providerAccountAliases")
     const indexEvidenceRepos = metadataListFromMetadata(index.metadata, "evidenceRepos")
     const indexArtifactCoverageInputSources = metadataListFromMetadata(index.metadata, "artifactCoverageInputSources")
@@ -389,6 +399,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexMissingGeneratedMatrixRepos, missingGeneratedMatrixRepos)
     countValues(indexRequiredGeneratedValidationSuiteArtifactIndexes, requiredGeneratedValidationSuiteArtifactIndexes)
     countValues(indexMissingGeneratedValidationSuiteArtifactIndexes, missingGeneratedValidationSuiteArtifactIndexes)
+    countValues(indexRequiredGeneratedValidationSuiteFailureRoots, requiredGeneratedValidationSuiteFailureRoots)
+    countValues(indexMissingGeneratedValidationSuiteFailureRoots, missingGeneratedValidationSuiteFailureRoots)
     countValues(indexProviderAccountAliases, providerAccountAliases)
     countValues(indexEvidenceRepos, evidenceRepos)
     countValues(indexArtifactCoverageInputSources, artifactCoverageInputSources)
@@ -442,6 +454,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       missingGeneratedMatrixRepos: countValues(indexMissingGeneratedMatrixRepos),
       requiredGeneratedValidationSuiteArtifactIndexes: countValues(indexRequiredGeneratedValidationSuiteArtifactIndexes),
       missingGeneratedValidationSuiteArtifactIndexes: countValues(indexMissingGeneratedValidationSuiteArtifactIndexes),
+      requiredGeneratedValidationSuiteFailureRoots: countValues(indexRequiredGeneratedValidationSuiteFailureRoots),
+      missingGeneratedValidationSuiteFailureRoots: countValues(indexMissingGeneratedValidationSuiteFailureRoots),
       providerAccountAliases: countValues(indexProviderAccountAliases),
       evidenceRepos: countValues(indexEvidenceRepos),
       artifactCoverageInputSources: countValues(indexArtifactCoverageInputSources),
@@ -487,6 +501,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     missingGeneratedMatrixRepos: sortedCountObject(missingGeneratedMatrixRepos),
     requiredGeneratedValidationSuiteArtifactIndexes: sortedCountObject(requiredGeneratedValidationSuiteArtifactIndexes),
     missingGeneratedValidationSuiteArtifactIndexes: sortedCountObject(missingGeneratedValidationSuiteArtifactIndexes),
+    requiredGeneratedValidationSuiteFailureRoots: sortedCountObject(requiredGeneratedValidationSuiteFailureRoots),
+    missingGeneratedValidationSuiteFailureRoots: sortedCountObject(missingGeneratedValidationSuiteFailureRoots),
     providerAccountAliases: sortedCountObject(providerAccountAliases),
     evidenceRepos: sortedCountObject(evidenceRepos),
     artifactCoverageInputSources: sortedCountObject(artifactCoverageInputSources),

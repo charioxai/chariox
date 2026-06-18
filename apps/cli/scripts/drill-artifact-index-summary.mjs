@@ -156,7 +156,7 @@ async function main() {
     || (aggregate.missingRequiredGeneratedMatrixNames ?? []).length > 0
     || (aggregate.missingRequiredGeneratedMatrixRepos ?? []).length > 0
     || (aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []).length > 0
-    || (aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0
+    || (aggregate.missingGeneratedValidationSuiteFailureRootRequirements ?? []).length > 0
     || (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).length > 0
     || (aggregate.missingProviderAccountAliases ?? []).length > 0
     || (aggregate.missingPlannedOwners ?? []).length > 0
@@ -613,14 +613,14 @@ function generatedValidationSuiteFailureRootDiagnosticsFor(aggregate, options) {
   if (required.length === 0) return {}
   const available = new Set(Object.keys(aggregate.generatedValidationSuiteFailureRoots ?? {}))
   return {
-    requiredGeneratedValidationSuiteFailureRoots: required,
-    missingGeneratedValidationSuiteFailureRoots: required.filter((root) => !available.has(root)),
+    requiredGeneratedValidationSuiteFailureRootRequirements: required,
+    missingGeneratedValidationSuiteFailureRootRequirements: required.filter((root) => !available.has(root)),
   }
 }
 
 function generatedValidationSuiteFailureRootRequirementMetadataFor(aggregate) {
-  const required = aggregate.requiredGeneratedValidationSuiteFailureRoots ?? []
-  const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
+  const required = aggregate.requiredGeneratedValidationSuiteFailureRootRequirements ?? []
+  const missing = aggregate.missingGeneratedValidationSuiteFailureRootRequirements ?? []
   return {
     ...(required.length > 0 ? { requiredGeneratedValidationSuiteFailureRoots: required.join(",") } : {}),
     ...(missing.length > 0 ? { missingGeneratedValidationSuiteFailureRoots: missing.join(",") } : {}),
@@ -812,9 +812,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingRequiredGeneratedMatrixRepos ?? []
     lines.push(`generated_matrix_repos_required=${aggregate.requiredGeneratedMatrixRepoRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
-  if (aggregate.requiredGeneratedValidationSuiteFailureRoots !== undefined) {
-    const missing = aggregate.missingGeneratedValidationSuiteFailureRoots ?? []
-    lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRoots.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  if (aggregate.requiredGeneratedValidationSuiteFailureRootRequirements !== undefined) {
+    const missing = aggregate.missingGeneratedValidationSuiteFailureRootRequirements ?? []
+    lines.push(`generated_validation_suite_failure_roots_required=${aggregate.requiredGeneratedValidationSuiteFailureRootRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
   if (aggregate.requiredGeneratedValidationSuiteArtifactIndexPaths !== undefined) {
     const missing = aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []
@@ -876,8 +876,8 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   if ((aggregate.missingRequiredGeneratedMatrixRepos ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record generated matrix repos: ${aggregate.missingRequiredGeneratedMatrixRepos.join(", ")}`)
   }
-  if ((aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).length > 0) {
-    lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRoots.join(", ")}`)
+  if ((aggregate.missingGeneratedValidationSuiteFailureRootRequirements ?? []).length > 0) {
+    lines.push(`next: rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root: ${aggregate.missingGeneratedValidationSuiteFailureRootRequirements.join(", ")}`)
   }
   if ((aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []).length > 0) {
     lines.push(`next: rerun generated validation suites with artifact indexes or include the artifact index that records generated validation-suite artifact indexes: ${aggregate.missingGeneratedValidationSuiteArtifactIndexPaths.join(", ")}`)
@@ -949,7 +949,7 @@ function artifactIndexSummaryNextActions(aggregate) {
   )
   addMissingListActions(
     nextActions,
-    aggregate.missingGeneratedValidationSuiteFailureRoots,
+    aggregate.missingGeneratedValidationSuiteFailureRootRequirements,
     "generated-evidence",
     "rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root",
   )

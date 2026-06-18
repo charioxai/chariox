@@ -140,6 +140,8 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/arroba-drill-artifacts\.json:1/)
   assert.match(text, /artifact_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/failed-run:1/)
+  assert.match(text, /artifact_required_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/failed-run:1/)
+  assert.match(text, /artifact_missing_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/missing-run:1/)
   assert.match(text, /artifact_required_generated_evidence_kinds=matrix-report:2,validation-suite-run:1/)
   assert.match(text, /artifact_missing_generated_evidence_kinds=matrix-report:1/)
   assert.match(text, /artifact_required_generated_matrix_limitations=dry-run-classification-coverage:1/)
@@ -371,6 +373,12 @@ function artifactAggregateFixture() {
     generatedValidationSuiteFailureRoots: {
       "/tmp/generated-suite/failed-run": 1,
     },
+    requiredGeneratedValidationSuiteFailureRoots: {
+      "/tmp/generated-suite/failed-run": 1,
+    },
+    missingGeneratedValidationSuiteFailureRoots: {
+      "/tmp/generated-suite/missing-run": 1,
+    },
     requiredGeneratedEvidenceKinds: {
       "matrix-report": 2,
       "validation-suite-run": 1,
@@ -489,6 +497,12 @@ function artifactAggregateFixture() {
       },
       generatedValidationSuiteFailureRoots: {
         "/tmp/generated-suite/failed-run": 1,
+      },
+      requiredGeneratedValidationSuiteFailureRoots: {
+        "/tmp/generated-suite/failed-run": 1,
+      },
+      missingGeneratedValidationSuiteFailureRoots: {
+        "/tmp/generated-suite/missing-run": 1,
       },
       requiredGeneratedEvidenceKinds: {
         "matrix-report": 2,

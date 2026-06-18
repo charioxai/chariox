@@ -239,6 +239,14 @@ export function formatDrillValidationGateSummary(report) {
     if (generatedValidationSuiteFailureRoots.length > 0) {
       lines.push(`artifact_generated_validation_suite_failure_roots=${generatedValidationSuiteFailureRoots.map(([root, count]) => `${root}:${count}`).join(",")}`)
     }
+    const requiredGeneratedValidationSuiteFailureRoots = Object.entries(artifacts.aggregate.requiredGeneratedValidationSuiteFailureRoots ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (requiredGeneratedValidationSuiteFailureRoots.length > 0) {
+      lines.push(`artifact_required_generated_validation_suite_failure_roots=${requiredGeneratedValidationSuiteFailureRoots.map(([root, count]) => `${root}:${count}`).join(",")}`)
+    }
+    const missingGeneratedValidationSuiteFailureRoots = Object.entries(artifacts.aggregate.missingGeneratedValidationSuiteFailureRoots ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (missingGeneratedValidationSuiteFailureRoots.length > 0) {
+      lines.push(`artifact_missing_generated_validation_suite_failure_roots=${missingGeneratedValidationSuiteFailureRoots.map(([root, count]) => `${root}:${count}`).join(",")}`)
+    }
     const requiredGeneratedEvidenceKinds = Object.entries(artifacts.aggregate.requiredGeneratedEvidenceKinds ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (requiredGeneratedEvidenceKinds.length > 0) {
       lines.push(`artifact_required_generated_evidence_kinds=${requiredGeneratedEvidenceKinds.map(([kind, count]) => `${kind}:${count}`).join(",")}`)
