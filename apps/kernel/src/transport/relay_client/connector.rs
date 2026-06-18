@@ -1,5 +1,7 @@
 //! Relay socket connection lifecycle and heartbeat loop.
 
+use std::future::Future;
+
 use super::*;
 
 pub async fn run_daemon_relay_connector(
@@ -42,6 +44,13 @@ enum MissingRelayConfigDisposition {
     CloudUnavailable,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CloudRelayRefreshResult {
+    Refreshed,
+    Failed(String),
+    TimedOut,
+}
+
 fn should_refresh_cloud_relay(config: &crate::config::DaemonConfig) -> bool {
     config.cloud_relay.is_some()
 }
@@ -74,15 +83,30 @@ fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
     }
 }
 
+async fn bounded_cloud_relay_refresh<F, E>(
+    refresh: F,
+    refresh_timeout: Duration,
+) -> CloudRelayRefreshResult
+where
+    F: Future<Output = Result<(), E>>,
+    E: ToString,
+{
+    match timeout(refresh_timeout, refresh).await {
+        Ok(Ok(())) => CloudRelayRefreshResult::Refreshed,
+        Ok(Err(error)) => CloudRelayRefreshResult::Failed(error.to_string()),
+        Err(_) => CloudRelayRefreshResult::TimedOut,
+    }
+}
+
 fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> JoinHandle<()> {
     tokio::spawn(async move {
-        match timeout(
-            CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT,
+        match bounded_cloud_relay_refresh(
             router.ensure_cloud_relay_connection(),
+            CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT,
         )
         .await
         {
-            Ok(Ok(())) => {
+            CloudRelayRefreshResult::Refreshed => {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
                     "cloud relay token refresh completed",
@@ -91,17 +115,17 @@ fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> J
                     }),
                 );
             }
-            Ok(Err(error)) => {
+            CloudRelayRefreshResult::Failed(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
                     "failed to refresh cloud relay token",
                     serde_json::json!({
                         "relay_url": relay_url,
-                        "error": error.to_string(),
+                        "error": error,
                     }),
                 );
             }
-            Err(_) => {
+            CloudRelayRefreshResult::TimedOut => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
                     "cloud relay token refresh timed out",
@@ -217,8 +241,13 @@ async fn run_daemon_relay_connector_inner(
             let config = router.relay_config_snapshot();
             if should_refresh_cloud_relay(&config) {
                 let cloud_refresh_started = Instant::now();
-                match router.ensure_cloud_relay_connection().await {
-                    Ok(()) => {
+                match bounded_cloud_relay_refresh(
+                    router.ensure_cloud_relay_connection(),
+                    CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT,
+                )
+                .await
+                {
+                    CloudRelayRefreshResult::Refreshed => {
                         crate::logging::info_with_fields(
                             "daemon.startup",
                             "cloud relay profile hydrated",
@@ -227,13 +256,23 @@ async fn run_daemon_relay_connector_inner(
                             }),
                         );
                     }
-                    Err(error) => {
+                    CloudRelayRefreshResult::Failed(error) => {
                         crate::logging::warn_with_fields(
                             "daemon.relay_client",
                             "failed to refresh cloud relay token",
                             serde_json::json!({
                                 "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
-                                "error": error.to_string(),
+                                "error": error,
+                            }),
+                        );
+                    }
+                    CloudRelayRefreshResult::TimedOut => {
+                        crate::logging::warn_with_fields(
+                            "daemon.relay_client",
+                            "cloud relay token refresh timed out before connect",
+                            serde_json::json!({
+                                "refresh_ms": cloud_refresh_started.elapsed().as_millis(),
+                                "timeout_ms": CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis(),
                             }),
                         );
                     }
@@ -794,5 +833,41 @@ mod tests {
 
         assert!(should_start_leased_projection_pump(None));
         assert!(should_start_leased_projection_pump(Some(&task)));
+    }
+
+    #[tokio::test]
+    async fn bounded_cloud_relay_refresh_reports_success() {
+        let result = bounded_cloud_relay_refresh(
+            async { Ok::<(), &'static str>(()) },
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(result, CloudRelayRefreshResult::Refreshed);
+    }
+
+    #[tokio::test]
+    async fn bounded_cloud_relay_refresh_reports_failure() {
+        let result = bounded_cloud_relay_refresh(
+            async { Err::<(), &'static str>("cloud unavailable") },
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            CloudRelayRefreshResult::Failed("cloud unavailable".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_cloud_relay_refresh_times_out() {
+        let result = bounded_cloud_relay_refresh(
+            std::future::pending::<Result<(), &'static str>>(),
+            Duration::from_millis(1),
+        )
+        .await;
+
+        assert_eq!(result, CloudRelayRefreshResult::TimedOut);
     }
 }
