@@ -291,9 +291,7 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
   if (runtimeSignals.length > 0) {
     validateDrillRuntimeSignalsManifest(manifest.runtimeSignalsManifest, "validation suite runtimeSignalsManifest")
   }
-  if (manifest.runtimeAuthorityManifest !== undefined) {
-    validateDrillRuntimeAuthorityManifest(manifest.runtimeAuthorityManifest, "validation suite runtimeAuthorityManifest")
-  }
+  validateDrillRuntimeAuthorityManifest(manifest.runtimeAuthorityManifest, "validation suite runtimeAuthorityManifest")
   const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)
   return {
     drill: "validation-suite",

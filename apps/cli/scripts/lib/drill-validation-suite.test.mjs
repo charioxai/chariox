@@ -232,6 +232,10 @@ test("builds validation suite artifact metadata from manifest and run report", (
     requiredRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
     requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
+  assert.throws(() => {
+    const { runtimeAuthorityManifest: _runtimeAuthorityManifest, ...missingAuthorityManifest } = manifest
+    return drillValidationSuiteArtifactMetadata(missingAuthorityManifest)
+  }, /validation suite runtimeAuthorityManifest is not an object/)
   assert.throws(() => drillValidationSuiteArtifactMetadata({
     ...manifest,
     runtimeAuthorityManifest: {
