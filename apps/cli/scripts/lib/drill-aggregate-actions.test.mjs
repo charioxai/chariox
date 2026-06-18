@@ -14,6 +14,7 @@ test("counts and orders aggregate next actions", () => {
     owner: "runtime-network",
     classification: "relay-runtime",
     nextAction: "inspect relay",
+    sourceDetails: [{ source: "remote-matrix", matrix: "remote", scenarioId: "remote", reportPath: "/tmp/remote.json" }],
   })
   countDrillAggregateNextAction(counts, {
     owner: "provider-account",
@@ -30,6 +31,7 @@ test("counts and orders aggregate next actions", () => {
     classification: "relay-runtime",
     nextAction: "inspect relay",
     count: 3,
+    sourceDetails: [{ source: "hetzner-matrix", matrix: "remote", scenarioId: "hetzner", reportPath: "/tmp/remote.json" }],
   })
 
   assert.deepEqual(formatDrillAggregateNextActionCounts(counts), [
@@ -38,6 +40,10 @@ test("counts and orders aggregate next actions", () => {
       classification: "relay-runtime",
       nextAction: "inspect relay",
       count: 4,
+      sourceDetails: [
+        { source: "hetzner-matrix", matrix: "remote", scenarioId: "hetzner", reportPath: "/tmp/remote.json" },
+        { source: "remote-matrix", matrix: "remote", scenarioId: "remote", reportPath: "/tmp/remote.json" },
+      ],
     },
     {
       owner: "provider-account",
@@ -80,6 +86,13 @@ test("validates aggregate next action entries", () => {
     nextAction: "use Bearer abcdefghijklmnopqrstuvwxyz",
     count: 1,
   }, "action"), /secret-looking nextAction/)
+  assert.throws(() => validateDrillAggregateNextAction({
+    owner: "runtime-state",
+    classification: "runtime-timeout",
+    nextAction: "inspect state",
+    count: 1,
+    sourceDetails: [{ source: "sk-secretsecretsecretsecret" }],
+  }, "action"), /sourceDetails\[0\]\.source includes secret-looking diagnostic text/)
 })
 
 test("aggregate next action counting rejects incomplete actions", () => {
@@ -101,6 +114,12 @@ test("aggregate next action counting rejects incomplete actions", () => {
     classification: "runtime-timeout",
     nextAction: "use sk-secretsecretsecretsecret",
   }), /secret-looking nextAction/)
+  assert.throws(() => countDrillAggregateNextAction(counts, {
+    owner: "runtime-state",
+    classification: "runtime-timeout",
+    nextAction: "inspect state",
+    sourceDetails: "bad",
+  }), /invalid sourceDetails/)
   assert.equal(counts.size, 0)
 })
 

@@ -355,14 +355,31 @@ test("aggregates multiple matrix reports for CI", () => {
     owner: action.owner,
     classification: action.classification,
     count: action.count,
+    sourceDetails: action.sourceDetails,
   })), [
-    { owner: "provider-account", classification: "provider-auth", count: 1 },
+    {
+      owner: "provider-account",
+      classification: "provider-auth",
+      count: 1,
+      sourceDetails: [{
+        source: "remote/remote",
+        matrix: "remote",
+        scenarioId: "remote",
+        reportPath: "/tmp/remote-matrix.json",
+      }],
+    },
   ])
   assert.deepEqual(aggregate.plannedNextActions, [{
     owner: "runtime-state",
     classification: "workspace-live-sync-conflict",
     plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
     count: 1,
+    sourceDetails: [{
+      source: "workspace/tracked",
+      matrix: "workspace",
+      scenarioId: "tracked",
+      reportPath: "/tmp/workspace-matrix.json",
+    }],
   }])
   assert.deepEqual(aggregate.reports.map((report) => ({ matrix: report.matrix, source: report.source })), [
     { matrix: "remote", source: "/tmp/remote-matrix.json" },
@@ -430,8 +447,10 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /- workspace-live-sync-state: workspace\/tracked\(dry-run\) source=\/tmp\/workspace-matrix\.json/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
+  assert.match(text, /sources: remote\/remote report=\/tmp\/remote-matrix\.json/)
   assert.match(text, /planned next actions:/)
   assert.match(text, /owner=runtime-state classification=workspace-live-sync-conflict count=1: inspect workspace live sync status/)
+  assert.match(text, /sources: workspace\/tracked report=\/tmp\/workspace-matrix\.json/)
   assert.match(text, /next: refresh provider login/)
   assert.match(text, /incomplete scenarios:/)
   assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure source=\/tmp\/remote-matrix.json/)

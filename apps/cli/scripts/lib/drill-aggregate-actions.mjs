@@ -1,18 +1,33 @@
 import { looksLikeDrillSecretValue } from "./drill-secrets.mjs"
 
-export function countDrillAggregateNextAction(counts, { owner, classification, nextAction, count = 1 }) {
+export function countDrillAggregateNextAction(counts, { owner, classification, nextAction, count = 1, sourceDetails = [] }) {
+  const hasSourceDetails = sourceDetails !== undefined && sourceDetails !== null
+  const details = hasSourceDetails ? sourceDetails : []
   validateDrillAggregateNextAction({
     owner,
     classification,
     nextAction,
     count,
+    ...(hasSourceDetails ? { sourceDetails: details } : {}),
   }, "aggregate next action")
   const key = JSON.stringify([owner, classification, nextAction])
   const previous = counts.get(key)
   const increment = nextActionIncrement(count)
-  counts.set(key, previous
-    ? { ...previous, count: previous.count + increment }
-    : { owner, classification, nextAction, count: increment })
+  if (previous) {
+    counts.set(key, {
+      ...previous,
+      count: previous.count + increment,
+      ...mergedSourceDetails(previous.sourceDetails, Array.isArray(details) ? details : []),
+    })
+  } else {
+    counts.set(key, {
+      owner,
+      classification,
+      nextAction,
+      count: increment,
+      ...mergedSourceDetails([], Array.isArray(details) ? details : []),
+    })
+  }
 }
 
 export function formatDrillAggregateNextActionCounts(counts) {
@@ -39,6 +54,14 @@ export function validateDrillAggregateNextAction(action, source) {
   if (!Number.isSafeInteger(action.count) || action.count < 1) {
     throw new Error(`${source} has invalid count`)
   }
+  if (action.sourceDetails !== undefined) {
+    if (!Array.isArray(action.sourceDetails)) {
+      throw new Error(`${source} has invalid sourceDetails`)
+    }
+    for (const [index, detail] of action.sourceDetails.entries()) {
+      validateDrillAggregateNextActionSourceDetail(detail, `${source}.sourceDetails[${index}]`)
+    }
+  }
 }
 
 export function countDrillAggregateEntriesBy(entries, keyForEntry) {
@@ -59,4 +82,47 @@ function nextActionIncrement(count) {
     throw new Error("aggregate next action has invalid count")
   }
   return count
+}
+
+function mergedSourceDetails(previous = [], next = []) {
+  const details = new Map()
+  for (const detail of [...previous, ...next]) {
+    if (!detail || typeof detail !== "object" || Array.isArray(detail)) continue
+    const normalized = normalizeSourceDetail(detail)
+    details.set(JSON.stringify(normalized), normalized)
+  }
+  const sourceDetails = [...details.values()].sort(compareSourceDetails)
+  return sourceDetails.length > 0 ? { sourceDetails } : {}
+}
+
+function validateDrillAggregateNextActionSourceDetail(detail, source) {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    throw new Error(`${source} is not an object`)
+  }
+  const keys = ["source", "matrix", "scenarioId", "reportPath"]
+  if (!keys.some((key) => nonEmptyString(detail[key]))) {
+    throw new Error(`${source} is missing source identity`)
+  }
+  for (const key of keys) {
+    if (detail[key] === undefined || detail[key] === null) continue
+    if (!nonEmptyString(detail[key])) {
+      throw new Error(`${source} has invalid ${key}`)
+    }
+    if (looksLikeDrillSecretValue(detail[key])) {
+      throw new Error(`${source}.${key} includes secret-looking diagnostic text`)
+    }
+  }
+}
+
+function normalizeSourceDetail(detail) {
+  return {
+    ...(nonEmptyString(detail.source) ? { source: detail.source } : {}),
+    ...(nonEmptyString(detail.matrix) ? { matrix: detail.matrix } : {}),
+    ...(nonEmptyString(detail.scenarioId) ? { scenarioId: detail.scenarioId } : {}),
+    ...(nonEmptyString(detail.reportPath) ? { reportPath: detail.reportPath } : {}),
+  }
+}
+
+function compareSourceDetails(left, right) {
+  return JSON.stringify(left).localeCompare(JSON.stringify(right))
 }

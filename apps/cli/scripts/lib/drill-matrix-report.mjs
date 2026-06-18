@@ -255,6 +255,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
         owner,
         classification: scenario.classification ?? "child-process",
         nextAction: nextActionForScenario(scenario),
+        sourceDetails: [nextActionSourceDetailForScenario(summary, scenario)],
       })
     }
     for (const scenario of summary.skippedScenarios) {
@@ -276,6 +277,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
           owner: planned.plannedOwner,
           classification: planned.plannedClassification,
           nextAction: planned.plannedNextAction,
+          sourceDetails: [nextActionSourceDetailForScenario(summary, scenario)],
         })
       }
     }
@@ -305,6 +307,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
         classification: action.classification,
         plannedNextAction: action.nextAction,
         count: action.count,
+        ...(action.sourceDetails ? { sourceDetails: action.sourceDetails } : {}),
       })),
     reports: summaries.map((summary) => ({
       matrix: summary.matrix,
@@ -443,12 +446,20 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+      const sources = formatNextActionSourceDetails(action.sourceDetails)
+      if (sources) {
+        lines.push(`  sources: ${sources}`)
+      }
     }
   }
   if (Array.isArray(aggregate.plannedNextActions) && aggregate.plannedNextActions.length > 0) {
     lines.push("planned next actions:")
     for (const action of aggregate.plannedNextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.plannedNextAction}`)
+      const sources = formatNextActionSourceDetails(action.sourceDetails)
+      if (sources) {
+        lines.push(`  sources: ${sources}`)
+      }
     }
   }
 
@@ -523,6 +534,15 @@ function plannedDiagnosticsForScenario(scenario) {
     plannedClassification: scenario.plannedClassification,
     plannedOwner: scenario.plannedOwner,
     plannedNextAction: scenario.plannedNextAction,
+  }
+}
+
+function nextActionSourceDetailForScenario(summary, scenario) {
+  return {
+    source: `${summary.matrix}/${scenario.id}`,
+    matrix: summary.matrix,
+    scenarioId: scenario.id,
+    ...(summary.source ? { reportPath: summary.source } : {}),
   }
 }
 
@@ -865,6 +885,7 @@ function assertNextActionCountsMatchScenarios(aggregate) {
       owner: scenario.owner,
       classification: scenario.classification ?? "child-process",
       nextAction: scenario.nextAction,
+      sourceDetails: [nextActionSourceDetailForAggregateScenario(scenario)],
     })
   }
   const expectedActions = formatDrillAggregateNextActionCounts(expected)
@@ -881,6 +902,7 @@ function assertPlannedNextActionCountsMatchScenarios(aggregate) {
       owner: scenario.plannedOwner,
       classification: scenario.plannedClassification,
       nextAction: scenario.plannedNextAction,
+      sourceDetails: [nextActionSourceDetailForAggregateScenario(scenario)],
     })
   }
   const expectedActions = formatDrillAggregateNextActionCounts(expected)
@@ -889,9 +911,19 @@ function assertPlannedNextActionCountsMatchScenarios(aggregate) {
       classification: action.classification,
       plannedNextAction: action.nextAction,
       count: action.count,
+      ...(action.sourceDetails ? { sourceDetails: action.sourceDetails } : {}),
     }))
   if (JSON.stringify(aggregate.plannedNextActions ?? []) !== JSON.stringify(expectedActions)) {
     throw new Error("aggregate plannedNextActions do not match incompleteScenarios")
+  }
+}
+
+function nextActionSourceDetailForAggregateScenario(scenario) {
+  return {
+    source: `${scenario.matrix}/${scenario.id}`,
+    matrix: scenario.matrix,
+    scenarioId: scenario.id,
+    ...(scenario.source ? { reportPath: scenario.source } : {}),
   }
 }
 
@@ -1175,6 +1207,7 @@ function validateMatrixAggregatePlannedNextAction(action, source) {
     classification: action?.classification,
     nextAction: action?.plannedNextAction,
     count: action?.count,
+    ...(action?.sourceDetails !== undefined ? { sourceDetails: action.sourceDetails } : {}),
   }, source)
 }
 
@@ -1702,4 +1735,15 @@ function formatCountObject(counts) {
 function formatRuntimeSignalScenarioRef(scenario) {
   const source = scenario.source ? ` source=${scenario.source}` : ""
   return `${scenario.matrix}/${scenario.id}(${scenario.status})${source}`
+}
+
+function formatNextActionSourceDetails(sourceDetails) {
+  if (!Array.isArray(sourceDetails) || sourceDetails.length === 0) return ""
+  return sourceDetails
+    .map((detail) => {
+      const source = detail.source ?? [detail.matrix, detail.scenarioId].filter(Boolean).join("/")
+      const report = detail.reportPath ? ` report=${detail.reportPath}` : ""
+      return `${source}${report}`
+    })
+    .join(", ")
 }
