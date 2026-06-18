@@ -99,6 +99,34 @@ Artifact-index gates can enforce the same provenance with `--require-artifact-ge
 
 When the distributed-runtime wrapper generates matrix reports with `--matrix-dry-run`, it validates matrix names, scenarios, deployment presets, providers, runtime signals, validation-suite run artifacts, generated-evidence provenance, and planned diagnostic ownership, but it does not treat dry-run scenarios as release-grade failure-classification evidence. In that mode the gate records generated matrix limitation `dry-run-classification-coverage` and suppresses only the preset-derived matrix classification requirement. Follow it with `drill-validation-gate-summary.mjs --require-generated-matrix-limitation dry-run-classification-coverage --require-artifact-generated-matrix-limitation dry-run-classification-coverage --require-artifact-planned-owner OWNER --require-artifact-planned-classification CLASSIFICATION --require-artifact-max-age-ms 3600000` to prove the limitation was explicit, the planned owner/classification metadata is present, and the artifact metadata inputs are fresh. Rerun without `--matrix-dry-run` before treating the distributed-runtime gate as release evidence.
 
+Use focused gates before the release-level distributed-runtime gate when the
+change is isolated to one quality axis:
+
+```bash
+node apps/cli/scripts/drill-validation-gate.mjs \
+  --preset runtime-authority \
+  --platform-bundle .artifacts/drill-platform \
+  --matrix-root .artifacts/drill-matrices \
+  --require-complete
+
+node apps/cli/scripts/drill-validation-gate.mjs \
+  --preset distributed-state-health \
+  --platform-bundle .artifacts/drill-platform \
+  --matrix-root .artifacts/drill-matrices \
+  --require-complete
+```
+
+`runtime-authority` proves the shared kernel-owned session, agent, provider-run,
+permission, and projection path across native TUI, remote agent, and slice
+matrices. `distributed-state-health` proves owner-routed diagnostics and
+recovery evidence for leases, provider-run lifecycle, relay freshness, slice
+state, home-extension manifest sync, and Workspace Live Sync state. Run both
+focused presets after refactors in those areas, then run `distributed-runtime`
+once remote, hosted, collab, provider, and UI evidence has been collected.
+Dry-run matrix evidence is acceptable only for scope review; it must carry
+planned owner/classification metadata and cannot satisfy release evidence until
+the matching live matrix has completed.
+
 ## Matrix Reports
 
 Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.

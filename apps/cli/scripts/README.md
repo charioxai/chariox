@@ -79,6 +79,20 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
 
 Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, validation-suite failure roots, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. The distributed-runtime preset also derives required runtime-signal owner coverage from its required runtime signals, so generated evidence must prove subsystem owners such as `kernel-authority`, `runtime-network`, and `worker-kernel` rather than only raw signal ids. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
 
+For faster inner-loop validation, use the focused presets before the full
+distributed-runtime gate:
+
+```bash
+node apps/cli/scripts/drill-validation-gate.mjs --preset runtime-authority --platform-bundle .artifacts/drill-platform --matrix-root .artifacts/drill-matrices --require-complete
+node apps/cli/scripts/drill-validation-gate.mjs --preset distributed-state-health --platform-bundle .artifacts/drill-platform --matrix-root .artifacts/drill-matrices --require-complete
+```
+
+`runtime-authority` is the right first gate after kernel-owned path refactors.
+`distributed-state-health` is the right first gate after diagnostics,
+reconciliation, relay freshness, manifest sync, slice-state, or Workspace Live
+Sync changes. Treat dry-run matrices as scope evidence only; release evidence
+still needs the matching live matrix reports.
+
 When a distributed gate spans OSS and Cloud, keep the registry parity flags enabled: `--require-generated-matrix-registry-parity`, `--require-runtime-signal-registry-parity`, and `--require-failure-taxonomy-registry-parity`. These checks validate registry schemas, reject duplicate generated matrix names/runtime signal ids/failure classifications, and fail on matrix repo, signal owner/description, or taxonomy owner drift before live drills consume provider or remote-host time.
 
 To reject stale or discovered-only bundles, summarize the generated gate report and require both generated evidence kinds:
