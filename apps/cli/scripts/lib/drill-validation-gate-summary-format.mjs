@@ -1,4 +1,5 @@
 import { validateDrillValidationGateReport } from "./drill-validation-gate-report.mjs"
+import { formatDrillAggregateNextActionSourceDetails } from "./drill-aggregate-actions.mjs"
 import { drillRuntimeSignalOwnerCounts } from "./drill-runtime-signals.mjs"
 
 export function formatDrillValidationGateSummary(report) {
@@ -381,6 +382,10 @@ export function formatDrillValidationGateSummary(report) {
     lines.push("next actions:")
     for (const action of report.nextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+      const sources = formatDrillAggregateNextActionSourceDetails(action.sourceDetails)
+      if (sources) {
+        lines.push(`  sources: ${sources}`)
+      }
     }
   }
 

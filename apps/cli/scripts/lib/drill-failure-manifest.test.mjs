@@ -274,9 +274,26 @@ test("aggregates preserved drill failure summaries", () => {
     owner: action.owner,
     classification: action.classification,
     count: action.count,
+    sourceDetails: action.sourceDetails,
   })), [
-    { owner: "provider-account", classification: "provider-auth", count: 1 },
-    { owner: "runtime-network", classification: "relay-runtime", count: 1 },
+    {
+      owner: "provider-account",
+      classification: "provider-auth",
+      count: 1,
+      sourceDetails: [{
+        source: "provider-drill",
+        reportPath: "/tmp/provider/arroba-drill-failure.json",
+      }],
+    },
+    {
+      owner: "runtime-network",
+      classification: "relay-runtime",
+      count: 1,
+      sourceDetails: [{
+        source: "relay-drill",
+        reportPath: "/tmp/relay/arroba-drill-failure.json",
+      }],
+    },
   ])
   assert.deepEqual(aggregate.failures.map((failure) => ({
     drill: failure.drill,
@@ -309,6 +326,8 @@ test("aggregates preserved drill failure summaries", () => {
   assert.match(text, /runtime_signal_owners: kernel-authority=2 provider-runtime=1 runtime-network=1/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
+  assert.match(text, /sources: provider-drill report=\/tmp\/provider\/arroba-drill-failure\.json/)
+  assert.match(text, /sources: relay-drill report=\/tmp\/relay\/arroba-drill-failure\.json/)
   assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime runtime_signals=lease-health,relay-target-freshness root=\/tmp\/relay source=\/tmp\/relay\/arroba-drill-failure.json/)
   assert.match(text, /next: inspect relay and kernel logs/)
 })

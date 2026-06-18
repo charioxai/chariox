@@ -4,6 +4,7 @@ import {
   countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
+  formatDrillAggregateNextActionSourceDetails,
   validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
 import { classifyDrillChildFailure } from "./drill-child-process.mjs"
@@ -141,7 +142,12 @@ export function summarizeDrillFailureManifests(manifests, {
     const failureRuntimeSignals = runtimeSignalsFromMetadata(summary.metadata)
     owners.set(owner, (owners.get(owner) ?? 0) + 1)
     classifications.set(kind, (classifications.get(kind) ?? 0) + 1)
-    countDrillAggregateNextAction(nextActions, { owner, classification: kind, nextAction })
+    countDrillAggregateNextAction(nextActions, {
+      owner,
+      classification: kind,
+      nextAction,
+      sourceDetails: [nextActionSourceDetailForFailureSummary(summary)],
+    })
     countRuntimeSignals(runtimeSignals, failureRuntimeSignals)
     failures.push({
       drill: summary.metadata.drill ?? "unknown",
@@ -174,6 +180,13 @@ export function summarizeDrillFailureManifests(manifests, {
   return aggregate
 }
 
+function nextActionSourceDetailForFailureSummary(summary) {
+  return {
+    source: summary.metadata.drill ?? summary.rootDir,
+    ...(summary.source ? { reportPath: summary.source } : {}),
+  }
+}
+
 export function formatDrillFailureManifestAggregateSummary(aggregate) {
   validateDrillFailureManifestAggregate(aggregate)
   const lines = [
@@ -203,6 +216,10 @@ export function formatDrillFailureManifestAggregateSummary(aggregate) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+      const sources = formatDrillAggregateNextActionSourceDetails(action.sourceDetails)
+      if (sources) {
+        lines.push(`  sources: ${sources}`)
+      }
     }
   }
   if (aggregate.failures.length > 0) {
@@ -307,11 +324,19 @@ function assertNextActionCountsMatchFailures(aggregate) {
       owner: failure.owner,
       classification: failure.classification,
       nextAction: failure.nextAction,
+      sourceDetails: [nextActionSourceDetailForAggregateFailure(failure)],
     })
   }
   const expectedActions = formatDrillAggregateNextActionCounts(expected)
   if (JSON.stringify(aggregate.nextActions ?? []) !== JSON.stringify(expectedActions)) {
     throw new Error("aggregate nextActions do not match failures")
+  }
+}
+
+function nextActionSourceDetailForAggregateFailure(failure) {
+  return {
+    source: failure.drill ?? failure.rootDir,
+    ...(failure.source ? { reportPath: failure.source } : {}),
   }
 }
 

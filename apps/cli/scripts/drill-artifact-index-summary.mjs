@@ -16,6 +16,7 @@ import {
 import {
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
+  formatDrillAggregateNextActionSourceDetails,
 } from "./lib/drill-aggregate-actions.mjs"
 import {
   parseProviderAccountAlias,
@@ -856,6 +857,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count} next=${action.nextAction}`)
+      const sources = formatDrillAggregateNextActionSourceDetails(action.sourceDetails)
+      if (sources) {
+        lines.push(`  sources: ${sources}`)
+      }
     }
   }
   if ((aggregate.staleArtifactIndexes ?? []).length > 0) {

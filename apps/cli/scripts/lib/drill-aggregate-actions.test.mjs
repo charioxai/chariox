@@ -5,6 +5,7 @@ import {
   countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
+  formatDrillAggregateNextActionSourceDetails,
   validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
 
@@ -52,6 +53,10 @@ test("counts and orders aggregate next actions", () => {
       count: 2,
     },
   ])
+  assert.equal(
+    formatDrillAggregateNextActionSourceDetails(formatDrillAggregateNextActionCounts(counts)[0].sourceDetails),
+    "hetzner-matrix report=/tmp/remote.json, remote-matrix report=/tmp/remote.json",
+  )
 })
 
 test("validates aggregate next action entries", () => {

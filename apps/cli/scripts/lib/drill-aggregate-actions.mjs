@@ -39,6 +39,17 @@ export function formatDrillAggregateNextActionCounts(counts) {
   ))
 }
 
+export function formatDrillAggregateNextActionSourceDetails(sourceDetails) {
+  if (!Array.isArray(sourceDetails) || sourceDetails.length === 0) return ""
+  return sourceDetails
+    .map((detail) => {
+      const source = detail.source ?? [detail.matrix, detail.scenarioId].filter(Boolean).join("/")
+      const report = detail.reportPath ? ` report=${detail.reportPath}` : ""
+      return `${source}${report}`
+    })
+    .join(", ")
+}
+
 export function validateDrillAggregateNextAction(action, source) {
   if (!action || typeof action !== "object" || Array.isArray(action)) {
     throw new Error(`${source} is not an object`)

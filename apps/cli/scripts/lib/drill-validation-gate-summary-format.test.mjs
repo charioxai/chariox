@@ -53,6 +53,12 @@ test("formats required platform and matrix coverage diagnostics", () => {
       classification: "matrix-coverage",
       nextAction: "run missing drill matrices: workspace-live-sync-matrix",
       count: 1,
+      sourceDetails: [{
+        source: "workspace-live-sync-matrix/tracked",
+        matrix: "workspace-live-sync-matrix",
+        scenarioId: "tracked",
+        reportPath: "/tmp/workspace-live-sync-matrix.json",
+      }],
     }],
   }))
 
@@ -68,6 +74,7 @@ test("formats required platform and matrix coverage diagnostics", () => {
   assert.match(text, /matrix_error=no matrix reports found/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=validation-harness classification=matrix-coverage count=1/)
+  assert.match(text, /sources: workspace-live-sync-matrix\/tracked report=\/tmp\/workspace-live-sync-matrix\.json/)
   assert.match(text, /next: inspect failed gate checks and rerun the relevant drills/)
 })
 
@@ -652,6 +659,10 @@ function failureAggregateFixture() {
       classification: "relay-runtime",
       nextAction,
       count: 1,
+      sourceDetails: [{
+        source: "relay-drill",
+        reportPath: "/tmp/failure.json",
+      }],
     }],
     failures: [{
       drill: "relay-drill",

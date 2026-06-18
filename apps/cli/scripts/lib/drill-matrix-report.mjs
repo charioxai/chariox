@@ -3,6 +3,7 @@ import {
   countDrillAggregateEntriesBy,
   countDrillAggregateNextAction,
   formatDrillAggregateNextActionCounts,
+  formatDrillAggregateNextActionSourceDetails,
   validateDrillAggregateNextAction,
 } from "./drill-aggregate-actions.mjs"
 import {
@@ -446,7 +447,7 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
-      const sources = formatNextActionSourceDetails(action.sourceDetails)
+      const sources = formatDrillAggregateNextActionSourceDetails(action.sourceDetails)
       if (sources) {
         lines.push(`  sources: ${sources}`)
       }
@@ -456,7 +457,7 @@ export function formatDrillMatrixAggregateSummary(aggregate) {
     lines.push("planned next actions:")
     for (const action of aggregate.plannedNextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.plannedNextAction}`)
-      const sources = formatNextActionSourceDetails(action.sourceDetails)
+      const sources = formatDrillAggregateNextActionSourceDetails(action.sourceDetails)
       if (sources) {
         lines.push(`  sources: ${sources}`)
       }
@@ -1735,15 +1736,4 @@ function formatCountObject(counts) {
 function formatRuntimeSignalScenarioRef(scenario) {
   const source = scenario.source ? ` source=${scenario.source}` : ""
   return `${scenario.matrix}/${scenario.id}(${scenario.status})${source}`
-}
-
-function formatNextActionSourceDetails(sourceDetails) {
-  if (!Array.isArray(sourceDetails) || sourceDetails.length === 0) return ""
-  return sourceDetails
-    .map((detail) => {
-      const source = detail.source ?? [detail.matrix, detail.scenarioId].filter(Boolean).join("/")
-      const report = detail.reportPath ? ` report=${detail.reportPath}` : ""
-      return `${source}${report}`
-    })
-    .join(", ")
 }
