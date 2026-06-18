@@ -176,7 +176,10 @@ async fn forward_display_http_stream(
             body_base64: (!request.body.is_empty()).then(|| BASE64_STANDARD.encode(&request.body)),
         },
     };
-    send_envelope(&daemon_sender, &open).await?;
+    if send_envelope(&daemon_sender, &open).is_err() {
+        write_response(&mut stream, 502, "display tunnel daemon is busy").await?;
+        return Ok(());
+    }
     let start = match tokio::time::timeout(DISPLAY_RESPONSE_START_TIMEOUT, event_rx.recv()).await {
         Ok(Some(DisplayStreamEvent::ResponseStart { status, headers })) => (status, headers),
         Ok(Some(DisplayStreamEvent::Close { error })) => {
@@ -252,10 +255,10 @@ async fn forward_display_websocket_stream(
             browser_message = browser_read.next() => {
                 match browser_message {
                     Some(Ok(Message::Binary(data))) => {
-                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_ref(), Some("binary")).await?;
+                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_ref(), Some("binary"))?;
                     }
                     Some(Ok(Message::Text(data))) => {
-                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_str().as_bytes(), Some("text")).await?;
+                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_str().as_bytes(), Some("text"))?;
                     }
                     Some(Ok(Message::Close(_))) | None => {
                         let _ = send_envelope(
@@ -264,7 +267,7 @@ async fn forward_display_websocket_stream(
                                 stream_id: stream_id.clone(),
                                 error: None,
                             },
-                        ).await;
+                        );
                         break;
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -279,7 +282,7 @@ async fn forward_display_websocket_stream(
                                 stream_id: stream_id.clone(),
                                 error: Some(relay_error("display_browser_websocket_failed", &error.to_string(), true)),
                             },
-                        ).await;
+                        );
                         break;
                     }
                 }
@@ -310,7 +313,7 @@ async fn forward_display_websocket_stream(
     Ok(())
 }
 
-async fn send_display_client_chunk(
+fn send_display_client_chunk(
     sender: &RelaySender,
     stream_id: &str,
     data: &[u8],
@@ -326,19 +329,14 @@ async fn send_display_client_chunk(
             },
         },
     )
-    .await
 }
 
-async fn send_envelope(
-    sender: &RelaySender,
-    envelope: &RelayEnvelope,
-) -> Result<(), std::io::Error> {
+fn send_envelope(sender: &RelaySender, envelope: &RelayEnvelope) -> Result<(), std::io::Error> {
     let payload = serde_json::to_string(envelope)
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     sender
-        .send(Message::Text(payload.into()))
-        .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "daemon disconnected"))
+        .try_send(Message::Text(payload.into()))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error.to_string()))
 }
 
 fn display_stream_error_message(error: Option<&RelayError>) -> String {
@@ -596,5 +594,23 @@ mod tests {
     #[test]
     fn display_response_start_timeout_allows_synchronous_workflow_calls() {
         assert!(DISPLAY_RESPONSE_START_TIMEOUT >= Duration::from_secs(300));
+    }
+
+    #[test]
+    fn display_daemon_send_fails_fast_when_queue_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(Message::Text("occupied".to_string().into()))
+            .expect("test queue should accept first message");
+
+        let error = send_envelope(
+            &sender,
+            &RelayEnvelope::Close {
+                reason: "should fail fast".to_string(),
+            },
+        )
+        .expect_err("full daemon queue should reject display envelope");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
     }
 }
