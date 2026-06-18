@@ -89,6 +89,37 @@ fn cloud_presence_refresh_interval(daemon_id: &str) -> Duration {
         ))
 }
 
+#[derive(Debug)]
+struct CloudPresencePublishSchedule {
+    next_publish_at: Instant,
+    interval: Duration,
+}
+
+impl CloudPresencePublishSchedule {
+    fn new(now: Instant, daemon_id: &str) -> Self {
+        Self {
+            next_publish_at: now + cloud_presence_refresh_interval(daemon_id),
+            interval: cloud_presence_refresh_interval(daemon_id),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_interval(now: Instant, interval: Duration) -> Self {
+        Self {
+            next_publish_at: now + interval,
+            interval,
+        }
+    }
+
+    fn claim_publish_if_due(&mut self, now: Instant, task: Option<&JoinHandle<()>>) -> bool {
+        if now < self.next_publish_at {
+            return false;
+        }
+        self.next_publish_at = now + self.interval;
+        should_start_cloud_presence_publish(task)
+    }
+}
+
 fn stable_jitter_ms(value: &str, spread_ms: u64) -> u64 {
     if spread_ms == 0 {
         return 0;
@@ -538,8 +569,8 @@ async fn run_daemon_relay_connector_inner(
                         "relay registration sent",
                     ));
                 }
-                let mut next_cloud_presence_publish =
-                    Instant::now() + cloud_presence_refresh_interval(&daemon_id);
+                let mut cloud_presence_schedule =
+                    CloudPresencePublishSchedule::new(Instant::now(), &daemon_id);
                 let mut inventory_refresh_task = static_relay
                     .is_none()
                     .then(|| spawn_remote_inventory_projection_refresh(Arc::clone(&router)));
@@ -766,20 +797,17 @@ async fn run_daemon_relay_connector_inner(
                                     outgoing_tx.clone(),
                                 ));
                             }
-                            if Instant::now() >= next_cloud_presence_publish {
-                                if static_relay.is_none()
-                                    && should_start_cloud_presence_publish(
-                                        cloud_presence_task.as_ref(),
-                                    )
-                                {
-                                    cloud_presence_task = Some(spawn_cloud_presence_publish(
-                                        Arc::clone(&router),
-                                        true,
-                                        "relay heartbeat",
-                                    ));
-                                    next_cloud_presence_publish =
-                                        Instant::now() + cloud_presence_refresh_interval(&daemon_id);
-                                }
+                            if static_relay.is_none()
+                                && cloud_presence_schedule.claim_publish_if_due(
+                                    Instant::now(),
+                                    cloud_presence_task.as_ref(),
+                                )
+                            {
+                                cloud_presence_task = Some(spawn_cloud_presence_publish(
+                                    Arc::clone(&router),
+                                    true,
+                                    "relay heartbeat",
+                                ));
                             }
                         }
                     }
@@ -946,6 +974,41 @@ mod tests {
                 < CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
                     + Duration::from_millis(CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS)
         );
+    }
+
+    #[test]
+    fn cloud_presence_schedule_claims_due_idle_publish_once_per_interval() {
+        let start = Instant::now();
+        let mut schedule =
+            CloudPresencePublishSchedule::new_with_interval(start, Duration::from_millis(100));
+
+        assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(99), None));
+        assert!(schedule.claim_publish_if_due(start + Duration::from_millis(100), None));
+        assert!(!schedule.claim_publish_if_due(start + Duration::from_millis(101), None));
+        assert!(schedule.claim_publish_if_due(start + Duration::from_millis(200), None));
+    }
+
+    #[tokio::test]
+    async fn cloud_presence_schedule_does_not_retry_every_heartbeat_while_task_runs() {
+        let start = Instant::now();
+        let mut schedule =
+            CloudPresencePublishSchedule::new_with_interval(start, Duration::from_millis(100));
+        let (_tx, rx) = oneshot::channel::<()>();
+        let running_task = tokio::spawn(async move {
+            let _ = rx.await;
+        });
+
+        assert!(
+            !schedule.claim_publish_if_due(start + Duration::from_millis(100), Some(&running_task))
+        );
+        assert!(
+            !schedule.claim_publish_if_due(start + Duration::from_millis(101), Some(&running_task))
+        );
+        assert!(
+            !schedule.claim_publish_if_due(start + Duration::from_millis(199), Some(&running_task))
+        );
+
+        running_task.abort();
     }
 
     #[test]
