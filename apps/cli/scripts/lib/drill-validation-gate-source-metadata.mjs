@@ -13,10 +13,12 @@ export function validationGateEvidenceSourceMetadata(report, {
   const matrixRepos = sourceReposForPaths(matrixEvidencePaths(report), roots)
   const artifactRepos = sourceReposForPaths(artifactEvidencePaths(report), roots)
   const failureRepos = sourceReposForPaths(failureEvidencePaths(report), roots)
+  const generatedRepos = sourceReposForPaths(generatedEvidencePaths(report), roots)
   const evidenceRepos = sortedUnique([
     ...matrixRepos,
     ...artifactRepos,
     ...failureRepos,
+    ...generatedRepos,
   ])
 
   return {
@@ -24,6 +26,7 @@ export function validationGateEvidenceSourceMetadata(report, {
     ...(matrixRepos.length > 0 ? { matrixEvidenceRepos: matrixRepos.join(",") } : {}),
     ...(artifactRepos.length > 0 ? { artifactEvidenceRepos: artifactRepos.join(",") } : {}),
     ...(failureRepos.length > 0 ? { failureEvidenceRepos: failureRepos.join(",") } : {}),
+    ...(generatedRepos.length > 0 ? { generatedEvidenceRepos: generatedRepos.join(",") } : {}),
   }
 }
 
@@ -45,6 +48,30 @@ function failureEvidencePaths(report) {
     .filter(nonEmptyString)
 }
 
+function generatedEvidencePaths(report) {
+  const validationSuites = report?.generatedEvidence?.validationSuites ?? {}
+  const matrixReports = report?.generatedEvidence?.matrixReports ?? {}
+  return [
+    ...stringArray(validationSuites.outputRoots),
+    ...stringArray(validationSuites.artifactIndexes),
+    ...stringArray(validationSuites.failureRoots),
+    ...arrayValue(validationSuites.commands).flatMap((command) => [
+      command?.reportPath,
+      command?.artifactIndexPath,
+      command?.failureRoot,
+      command?.outputRoot,
+      command?.scriptPath,
+    ]),
+    ...stringArray(matrixReports.reportPaths),
+    ...stringArray(matrixReports.artifactIndexes),
+    ...arrayValue(matrixReports.commands).flatMap((command) => [
+      command?.reportPath,
+      command?.artifactIndexPath,
+      command?.scriptPath,
+    ]),
+  ].filter(nonEmptyString)
+}
+
 function sourceReposForPaths(paths, roots) {
   return sortedUnique(paths.map((sourcePath) => sourceRepoForPath(sourcePath, roots)).filter(nonEmptyString))
 }
@@ -61,6 +88,14 @@ function sourceRepoForPath(sourcePath, roots) {
 
 function sortedUnique(values) {
   return [...new Set(values)].sort()
+}
+
+function stringArray(value) {
+  return Array.isArray(value) ? value.filter(nonEmptyString) : []
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : []
 }
 
 function nonEmptyString(value) {

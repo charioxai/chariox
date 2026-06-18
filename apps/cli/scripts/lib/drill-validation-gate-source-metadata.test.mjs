@@ -77,6 +77,43 @@ test("does not classify sibling paths as repo evidence", () => {
   })
 })
 
+test("classifies generated evidence paths by repo root", () => {
+  const root = path.join(path.sep, "tmp", "arroba-validation-sources")
+  const ossRoot = path.join(root, "arroba")
+  const cloudRoot = path.join(root, "arroba-cloud")
+
+  const metadata = validationGateEvidenceSourceMetadata({
+    checks: {},
+    generatedEvidence: {
+      validationSuites: {
+        outputRoots: [path.join(ossRoot, ".artifacts", "suite")],
+        artifactIndexes: [path.join(ossRoot, ".artifacts", "suite", "arroba-drill-artifacts.json")],
+        failureRoots: [path.join(root, "external", "suite-failures")],
+        commands: [{
+          reportPath: path.join(ossRoot, ".artifacts", "suite", "drill-validation-suite-run.json"),
+          artifactIndexPath: path.join(ossRoot, ".artifacts", "suite", "arroba-drill-artifacts.json"),
+          failureRoot: path.join(root, "external", "suite-failures"),
+          scriptPath: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+        }],
+      },
+      matrixReports: {
+        reportPaths: [path.join(cloudRoot, ".artifacts", "matrices", "cloud-slice.json")],
+        artifactIndexes: [path.join(cloudRoot, ".artifacts", "matrices", "arroba-drill-artifacts.json")],
+        commands: [{
+          reportPath: path.join(cloudRoot, ".artifacts", "matrices", "cloud-slice.json"),
+          artifactIndexPath: path.join(cloudRoot, ".artifacts", "matrices", "arroba-drill-artifacts.json"),
+          scriptPath: path.join(cloudRoot, "scripts", "cloud-slice-runtime-matrix.mjs"),
+        }],
+      },
+    },
+  }, { ossRoot, cloudRoot })
+
+  assert.deepEqual(metadata, {
+    evidenceRepos: "cloud,external,oss",
+    generatedEvidenceRepos: "cloud,external,oss",
+  })
+})
+
 test("omits empty source metadata when there is no evidence", () => {
   assert.deepEqual(validationGateEvidenceSourceMetadata({ checks: {} }), {})
 })
