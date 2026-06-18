@@ -43,8 +43,9 @@ export function formatDrillAggregateNextActionSourceDetails(sourceDetails) {
   if (!Array.isArray(sourceDetails) || sourceDetails.length === 0) return ""
   return sourceDetails
     .map((detail) => {
-      const source = detail.source ?? [detail.matrix, detail.scenarioId].filter(Boolean).join("/")
-      const report = detail.reportPath ? ` report=${detail.reportPath}` : ""
+      const location = [detail.matrix, detail.scenarioId].filter(Boolean).join("/")
+      const source = detail.source ?? (location || detail.reportPath || "unknown")
+      const report = detail.reportPath && detail.reportPath !== source ? ` report=${detail.reportPath}` : ""
       return `${source}${report}`
     })
     .join(", ")

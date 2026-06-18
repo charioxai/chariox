@@ -57,6 +57,10 @@ test("counts and orders aggregate next actions", () => {
     formatDrillAggregateNextActionSourceDetails(formatDrillAggregateNextActionCounts(counts)[0].sourceDetails),
     "hetzner-matrix report=/tmp/remote.json, remote-matrix report=/tmp/remote.json",
   )
+  assert.equal(
+    formatDrillAggregateNextActionSourceDetails([{ reportPath: "/tmp/report-only.json" }]),
+    "/tmp/report-only.json",
+  )
 })
 
 test("validates aggregate next action entries", () => {
