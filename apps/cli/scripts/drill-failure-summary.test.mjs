@@ -117,6 +117,19 @@ test("failure summary gates stale failure manifests", async () => {
         assert.equal(stale.requiredFailureMaxAgeMs, 100)
         assert.equal(stale.staleFailureManifests.length, 1)
         assert.equal(stale.staleFailureManifests[0].source, manifestPath)
+        assert.deepEqual(
+          stale.nextActions
+            .filter(({ classification }) => classification === "failure-artifacts")
+            .map(({ nextAction, count, sourceDetails }) => ({ nextAction, count, sourceDetails })),
+          [{
+            nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
+            count: 1,
+            sourceDetails: [{
+              source: "stale-root",
+              reportPath: manifestPath,
+            }],
+          }],
+        )
         return true
       },
     )
@@ -131,6 +144,7 @@ test("failure summary gates stale failure manifests", async () => {
         assert.equal(error.code, 1)
         assert.match(error.stdout, /failure_required_max_age_ms=100 stale_manifests=1/)
         assert.match(error.stdout, /stale_failure_manifest=.*arroba-drill-failure\.json drill=stale-root/)
+        assert.match(error.stdout, /sources: stale-root report=.*arroba-drill-failure\.json/)
         return true
       },
     )

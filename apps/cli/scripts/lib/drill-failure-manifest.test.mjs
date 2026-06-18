@@ -358,6 +358,22 @@ test("summarizes stale preserved failure manifests", () => {
   }])
   assert.match(text, /failure_required_max_age_ms=100 stale_manifests=1/)
   assert.match(text, /stale_failure_manifest=\/tmp\/stale-failure\/arroba-drill-failure\.json drill=stale-drill/)
+  assert.deepEqual(
+    aggregate.nextActions
+      .filter(({ classification }) => classification === "failure-artifacts")
+      .map(({ owner, classification, nextAction, count, sourceDetails }) => ({ owner, classification, nextAction, count, sourceDetails })),
+    [{
+      owner: "validation-harness",
+      classification: "failure-artifacts",
+      nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
+      count: 1,
+      sourceDetails: [{
+        source: "stale-drill",
+        reportPath: "/tmp/stale-failure/arroba-drill-failure.json",
+      }],
+    }],
+  )
+  assert.match(text, /sources: stale-drill report=\/tmp\/stale-failure\/arroba-drill-failure\.json/)
 
   const fresh = summarizeDrillFailureManifests([manifest], {
     nowMs: Date.parse(failedAt) + 100,

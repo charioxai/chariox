@@ -363,12 +363,20 @@ export function validationGateNextActions(checks) {
       countDrillAggregateNextAction(counts, action)
     }
     if ((checks.failures.staleFailureManifests ?? []).length > 0) {
-      countDrillAggregateNextAction(counts, {
-        owner: "validation-harness",
-        classification: "failure-artifacts",
-        nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
-        count: checks.failures.staleFailureManifests.length,
-      })
+      const nextAction = "regenerate stale preserved failure bundles or rerun the failing drills before routing them"
+      const aggregateAlreadyRoutesStaleFailures = (checks.failures.aggregate?.nextActions ?? [])
+        .some((action) => action.owner === "validation-harness"
+          && action.classification === "failure-artifacts"
+          && action.nextAction === nextAction)
+      if (!aggregateAlreadyRoutesStaleFailures) {
+        countDrillAggregateNextAction(counts, {
+          owner: "validation-harness",
+          classification: "failure-artifacts",
+          nextAction,
+          count: checks.failures.staleFailureManifests.length,
+          sourceDetails: checks.failures.staleFailureManifests.map(staleFailureManifestSourceDetail),
+        })
+      }
     }
   }
   return formatDrillAggregateNextActionCounts(counts)
@@ -396,6 +404,13 @@ function staleMatrixReportSourceDetail(staleReport) {
     source: staleReport.matrix ?? "matrix-report",
     ...(staleReport.matrix ? { matrix: staleReport.matrix } : {}),
     ...(staleReport.source ? { reportPath: staleReport.source } : {}),
+  }
+}
+
+function staleFailureManifestSourceDetail(staleFailure) {
+  return {
+    source: staleFailure.drill ?? staleFailure.rootDir,
+    ...(staleFailure.source ? { reportPath: staleFailure.source } : {}),
   }
 }
 

@@ -175,6 +175,16 @@ export function summarizeDrillFailureManifests(manifests, {
       nowMs,
       requiredFailureMaxAgeMs,
     })
+    if (aggregate.staleFailureManifests.length > 0) {
+      countDrillAggregateNextAction(nextActions, {
+        owner: "validation-harness",
+        classification: "failure-artifacts",
+        nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
+        count: aggregate.staleFailureManifests.length,
+        sourceDetails: aggregate.staleFailureManifests.map(staleFailureManifestSourceDetail),
+      })
+      aggregate.nextActions = formatDrillAggregateNextActionCounts(nextActions)
+    }
   }
   validateDrillFailureManifestAggregate(aggregate)
   return aggregate
@@ -327,6 +337,15 @@ function assertNextActionCountsMatchFailures(aggregate) {
       sourceDetails: [nextActionSourceDetailForAggregateFailure(failure)],
     })
   }
+  if ((aggregate.staleFailureManifests ?? []).length > 0) {
+    countDrillAggregateNextAction(expected, {
+      owner: "validation-harness",
+      classification: "failure-artifacts",
+      nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
+      count: aggregate.staleFailureManifests.length,
+      sourceDetails: aggregate.staleFailureManifests.map(staleFailureManifestSourceDetail),
+    })
+  }
   const expectedActions = formatDrillAggregateNextActionCounts(expected)
   if (JSON.stringify(aggregate.nextActions ?? []) !== JSON.stringify(expectedActions)) {
     throw new Error("aggregate nextActions do not match failures")
@@ -337,6 +356,13 @@ function nextActionSourceDetailForAggregateFailure(failure) {
   return {
     source: failure.drill ?? failure.rootDir,
     ...(failure.source ? { reportPath: failure.source } : {}),
+  }
+}
+
+function staleFailureManifestSourceDetail(staleFailure) {
+  return {
+    source: staleFailure.drill ?? staleFailure.rootDir,
+    ...(staleFailure.source ? { reportPath: staleFailure.source } : {}),
   }
 }
 

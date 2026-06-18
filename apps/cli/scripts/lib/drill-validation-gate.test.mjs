@@ -904,11 +904,19 @@ test("reports stale preserved failure manifests", async () => {
     assert.equal(report.checks.failures.staleFailureManifests[0].source, manifestPath)
     assert.match(summary, /failure_required_max_age_ms=100 stale_manifests=1/)
     assert.match(summary, /stale_failure_manifest=.*arroba-drill-failure\.json drill=stale-failure/)
+    assert.match(summary, /sources: stale-failure report=.*arroba-drill-failure\.json/)
     assert.deepEqual(
       report.nextActions
         .filter(({ owner, classification }) => owner === "validation-harness" && classification === "failure-artifacts")
-        .map(({ count }) => count),
-      [1],
+        .map(({ nextAction, count, sourceDetails }) => ({ nextAction, count, sourceDetails })),
+      [{
+        nextAction: "regenerate stale preserved failure bundles or rerun the failing drills before routing them",
+        count: 1,
+        sourceDetails: [{
+          source: "stale-failure",
+          reportPath: manifestPath,
+        }],
+      }],
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
