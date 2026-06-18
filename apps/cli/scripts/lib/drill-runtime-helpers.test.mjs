@@ -2,7 +2,21 @@ import assert from "node:assert/strict"
 import net from "node:net"
 import test from "node:test"
 
-import { waitForCondition, waitForTcpPort } from "./drill-runtime-helpers.mjs"
+import { formatDrillCommandLine, runLogged, waitForCondition, waitForTcpPort } from "./drill-runtime-helpers.mjs"
+
+test("formatDrillCommandLine quotes replayable command diagnostics", () => {
+  assert.equal(
+    formatDrillCommandLine("node", ["apps/cli/scripts/drill-validation-suite.mjs", "--label", "Alice's local run"]),
+    "node apps/cli/scripts/drill-validation-suite.mjs --label 'Alice'\\''s local run'",
+  )
+})
+
+test("runLogged failure diagnostics use formatted command lines", async () => {
+  await assert.rejects(
+    () => runLogged(process.execPath, ["-e", "process.exit(7)", "arg with space"]),
+    /node.* -e 'process\.exit\(7\)' 'arg with space' exited with 7/,
+  )
+})
 
 test("waitForCondition returns the first ready observation", async () => {
   let count = 0

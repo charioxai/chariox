@@ -109,9 +109,13 @@ export async function runLogged(command, args, options = {}) {
         resolve()
         return
       }
-      reject(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`))
+      reject(new Error(`${formatDrillCommandLine(command, args)} exited with ${signal ?? code}`))
     })
   })
+}
+
+export function formatDrillCommandLine(command, args = []) {
+  return [command, ...args].map(shellDisplayArg).join(" ")
 }
 
 export async function resolveCommandPath(command) {
@@ -199,6 +203,12 @@ export async function waitForCondition({
 function stringifyDiagnostic(value) {
   if (typeof value === "string") return value
   return JSON.stringify(value, null, 2)
+}
+
+function shellDisplayArg(value) {
+  const arg = String(value)
+  if (/^[A-Za-z0-9_./:@=,+%-]+$/.test(arg)) return arg
+  return shellQuote(arg)
 }
 
 function shellQuote(value) {
