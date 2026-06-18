@@ -11,6 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         RelayServer::new(config.clone())
     };
+    let draining = parse_relay_draining(std::env::var("ARROBA_RELAY_DRAINING").ok().as_deref());
+    server.set_draining(draining);
     eprintln!(
         "{}",
         json!({
@@ -22,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "port": config.port,
                 "package_version": env!("CARGO_PKG_VERSION"),
                 "build_commit": std::env::var("ARROBA_BUILD_COMMIT").ok(),
+                "draining": draining,
                 "scoped_verifier": std::env::var("ARROBA_RELAY_SCOPED_ISSUER")
                     .ok()
                     .map(|value| !value.trim().is_empty())
@@ -31,6 +34,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     server.run().await?;
     Ok(())
+}
+
+fn parse_relay_draining(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on" | "draining")
+    )
 }
 
 fn scoped_verifier_from_env() -> Option<RelayAuthVerifier> {
@@ -46,4 +56,22 @@ fn scoped_verifier_from_env() -> Option<RelayAuthVerifier> {
         BTreeMap::from([(issuer, secret)]),
         None,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_relay_draining_accepts_only_explicit_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes ", "on", "draining"] {
+            assert!(
+                parse_relay_draining(Some(value)),
+                "{value} should enable draining"
+            );
+        }
+        for value in [None, Some(""), Some("0"), Some("false"), Some("healthy")] {
+            assert!(!parse_relay_draining(value));
+        }
+    }
 }
