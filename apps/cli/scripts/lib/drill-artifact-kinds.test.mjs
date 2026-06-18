@@ -9,6 +9,7 @@ import {
 
 test("drill artifact kinds include stable validation artifacts", () => {
   assert(DRILL_ARTIFACT_KINDS.includes("artifact-index"))
+  assert(DRILL_ARTIFACT_KINDS.includes("focused-runtime-gate"))
   assert(DRILL_ARTIFACT_KINDS.includes("validation-suite-run"))
   assert.equal(isKnownDrillArtifactKind("validation-gate"), true)
   assert.equal(isKnownDrillArtifactKind("validation-sutie"), false)

@@ -981,6 +981,17 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   }
   if (parsed?.schema === "arroba.drill.focused_runtime_gate.v1") {
     validateDrillFocusedRuntimeGateReport(parsed, artifactPath)
+    validateFocusedRuntimeGateArtifactMetadata(parsed, artifactPath, metadata)
+  }
+}
+
+function validateFocusedRuntimeGateArtifactMetadata(report, artifactPath, metadata) {
+  const artifactKinds = metadataListFromMetadata(metadata, "artifactKinds")
+  if (artifactKinds.length > 0 && !artifactKinds.includes("focused-runtime-gate")) {
+    throw new Error(`drill artifact ${artifactPath} metadata.artifactKinds must include focused-runtime-gate`)
+  }
+  if (metadata?.status !== undefined && metadata.status !== report.status) {
+    throw new Error(`drill artifact ${artifactPath} metadata.status must match artifact status`)
   }
 }
 

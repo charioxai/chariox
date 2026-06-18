@@ -566,6 +566,7 @@ test("verifies focused runtime gate artifacts", async () => {
       rootDir: root,
       artifacts: ["reports/focused.json"],
       metadata: {
+        artifactKinds: "focused-runtime-gate",
         drill: "focused-runtime-gate",
         runtimeSignals: "session-authority",
         runtimeSignalOwners: "kernel-authority",
@@ -595,6 +596,41 @@ test("rejects malformed focused runtime gate artifacts", async () => {
     await assert.rejects(
       verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
       /focused\.json status does not match embedded report statuses/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects focused runtime gate artifacts with stale metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-focused-runtime-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "focused.json"), `${JSON.stringify(focusedRuntimeGateReportArtifact(), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/focused.json"],
+      metadata: {
+        artifactKinds: "validation-gate",
+      },
+    })
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /focused\.json metadata\.artifactKinds must include focused-runtime-gate/,
+    )
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/focused.json"],
+      metadata: {
+        artifactKinds: "focused-runtime-gate",
+        status: "failed",
+      },
+    })
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /focused\.json metadata\.status must match artifact status/,
     )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })

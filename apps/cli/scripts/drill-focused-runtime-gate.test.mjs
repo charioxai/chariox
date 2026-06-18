@@ -57,6 +57,7 @@ test("focused runtime gate passes runtime authority and distributed state health
     assert.equal(report.nextActions.length, 0)
     assert.deepEqual(report.reports[0].report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.reports[1].report.checks.matrices.missingMatrixRuntimeSignals, [])
+    assert.equal(artifactIndex.metadata.artifactKinds, "focused-runtime-gate")
     assert.equal(artifactIndex.metadata.drill, "focused-runtime-gate")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.presets, "runtime-authority,distributed-state-health")

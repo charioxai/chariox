@@ -342,6 +342,7 @@ function failureRootsFor(options) {
 
 function focusedRuntimeGateArtifactMetadata(report, options) {
   return {
+    artifactKinds: "focused-runtime-gate",
     drill: "focused-runtime-gate",
     status: report.status,
     presets: report.presets.join(","),
