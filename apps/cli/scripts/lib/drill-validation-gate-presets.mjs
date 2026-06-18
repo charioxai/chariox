@@ -1,5 +1,6 @@
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import {
+  DISTRIBUTED_RUNTIME_GENERATED_EVIDENCE_REPOS,
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
 } from "./drill-distributed-runtime-evidence.mjs"
@@ -32,6 +33,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredArtifactCoverageAreas: Object.freeze(["distributed-observability"]),
     requiredArtifactSchemas: Object.freeze(["arroba.drill.validation_suite_run.v1"]),
     requiredArtifactKinds: Object.freeze(["validation-suite-run"]),
+    requiredArtifactGeneratedEvidenceRepos: DISTRIBUTED_RUNTIME_GENERATED_EVIDENCE_REPOS,
     requiredArtifactGeneratedMatrixNames: DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
     requiredArtifactGeneratedMatrixRepos: DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
     requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),

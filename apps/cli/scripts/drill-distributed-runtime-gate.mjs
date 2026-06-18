@@ -89,6 +89,7 @@ function printHelp() {
   "  --require-artifact-schema SCHEMA[,SCHEMA]",
   "  --require-artifact-kind KIND[,KIND]",
   "  --require-artifact-generated-evidence-kind KIND[,KIND]",
+  "  --require-artifact-generated-evidence-repo REPO[,REPO]",
   "  --require-artifact-generated-matrix-artifact-index PATH[,PATH]",
   "  --require-artifact-generated-matrix-limitation KIND[,KIND]",
   "  --require-artifact-generated-matrix-name NAME[,NAME]",
@@ -510,8 +511,10 @@ function generatedEvidenceMetadataFor(generatedEvidence) {
     .sort()
   const matrixNames = generatedMatrixCommandMetadataValues(generatedEvidence, "matrix")
   const matrixRepos = generatedMatrixCommandMetadataValues(generatedEvidence, "repo")
+  const generatedEvidenceRepos = matrixRepos
   return {
     ...(kinds.length > 0 ? { generatedEvidenceKinds: kinds.join(",") } : {}),
+    ...(generatedEvidenceRepos.length > 0 ? { generatedEvidenceRepos: generatedEvidenceRepos.join(",") } : {}),
     ...(matrixArtifactIndexes.length > 0 ? { generatedMatrixArtifactIndexes: matrixArtifactIndexes.join(",") } : {}),
     ...(validationSuiteArtifactIndexes.length > 0 ? { generatedValidationSuiteArtifactIndexes: validationSuiteArtifactIndexes.join(",") } : {}),
     ...(matrixLimitations.length > 0 ? { generatedMatrixLimitations: matrixLimitations.join(",") } : {}),

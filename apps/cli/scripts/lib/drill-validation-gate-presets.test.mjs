@@ -94,7 +94,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
       requiredArtifactKinds: ["validation-suite-run"],
       requiredArtifactGeneratedEvidenceKinds: [],
-      requiredArtifactGeneratedEvidenceRepos: [],
+      requiredArtifactGeneratedEvidenceRepos: ["cloud", "oss"],
       requiredArtifactGeneratedMatrixArtifactIndexes: [],
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactGeneratedMatrixNames: ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
@@ -439,6 +439,24 @@ test("expands validation gate preset requirements", () => {
     requiredProviders: [],
     requiredScenarios: [],
   }).requiredArtifactEvidenceRepos, ["cloud", "oss"])
+  assert.deepEqual(expandValidationGatePresetRequirements({
+    presets: ["distributed-runtime"],
+    requiredPlatformCoverageAreas: [],
+    requiredArtifactCoverageAreas: [],
+    requiredArtifactSchemas: [],
+    requiredArtifactKinds: [],
+    requiredArtifactGeneratedEvidenceRepos: [],
+    requiredArtifactEvidenceRepos: [],
+    requiredArtifactProviderAccountAliases: [],
+    requiredRuntimeSignals: [],
+    requiredFailureClassifications: [],
+    requiredMatrices: [],
+    requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    requiredDeploymentPresets: [],
+    requiredProviders: [],
+    requiredScenarios: [],
+  }).requiredArtifactGeneratedEvidenceRepos, ["cloud", "oss"])
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["distributed-runtime"],
     requiredPlatformCoverageAreas: [],

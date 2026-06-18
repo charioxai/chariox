@@ -20,6 +20,7 @@ test("distributed runtime gate help lists artifact evidence requirements", async
   const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
 
   assert.match(stdout, /--require-artifact-generated-matrix-name NAME\[,NAME\]/)
+  assert.match(stdout, /--require-artifact-generated-evidence-repo REPO\[,REPO\]/)
   assert.match(stdout, /--require-artifact-generated-matrix-repo REPO\[,REPO\]/)
   assert.match(stdout, /--require-artifact-generated-validation-suite-artifact-index PATH\[,PATH\]/)
   assert.match(stdout, /--require-artifact-validation-preset NAME\[,NAME\]/)
@@ -1276,6 +1277,7 @@ async function writeValidationSuiteArtifact(rootDir, {
       evidenceRepos: evidenceRepo,
       generatedMatrixNames: generatedMatrixNamesForEvidenceRepo(evidenceRepo).join(","),
       generatedMatrixRepos: evidenceRepo,
+      generatedEvidenceRepos: evidenceRepo,
       validationPresets,
       ...(providerAccountAliases ? { providerAccountAliases } : {}),
       ...(plannedOwners ? { plannedOwners } : {}),
@@ -1581,6 +1583,7 @@ if (artifactIndexPath) {
       artifactKinds: "matrix-report",
       generatedMatrixNames: report.matrix,
       generatedMatrixRepos: report.matrix.startsWith("cloud-") ? "cloud" : "oss",
+      generatedEvidenceRepos: report.matrix.startsWith("cloud-") ? "cloud" : "oss",
       ...(providerAccountAliases.length > 0 ? { providerAccountAliases: providerAccountAliases.join(",") } : {}),
     },
     artifacts: [{
@@ -1704,6 +1707,7 @@ const index = {
     evidenceRepos: ${JSON.stringify(evidenceRepo)},
     generatedMatrixNames: ${JSON.stringify(generatedMatrixNamesForEvidenceRepo(evidenceRepo).join(","))},
     generatedMatrixRepos: ${JSON.stringify(evidenceRepo)},
+    generatedEvidenceRepos: ${JSON.stringify(evidenceRepo)},
     validationPresets: ${JSON.stringify(validationPresets)},
     exitCriterionStatuses: "satisfied",
   },

@@ -89,6 +89,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
     )
     assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactGeneratedEvidenceRepos,
+      ["cloud", "oss"],
+    )
+    assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactRuntimeSignals,
       DRILL_RUNTIME_SIGNAL_IDS,
     )
