@@ -1958,6 +1958,7 @@ function validationGateReportGeneratedEvidence(report) {
           args: stringArray(commandRecord.args),
           cwd: commandRecord.cwd,
           failureRoot: commandRecord.failureRoot,
+          nodeArgs: stringArray(commandRecord.nodeArgs),
           reportPath: commandRecord.reportPath,
           scriptPath: commandRecord.scriptPath,
         }
@@ -1989,6 +1990,7 @@ function validationGateReportGeneratedEvidence(report) {
           args: stringArray(commandRecord.args),
           cwd: commandRecord.cwd,
           matrix: commandRecord.matrix,
+          nodeArgs: stringArray(commandRecord.nodeArgs),
           repo: commandRecord.repo,
           reportPath: commandRecord.reportPath,
           scriptPath: commandRecord.scriptPath,
@@ -2042,6 +2044,7 @@ function validateGeneratedValidationSuiteCommandSummary(command, source) {
     validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
   validateGeneratedEvidencePathArray(command.args ?? [], `${source}.args`)
+  validateGeneratedEvidencePathArray(command.nodeArgs, `${source}.nodeArgs`)
 }
 
 function validateGeneratedMatrixReportsSummary(matrixReports, source) {
@@ -2107,6 +2110,7 @@ function validateGeneratedMatrixCommandSummary(command, source) {
     validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
   validateGeneratedEvidencePathArray(command.args ?? [], `${source}.args`)
+  validateGeneratedEvidencePathArray(command.nodeArgs, `${source}.nodeArgs`)
 }
 
 function validateValidationGateArtifactCoverage(coverage, source) {

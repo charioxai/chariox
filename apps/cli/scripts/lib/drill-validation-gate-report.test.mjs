@@ -98,6 +98,21 @@ test("validates optional generated evidence provenance", () => {
     })),
     /generatedEvidence\.matrixReports\.commands\[0\] has invalid reportPath/,
   )
+  {
+    const { nodeArgs: _nodeArgs, ...commandWithoutNodeArgs } = generatedEvidence().validationSuites.commands[0]
+    assert.throws(
+      () => validateDrillValidationGateReport(report({
+        generatedEvidence: {
+          ...generatedEvidence(),
+          validationSuites: {
+            ...generatedEvidence().validationSuites,
+            commands: [commandWithoutNodeArgs],
+          },
+        },
+      })),
+      /generatedEvidence\.validationSuites\.commands\[0\]\.nodeArgs is not an array/,
+    )
+  }
   assert.throws(
     () => validateDrillValidationGateReport(report({
       generatedEvidence: {
@@ -746,6 +761,7 @@ function generatedEvidence() {
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           cwd: "/repo/arroba",
           failureRoot: "/tmp/suites/oss/failed-run",
+          nodeArgs: ["/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
           scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
         },
@@ -754,6 +770,7 @@ function generatedEvidence() {
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           cwd: "/repo/arroba-cloud",
           failureRoot: "/tmp/suites/cloud/failed-run",
+          nodeArgs: ["/repo/arroba-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
           scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
         },
@@ -766,8 +783,12 @@ function generatedEvidence() {
       roots: ["/tmp/matrices/cloud", "/tmp/matrices/oss"],
       commands: [{
         args: ["--include-hetzner"],
+        artifactIndexFlag: "--artifact-index",
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         cwd: "/repo/arroba",
+        matrix: "native-provider-tui-matrix",
+        nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
+        repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
         scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
       }],

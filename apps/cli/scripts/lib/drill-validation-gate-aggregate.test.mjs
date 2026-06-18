@@ -1057,6 +1057,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           cwd: "/repo/arroba",
           failureRoot: "/tmp/suites/oss/failed-run",
+          nodeArgs: ["/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
           scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
         },
@@ -1065,6 +1066,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           cwd: "/repo/arroba-cloud",
           failureRoot: "/tmp/suites/cloud/failed-run",
+          nodeArgs: ["/repo/arroba-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
           scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
         },
@@ -1087,6 +1089,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
         args: ["--include-hetzner"],
         cwd: "/repo/arroba",
         matrix: "native-provider-tui-matrix",
+        nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
         scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
@@ -1181,6 +1184,25 @@ test("rejects secret-looking generated evidence paths in validation gate aggrega
     }),
     /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.args\[1\] includes secret-looking generated evidence path/,
   )
+  {
+    const { nodeArgs: _nodeArgs, ...commandWithoutNodeArgs } = aggregate.reports[0].generatedEvidence.matrixReports.commands[0]
+    assert.throws(
+      () => validateDrillValidationGateAggregate({
+        ...aggregate,
+        reports: [{
+          ...aggregate.reports[0],
+          generatedEvidence: {
+            ...aggregate.reports[0].generatedEvidence,
+            matrixReports: {
+              ...aggregate.reports[0].generatedEvidence.matrixReports,
+              commands: [commandWithoutNodeArgs],
+            },
+          },
+        }],
+      }),
+      /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.nodeArgs is not an array/,
+    )
+  }
   assert.throws(
     () => validateDrillValidationGateAggregate({
       ...aggregate,
@@ -1461,6 +1483,7 @@ function generatedEvidenceFixture() {
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           cwd: "/repo/arroba",
           failureRoot: "/tmp/suites/oss/failed-run",
+          nodeArgs: ["/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
           scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
         },
@@ -1469,6 +1492,7 @@ function generatedEvidenceFixture() {
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           cwd: "/repo/arroba-cloud",
           failureRoot: "/tmp/suites/cloud/failed-run",
+          nodeArgs: ["/repo/arroba-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
           scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
         },
@@ -1491,6 +1515,7 @@ function generatedEvidenceFixture() {
         args: ["--include-hetzner"],
         cwd: "/repo/arroba",
         matrix: "native-provider-tui-matrix",
+        nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
         scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",

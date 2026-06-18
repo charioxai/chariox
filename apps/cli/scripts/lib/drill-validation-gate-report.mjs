@@ -524,6 +524,7 @@ function validateGeneratedValidationSuiteCommand(command, source) {
     validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
   validateGeneratedEvidencePathArray(command.args, `${source}.args`)
+  validateGeneratedEvidencePathArray(command.nodeArgs, `${source}.nodeArgs`)
 }
 
 function validateGeneratedMatrixReports(matrixReports, source) {
@@ -589,6 +590,7 @@ function validateGeneratedMatrixCommand(command, source) {
     validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
   }
   validateGeneratedEvidencePathArray(command.args, `${source}.args`)
+  validateGeneratedEvidencePathArray(command.nodeArgs, `${source}.nodeArgs`)
 }
 
 function validateGeneratedEvidencePathArray(value, source) {
