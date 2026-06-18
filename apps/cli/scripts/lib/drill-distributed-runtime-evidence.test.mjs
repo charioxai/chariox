@@ -17,6 +17,9 @@ import {
   runDistributedRuntimeMatrixReportCommand,
   runDistributedRuntimeValidationSuiteCommand,
 } from "./drill-distributed-runtime-evidence.mjs"
+import {
+  DRILL_GENERATED_MATRIX_NAMES_BY_REPO,
+} from "./drill-generated-matrix-names.mjs"
 
 test("builds distributed runtime matrix command contracts", () => {
   const commands = distributedRuntimeMatrixCommandsFor({
@@ -142,6 +145,7 @@ test("builds distributed runtime matrix command contracts", () => {
     "oss/workspace-live-sync-matrix",
     "cloud/cloud-slice-runtime-matrix",
   ])
+  assert.deepEqual(DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS, Object.keys(DRILL_GENERATED_MATRIX_NAMES_BY_REPO).sort())
   assert.deepEqual([...new Set(commands.map((command) => command.repo))].sort(), DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS)
   assert.deepEqual(commands.map((command) => command.matrix).sort(), [...DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES].sort())
   assert.deepEqual(
