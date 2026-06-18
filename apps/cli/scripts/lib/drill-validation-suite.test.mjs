@@ -250,6 +250,10 @@ test("builds validation suite artifact metadata from manifest and run report", (
       signals: drillRuntimeSignalsManifest().signals.filter((signal) => signal.id !== "lease-health"),
     },
   }), /validation suite runtimeSignalsManifest does not match required runtime signals/)
+  assert.throws(() => {
+    const { runtimeSignalsManifest: _runtimeSignalsManifest, ...missingRuntimeSignalsManifest } = manifest
+    return drillValidationSuiteArtifactMetadata(missingRuntimeSignalsManifest)
+  }, /validation suite runtimeSignalsManifest is not an object/)
   const failureClassificationOnlyManifest = {
     ...manifest,
     validationPresets: manifest.validationPresets.map((preset) => ({
@@ -266,6 +270,10 @@ test("builds validation suite artifact metadata from manifest and run report", (
       classifications: drillFailureTaxonomyManifest().classifications.filter((classification) => classification.kind !== "kernel-authority"),
     },
   }), /validation suite failureTaxonomyManifest classifications do not match drill failure taxonomy/)
+  assert.throws(() => {
+    const { failureTaxonomyManifest: _failureTaxonomyManifest, ...missingFailureTaxonomyManifest } = failureClassificationOnlyManifest
+    return drillValidationSuiteArtifactMetadata(missingFailureTaxonomyManifest)
+  }, /validation suite failureTaxonomyManifest is not an object/)
   assert.throws(() => drillValidationSuiteArtifactMetadata(null), /requires a manifest or run report/)
 })
 
