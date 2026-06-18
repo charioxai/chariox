@@ -64,6 +64,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "generatedMatrixLimitations",
   "generatedMatrixNames",
   "generatedMatrixRepos",
+  "generatedEvidenceRepos",
   "generatedValidationSuiteArtifactIndexes",
   "generatedValidationSuiteFailureRoots",
   "requiredGeneratedEvidenceKinds",
@@ -112,6 +113,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   generatedMatrixLimitations: "generated_matrix_limitations",
   generatedMatrixNames: "generated_matrix_names",
   generatedMatrixRepos: "generated_matrix_repos",
+  generatedEvidenceRepos: "generated_evidence_repos",
   generatedValidationSuiteArtifactIndexes: "generated_validation_suite_artifact_indexes",
   generatedValidationSuiteFailureRoots: "generated_validation_suite_failure_roots",
   requiredGeneratedEvidenceKinds: "required_generated_evidence_kinds",
@@ -296,6 +298,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const generatedMatrixLimitations = new Map()
   const generatedMatrixNames = new Map()
   const generatedMatrixRepos = new Map()
+  const generatedEvidenceRepos = new Map()
   const generatedValidationSuiteArtifactIndexes = new Map()
   const generatedValidationSuiteFailureRoots = new Map()
   const requiredGeneratedEvidenceKinds = new Map()
@@ -344,6 +347,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexGeneratedMatrixLimitations = metadataListFromMetadata(index.metadata, "generatedMatrixLimitations")
     const indexGeneratedMatrixNames = metadataListFromMetadata(index.metadata, "generatedMatrixNames")
     const indexGeneratedMatrixRepos = metadataListFromMetadata(index.metadata, "generatedMatrixRepos")
+    const indexGeneratedEvidenceRepos = metadataListFromMetadata(index.metadata, "generatedEvidenceRepos")
     const indexGeneratedValidationSuiteArtifactIndexes = metadataListFromMetadata(index.metadata, "generatedValidationSuiteArtifactIndexes")
     const indexGeneratedValidationSuiteFailureRoots = metadataListFromMetadata(index.metadata, "generatedValidationSuiteFailureRoots")
     const indexRequiredGeneratedEvidenceKinds = metadataListFromMetadata(index.metadata, "requiredGeneratedEvidenceKinds")
@@ -385,6 +389,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexGeneratedMatrixLimitations, generatedMatrixLimitations)
     countValues(indexGeneratedMatrixNames, generatedMatrixNames)
     countValues(indexGeneratedMatrixRepos, generatedMatrixRepos)
+    countValues(indexGeneratedEvidenceRepos, generatedEvidenceRepos)
     countValues(indexGeneratedValidationSuiteArtifactIndexes, generatedValidationSuiteArtifactIndexes)
     countValues(indexGeneratedValidationSuiteFailureRoots, generatedValidationSuiteFailureRoots)
     countValues(indexRequiredGeneratedEvidenceKinds, requiredGeneratedEvidenceKinds)
@@ -440,6 +445,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       generatedMatrixLimitations: countValues(indexGeneratedMatrixLimitations),
       generatedMatrixNames: countValues(indexGeneratedMatrixNames),
       generatedMatrixRepos: countValues(indexGeneratedMatrixRepos),
+      generatedEvidenceRepos: countValues(indexGeneratedEvidenceRepos),
       generatedValidationSuiteArtifactIndexes: countValues(indexGeneratedValidationSuiteArtifactIndexes),
       generatedValidationSuiteFailureRoots: countValues(indexGeneratedValidationSuiteFailureRoots),
       requiredGeneratedEvidenceKinds: countValues(indexRequiredGeneratedEvidenceKinds),
@@ -487,6 +493,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     generatedMatrixLimitations: sortedCountObject(generatedMatrixLimitations),
     generatedMatrixNames: sortedCountObject(generatedMatrixNames),
     generatedMatrixRepos: sortedCountObject(generatedMatrixRepos),
+    generatedEvidenceRepos: sortedCountObject(generatedEvidenceRepos),
     generatedValidationSuiteArtifactIndexes: sortedCountObject(generatedValidationSuiteArtifactIndexes),
     generatedValidationSuiteFailureRoots: sortedCountObject(generatedValidationSuiteFailureRoots),
     requiredGeneratedEvidenceKinds: sortedCountObject(requiredGeneratedEvidenceKinds),
@@ -811,7 +818,7 @@ function validateDiagnosticCountObject(value, source, key) {
       validateDrillGeneratedMatrixLimitation(limitation, source)
     }
   }
-  if (["generatedMatrixRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"].includes(key)) {
+  if (["generatedMatrixRepos", "generatedEvidenceRepos", "requiredGeneratedMatrixRepos", "missingGeneratedMatrixRepos"].includes(key)) {
     for (const repo of Object.keys(value)) {
       validateDrillArtifactEvidenceRepo(repo, source)
     }
@@ -1171,8 +1178,10 @@ function validateOptionalRuntimeSignalOwners(runtimeSignals, runtimeSignalOwners
 }
 
 function validateDrillArtifactIndexEvidenceRepoMetadata(metadata, source) {
-  for (const repo of metadataListFromMetadata(metadata, "evidenceRepos")) {
-    validateDrillArtifactEvidenceRepo(repo, `${source}.evidenceRepos`)
+  for (const key of ["evidenceRepos", "generatedEvidenceRepos"]) {
+    for (const repo of metadataListFromMetadata(metadata, key)) {
+      validateDrillArtifactEvidenceRepo(repo, `${source}.${key}`)
+    }
   }
 }
 

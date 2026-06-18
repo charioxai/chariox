@@ -144,6 +144,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_planned_classifications=workspace-live-sync-conflict:1/)
   assert.match(text, /artifact_kinds=artifact-index:1,matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_evidence_kinds=matrix-report:1,validation-suite-run:1/)
+  assert.match(text, /artifact_generated_evidence_repos=cloud:1,oss:1/)
   assert.match(text, /artifact_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/arroba-drill-artifacts\.json:1/)
   assert.match(text, /artifact_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/failed-run:1/)
@@ -384,6 +385,10 @@ function artifactAggregateFixture() {
     generatedMatrixRepos: {
       oss: 1,
     },
+    generatedEvidenceRepos: {
+      cloud: 1,
+      oss: 1,
+    },
     generatedValidationSuiteArtifactIndexes: {
       "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
     },
@@ -507,6 +512,10 @@ function artifactAggregateFixture() {
         "workspace-live-sync-matrix": 1,
       },
       generatedMatrixRepos: {
+        oss: 1,
+      },
+      generatedEvidenceRepos: {
+        cloud: 1,
         oss: 1,
       },
       generatedValidationSuiteArtifactIndexes: {

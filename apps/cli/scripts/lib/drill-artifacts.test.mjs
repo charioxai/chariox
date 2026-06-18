@@ -699,6 +699,7 @@ test("summarizes drill artifact indexes", async () => {
         generatedEvidenceKinds: "validation-suite-run",
         generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
         generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
+        generatedEvidenceRepos: "oss",
         requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
         missingGeneratedEvidenceKinds: "matrix-report",
         requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
@@ -731,6 +732,7 @@ test("summarizes drill artifact indexes", async () => {
         generatedMatrixLimitations: "dry-run-classification-coverage",
         generatedMatrixNames: "workspace-live-sync-matrix",
         generatedMatrixRepos: "oss",
+        generatedEvidenceRepos: "cloud,oss",
         requiredGeneratedEvidenceKinds: "matrix-report",
         requiredGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
         missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
@@ -837,6 +839,10 @@ test("summarizes drill artifact indexes", async () => {
     })
     assert.deepEqual(aggregate.generatedMatrixRepos, {
       oss: 1,
+    })
+    assert.deepEqual(aggregate.generatedEvidenceRepos, {
+      cloud: 1,
+      oss: 2,
     })
     assert.deepEqual(aggregate.generatedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
@@ -946,6 +952,7 @@ test("summarizes drill artifact indexes", async () => {
       generatedMatrixLimitations: "dry-run-classification-coverage",
       generatedMatrixNames: "workspace-live-sync-matrix",
       generatedMatrixRepos: "oss",
+      generatedEvidenceRepos: "cloud,oss",
       generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
       generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       missingGeneratedEvidenceKinds: "matrix-report",
@@ -997,6 +1004,7 @@ test("summarizes drill artifact indexes", async () => {
       "generatedMatrixLimitations",
       "generatedMatrixNames",
       "generatedMatrixRepos",
+      "generatedEvidenceRepos",
       "generatedValidationSuiteArtifactIndexes",
       "generatedValidationSuiteFailureRoots",
       "requiredGeneratedEvidenceKinds",
@@ -1041,6 +1049,7 @@ test("summarizes drill artifact indexes", async () => {
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /planned_classifications: workspace-live-sync-conflict=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /exit_criterion_statuses: dry-run=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /incomplete_exit_criterion_statuses: dry-run=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /generated_evidence_repos: cloud=1 oss=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /provider_account_aliases: claude=team=1 codex=work=2 opencode=zen=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /artifact_coverage_input_count=1/)
   } finally {
@@ -1233,6 +1242,12 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      generatedEvidenceRepos: { cluod: 1 },
+    })),
+    /generatedEvidenceRepos has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
       generatedEvidenceKinds: { "matrix-reprot": 1 },
     })),
     /generatedEvidenceKinds has unknown generated evidence kind "matrix-reprot"/,
@@ -1398,6 +1413,21 @@ test("rejects unsafe drill artifact index paths", async () => {
         }],
       }),
       /metadata\.evidenceRepos has unknown evidence repo "cluod"/,
+    )
+    assert.throws(
+      () => validateDrillArtifactIndex({
+        schema: DRILL_ARTIFACT_INDEX_SCHEMA,
+        rootDir: root,
+        createdAt: new Date().toISOString(),
+        metadata: { generatedEvidenceRepos: "cluod" },
+        artifacts: [{
+          path: "reports/gate.json",
+          schema: null,
+          sha256: "0".repeat(64),
+          sizeBytes: 0,
+        }],
+      }),
+      /metadata\.generatedEvidenceRepos has unknown evidence repo "cluod"/,
     )
     assert.throws(
       () => validateDrillArtifactIndex({
