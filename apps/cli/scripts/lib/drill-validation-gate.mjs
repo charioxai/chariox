@@ -33,6 +33,7 @@ import {
   normalizeRequiredArtifactGeneratedValidationSuiteArtifactIndexes,
   normalizeRequiredArtifactGeneratedValidationSuiteFailureRoots,
   normalizeRequiredArtifactProviderAccountAliases,
+  normalizeRequiredArtifactRuntimeAuthorityInvariants,
   normalizeRequiredArtifactValidationPresets,
   normalizeRequiredArtifactClassifications,
   normalizeRequiredArtifactFailureClassifications,
@@ -128,6 +129,7 @@ export async function runDrillValidationGate({
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
   requiredArtifactValidationPresets = [],
+  requiredArtifactRuntimeAuthorityInvariants = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
@@ -169,6 +171,7 @@ export async function runDrillValidationGate({
     requiredArtifactEvidenceRepos,
     requiredArtifactProviderAccountAliases,
     requiredArtifactValidationPresets,
+    requiredArtifactRuntimeAuthorityInvariants,
     requiredArtifactRuntimeSignals,
     requiredArtifactRuntimeSignalOwners,
     requiredArtifactOwners,
@@ -206,6 +209,7 @@ export async function runDrillValidationGate({
   const normalizedRequiredArtifactEvidenceRepos = normalizeRequiredArtifactEvidenceRepos(expandedRequirements.requiredArtifactEvidenceRepos)
   const normalizedRequiredArtifactProviderAccountAliases = normalizeRequiredArtifactProviderAccountAliases(expandedRequirements.requiredArtifactProviderAccountAliases)
   const normalizedRequiredArtifactValidationPresets = normalizeRequiredArtifactValidationPresets(expandedRequirements.requiredArtifactValidationPresets)
+  const normalizedRequiredArtifactRuntimeAuthorityInvariants = normalizeRequiredArtifactRuntimeAuthorityInvariants(expandedRequirements.requiredArtifactRuntimeAuthorityInvariants)
   const normalizedRequiredArtifactRuntimeSignals = normalizeRequiredArtifactRuntimeSignals(expandedRequirements.requiredArtifactRuntimeSignals)
   const normalizedRequiredArtifactRuntimeSignalOwners = normalizeRequiredArtifactRuntimeSignalOwners(expandedRequirements.requiredArtifactRuntimeSignalOwners)
   const normalizedRequiredArtifactOwners = normalizeRequiredArtifactOwners(expandedRequirements.requiredArtifactOwners)
@@ -248,6 +252,7 @@ export async function runDrillValidationGate({
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
       requiredArtifactProviderAccountAliases: normalizedRequiredArtifactProviderAccountAliases,
       requiredArtifactValidationPresets: normalizedRequiredArtifactValidationPresets,
+      requiredArtifactRuntimeAuthorityInvariants: normalizedRequiredArtifactRuntimeAuthorityInvariants,
       requiredArtifactRuntimeSignals: normalizedRequiredArtifactRuntimeSignals,
       requiredArtifactRuntimeSignalOwners: normalizedRequiredArtifactRuntimeSignalOwners,
       requiredArtifactOwners: normalizedRequiredArtifactOwners,
@@ -292,6 +297,7 @@ export async function runDrillValidationGate({
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
       requiredArtifactProviderAccountAliases: normalizedRequiredArtifactProviderAccountAliases,
       requiredArtifactValidationPresets: normalizedRequiredArtifactValidationPresets,
+      requiredArtifactRuntimeAuthorityInvariants: normalizedRequiredArtifactRuntimeAuthorityInvariants,
       requiredArtifactRuntimeSignals: normalizedRequiredArtifactRuntimeSignals,
       requiredArtifactRuntimeSignalOwners: normalizedRequiredArtifactRuntimeSignalOwners,
       requiredArtifactOwners: normalizedRequiredArtifactOwners,
@@ -367,6 +373,7 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredArtifactEvidenceRepos: normalizeRequiredArtifactEvidenceRepos(options.requiredArtifactEvidenceRepos ?? []),
     requiredArtifactProviderAccountAliases: normalizeRequiredArtifactProviderAccountAliases(options.requiredArtifactProviderAccountAliases ?? []),
     requiredArtifactValidationPresets: normalizeRequiredArtifactValidationPresets(options.requiredArtifactValidationPresets ?? []),
+    requiredArtifactRuntimeAuthorityInvariants: normalizeRequiredArtifactRuntimeAuthorityInvariants(options.requiredArtifactRuntimeAuthorityInvariants ?? []),
     requiredArtifactRuntimeSignals: normalizeRequiredArtifactRuntimeSignals(options.requiredArtifactRuntimeSignals ?? []),
     requiredArtifactRuntimeSignalOwners: normalizeRequiredArtifactRuntimeSignalOwners(options.requiredArtifactRuntimeSignalOwners ?? []),
     requiredArtifactOwners: normalizeRequiredArtifactOwners(options.requiredArtifactOwners ?? []),

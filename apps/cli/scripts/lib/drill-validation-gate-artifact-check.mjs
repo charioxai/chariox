@@ -21,6 +21,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
   requiredArtifactValidationPresets = [],
+  requiredArtifactRuntimeAuthorityInvariants = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
@@ -48,6 +49,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       || requiredArtifactEvidenceRepos.length > 0
       || requiredArtifactProviderAccountAliases.length > 0
       || requiredArtifactValidationPresets.length > 0
+      || requiredArtifactRuntimeAuthorityInvariants.length > 0
       || requiredArtifactRuntimeSignals.length > 0
       || requiredArtifactRuntimeSignalOwners.length > 0
       || requiredArtifactOwners.length > 0
@@ -93,6 +95,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
         requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
         missingArtifactValidationPresets: [...requiredArtifactValidationPresets],
+        requiredArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
+        missingArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
         requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -126,6 +130,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactEvidenceRepos: requiredArtifactEvidenceRepos,
           missingArtifactProviderAccountAliases: requiredArtifactProviderAccountAliases,
           missingArtifactValidationPresets: requiredArtifactValidationPresets,
+          missingArtifactRuntimeAuthorityInvariants: requiredArtifactRuntimeAuthorityInvariants,
           missingArtifactRuntimeSignals: requiredArtifactRuntimeSignals,
           missingArtifactRuntimeSignalOwners: requiredArtifactRuntimeSignalOwners,
           missingArtifactOwners: requiredArtifactOwners,
@@ -174,6 +179,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactProviderAccountAliases: [],
       requiredArtifactValidationPresets: [],
       missingArtifactValidationPresets: [],
+      requiredArtifactRuntimeAuthorityInvariants: [],
+      missingArtifactRuntimeAuthorityInvariants: [],
       requiredArtifactRuntimeSignals: [],
       missingArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
@@ -235,6 +242,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
         requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
         missingArtifactValidationPresets: [...requiredArtifactValidationPresets],
+        requiredArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
+        missingArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
         requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
         requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -276,6 +285,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactEvidenceRepos = requiredArtifactEvidenceRepos.filter((repo) => !Object.prototype.hasOwnProperty.call(aggregate.evidenceRepos ?? {}, repo))
     const missingArtifactProviderAccountAliases = requiredArtifactProviderAccountAliases.filter((alias) => !Object.prototype.hasOwnProperty.call(aggregate.providerAccountAliases ?? {}, alias))
     const missingArtifactValidationPresets = requiredArtifactValidationPresets.filter((preset) => !Object.prototype.hasOwnProperty.call(aggregate.validationPresets ?? {}, preset))
+    const missingArtifactRuntimeAuthorityInvariants = requiredArtifactRuntimeAuthorityInvariants.filter((invariant) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeAuthorityInvariants ?? {}, invariant))
     const missingArtifactRuntimeSignals = requiredArtifactRuntimeSignals.filter((signal) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignals ?? {}, signal))
     const missingArtifactRuntimeSignalOwners = requiredArtifactRuntimeSignalOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignalOwners ?? {}, owner))
     const missingArtifactOwners = requiredArtifactOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.owners ?? {}, owner))
@@ -299,6 +309,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       + missingArtifactEvidenceRepos.length
       + missingArtifactProviderAccountAliases.length
       + missingArtifactValidationPresets.length
+      + missingArtifactRuntimeAuthorityInvariants.length
       + missingArtifactRuntimeSignals.length
       + missingArtifactRuntimeSignalOwners.length
       + missingArtifactOwners.length
@@ -344,6 +355,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactProviderAccountAliases,
       requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
       missingArtifactValidationPresets,
+      requiredArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
+      missingArtifactRuntimeAuthorityInvariants,
       requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
       missingArtifactRuntimeSignals,
       requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -380,6 +393,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactEvidenceRepos,
             missingArtifactProviderAccountAliases,
             missingArtifactValidationPresets,
+            missingArtifactRuntimeAuthorityInvariants,
             missingArtifactRuntimeSignals,
             missingArtifactRuntimeSignalOwners,
             missingArtifactOwners,
@@ -430,6 +444,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
       requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
       missingArtifactValidationPresets: [...requiredArtifactValidationPresets],
+      requiredArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
+      missingArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
       requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
       missingArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
       requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
@@ -468,6 +484,7 @@ function artifactRequirementError({
   missingArtifactEvidenceRepos,
   missingArtifactProviderAccountAliases,
   missingArtifactValidationPresets,
+  missingArtifactRuntimeAuthorityInvariants,
   missingArtifactRuntimeSignals,
   missingArtifactRuntimeSignalOwners,
   missingArtifactOwners,
@@ -521,6 +538,9 @@ function artifactRequirementError({
   }
   if (missingArtifactValidationPresets.length > 0) {
     messages.push(`missing required artifact validation presets: ${missingArtifactValidationPresets.join(", ")}`)
+  }
+  if (missingArtifactRuntimeAuthorityInvariants.length > 0) {
+    messages.push(`missing required artifact runtime authority invariants: ${missingArtifactRuntimeAuthorityInvariants.join(", ")}`)
   }
   if (missingArtifactRuntimeSignals.length > 0) {
     messages.push(`missing required artifact runtime signals: ${missingArtifactRuntimeSignals.join(", ")}`)

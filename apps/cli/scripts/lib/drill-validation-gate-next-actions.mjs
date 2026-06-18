@@ -174,6 +174,14 @@ export function validationGateNextActions(checks) {
         nextAction: `collect artifact evidence for validation presets: ${missingArtifactValidationPresets.join(", ")}`,
       })
     }
+    const missingArtifactRuntimeAuthorityInvariants = checks.artifacts.missingArtifactRuntimeAuthorityInvariants ?? []
+    if (missingArtifactRuntimeAuthorityInvariants.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "artifact-coverage",
+        nextAction: `collect artifact evidence covering runtime authority invariants: ${missingArtifactRuntimeAuthorityInvariants.join(", ")}`,
+      })
+    }
     const missingArtifactRuntimeSignals = checks.artifacts.missingArtifactRuntimeSignals ?? []
     if (missingArtifactRuntimeSignals.length > 0) {
       countDrillAggregateNextAction(counts, {

@@ -19,6 +19,9 @@ import {
   validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import {
+  validateDrillRuntimeAuthorityInvariant,
+} from "./drill-runtime-authority-invariants.mjs"
+import {
   drillRuntimeSignalOwnersFor,
   validateDrillRuntimeSignal,
   validateDrillRuntimeSignalOwner,
@@ -422,6 +425,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
       requiredArtifactProviderAccountAliases: [...(preset.requiredArtifactProviderAccountAliases ?? [])],
       requiredArtifactValidationPresets: [...(preset.requiredArtifactValidationPresets ?? [])],
+      requiredArtifactRuntimeAuthorityInvariants: [...(preset.requiredArtifactRuntimeAuthorityInvariants ?? [])],
       requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
       requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
       requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
@@ -466,6 +470,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
   requiredArtifactValidationPresets = [],
+  requiredArtifactRuntimeAuthorityInvariants = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
@@ -506,6 +511,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
     requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
     requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
+    requiredArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
     requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
     requiredArtifactOwners: [...requiredArtifactOwners],
@@ -547,6 +553,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
     expanded.requiredArtifactProviderAccountAliases.push(...(preset.requiredArtifactProviderAccountAliases ?? []))
     expanded.requiredArtifactValidationPresets.push(...(preset.requiredArtifactValidationPresets ?? []))
+    expanded.requiredArtifactRuntimeAuthorityInvariants.push(...(preset.requiredArtifactRuntimeAuthorityInvariants ?? []))
     expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
     expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
@@ -814,6 +821,19 @@ export function normalizeRequiredArtifactRuntimeSignals(requiredArtifactRuntimeS
     })
   }
   return signals
+}
+
+export function normalizeRequiredArtifactRuntimeAuthorityInvariants(requiredArtifactRuntimeAuthorityInvariants) {
+  const invariants = normalizeCommaSeparatedStrings(requiredArtifactRuntimeAuthorityInvariants, {
+    fieldName: "requiredArtifactRuntimeAuthorityInvariants",
+    itemName: "invariant",
+  })
+  for (const invariant of invariants) {
+    validateDrillRuntimeAuthorityInvariant(invariant, "required artifact runtime authority invariants", {
+      message: () => `unknown required artifact runtime authority invariant: ${invariant}`,
+    })
+  }
+  return invariants
 }
 
 export function normalizeRequiredArtifactRuntimeSignalOwners(requiredArtifactRuntimeSignalOwners) {

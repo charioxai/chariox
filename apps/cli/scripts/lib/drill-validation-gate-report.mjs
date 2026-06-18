@@ -32,6 +32,7 @@ import {
   validateDrillRuntimeSignalOwner,
   validateDrillRuntimeSignals,
 } from "./drill-runtime-signals.mjs"
+import { validateDrillRuntimeAuthorityInvariant } from "./drill-runtime-authority-invariants.mjs"
 
 export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
 
@@ -165,6 +166,8 @@ function validateArtifactIndexCheck(check, source) {
   validateProviderAccountAliasArray(check.missingArtifactProviderAccountAliases ?? [], `${source}.missingArtifactProviderAccountAliases`)
   validateArtifactValidationPresetArray(check.requiredArtifactValidationPresets ?? [], `${source}.requiredArtifactValidationPresets`)
   validateArtifactValidationPresetArray(check.missingArtifactValidationPresets ?? [], `${source}.missingArtifactValidationPresets`)
+  validateRuntimeAuthorityInvariantArray(check.requiredArtifactRuntimeAuthorityInvariants ?? [], `${source}.requiredArtifactRuntimeAuthorityInvariants`)
+  validateRuntimeAuthorityInvariantArray(check.missingArtifactRuntimeAuthorityInvariants ?? [], `${source}.missingArtifactRuntimeAuthorityInvariants`)
   validateRuntimeSignalArray(check.requiredArtifactRuntimeSignals ?? [], `${source}.requiredArtifactRuntimeSignals`)
   validateRuntimeSignalArray(check.missingArtifactRuntimeSignals ?? [], `${source}.missingArtifactRuntimeSignals`)
   validateRuntimeSignalOwnerArray(check.requiredArtifactRuntimeSignalOwners ?? [], `${source}.requiredArtifactRuntimeSignalOwners`)
@@ -695,6 +698,13 @@ function validateDeploymentPresetArray(value, source) {
 function validateRuntimeSignalArray(value, source) {
   validateStringArray(value, source)
   validateDrillRuntimeSignals(value, source)
+}
+
+function validateRuntimeAuthorityInvariantArray(value, source) {
+  validateStringArray(value, source)
+  for (const [index, invariant] of value.entries()) {
+    validateDrillRuntimeAuthorityInvariant(invariant, `${source}[${index}]`)
+  }
 }
 
 function validateRuntimeSignalOwnerArray(value, source) {

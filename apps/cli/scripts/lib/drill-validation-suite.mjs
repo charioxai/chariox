@@ -10,6 +10,7 @@ import {
 import {
   DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
   drillRuntimeAuthorityManifest,
+  validateDrillRuntimeAuthorityInvariant,
   validateDrillRuntimeAuthorityManifest,
 } from "./drill-runtime-authority-invariants.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
@@ -415,6 +416,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactProviderAccountAliases: sortedProviderAccountAliasArray(preset.requiredArtifactProviderAccountAliases, `${preset.name}.requiredArtifactProviderAccountAliases`),
     requiredArtifactValidationPresets: sortedArtifactValidationPresetArray(preset.requiredArtifactValidationPresets, `${preset.name}.requiredArtifactValidationPresets`),
+    requiredArtifactRuntimeAuthorityInvariants: sortedRuntimeAuthorityInvariantArray(preset.requiredArtifactRuntimeAuthorityInvariants, `${preset.name}.requiredArtifactRuntimeAuthorityInvariants`),
     requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
     requiredArtifactRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
@@ -460,6 +462,14 @@ function sortedRuntimeSignalArray(value, source) {
     validateDrillRuntimeSignal(signal, `validation suite preset ${source}[${index}]`)
   }
   return signals
+}
+
+function sortedRuntimeAuthorityInvariantArray(value, source) {
+  const invariants = sortedStringArray(value, source)
+  for (const [index, invariant] of invariants.entries()) {
+    validateDrillRuntimeAuthorityInvariant(invariant, `validation suite preset ${source}[${index}]`)
+  }
+  return invariants
 }
 
 function sortedArtifactKindArray(value, source) {
