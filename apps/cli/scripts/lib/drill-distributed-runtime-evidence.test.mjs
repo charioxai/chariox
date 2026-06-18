@@ -401,13 +401,17 @@ test("matrix report child failures include generated evidence context", async ()
         artifactIndexFlag: "--artifact-index",
         args: ["--include-hetzner"],
         cwd: rootDir,
+        matrix: "remote-agent-runtime-matrix",
         outputDir: path.join(rootDir, "out"),
         reportFileName: "matrix.json",
+        repo: "oss",
         scriptPath,
       }),
       (error) => {
         assert.match(error.message, /matrix report failed:/)
         assert.match(error.message, new RegExp(`cwd: ${escapeRegExp(rootDir)}`))
+        assert.match(error.message, /repo: oss/)
+        assert.match(error.message, /matrix: remote-agent-runtime-matrix/)
         assert.match(error.message, /args: .*--include-hetzner .*--report .*matrix\.json .*--artifact-index .*matrix-artifacts\.json/)
         assert.match(error.message, /report: .*matrix\.json/)
         assert.match(error.message, /artifact-index: .*matrix-artifacts\.json/)
@@ -437,6 +441,7 @@ test("validation suite child failures include generated evidence context", async
       (error) => {
         assert.match(error.message, /validation suite failed:/)
         assert.match(error.message, new RegExp(`cwd: ${escapeRegExp(rootDir)}`))
+        assert.match(error.message, /validation-suite: suite/)
         assert.match(error.message, /args: .*--run-json .*--output .*suite\.json .*--output-artifact-index .*arroba-drill-artifacts\.json .*--preserve-failure-root .*failed-run/)
         assert.match(error.message, /report: .*suite\.json/)
         assert.match(error.message, /artifact-index: .*arroba-drill-artifacts\.json/)

@@ -238,8 +238,10 @@ export async function runDistributedRuntimeMatrixReportCommand({
   artifactIndexFlag,
   args,
   cwd,
+  matrix = null,
   outputDir,
   reportFileName,
+  repo = null,
   scriptPath,
 }) {
   const reportPath = path.join(outputDir, reportFileName)
@@ -259,6 +261,8 @@ export async function runDistributedRuntimeMatrixReportCommand({
       args: commandArgs,
       artifactIndexPath,
       cwd,
+      matrix,
+      repo,
       reportPath,
     })}${childProcessOutputFor(error)}`)
   }
@@ -318,6 +322,7 @@ export async function runDistributedRuntimeValidationSuiteCommand({
       cwd,
       failureRoot: preserveFailureRoot,
       reportPath: outputPath,
+      validationSuite: path.basename(reportFileName, ".json"),
     })}${childProcessOutputFor(error)}`)
   }
   return artifactIndexPath
@@ -376,10 +381,16 @@ function childCommandContextFor({
   artifactIndexPath,
   cwd,
   failureRoot = null,
+  matrix = null,
   reportPath,
+  repo = null,
+  validationSuite = null,
 }) {
   return [
     `\ncwd: ${cwd}`,
+    ...(repo ? [`\nrepo: ${repo}`] : []),
+    ...(matrix ? [`\nmatrix: ${matrix}`] : []),
+    ...(validationSuite ? [`\nvalidation-suite: ${validationSuite}`] : []),
     `\nargs: ${args.join(" ")}`,
     `\nreport: ${reportPath}`,
     `\nartifact-index: ${artifactIndexPath}`,
