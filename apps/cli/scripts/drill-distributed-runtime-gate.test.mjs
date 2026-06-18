@@ -506,6 +506,10 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
       path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
     ].sort())
+    assert.equal(artifactIndex.metadata.generatedValidationSuiteArtifactIndexes, [
+      path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+    ].sort().join(","))
     assert.equal(artifactIndex.metadata.generatedMatrixArtifactIndexes, [
       path.join(matrixOutputRoot, "cloud", "cloud-slice-runtime-matrix-artifacts.json"),
       path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix-artifacts.json"),

@@ -504,11 +504,15 @@ function generatedEvidenceMetadataFor(generatedEvidence) {
   const matrixArtifactIndexes = (generatedEvidence.matrixReports.artifactIndexes ?? [])
     .filter((artifactIndex) => typeof artifactIndex === "string" && artifactIndex.length > 0)
     .sort()
+  const validationSuiteArtifactIndexes = (generatedEvidence.validationSuites.artifactIndexes ?? [])
+    .filter((artifactIndex) => typeof artifactIndex === "string" && artifactIndex.length > 0)
+    .sort()
   const matrixNames = generatedMatrixCommandMetadataValues(generatedEvidence, "matrix")
   const matrixRepos = generatedMatrixCommandMetadataValues(generatedEvidence, "repo")
   return {
     ...(kinds.length > 0 ? { generatedEvidenceKinds: kinds.join(",") } : {}),
     ...(matrixArtifactIndexes.length > 0 ? { generatedMatrixArtifactIndexes: matrixArtifactIndexes.join(",") } : {}),
+    ...(validationSuiteArtifactIndexes.length > 0 ? { generatedValidationSuiteArtifactIndexes: validationSuiteArtifactIndexes.join(",") } : {}),
     ...(matrixLimitations.length > 0 ? { generatedMatrixLimitations: matrixLimitations.join(",") } : {}),
     ...(matrixNames.length > 0 ? { generatedMatrixNames: matrixNames.join(",") } : {}),
     ...(matrixRepos.length > 0 ? { generatedMatrixRepos: matrixRepos.join(",") } : {}),
