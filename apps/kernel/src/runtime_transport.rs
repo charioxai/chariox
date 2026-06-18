@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, Semaphore};
@@ -346,7 +346,49 @@ async fn handle_kernel_connection(
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
         transport_ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut delayed_event_frame: Option<KernelOutgoingFrame> = None;
+        let mut delayed_event_ready_at: Option<tokio::time::Instant> = None;
         loop {
+            if let Some(ready_at) = delayed_event_ready_at {
+                tokio::select! {
+                    biased;
+                    Some(command) = close_rx.recv() => {
+                        let _ = writer.send(Message::Close(Some(CloseFrame {
+                            code: CloseCode::Policy,
+                            reason: command.reason.into(),
+                        }))).await;
+                        break;
+                    }
+                    Some(payload) = pong_rx.recv() => {
+                        if writer.send(Message::Pong(payload.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ = transport_ping.tick() => {
+                        if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(frame) = priority_rx.recv() => {
+                        if !send_kernel_frame(&mut writer, frame).await {
+                            break;
+                        }
+                    }
+                    _ = tokio::time::sleep_until(ready_at) => {
+                        let Some(frame) = delayed_event_frame.take() else {
+                            delayed_event_ready_at = None;
+                            continue;
+                        };
+                        delayed_event_ready_at = None;
+                        if !send_kernel_frame(&mut writer, frame).await {
+                            break;
+                        }
+                    }
+                    else => break,
+                }
+                continue;
+            }
+
             tokio::select! {
                 biased;
                 Some(command) = close_rx.recv() => {
@@ -367,26 +409,19 @@ async fn handle_kernel_connection(
                     }
                 }
                 Some(frame) = priority_rx.recv() => {
-                    let payload = match serialize_frame(&frame) {
-                        Ok(payload) => payload,
-                        Err(_) => break,
-                    };
-                    if write_delay_ms > 0 {
-                        sleep(Duration::from_millis(write_delay_ms)).await;
-                    }
-                    if writer.send(Message::Text(payload.into())).await.is_err() {
+                    if !send_kernel_frame(&mut writer, frame).await {
                         break;
                     }
                 }
                 Some(frame) = event_rx.recv() => {
-                    let payload = match serialize_frame(&frame) {
-                        Ok(payload) => payload,
-                        Err(_) => break,
-                    };
                     if write_delay_ms > 0 {
-                        sleep(Duration::from_millis(write_delay_ms)).await;
+                        delayed_event_frame = Some(frame);
+                        delayed_event_ready_at = Some(
+                            tokio::time::Instant::now() + Duration::from_millis(write_delay_ms),
+                        );
+                        continue;
                     }
-                    if writer.send(Message::Text(payload.into())).await.is_err() {
+                    if !send_kernel_frame(&mut writer, frame).await {
                         break;
                     }
                 }
@@ -459,6 +494,17 @@ async fn handle_kernel_connection(
     }
 
     Ok(())
+}
+
+async fn send_kernel_frame<S>(writer: &mut S, frame: KernelOutgoingFrame) -> bool
+where
+    S: Sink<Message> + Unpin,
+{
+    let payload = match serialize_frame(&frame) {
+        Ok(payload) => payload,
+        Err(_) => return false,
+    };
+    writer.send(Message::Text(payload.into())).await.is_ok()
 }
 
 async fn handle_incoming_payload(
