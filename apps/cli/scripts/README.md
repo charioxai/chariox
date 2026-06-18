@@ -83,6 +83,7 @@ For faster inner-loop validation, use the focused presets before the full
 distributed-runtime gate:
 
 ```bash
+node apps/cli/scripts/drill-focused-runtime-gate.mjs --matrix-root .artifacts/drill-matrices --require-complete
 node apps/cli/scripts/drill-validation-gate.mjs --preset runtime-authority --platform-bundle .artifacts/drill-platform --matrix-root .artifacts/drill-matrices --require-complete
 node apps/cli/scripts/drill-validation-gate.mjs --preset distributed-state-health --platform-bundle .artifacts/drill-platform --matrix-root .artifacts/drill-matrices --require-complete
 ```

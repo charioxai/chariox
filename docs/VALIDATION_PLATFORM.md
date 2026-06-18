@@ -103,6 +103,10 @@ Use focused gates before the release-level distributed-runtime gate when the
 change is isolated to one quality axis:
 
 ```bash
+node apps/cli/scripts/drill-focused-runtime-gate.mjs \
+  --matrix-root .artifacts/drill-matrices \
+  --require-complete
+
 node apps/cli/scripts/drill-validation-gate.mjs \
   --preset runtime-authority \
   --platform-bundle .artifacts/drill-platform \
