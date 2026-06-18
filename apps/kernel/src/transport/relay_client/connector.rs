@@ -38,6 +38,9 @@ struct StaticRelayConfig {
 
 const CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
+const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
+const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 5_000;
+const RELAY_RECONNECT_JITTER_SPREAD_MS: u64 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRelayConfigDisposition {
@@ -97,6 +100,24 @@ fn stable_jitter_ms(value: &str, spread_ms: u64) -> u64 {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         })
         % spread_ms
+}
+
+fn relay_reconnect_delay(daemon_id: &str, attempt: u32) -> Duration {
+    let capped_attempt = attempt.min(4);
+    let backoff_ms = RELAY_RECONNECT_BASE_DELAY_MS.saturating_mul(1_u64 << capped_attempt);
+    let bounded_backoff_ms = backoff_ms.min(RELAY_RECONNECT_MAX_DELAY_MS);
+    Duration::from_millis(
+        bounded_backoff_ms + stable_jitter_ms(daemon_id, RELAY_RECONNECT_JITTER_SPREAD_MS),
+    )
+}
+
+async fn wait_for_reconnect_delay(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
+    let wait = sleep(delay);
+    tokio::pin!(wait);
+    tokio::select! {
+        changed = shutdown.changed() => changed.is_ok() && *shutdown.borrow(),
+        _ = &mut wait => false,
+    }
 }
 
 fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
@@ -246,6 +267,7 @@ async fn run_daemon_relay_connector_inner(
         };
     let command_sequence = Arc::new(AtomicU64::new(1));
     let mut missing_relay_config_reported = false;
+    let mut reconnect_attempt = 0_u32;
 
     loop {
         if *shutdown.borrow() {
@@ -394,7 +416,12 @@ async fn run_daemon_relay_connector_inner(
                     static_relay.is_none(),
                 )
                 .await;
-                sleep(Duration::from_secs(1)).await;
+                let daemon_id = router.relay_daemon_id();
+                let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                if wait_for_reconnect_delay(shutdown, delay).await {
+                    return;
+                }
                 continue;
             }
             Ok(Ok((socket, _))) => {
@@ -468,7 +495,11 @@ async fn run_daemon_relay_connector_inner(
                         static_relay.is_none(),
                     )
                     .await;
-                    sleep(Duration::from_secs(1)).await;
+                    let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                    reconnect_attempt = reconnect_attempt.saturating_add(1);
+                    if wait_for_reconnect_delay(shutdown, delay).await {
+                        return;
+                    }
                     continue;
                 }
                 crate::logging::info_with_fields(
@@ -482,6 +513,7 @@ async fn run_daemon_relay_connector_inner(
                     }),
                 );
                 set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await;
+                reconnect_attempt = 0;
                 let mut cloud_presence_task = None;
                 if static_relay.is_none() {
                     cloud_presence_task = Some(spawn_cloud_presence_publish(
@@ -736,6 +768,11 @@ async fn run_daemon_relay_connector_inner(
                         }
                     }
                 }
+                let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                if wait_for_reconnect_delay(shutdown, delay).await {
+                    return;
+                }
             }
             Ok(Err(error)) => {
                 crate::logging::warn_with_fields(
@@ -755,15 +792,11 @@ async fn run_daemon_relay_connector_inner(
                     static_relay.is_none(),
                 )
                 .await;
-                let reconnect_delay = sleep(Duration::from_secs(1));
-                tokio::pin!(reconnect_delay);
-                tokio::select! {
-                    changed = shutdown.changed() => {
-                        if changed.is_ok() && *shutdown.borrow() {
-                            return;
-                        }
-                    }
-                    _ = &mut reconnect_delay => {}
+                let daemon_id = router.relay_daemon_id();
+                let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                if wait_for_reconnect_delay(shutdown, delay).await {
+                    return;
                 }
             }
         }
@@ -895,6 +928,52 @@ mod tests {
                 < CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
                     + Duration::from_millis(CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS)
         );
+    }
+
+    #[test]
+    fn relay_reconnect_delay_is_stable_jittered_and_bounded() {
+        let first = relay_reconnect_delay("daemon-a", 0);
+        let second = relay_reconnect_delay("daemon-a", 0);
+
+        assert_eq!(first, second);
+        assert!(first >= Duration::from_millis(RELAY_RECONNECT_BASE_DELAY_MS));
+        assert!(
+            first
+                < Duration::from_millis(
+                    RELAY_RECONNECT_BASE_DELAY_MS + RELAY_RECONNECT_JITTER_SPREAD_MS,
+                )
+        );
+
+        let capped = relay_reconnect_delay("daemon-a", 99);
+        assert!(capped >= Duration::from_millis(RELAY_RECONNECT_MAX_DELAY_MS));
+        assert!(
+            capped
+                < Duration::from_millis(
+                    RELAY_RECONNECT_MAX_DELAY_MS + RELAY_RECONNECT_JITTER_SPREAD_MS,
+                )
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_delay_returns_false_after_delay() {
+        let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+        assert!(!wait_for_reconnect_delay(&mut shutdown_rx, Duration::from_millis(1)).await);
+    }
+
+    #[tokio::test]
+    async fn reconnect_delay_exits_on_shutdown() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let wait = tokio::spawn(async move {
+            wait_for_reconnect_delay(&mut shutdown_rx, Duration::from_secs(30)).await
+        });
+
+        shutdown_tx.send(true).expect("shutdown should send");
+
+        assert!(timeout(Duration::from_secs(1), wait)
+            .await
+            .expect("wait should observe shutdown")
+            .expect("wait task should finish"));
     }
 
     #[test]
