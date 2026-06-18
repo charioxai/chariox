@@ -372,6 +372,109 @@ test("applies validation gate requirement presets", async () => {
   }
 })
 
+test("runtime authority preset gates shared kernel-owned path evidence", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    const matrixReports = await writeRuntimeAuthorityMatrixReports(rootDir)
+
+    const report = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      matrixReports,
+      presets: ["runtime-authority"],
+    })
+
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.presets, ["runtime-authority"])
+    assert.deepEqual(report.checks.platformBundle.requiredRuntimeSignals, [
+      "agent-lifecycle",
+      "client-projection-health",
+      "lease-health",
+      "permission-interaction",
+      "provider-run-lifecycle",
+      "runtime-projection-health",
+      "session-authority",
+    ])
+    assert.deepEqual(report.checks.matrices.requiredMatrices, [
+      "native-provider-tui-matrix",
+      "remote-agent-runtime-matrix",
+      "slice-runtime-matrix",
+    ])
+    assert.deepEqual(report.checks.matrices.missingMatrices, [])
+    assert.deepEqual(report.checks.matrices.missingMatrixRuntimeSignals, [])
+    assert.deepEqual(report.checks.matrices.missingScenarios, [])
+    assert.deepEqual(report.nextActions, [])
+    assert.match(formatDrillValidationGateSummary(report), /presets=runtime-authority/)
+    assert.match(formatDrillValidationGateSummary(report), /matrix_required_runtime_signals=agent-lifecycle,client-projection-health,lease-health,permission-interaction,provider-run-lifecycle,runtime-projection-health,session-authority missing=none/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed state health preset reports owner-routed missing diagnostics", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  try {
+    const bundleDir = path.join(rootDir, "bundle")
+    const reportPath = path.join(rootDir, "remote-agent-runtime.json")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeMatrixReport(reportPath, matrixReport({
+      matrix: "remote-agent-runtime-matrix",
+      metadata: {
+        deploymentPresets: "local",
+        providers: "codex",
+      },
+      scenarios: [
+        scenario("lease-reconnect", "passed", {
+          classification: "kernel-authority",
+          runtimeSignals: ["lease-health", "provider-run-lifecycle"],
+        }),
+      ],
+    }))
+
+    const report = await runDrillValidationGate({
+      platformBundleDir: bundleDir,
+      matrixReports: [reportPath],
+      presets: ["distributed-state-health"],
+    })
+
+    assert.equal(report.status, "failed")
+    assert.deepEqual(report.presets, ["distributed-state-health"])
+    assert.deepEqual(report.checks.matrices.missingMatrices, [
+      "cloud-slice-runtime-matrix",
+      "remote-home-extension-matrix",
+      "slice-runtime-matrix",
+      "workspace-live-sync-matrix",
+    ])
+    assert.deepEqual(report.checks.matrices.missingMatrixRuntimeSignals, [
+      "home-extension-manifest-sync",
+      "relay-target-freshness",
+      "runtime-projection-health",
+      "slice-auth-state",
+      "slice-runtime-state",
+      "workspace-live-sync-state",
+    ])
+    assert.equal(report.nextActions.some((action) =>
+      action.owner === "runtime-network"
+        && action.classification === "runtime-signal-coverage"
+        && action.nextAction.includes("relay-target-freshness owned by runtime-network")
+    ), true)
+    assert.equal(report.nextActions.some((action) =>
+      action.owner === "provider-account"
+        && action.classification === "runtime-signal-coverage"
+        && action.nextAction.includes("slice-auth-state owned by provider-account")
+    ), true)
+    assert.equal(report.nextActions.some((action) =>
+      action.owner === "runtime-state"
+        && action.classification === "runtime-signal-coverage"
+        && action.nextAction.includes("workspace-live-sync-state owned by runtime-state")
+    ), true)
+    assert.match(formatDrillValidationGateSummary(report), /matrix_required_runtime_signals=home-extension-manifest-sync,lease-health,provider-run-lifecycle,relay-target-freshness,runtime-projection-health,slice-auth-state,slice-runtime-state,workspace-live-sync-state missing=home-extension-manifest-sync,relay-target-freshness,runtime-projection-health,slice-auth-state,slice-runtime-state,workspace-live-sync-state/)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("suppresses only preset-derived matrix classification requirements", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
   try {
@@ -1605,6 +1708,108 @@ function workspaceLiveSyncRequiredScenarios() {
   return workspaceLiveSyncRequiredScenarioDescriptors().map(({ id, classification, runtimeSignals }) => {
     return scenario(id, "passed", { classification, runtimeSignals })
   })
+}
+
+async function writeRuntimeAuthorityMatrixReports(rootDir) {
+  const nativeReport = path.join(rootDir, "native-provider-tui.json")
+  const remoteReport = path.join(rootDir, "remote-agent-runtime.json")
+  const sliceReport = path.join(rootDir, "slice-runtime.json")
+  await writeMatrixReport(nativeReport, matrixReport({
+    matrix: "native-provider-tui-matrix",
+    metadata: {
+      deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+      providers: "claude,codex,opencode",
+    },
+    scenarios: [
+      scenario("local-native-tui", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["provider-run-lifecycle", "session-authority"],
+      }),
+      scenario("permission-visibility", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["permission-interaction", "session-authority"],
+      }),
+      scenario("remote-native-tui", "passed", {
+        classification: "relay-runtime",
+        runtimeSignals: ["provider-run-lifecycle", "runtime-projection-health", "session-authority"],
+      }),
+      scenario("slice-native-tui", "passed", {
+        classification: "worker-execution",
+        runtimeSignals: ["agent-lifecycle", "lease-health", "provider-run-lifecycle"],
+      }),
+      scenario("transcript-parity", "passed", {
+        classification: "ui-client-projection",
+        runtimeSignals: ["client-projection-health", "runtime-projection-health"],
+      }),
+    ],
+  }))
+  await writeMatrixReport(remoteReport, matrixReport({
+    matrix: "remote-agent-runtime-matrix",
+    metadata: {
+      deploymentPresets: "hetzner,hosted-cloud,same-host-remote,self-hosted-relay",
+      providers: "claude,codex,opencode",
+    },
+    scenarios: [
+      scenario("collab-remote-agent", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["lease-health", "session-authority"],
+      }),
+      scenario("hetzner-collab-remote-agent", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["lease-health", "session-authority"],
+      }),
+      scenario("hetzner-single-user-remote-agent", "passed", {
+        classification: "worker-execution",
+        runtimeSignals: ["agent-lifecycle", "lease-health", "provider-run-lifecycle"],
+      }),
+      scenario("hosted-collab-remote-agent", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["lease-health", "session-authority"],
+      }),
+      scenario("hosted-single-user-remote-agent", "passed", {
+        classification: "relay-runtime",
+        runtimeSignals: ["lease-health", "runtime-projection-health"],
+      }),
+      scenario("lease-reconnect", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["lease-health", "session-authority"],
+      }),
+      scenario("provider-run-binding", "passed", {
+        classification: "provider-error",
+        runtimeSignals: ["provider-run-lifecycle", "session-authority"],
+      }),
+      scenario("remote-prompt-dispatch", "passed", {
+        classification: "provider-auth",
+        runtimeSignals: ["provider-run-lifecycle", "session-authority"],
+      }),
+      scenario("single-user-remote-agent", "passed", {
+        classification: "ui-client-projection",
+        runtimeSignals: ["agent-lifecycle", "client-projection-health", "runtime-projection-health", "session-authority"],
+      }),
+    ],
+  }))
+  await writeMatrixReport(sliceReport, matrixReport({
+    matrix: "slice-runtime-matrix",
+    metadata: {
+      deploymentPresets: "local,self-hosted-relay",
+      providers: "claude,codex,opencode",
+    },
+    scenarios: [
+      scenario("agent-reuse", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["agent-lifecycle", "session-authority"],
+      }),
+      scenario("session-start", "passed", {
+        classification: "kernel-authority",
+        runtimeSignals: ["agent-lifecycle", "session-authority"],
+      }),
+      scenario("ui-projection", "passed", {
+        classification: "ui-client-projection",
+        runtimeSignals: ["client-projection-health", "runtime-projection-health"],
+      }),
+    ],
+  }))
+  return [nativeReport, remoteReport, sliceReport]
 }
 
 function platformValidationPresetSummaries() {
