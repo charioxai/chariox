@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 
+import { validateDrillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 import { verifyDrillPlatformBundle } from "./drill-platform-bundle.mjs"
 
 export async function platformValidationGateCheck(
@@ -159,15 +160,7 @@ async function readPlatformBundleFailureTaxonomy(platformBundleDir) {
 
 async function readPlatformBundleFailureTaxonomyKinds(platformBundleDir, target) {
   const taxonomy = JSON.parse(await readFile(path.join(platformBundleDir, `failure-taxonomy-${target}.json`), "utf8"))
-  if (taxonomy.schema !== "arroba.drill.failure_taxonomy.v1") {
-    throw new Error(`failure taxonomy ${target} has unsupported schema ${JSON.stringify(taxonomy.schema)}`)
-  }
-  if (taxonomy.target !== target) {
-    throw new Error(`failure taxonomy ${target} has invalid target ${JSON.stringify(taxonomy.target)}`)
-  }
-  if (!Array.isArray(taxonomy.classifications)) {
-    throw new Error(`failure taxonomy ${target} has invalid classifications`)
-  }
+  validateDrillFailureTaxonomyManifest(taxonomy, `failure taxonomy ${target}`, { target })
   return [...new Set(taxonomy.classifications
     .map((entry) => entry?.kind)
     .filter((kind) => typeof kind === "string"))].sort()

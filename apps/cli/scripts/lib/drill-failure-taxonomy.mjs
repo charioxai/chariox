@@ -165,14 +165,18 @@ export function drillFailureTaxonomyManifest({ target = "scenario" } = {}) {
   }
 }
 
-export function validateDrillFailureTaxonomyManifest(manifest, source = "drill failure taxonomy manifest") {
+export function validateDrillFailureTaxonomyManifest(
+  manifest,
+  source = "drill failure taxonomy manifest",
+  { target = "scenario" } = {},
+) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${source} is not an object`)
   }
   if (manifest.schema !== "arroba.drill.failure_taxonomy.v1") {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
   }
-  if (manifest.target !== "scenario") {
+  if (manifest.target !== target) {
     throw new Error(`${source} has invalid target ${JSON.stringify(manifest.target)}`)
   }
   if (!Array.isArray(manifest.classifications)) {
@@ -191,7 +195,7 @@ export function validateDrillFailureTaxonomyManifest(manifest, source = "drill f
     if (classification.owner !== drillFailureOwnerForClassification(classification.kind)) {
       throw new Error(`${classificationSource} has invalid owner`)
     }
-    if (classification.nextAction !== drillFailureNextActionForClassification(classification.kind, { target: "scenario" })) {
+    if (classification.nextAction !== drillFailureNextActionForClassification(classification.kind, { target })) {
       throw new Error(`${classificationSource} has invalid nextAction`)
     }
   }

@@ -423,7 +423,7 @@ test("rejects failure taxonomy target drift", async () => {
 
     await assert.rejects(
       verifyDrillPlatformBundle(rootDir),
-      /target mismatch/,
+      /has invalid target/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -466,7 +466,7 @@ test("rejects failure taxonomy classification drift", async () => {
 
     await assert.rejects(
       verifyDrillPlatformBundle(rootDir),
-      /classifications do not match taxonomy/,
+      /classifications do not match drill failure taxonomy/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })

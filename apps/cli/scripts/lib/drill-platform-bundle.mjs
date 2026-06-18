@@ -3,10 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 import {
-  DRILL_FAILURE_CLASSIFICATION_KINDS,
-  drillFailureNextActionForClassification,
-  drillFailureOwnerForClassification,
   drillFailureTaxonomyManifest,
+  validateDrillFailureTaxonomyManifest,
 } from "./drill-failure-taxonomy.mjs"
 import {
   drillGeneratedMatrixNamesManifest,
@@ -214,29 +212,7 @@ function validateValidationSuiteArtifact(contents) {
 }
 
 function validateFailureTaxonomyArtifact(contents, expectedTarget) {
-  if (contents.target !== expectedTarget) {
-    throw new Error(`failure taxonomy artifact target mismatch: expected ${expectedTarget}, got ${JSON.stringify(contents.target)}`)
-  }
-  if (!Array.isArray(contents.classifications)) {
-    throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid classifications`)
-  }
-  const kinds = contents.classifications.map((entry) => entry?.kind).sort()
-  if (JSON.stringify(kinds) !== JSON.stringify(DRILL_FAILURE_CLASSIFICATION_KINDS)) {
-    throw new Error(`failure taxonomy ${expectedTarget} artifact classifications do not match taxonomy`)
-  }
-  for (const entry of contents.classifications) {
-    if (typeof entry.kind !== "string" || entry.kind.length === 0) {
-      throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid kind`)
-    }
-    const expectedOwner = drillFailureOwnerForClassification(entry.kind)
-    if (entry.owner !== expectedOwner) {
-      throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid owner`)
-    }
-    const expectedNextAction = drillFailureNextActionForClassification(entry.kind, { target: expectedTarget })
-    if (entry.nextAction !== expectedNextAction) {
-      throw new Error(`failure taxonomy ${expectedTarget} artifact has invalid nextAction`)
-    }
-  }
+  validateDrillFailureTaxonomyManifest(contents, `failure taxonomy ${expectedTarget} artifact`, { target: expectedTarget })
 }
 
 function assertRequiredBundleArtifacts(artifacts) {

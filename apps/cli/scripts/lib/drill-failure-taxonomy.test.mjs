@@ -163,6 +163,11 @@ test("builds stable failure taxonomy manifest", () => {
       && entry.nextAction.includes("slice lifecycle events")
   )))
   assert.doesNotThrow(() => validateDrillFailureTaxonomyManifest(manifest))
+  assert.doesNotThrow(() => validateDrillFailureTaxonomyManifest(
+    drillFailureTaxonomyManifest({ target: "drill" }),
+    "drill target manifest",
+    { target: "drill" },
+  ))
   assert.throws(
     () => validateDrillFailureTaxonomyManifest({ ...manifest, target: "drill" }),
     /has invalid target "drill"/,
