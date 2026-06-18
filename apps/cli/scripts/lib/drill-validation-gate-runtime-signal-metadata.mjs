@@ -324,6 +324,12 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
   const validationPresets = new Set([
     ...Object.keys(aggregate.coverage?.artifactValidationPresets ?? {}),
   ])
+  const plannedOwners = new Set([
+    ...Object.keys(aggregate.coverage?.artifactPlannedOwners ?? {}),
+  ])
+  const plannedClassifications = new Set([
+    ...Object.keys(aggregate.coverage?.artifactPlannedClassifications ?? {}),
+  ])
   const requiredProviderAccountAliases = new Set([
     ...Object.keys(aggregate.coverage?.requiredArtifactProviderAccountAliases ?? {}),
     ...(aggregate.requiredArtifactProviderAccountAliases ?? []).filter(nonEmptyString),
@@ -340,6 +346,22 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...Object.keys(aggregate.coverage?.missingArtifactValidationPresets ?? {}),
     ...(aggregate.missingArtifactValidationPresets ?? []).filter(nonEmptyString),
   ])
+  const requiredPlannedOwners = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactPlannedOwners ?? {}),
+    ...(aggregate.requiredArtifactPlannedOwners ?? []).filter(nonEmptyString),
+  ])
+  const missingPlannedOwners = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactPlannedOwners ?? {}),
+    ...(aggregate.missingArtifactPlannedOwners ?? []).filter(nonEmptyString),
+  ])
+  const requiredPlannedClassifications = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactPlannedClassifications ?? {}),
+    ...(aggregate.requiredArtifactPlannedClassifications ?? []).filter(nonEmptyString),
+  ])
+  const missingPlannedClassifications = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactPlannedClassifications ?? {}),
+    ...(aggregate.missingArtifactPlannedClassifications ?? []).filter(nonEmptyString),
+  ])
   return {
     ...runtimeSignalMetadataForValidationGateAggregate(aggregate),
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
@@ -355,6 +377,12 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(validationPresets.size > 0 ? { validationPresets: [...validationPresets].sort().join(",") } : {}),
     ...(requiredValidationPresets.size > 0 ? { requiredValidationPresets: [...requiredValidationPresets].sort().join(",") } : {}),
     ...(missingValidationPresets.size > 0 ? { missingValidationPresets: [...missingValidationPresets].sort().join(",") } : {}),
+    ...(plannedOwners.size > 0 ? { plannedOwners: [...plannedOwners].sort().join(",") } : {}),
+    ...(plannedClassifications.size > 0 ? { plannedClassifications: [...plannedClassifications].sort().join(",") } : {}),
+    ...(requiredPlannedOwners.size > 0 ? { requiredPlannedOwners: [...requiredPlannedOwners].sort().join(",") } : {}),
+    ...(missingPlannedOwners.size > 0 ? { missingPlannedOwners: [...missingPlannedOwners].sort().join(",") } : {}),
+    ...(requiredPlannedClassifications.size > 0 ? { requiredPlannedClassifications: [...requiredPlannedClassifications].sort().join(",") } : {}),
+    ...(missingPlannedClassifications.size > 0 ? { missingPlannedClassifications: [...missingPlannedClassifications].sort().join(",") } : {}),
     ...(generatedEvidenceKinds.size > 0 ? { generatedEvidenceKinds: [...generatedEvidenceKinds].sort().join(",") } : {}),
     ...(generatedMatrixArtifactIndexes.size > 0 ? { generatedMatrixArtifactIndexes: [...generatedMatrixArtifactIndexes].sort().join(",") } : {}),
     ...(generatedMatrixLimitations.size > 0 ? { generatedMatrixLimitations: [...generatedMatrixLimitations].sort().join(",") } : {}),

@@ -456,6 +456,8 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
         exitCriterionStatuses: "dry-run",
         incompleteExitCriterionStatuses: "dry-run",
         generatedMatrixLimitations: "dry-run-classification-coverage",
+        plannedClassifications: "workspace-live-sync-conflict",
+        plannedOwners: "validation-platform",
         validationPresets: "distributed-runtime",
       },
     })
@@ -472,6 +474,10 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
       "dry-run-classification-coverage",
       "--require-artifact-validation-preset",
       "distributed-runtime",
+      "--require-artifact-planned-owner",
+      "validation-platform",
+      "--require-artifact-planned-classification",
+      "workspace-live-sync-conflict",
       "--json",
       "--output",
       outputPath,
@@ -490,9 +496,15 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     assert.deepEqual(stdoutAggregate.missingArtifactGeneratedMatrixLimitations, [])
     assert.deepEqual(stdoutAggregate.requiredArtifactValidationPresets, ["distributed-runtime"])
     assert.deepEqual(stdoutAggregate.missingArtifactValidationPresets, [])
+    assert.deepEqual(stdoutAggregate.requiredArtifactPlannedOwners, ["validation-platform"])
+    assert.deepEqual(stdoutAggregate.missingArtifactPlannedOwners, [])
+    assert.deepEqual(stdoutAggregate.requiredArtifactPlannedClassifications, ["workspace-live-sync-conflict"])
+    assert.deepEqual(stdoutAggregate.missingArtifactPlannedClassifications, [])
     assert.equal(stdoutAggregate.coverage.artifactExitCriterionStatuses["dry-run"], 1)
     assert.equal(stdoutAggregate.coverage.artifactIncompleteExitCriterionStatuses["dry-run"], 1)
     assert.equal(stdoutAggregate.coverage.artifactGeneratedMatrixLimitations["dry-run-classification-coverage"], 1)
+    assert.equal(stdoutAggregate.coverage.artifactPlannedOwners["validation-platform"], 1)
+    assert.equal(stdoutAggregate.coverage.artifactPlannedClassifications["workspace-live-sync-conflict"], 1)
     assert.equal(stdoutAggregate.coverage.artifactValidationPresets["distributed-runtime"], 1)
     assert.deepEqual(stdoutAggregate.reports.map((report) => report.source), [reportPath])
     assert.deepEqual(stdoutAggregate.artifactCoverageInputs.map((input) => input.source), ["artifact metadata inputs"])
@@ -502,6 +514,10 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     assert.equal(artifactIndex.metadata.incompleteExitCriterionStatuses, "dry-run")
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
+    assert.equal(artifactIndex.metadata.plannedOwners, "validation-platform")
+    assert.equal(artifactIndex.metadata.requiredPlannedOwners, "validation-platform")
+    assert.equal(artifactIndex.metadata.plannedClassifications, "workspace-live-sync-conflict")
+    assert.equal(artifactIndex.metadata.requiredPlannedClassifications, "workspace-live-sync-conflict")
     assert.equal(artifactIndex.metadata.validationPresets, "distributed-runtime")
     assert.equal(artifactIndex.metadata.requiredValidationPresets, "distributed-runtime")
   } finally {
