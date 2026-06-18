@@ -599,21 +599,44 @@ pub(crate) async fn handle_connection(
                                 "relay-request-{}",
                                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
                             );
-                            let daemon_sender = {
+                            let (subscription_conflict, daemon_sender) = {
                                 let mut guard = registry.write().await;
-                                guard.pending_requests.insert(
-                                    relay_request_id.clone(),
-                                    PendingClientRequest {
-                                        client_addr: peer_addr,
-                                        client_request_id: request_id.clone(),
-                                        daemon_key: daemon_key.clone(),
-                                        kind: PendingRequestKind::Subscribe {
-                                            subscription_id: subscription_id.clone(),
+                                if subscription_owned_by_other_client(
+                                    &guard,
+                                    &subscription_id,
+                                    peer_addr,
+                                ) {
+                                    (true, None)
+                                } else {
+                                    guard.pending_requests.insert(
+                                        relay_request_id.clone(),
+                                        PendingClientRequest {
+                                            client_addr: peer_addr,
+                                            client_request_id: request_id.clone(),
+                                            daemon_key: daemon_key.clone(),
+                                            kind: PendingRequestKind::Subscribe {
+                                                subscription_id: subscription_id.clone(),
+                                            },
                                         },
-                                    },
-                                );
-                                resolve_daemon_sender_locked(&guard, &daemon_key)
+                                    );
+                                    (false, resolve_daemon_sender_locked(&guard, &daemon_key))
+                                }
                             };
+                            if subscription_conflict {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "subscription_conflict",
+                                            "relay subscription id is already active for another client",
+                                            true,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            }
                             let Some(daemon_sender) = daemon_sender else {
                                 registry
                                     .write()
@@ -693,7 +716,7 @@ pub(crate) async fn handle_connection(
                                 let guard = registry.read().await;
                                 guard.subscriptions.get(&subscription_id).cloned()
                             };
-                            let Some(active) = active else {
+                            let Some(active) = active.filter(|active| active.client_addr == peer_addr) else {
                                 send_envelope(
                                     &outgoing_tx,
                                     &RelayEnvelope::ClientResponse {
@@ -1213,6 +1236,26 @@ async fn connected_client_realm_id(
         .get(&peer_addr)
         .filter(|peer| peer.role == RelayConnectionRole::Client)
         .and_then(|peer| peer.realm_id.clone())
+}
+
+fn subscription_owned_by_other_client(
+    registry: &RelayRegistry,
+    subscription_id: &str,
+    peer_addr: SocketAddr,
+) -> bool {
+    registry
+        .subscriptions
+        .get(subscription_id)
+        .is_some_and(|active| active.client_addr != peer_addr)
+        || registry.pending_requests.values().any(|pending| {
+            pending.client_addr != peer_addr
+                && matches!(
+                    &pending.kind,
+                    PendingRequestKind::Subscribe {
+                        subscription_id: pending_subscription_id,
+                    } if pending_subscription_id == subscription_id
+                )
+        })
 }
 
 async fn peer_identity(
