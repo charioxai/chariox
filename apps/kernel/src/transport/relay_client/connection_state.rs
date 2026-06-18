@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use crate::runtime::router::CommandRouter;
 
@@ -13,6 +15,8 @@ use arroba_relay::protocol::RelayDisplayTunnelStreamChunk;
 use super::peer_client::RelayPeerResponseEnvelope;
 use super::request_errors::relay_error;
 use super::RelayOutgoingSender;
+
+const CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT: Duration = Duration::from_millis(750);
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -184,6 +188,33 @@ pub(super) async fn publish_cloud_presence(
     }
 }
 
+pub(super) fn spawn_cloud_presence_publish(
+    router: Arc<CommandRouter>,
+    online: bool,
+    reason: impl Into<String>,
+) -> JoinHandle<()> {
+    let reason = reason.into();
+    tokio::spawn(async move {
+        if timeout(
+            CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT,
+            publish_cloud_presence(&router, online, &reason),
+        )
+        .await
+        .is_err()
+        {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "cloud relay presence publish timed out",
+                serde_json::json!({
+                    "online": online,
+                    "reason": reason,
+                    "timeout_ms": CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT.as_millis(),
+                }),
+            );
+        }
+    })
+}
+
 pub(super) async fn publish_offline_and_set_disconnected(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
@@ -196,8 +227,8 @@ pub(super) async fn publish_offline_and_set_disconnected(
             "reason": reason,
         }),
     );
-    publish_cloud_presence(router, false, reason).await;
     set_disconnected(state).await;
+    spawn_cloud_presence_publish(Arc::clone(router), false, reason.to_string());
 }
 
 pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {

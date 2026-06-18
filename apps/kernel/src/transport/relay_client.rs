@@ -44,7 +44,7 @@ mod request_errors;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
-    publish_cloud_presence, publish_offline_and_set_disconnected, set_connected,
+    publish_offline_and_set_disconnected, set_connected, spawn_cloud_presence_publish,
 };
 use daemon_requests::handle_daemon_request;
 use display_tunnel::handle_display_tunnel_open;

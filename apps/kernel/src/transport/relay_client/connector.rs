@@ -54,6 +54,10 @@ fn missing_relay_config_disposition(
     }
 }
 
+fn should_start_cloud_presence_publish(task: Option<&JoinHandle<()>>) -> bool {
+    task.is_none_or(|task| task.is_finished())
+}
+
 async fn disconnect_relay(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
@@ -311,8 +315,13 @@ async fn run_daemon_relay_connector_inner(
                     }),
                 );
                 set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await;
+                let mut cloud_presence_task = None;
                 if static_relay.is_none() {
-                    publish_cloud_presence(&router, true, "relay registration sent").await;
+                    cloud_presence_task = Some(spawn_cloud_presence_publish(
+                        Arc::clone(&router),
+                        true,
+                        "relay registration sent",
+                    ));
                 }
                 let mut last_cloud_presence_publish = Instant::now();
                 let mut inventory_refresh_task = static_relay
@@ -330,7 +339,11 @@ async fn run_daemon_relay_connector_inner(
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
                                 if static_relay.is_none() {
-                                    publish_cloud_presence(&router, false, "daemon shutting down").await;
+                                    let _ = spawn_cloud_presence_publish(
+                                        Arc::clone(&router),
+                                        false,
+                                        "daemon shutting down",
+                                    );
                                 }
                                 let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),
@@ -523,10 +536,18 @@ async fn run_daemon_relay_connector_inner(
                             if last_cloud_presence_publish.elapsed()
                                 >= CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
                             {
-                                if static_relay.is_none() {
-                                    publish_cloud_presence(&router, true, "relay heartbeat").await;
+                                if static_relay.is_none()
+                                    && should_start_cloud_presence_publish(
+                                        cloud_presence_task.as_ref(),
+                                    )
+                                {
+                                    cloud_presence_task = Some(spawn_cloud_presence_publish(
+                                        Arc::clone(&router),
+                                        true,
+                                        "relay heartbeat",
+                                    ));
+                                    last_cloud_presence_publish = Instant::now();
                                 }
-                                last_cloud_presence_publish = Instant::now();
                             }
                         }
                     }
@@ -607,5 +628,28 @@ mod tests {
             missing_relay_config_disposition(&config),
             MissingRelayConfigDisposition::CloudUnavailable
         );
+    }
+
+    #[tokio::test]
+    async fn cloud_presence_publish_gate_skips_running_task() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = rx.await;
+        });
+
+        assert!(!should_start_cloud_presence_publish(Some(&task)));
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn cloud_presence_publish_gate_allows_finished_or_missing_task() {
+        let task = tokio::spawn(async {});
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(should_start_cloud_presence_publish(None));
+        assert!(should_start_cloud_presence_publish(Some(&task)));
     }
 }
