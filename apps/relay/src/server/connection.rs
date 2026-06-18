@@ -1059,14 +1059,23 @@ pub(crate) async fn handle_connection(
                                     .map(|peer| peer.sender.clone())
                             };
                             if let Some(client_sender) = client_sender {
-                                send_envelope(
+                                if send_envelope(
                                     &client_sender,
                                     &RelayEnvelope::ClientEvent {
-                                        subscription_id,
+                                        subscription_id: subscription_id.clone(),
                                         event_id,
                                         encrypted_event,
                                     },
-                                )?;
+                                )
+                                .is_err()
+                                {
+                                    close_slow_subscription(
+                                        &registry,
+                                        &subscription_id,
+                                        &current_daemon_key,
+                                    )
+                                    .await;
+                                }
                             }
                         }
                         RelayEnvelope::Close { .. } => {
@@ -1267,6 +1276,34 @@ async fn connected_client_realm_id(
         .get(&peer_addr)
         .filter(|peer| peer.role == RelayConnectionRole::Client)
         .and_then(|peer| peer.realm_id.clone())
+}
+
+async fn close_slow_subscription(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    subscription_id: &str,
+    daemon_key: &DaemonKey,
+) {
+    let sender = {
+        let mut guard = registry.write().await;
+        let active = guard
+            .subscriptions
+            .get(subscription_id)
+            .cloned()
+            .filter(|active| active.daemon_key == *daemon_key);
+        if let Some(active) = active {
+            guard.subscriptions.remove(subscription_id);
+            guard
+                .peers
+                .get(&active.client_addr)
+                .map(|peer| peer.sender.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(sender) = sender {
+        send_close(&sender, "relay event consumer is too slow".to_string());
+        let _ = sender.try_send(Message::Close(None));
+    }
 }
 
 fn subscription_owned_by_other_client(
@@ -1547,7 +1584,7 @@ mod tests {
 
     use super::*;
     use crate::auth::DEFAULT_RELAY_REALM_ID;
-    use crate::protocol::DaemonRegistration;
+    use crate::protocol::{DaemonRegistration, EncryptedRelayPayload};
 
     fn peer_addr(port: u16) -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
@@ -1580,6 +1617,16 @@ mod tests {
             realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
             identity: None,
             daemon_registration: Some(registration),
+        }
+    }
+
+    fn client_peer(sender: RelaySender) -> PeerHandle {
+        PeerHandle {
+            sender,
+            role: RelayConnectionRole::Client,
+            realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
+            identity: None,
+            daemon_registration: None,
         }
     }
 
@@ -1665,5 +1712,65 @@ mod tests {
         assert!(!guard.daemons.contains_key(&daemon_key));
         assert!(!guard.daemon_peers.contains_key(&daemon_key));
         assert!(!guard.peers.contains_key(&peer_addr));
+    }
+
+    #[tokio::test]
+    async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
+        let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+        let other_daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-2");
+        let client_addr = peer_addr(10_004);
+        let other_client_addr = peer_addr(10_005);
+        let (sender, mut receiver) = mpsc::channel::<Message>(1);
+        sender
+            .try_send(Message::Text("occupied".to_string().into()))
+            .expect("test queue should accept first message");
+        let (other_sender, _other_receiver) = mpsc::channel::<Message>(1);
+        let mut registry = RelayRegistry::default();
+        registry
+            .peers
+            .insert(client_addr, client_peer(sender.clone()));
+        registry
+            .peers
+            .insert(other_client_addr, client_peer(other_sender));
+        registry.subscriptions.insert(
+            "slow-subscription".to_string(),
+            ActiveSubscription {
+                client_addr,
+                daemon_key: daemon_key.clone(),
+            },
+        );
+        registry.subscriptions.insert(
+            "other-subscription".to_string(),
+            ActiveSubscription {
+                client_addr: other_client_addr,
+                daemon_key: other_daemon_key.clone(),
+            },
+        );
+        let registry = Arc::new(RwLock::new(registry));
+
+        let result = send_envelope(
+            &sender,
+            &RelayEnvelope::ClientEvent {
+                subscription_id: "slow-subscription".to_string(),
+                event_id: 1,
+                encrypted_event: EncryptedRelayPayload {
+                    sender_public_key: "daemon-public".to_string(),
+                    nonce: "nonce".to_string(),
+                    ciphertext: "ciphertext".to_string(),
+                },
+            },
+        );
+        assert!(result.is_err(), "full client queue should reject event");
+
+        close_slow_subscription(&registry, "slow-subscription", &daemon_key).await;
+
+        let guard = registry.read().await;
+        assert!(!guard.subscriptions.contains_key("slow-subscription"));
+        assert!(guard.subscriptions.contains_key("other-subscription"));
+        drop(guard);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Message::Text(text)) if text == "occupied"
+        ));
     }
 }
