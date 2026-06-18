@@ -486,7 +486,7 @@
             <li>Draining relays refuse new runtime admissions with HTTP 503 and <code>Retry-After</code> while health checks keep returning drain status.</li>
             <li>Relay endpoint configuration accepts explicit health states and rejects unsupported states at startup/readiness.</li>
             <li>Cloud treats configured relay endpoint sets as authoritative and ranks them by health so healthy alternates precede draining or stale relay URLs.</li>
-            <li>Cloud readiness and browser bootstrap fail closed when configured endpoint sets have no relay that admits new runtime sockets.</li>
+            <li>Cloud readiness and browser bootstrap fail closed before token minting when configured endpoint sets have no relay that admits new runtime sockets.</li>
           </ul>
         </div>
         <div class="card">
