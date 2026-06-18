@@ -249,6 +249,7 @@ export function validationGateNextActions(checks) {
         classification: "artifact-staleness",
         nextAction: "regenerate stale drill artifact indexes, then rerun the validation gate",
         count: checks.artifacts.staleArtifactIndexes.length,
+        sourceDetails: checks.artifacts.staleArtifactIndexes.map(staleArtifactIndexSourceDetail),
       })
     }
   }
@@ -346,6 +347,7 @@ export function validationGateNextActions(checks) {
         classification: "matrix-staleness",
         nextAction: "regenerate stale matrix reports, then rerun the validation gate",
         count: checks.matrices.staleMatrixReports.length,
+        sourceDetails: checks.matrices.staleMatrixReports.map(staleMatrixReportSourceDetail),
       })
     }
   }
@@ -379,6 +381,21 @@ function countMissingRuntimeSignalActions(counts, runtimeSignals, { target }) {
       classification: "runtime-signal-coverage",
       nextAction: drillRuntimeSignalNextAction(signal, { target }),
     })
+  }
+}
+
+function staleArtifactIndexSourceDetail(staleIndex) {
+  return {
+    source: "artifact-index",
+    ...(staleIndex.source ? { reportPath: staleIndex.source } : {}),
+  }
+}
+
+function staleMatrixReportSourceDetail(staleReport) {
+  return {
+    source: staleReport.matrix ?? "matrix-report",
+    ...(staleReport.matrix ? { matrix: staleReport.matrix } : {}),
+    ...(staleReport.source ? { reportPath: staleReport.source } : {}),
   }
 }
 

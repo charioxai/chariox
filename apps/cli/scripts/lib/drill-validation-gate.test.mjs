@@ -567,10 +567,24 @@ test("gates matrix reports by required freshness", async () => {
     assert.equal(fail.status, "failed")
     assert.equal(fail.checks.matrices.staleMatrixReports.length, 1)
     assert.equal(fail.checks.matrices.staleMatrixReports[0].source, reportPath)
-    assert.match(formatDrillValidationGateSummary(fail), /matrix_required_max_age_ms=100 stale_reports=1/)
-    assert.equal(
-      fail.nextActions.some(({ classification }) => classification === "matrix-staleness"),
-      true,
+    const text = formatDrillValidationGateSummary(fail)
+    assert.match(text, /matrix_required_max_age_ms=100 stale_reports=1/)
+    assert.match(text, /sources: test-matrix report=.*matrix\.json/)
+    assert.deepEqual(
+      fail.nextActions
+        .filter(({ classification }) => classification === "matrix-staleness")
+        .map(({ owner, classification, nextAction, count, sourceDetails }) => ({ owner, classification, nextAction, count, sourceDetails })),
+      [{
+        owner: "validation-harness",
+        classification: "matrix-staleness",
+        nextAction: "regenerate stale matrix reports, then rerun the validation gate",
+        count: 1,
+        sourceDetails: [{
+          source: "test-matrix",
+          matrix: "test-matrix",
+          reportPath,
+        }],
+      }],
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -956,17 +970,23 @@ test("gates explicit artifact index paths by required freshness", async () => {
     assert.equal(stale.checks.artifacts.staleArtifactIndexes.length, 1)
     assert.equal(stale.checks.artifacts.staleArtifactIndexes[0].source, indexPath)
     assert.match(stale.checks.artifacts.error, /stale artifact indexes:/)
-    assert.match(formatDrillValidationGateSummary(stale), /artifact_required_max_age_ms=100 stale_indexes=1/)
-    assert.match(formatDrillValidationGateSummary(stale), /stale_artifact_index=.*arroba-drill-artifacts\.json/)
+    const text = formatDrillValidationGateSummary(stale)
+    assert.match(text, /artifact_required_max_age_ms=100 stale_indexes=1/)
+    assert.match(text, /stale_artifact_index=.*arroba-drill-artifacts\.json/)
+    assert.match(text, /sources: artifact-index report=.*arroba-drill-artifacts\.json/)
     assert.deepEqual(
       stale.nextActions
         .filter(({ classification }) => classification === "artifact-staleness")
-        .map(({ owner, classification, nextAction, count }) => ({ owner, classification, nextAction, count })),
+        .map(({ owner, classification, nextAction, count, sourceDetails }) => ({ owner, classification, nextAction, count, sourceDetails })),
       [{
         owner: "validation-harness",
         classification: "artifact-staleness",
         nextAction: "regenerate stale drill artifact indexes, then rerun the validation gate",
         count: 1,
+        sourceDetails: [{
+          source: "artifact-index",
+          reportPath: indexPath,
+        }],
       }],
     )
   } finally {
