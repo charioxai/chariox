@@ -109,7 +109,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: ["cloud", "oss"],
       requiredArtifactProviderAccountAliases: [],
-      requiredArtifactValidationPresets: ["distributed-runtime"],
+      requiredArtifactValidationPresets: ["distributed-runtime", "distributed-state-health", "runtime-authority"],
       requiredArtifactRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredArtifactRuntimeSignalOwners: ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
       requiredArtifactOwners: ["validation-platform"],
@@ -587,7 +587,7 @@ test("expands validation gate preset requirements", () => {
     requiredDeploymentPresets: [],
     requiredProviders: [],
     requiredScenarios: [],
-  }).requiredArtifactValidationPresets, ["distributed-runtime"])
+  }).requiredArtifactValidationPresets, ["distributed-runtime", "distributed-state-health", "runtime-authority"])
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["distributed-runtime"],
     requiredPlatformCoverageAreas: [],

@@ -112,11 +112,13 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       "codex=work": 1,
       "opencode=zen": 1,
     })
-    assert.deepEqual(report.checks.artifacts.requiredArtifactValidationPresets, ["cloud-distributed-runtime", "distributed-runtime"])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactValidationPresets, ["cloud-distributed-runtime", "distributed-runtime", "distributed-state-health", "runtime-authority"])
     assert.deepEqual(report.checks.artifacts.missingArtifactValidationPresets, [])
     assert.deepEqual(report.checks.artifacts.aggregate.validationPresets, {
       "cloud-distributed-runtime": 1,
       "distributed-runtime": 1,
+      "distributed-state-health": 1,
+      "runtime-authority": 1,
     })
     assert.deepEqual(report.checks.artifacts.requiredArtifactPlannedOwners, ["validation-platform"])
     assert.deepEqual(report.checks.artifacts.missingArtifactPlannedOwners, [])
@@ -1229,7 +1231,7 @@ async function writeValidationSuiteArtifact(rootDir, {
   providerAccountAliases = "",
   plannedOwners = "",
   plannedClassifications = "",
-  validationPresets = evidenceRepo === "oss" ? "distributed-runtime" : "cloud-distributed-runtime",
+  validationPresets = evidenceRepo === "oss" ? "distributed-runtime,distributed-state-health,runtime-authority" : "cloud-distributed-runtime",
 } = {}) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
   await mkdir(rootDir, { recursive: true })
@@ -1640,7 +1642,7 @@ async function writeFakeValidationSuiteScript({
   evidenceRepo,
   file,
 }) {
-  const validationPresets = evidenceRepo === "oss" ? "distributed-runtime" : "cloud-distributed-runtime"
+  const validationPresets = evidenceRepo === "oss" ? "distributed-runtime,distributed-state-health,runtime-authority" : "cloud-distributed-runtime"
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `#!/usr/bin/env node
 import { createHash } from "node:crypto"

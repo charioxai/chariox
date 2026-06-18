@@ -37,7 +37,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredArtifactGeneratedMatrixNames: DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES,
     requiredArtifactGeneratedMatrixRepos: DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
     requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),
-    requiredArtifactValidationPresets: Object.freeze(["distributed-runtime"]),
+    requiredArtifactValidationPresets: Object.freeze(["distributed-runtime", "distributed-state-health", "runtime-authority"]),
     requiredArtifactRuntimeSignals: Object.freeze([
       "agent-lifecycle",
       "client-projection-health",

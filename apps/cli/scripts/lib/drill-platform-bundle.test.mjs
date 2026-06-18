@@ -95,6 +95,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       ["cloud", "oss"],
     )
     assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactValidationPresets,
+      ["distributed-runtime", "distributed-state-health", "runtime-authority"],
+    )
+    assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactRuntimeSignals,
       DRILL_RUNTIME_SIGNAL_IDS,
     )
