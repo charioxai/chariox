@@ -12,11 +12,40 @@ use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
+const COMMAND_RESULT_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const COMMAND_RESULT_CACHE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommandResultRetentionPolicy {
+    max_entries: usize,
+    max_total_bytes: Option<u64>,
+    max_age_ms: Option<u64>,
+}
+
+impl CommandResultRetentionPolicy {
+    fn memory() -> Self {
+        Self {
+            max_entries: COMMAND_RESULT_CACHE_LIMIT,
+            max_total_bytes: None,
+            max_age_ms: None,
+        }
+    }
+
+    fn persistent() -> Self {
+        Self {
+            max_entries: COMMAND_RESULT_CACHE_LIMIT,
+            max_total_bytes: Some(COMMAND_RESULT_CACHE_MAX_BYTES),
+            max_age_ms: Some(COMMAND_RESULT_CACHE_MAX_AGE_MS),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CachedCommandResult {
     pub(crate) response: Box<Option<Value>>,
     pub(crate) error: Option<KernelTransportError>,
+    #[serde(default)]
+    completed_at_ms: u64,
     fingerprint: CommandFingerprint,
 }
 
@@ -64,6 +93,8 @@ pub(crate) enum CommandReservation {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistentCommandResult {
     command_id: String,
+    #[serde(default)]
+    completed_at_ms: u64,
     result: CachedCommandResult,
 }
 
@@ -73,29 +104,55 @@ struct CommandResultPersistence {
     io_lock: Mutex<()>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct CommandResultCache {
     results: Mutex<BTreeMap<String, CommandResultEntry>>,
     order: Mutex<VecDeque<String>>,
+    retention: CommandResultRetentionPolicy,
     persistence: Option<CommandResultPersistence>,
+}
+
+impl Default for CommandResultCache {
+    fn default() -> Self {
+        Self {
+            results: Mutex::new(BTreeMap::new()),
+            order: Mutex::new(VecDeque::new()),
+            retention: CommandResultRetentionPolicy::memory(),
+            persistence: None,
+        }
+    }
 }
 
 impl CommandResultCache {
     pub(crate) fn new_with_persistent_path(path: impl Into<PathBuf>) -> io::Result<Self> {
+        Self::new_with_persistent_path_and_retention(
+            path,
+            CommandResultRetentionPolicy::persistent(),
+        )
+    }
+
+    fn new_with_persistent_path_and_retention(
+        path: impl Into<PathBuf>,
+        retention: CommandResultRetentionPolicy,
+    ) -> io::Result<Self> {
         let path = path.into();
         let mut cache = Self {
             results: Mutex::new(BTreeMap::new()),
             order: Mutex::new(VecDeque::new()),
+            retention,
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),
             }),
         };
-        let retained = read_persistent_results(&path)?;
-        let start = retained.len().saturating_sub(COMMAND_RESULT_CACHE_LIMIT);
+        let mut retained = read_persistent_results(&path)?;
+        let compact_after_load = apply_persistent_retention(&mut retained, retention)?;
+        if compact_after_load {
+            rewrite_persistent_results(&path, &retained)?;
+        }
         let mut results = BTreeMap::new();
         let mut order = VecDeque::new();
-        for entry in retained.into_iter().skip(start) {
+        for entry in retained {
             order.push_back(entry.command_id.clone());
             results.insert(
                 entry.command_id,
@@ -162,6 +219,7 @@ impl CommandResultCache {
         };
         let cached = CachedCommandResult {
             fingerprint,
+            completed_at_ms: crate::session::unix_epoch_ms(),
             response: response.clone(),
             error: error.clone(),
         };
@@ -182,29 +240,16 @@ impl CommandResultCache {
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        let evicted = {
+        {
             let mut order = self.order.lock().await;
             if let Some(existing_index) = order.iter().position(|entry| entry == &command_id) {
                 order.remove(existing_index);
             }
             order.push_back(command_id.clone());
-            let mut evicted = Vec::new();
-            while order.len() > COMMAND_RESULT_CACHE_LIMIT {
-                if let Some(expired) = order.pop_front() {
-                    evicted.push(expired);
-                }
-            }
-            evicted
-        };
-        let compact_after_append = !evicted.is_empty();
-        if compact_after_append {
-            let mut results = self.results.lock().await;
-            for expired in evicted {
-                results.remove(&expired);
-            }
         }
+        let (retained, compact_after_append) = self.apply_retention_to_completed_results().await;
         if let Err(error) = self
-            .persist_completed_result(command_id, cached, compact_after_append)
+            .persist_completed_result(command_id, cached, retained, compact_after_append)
             .await
         {
             crate::logging::warn_with_fields(
@@ -221,6 +266,7 @@ impl CommandResultCache {
         &self,
         command_id: String,
         cached: CachedCommandResult,
+        retained: Vec<PersistentCommandResult>,
         compact_after_append: bool,
     ) -> io::Result<()> {
         let Some(persistence) = &self.persistence else {
@@ -234,14 +280,33 @@ impl CommandResultCache {
             &persistence.path,
             &PersistentCommandResult {
                 command_id,
+                completed_at_ms: cached.completed_at_ms,
                 result: cached,
             },
         )?;
         if compact_after_append {
-            let retained = self.completed_results_snapshot().await;
             rewrite_persistent_results(&persistence.path, &retained)?;
         }
         Ok(())
+    }
+
+    async fn apply_retention_to_completed_results(&self) -> (Vec<PersistentCommandResult>, bool) {
+        let mut retained = self.completed_results_snapshot().await;
+        let compacted = apply_persistent_retention(&mut retained, self.retention).unwrap_or(false);
+        if compacted {
+            let retained_ids = retained
+                .iter()
+                .map(|entry| entry.command_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let mut order = self.order.lock().await;
+            order.retain(|command_id| retained_ids.contains(command_id.as_str()));
+            let mut results = self.results.lock().await;
+            results.retain(|command_id, entry| {
+                matches!(entry, CommandResultEntry::Pending { .. })
+                    || retained_ids.contains(command_id.as_str())
+            });
+        }
+        (retained, compacted)
     }
 
     async fn completed_results_snapshot(&self) -> Vec<PersistentCommandResult> {
@@ -255,6 +320,7 @@ impl CommandResultCache {
                 };
                 Some(PersistentCommandResult {
                     command_id: command_id.clone(),
+                    completed_at_ms: result.completed_at_ms,
                     result: result.clone(),
                 })
             })
@@ -275,6 +341,7 @@ impl CommandResultCache {
     ) {
         let cached = CachedCommandResult {
             fingerprint,
+            completed_at_ms: crate::session::unix_epoch_ms(),
             response: Box::new(response),
             error: None,
         };
@@ -344,9 +411,12 @@ fn read_persistent_results(path: &PathBuf) -> io::Result<Vec<PersistentCommandRe
     let mut results = BTreeMap::<String, PersistentCommandResult>::new();
     let mut order = VecDeque::<String>::new();
     for line in payload.lines().filter(|line| !line.trim().is_empty()) {
-        let Ok(entry) = serde_json::from_str::<PersistentCommandResult>(line) else {
+        let Ok(mut entry) = serde_json::from_str::<PersistentCommandResult>(line) else {
             continue;
         };
+        let completed_at_ms = persistent_result_completed_at_ms(&entry);
+        entry.completed_at_ms = completed_at_ms;
+        entry.result.completed_at_ms = completed_at_ms;
         if let Some(existing_index) = order
             .iter()
             .position(|command_id| command_id == &entry.command_id)
@@ -360,6 +430,58 @@ fn read_persistent_results(path: &PathBuf) -> io::Result<Vec<PersistentCommandRe
         .into_iter()
         .filter_map(|command_id| results.remove(&command_id))
         .collect())
+}
+
+fn apply_persistent_retention(
+    entries: &mut Vec<PersistentCommandResult>,
+    retention: CommandResultRetentionPolicy,
+) -> io::Result<bool> {
+    let original_len = entries.len();
+    let now_ms = crate::session::unix_epoch_ms();
+    if let Some(max_age_ms) = retention.max_age_ms {
+        entries.retain(|entry| {
+            let completed_at_ms = persistent_result_completed_at_ms(entry);
+            completed_at_ms == 0 || now_ms.saturating_sub(completed_at_ms) <= max_age_ms
+        });
+    }
+    let mut compacted = entries.len() != original_len;
+    if entries.len() > retention.max_entries {
+        let drop_count = entries.len().saturating_sub(retention.max_entries);
+        entries.drain(0..drop_count);
+        compacted = true;
+    }
+    if let Some(max_total_bytes) = retention.max_total_bytes {
+        while persistent_results_jsonl_bytes(entries)? > max_total_bytes {
+            if entries.is_empty() {
+                break;
+            }
+            entries.remove(0);
+            compacted = true;
+        }
+    }
+    Ok(compacted)
+}
+
+fn persistent_result_completed_at_ms(entry: &PersistentCommandResult) -> u64 {
+    if entry.completed_at_ms != 0 {
+        entry.completed_at_ms
+    } else {
+        entry.result.completed_at_ms
+    }
+}
+
+fn persistent_results_jsonl_bytes(entries: &[PersistentCommandResult]) -> io::Result<u64> {
+    entries
+        .iter()
+        .map(persistent_result_jsonl_bytes)
+        .try_fold(0_u64, |total, bytes| {
+            bytes.map(|bytes| total.saturating_add(bytes))
+        })
+}
+
+fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<u64> {
+    let bytes = serde_json::to_vec(entry).map_err(io::Error::other)?;
+    Ok(bytes.len().saturating_add(1) as u64)
 }
 
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
@@ -483,6 +605,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persistent_command_cache_compacts_by_age_on_load() {
+        let path = temp_cache_path("compact-age");
+        let now_ms = crate::session::unix_epoch_ms();
+        let old = persistent_result_for_test(
+            "command-old",
+            CommandResultCache::fingerprint_from_bytes_for_test(b"old"),
+            now_ms.saturating_sub(10_000),
+            Some(serde_json::json!({ "value": "old" })),
+        );
+        let fresh = persistent_result_for_test(
+            "command-fresh",
+            CommandResultCache::fingerprint_from_bytes_for_test(b"fresh"),
+            now_ms,
+            Some(serde_json::json!({ "value": "fresh" })),
+        );
+        rewrite_persistent_results(&path, &[old, fresh]).expect("cache fixture should write");
+        let retention = CommandResultRetentionPolicy {
+            max_entries: COMMAND_RESULT_CACHE_LIMIT,
+            max_total_bytes: None,
+            max_age_ms: Some(1_000),
+        };
+
+        let cache =
+            CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
+                .expect("persistent cache should reload");
+
+        assert_eq!(cache.completed_count().await, 1);
+        let old_fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"old");
+        assert!(matches!(
+            cache.reserve("command-old", &old_fingerprint).await,
+            CommandReservation::Dispatch
+        ));
+        let fresh_fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"fresh");
+        assert!(matches!(
+            cache.reserve("command-fresh", &fresh_fingerprint).await,
+            CommandReservation::Wait(_)
+        ));
+        let stored = fs::read_to_string(&path).expect("compacted cache should exist");
+        assert!(!stored.contains("command-old"));
+        assert!(stored.contains("command-fresh"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn persistent_command_cache_compacts_by_total_bytes() {
+        let path = temp_cache_path("compact-bytes");
+        let first_fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"first");
+        let second_fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"second");
+        let first_response = Some(serde_json::json!({ "payload": "x".repeat(120) }));
+        let second_response = Some(serde_json::json!({ "payload": "y".repeat(120) }));
+        let second_entry = persistent_result_for_test(
+            "command-second",
+            second_fingerprint.clone(),
+            crate::session::unix_epoch_ms(),
+            second_response.clone(),
+        );
+        let retention = CommandResultRetentionPolicy {
+            max_entries: COMMAND_RESULT_CACHE_LIMIT,
+            max_total_bytes: Some(
+                persistent_result_jsonl_bytes(&second_entry).expect("entry should serialize"),
+            ),
+            max_age_ms: None,
+        };
+        let cache =
+            CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
+                .expect("persistent cache should initialize");
+        cache
+            .insert_completed_for_test(
+                "command-first".to_string(),
+                first_fingerprint.clone(),
+                first_response,
+            )
+            .await;
+        cache
+            .insert_completed_for_test(
+                "command-second".to_string(),
+                second_fingerprint.clone(),
+                second_response,
+            )
+            .await;
+
+        let stored = fs::read_to_string(&path).expect("cache should exist");
+        assert!(
+            stored.len() as u64 <= retention.max_total_bytes.unwrap(),
+            "cache should compact below byte budget: {stored}"
+        );
+        assert!(!stored.contains("command-first"));
+        assert!(stored.contains("command-second"));
+        assert!(matches!(
+            cache.reserve("command-first", &first_fingerprint).await,
+            CommandReservation::Dispatch
+        ));
+        assert!(matches!(
+            cache.reserve("command-second", &second_fingerprint).await,
+            CommandReservation::Wait(_)
+        ));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn persistent_command_cache_ignores_malformed_lines() {
         let path = temp_cache_path("ignore-malformed");
         fs::write(
@@ -525,5 +749,23 @@ mod tests {
             "arroba-command-cache-{label}-{}-{unique}.jsonl",
             std::process::id()
         ))
+    }
+
+    fn persistent_result_for_test(
+        command_id: &str,
+        fingerprint: CommandFingerprint,
+        completed_at_ms: u64,
+        response: Option<Value>,
+    ) -> PersistentCommandResult {
+        PersistentCommandResult {
+            command_id: command_id.to_string(),
+            completed_at_ms,
+            result: CachedCommandResult {
+                response: Box::new(response),
+                error: None,
+                completed_at_ms,
+                fingerprint,
+            },
+        }
     }
 }
