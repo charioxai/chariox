@@ -115,7 +115,7 @@ impl RelayServer {
 async fn reject_draining_connection(mut stream: TcpStream) -> Result<(), std::io::Error> {
     let body = r#"{"status":"draining","error":"relay is draining"}"#;
     let response = format!(
-        "HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n{body}",
+        "HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: {}\r\ncache-control: no-store\r\nretry-after: 5\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(response.as_bytes()).await?;
@@ -1015,6 +1015,28 @@ mod tests {
         response
     }
 
+    async fn relay_http_get_until_close_or_reset(addr: std::net::SocketAddr, path: &str) -> String {
+        let mut stream = TcpStream::connect(addr)
+            .await
+            .expect("relay HTTP connection should open");
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nhost: relay.test\r\n\r\n").as_bytes())
+            .await
+            .expect("relay HTTP request should write");
+        let mut response = Vec::new();
+        let mut buffer = [0_u8; 512];
+        loop {
+            match timeout(Duration::from_secs(2), stream.read(&mut buffer)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(size)) => response.extend_from_slice(&buffer[..size]),
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Ok(Err(error)) => panic!("relay HTTP response should read: {error}"),
+                Err(_) => panic!("relay HTTP response should complete"),
+            }
+        }
+        String::from_utf8(response).expect("relay HTTP response should be utf8")
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn health_endpoint_reports_healthy_and_draining_status() {
         let healthy_server = RelayServer::new(RelayConfig {
@@ -1084,6 +1106,7 @@ mod tests {
 
         let draining_ready = relay_http_get(addr, "/readyz").await;
         assert!(draining_ready.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(draining_ready.contains("\r\nretry-after: 5\r\n"));
         assert!(draining_ready.contains("\"status\":\"draining\""));
         assert!(draining_ready.contains("\"draining\":true"));
 
@@ -1094,6 +1117,10 @@ mod tests {
             websocket_error.to_string().contains("503"),
             "unexpected websocket error: {websocket_error}"
         );
+
+        let websocket_response = relay_http_get_until_close_or_reset(addr, "/runtime").await;
+        assert!(websocket_response.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(websocket_response.contains("\r\nretry-after: 5\r\n"));
 
         let _ = shutdown_tx.send(());
         server_task.await.expect("draining server task should join");

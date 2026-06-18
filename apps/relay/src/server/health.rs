@@ -12,6 +12,7 @@ use crate::registry::RelayRegistry;
 const HEALTH_PEEK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 const HEALTH_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const HEALTH_MAX_REQUEST_BYTES: usize = 8 * 1024;
+const DRAINING_RETRY_AFTER_SECONDS: u64 = 5;
 
 pub(crate) async fn is_health_http_request(stream: &TcpStream) -> bool {
     let mut buffer = [0_u8; 512];
@@ -36,6 +37,7 @@ pub(crate) async fn handle_health_connection(
                 "draining": draining.load(Ordering::Relaxed),
                 "unix_ms": current_unix_ms(),
             }),
+            None,
         )
         .await?;
         return Ok(());
@@ -61,7 +63,13 @@ pub(crate) async fn handle_health_connection(
     });
     drop(guard);
 
-    write_json_response(&mut stream, http_status, body).await
+    write_json_response(
+        &mut stream,
+        http_status,
+        body,
+        (http_status == 503).then_some(DRAINING_RETRY_AFTER_SECONDS),
+    )
+    .await
 }
 
 async fn read_health_request(stream: &mut TcpStream) -> Option<HealthRequestPath> {
@@ -114,6 +122,7 @@ async fn write_json_response(
     stream: &mut TcpStream,
     status: u16,
     body: serde_json::Value,
+    retry_after_seconds: Option<u64>,
 ) -> Result<(), std::io::Error> {
     let reason = match status {
         200 => "OK",
@@ -123,8 +132,11 @@ async fn write_json_response(
     };
     let body =
         serde_json::to_string(&body).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let retry_after = retry_after_seconds
+        .map(|seconds| format!("retry-after: {seconds}\r\n"))
+        .unwrap_or_default();
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\ncache-control: no-store\r\n{retry_after}connection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(response.as_bytes()).await?;
