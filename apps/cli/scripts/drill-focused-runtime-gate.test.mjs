@@ -22,6 +22,18 @@ test("focused runtime gate help lists focused presets", async () => {
   assert.match(stdout, /--require-complete/)
 })
 
+test("focused runtime gate accepts option separator forwarding", async () => {
+  const { stdout } = await execFile(process.execPath, [
+    scriptPath,
+    "--matrix-root",
+    ".artifacts/drill-matrices",
+    "--",
+    "--help",
+  ])
+
+  assert.match(stdout, /Usage: node apps\/cli\/scripts\/drill-focused-runtime-gate\.mjs/)
+})
+
 test("focused runtime gate passes runtime authority and distributed state health presets", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-focused-runtime-gate-"))
   try {

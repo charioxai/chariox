@@ -22,6 +22,7 @@
     "remote-skill:drill": "node scripts/live-remote-skill-drill.mjs",
     "remote-home-extension:matrix-drill": "node scripts/live-remote-home-extension-matrix-drill.mjs",
     "remote-home-extension:local-matrix-drill": "node scripts/live-remote-home-extension-matrix-drill.mjs --only local-single,local-collab",
+    "validation:focused-runtime-gate": "node scripts/drill-focused-runtime-gate.mjs --matrix-root .artifacts/drill-matrices --require-complete",
     "slice:lifecycle-drill": "pnpm run build && node scripts/live-slice-lifecycle-drill.mjs",
     "script-extension:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-drill.mjs",
     "script-extension-agent:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-agent-drill.mjs",

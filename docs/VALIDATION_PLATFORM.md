@@ -103,6 +103,8 @@ Use focused gates before the release-level distributed-runtime gate when the
 change is isolated to one quality axis:
 
 ```bash
+pnpm --filter @arroba/cli run validation:focused-runtime-gate
+
 node apps/cli/scripts/drill-focused-runtime-gate.mjs \
   --matrix-root .artifacts/drill-matrices \
   --require-complete
