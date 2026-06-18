@@ -46,6 +46,7 @@ const IPC_CLIENT_CLOSE_TIMEOUT_MS = 1_500
 const KERNEL_RECONNECT_BASE_DELAY_MS = 250
 const KERNEL_RECONNECT_MAX_DELAY_MS = 5_000
 const KERNEL_RECONNECT_JITTER_MS = 250
+const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
@@ -59,6 +60,7 @@ type LocalIpcClientOptions = {
   kernelMaxMissedPongs?: number | undefined
   reconnectJitterMs?: number | undefined
   reconnectRandom?: (() => number) | undefined
+  controlRequestRetryDeadlineMs?: number | undefined
 }
 
 export class LocalIpcClient {
@@ -81,6 +83,7 @@ export class LocalIpcClient {
   private eventHeartbeat: NodeJS.Timeout | null = null
   private readonly reconnectJitterMs: number
   private readonly reconnectRandom: () => number
+  private readonly controlRequestRetryDeadlineMs: number
   private missedControlPongs = 0
   private missedEventPongs = 0
   private suppressNextControlCloseEvent = false
@@ -99,6 +102,10 @@ export class LocalIpcClient {
     this.kernelMaxMissedPongs = Math.max(options.kernelMaxMissedPongs ?? DEFAULT_KERNEL_MAX_MISSED_PONGS, 1)
     this.reconnectJitterMs = Math.max(options.reconnectJitterMs ?? KERNEL_RECONNECT_JITTER_MS, 0)
     this.reconnectRandom = options.reconnectRandom ?? Math.random
+    this.controlRequestRetryDeadlineMs = Math.max(
+      options.controlRequestRetryDeadlineMs ?? KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS,
+      0,
+    )
     this.relayAuthToken = options.relayAuthToken?.trim() || null
     this.relayTarget = this.relayAuthToken
       ? {
@@ -287,11 +294,24 @@ export class LocalIpcClient {
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control"): Promise<TResponse> {
     const requestId = randomUUID()
-    const maxAttempts = lane === "control" ? 2 : 1
-    let lastError: unknown = null
+    const retryUntilMs = lane === "control"
+      ? Date.now() + this.controlRequestRetryDeadlineMs
+      : Date.now()
+    let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const socket = await this.ensureWebSocket(lane)
+    for (;;) {
+      let socket: WebSocket
+      try {
+        socket = await this.ensureWebSocket(lane)
+      } catch (error) {
+        if (!this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
+          throw error
+        }
+        this.destroyWebSocket(lane)
+        retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs)
+        continue
+      }
+
       const pending = this.pendingRequests.register<TResponse>(requestId, lane)
 
       try {
@@ -312,23 +332,33 @@ export class LocalIpcClient {
       try {
         return await pending.promise
       } catch (error) {
-        lastError = error
-        if (!this.shouldReplayWebSocketRequest(error, lane, attempt, maxAttempts)) {
+        if (!this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
         this.destroyWebSocket(lane)
+        retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs)
       }
     }
-
-    throw lastError
   }
 
-  private shouldReplayWebSocketRequest(error: unknown, lane: KernelSocketLane, attempt: number, maxAttempts: number): boolean {
+  private shouldReplayWebSocketRequest(error: unknown, lane: KernelSocketLane, retryUntilMs: number): boolean {
     return lane === "control"
-      && attempt < maxAttempts
+      && Date.now() < retryUntilMs
       && error instanceof LocalIpcError
       && error.retryable
       && (error.code === "connection_closed" || error.code === "write_failed")
+  }
+
+  private async waitBeforeWebSocketRequestReplay(delayMs: number, retryUntilMs: number): Promise<number> {
+    const remainingMs = retryUntilMs - Date.now()
+    if (remainingMs <= 0) {
+      return delayMs
+    }
+    const waitMs = Math.min(this.reconnectDelayWithJitter(delayMs), remainingMs)
+    if (waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs))
+    }
+    return this.nextReconnectDelayMs(delayMs)
   }
 
   private async sendRelaySubscribe(
@@ -402,13 +432,13 @@ export class LocalIpcClient {
       const socket = new WebSocket(this.socketPath)
       let settled = false
 
-      const fail = (operation: string, error: unknown) => {
+      const fail = (operation: string, error: unknown, code: string | null = null, retryable = false) => {
         if (settled) {
           return
         }
         settled = true
         this.setWebSocketConnectPromise(lane, null)
-        reject(new LocalIpcError(operation, formatTransportError(error, this.socketPath)))
+        reject(new LocalIpcError(operation, formatTransportError(error, this.socketPath), code, retryable))
       }
 
       socket.once("open", () => {
@@ -502,11 +532,11 @@ export class LocalIpcClient {
           socket.send(JSON.stringify(buildRelayConnectFrame(this.relayAuthToken, this.relayTarget)))
         } catch (error) {
           socket.off("message", handleRelayHandshakeMessage)
-          fail("write relay connect frame", error)
+          fail("write relay connect frame", error, "write_failed", true)
         }
       })
 
-      const handleConnectError = (error: unknown) => fail("connect kernel websocket", error)
+      const handleConnectError = (error: unknown) => fail("connect kernel websocket", error, "connection_closed", true)
       socket.on("error", handleConnectError)
     })
 

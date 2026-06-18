@@ -170,6 +170,46 @@ test("LocalIpcClient replays control requests with the same request id after a w
   assert.equal(receivedFrames[0]?.request_id, receivedFrames[1]?.request_id)
 })
 
+test("LocalIpcClient keeps replaying control requests through repeated websocket closes", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+
+  const receivedFrames: Array<Record<string, unknown>> = []
+  server.on("connection", (socket) => {
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      receivedFrames.push(frame)
+      if (receivedFrames.length < 3) {
+        socket.close(1011, `transient close ${receivedFrames.length}`)
+        return
+      }
+      socket.send(JSON.stringify({
+        type: "response",
+        request_id: frame.request_id,
+        response: { ok: true, attempts: receivedFrames.length },
+        error: null,
+      }))
+    })
+  })
+
+  const client = new LocalIpcClient(endpoint, { reconnectJitterMs: 0 })
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve())
+    })
+  })
+
+  assert.deepEqual(await client.send({ hello: "world" }), { ok: true, attempts: 3 })
+  assert.equal(receivedFrames.length, 3)
+  assert.equal(receivedFrames[0]?.type, "request")
+  assert.equal(receivedFrames[0]?.request_id, receivedFrames[1]?.request_id)
+  assert.equal(receivedFrames[0]?.request_id, receivedFrames[2]?.request_id)
+})
+
 test("LocalIpcClient emits transport_closed when websocket closes", async (t) => {
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")
@@ -181,7 +221,7 @@ test("LocalIpcClient emits transport_closed when websocket closes", async (t) =>
     socket.close()
   })
 
-  const client = new LocalIpcClient(endpoint)
+  const client = new LocalIpcClient(endpoint, { controlRequestRetryDeadlineMs: 0 })
   const events: KernelEvent[] = []
   const dispose = client.onKernelEvent((event) => {
     events.push(event)
@@ -289,7 +329,7 @@ test("LocalIpcClient preserves websocket close reasons in transport_closed event
     socket.close(1008, "kernel transport overloaded; reconnecting")
   })
 
-  const client = new LocalIpcClient(endpoint)
+  const client = new LocalIpcClient(endpoint, { controlRequestRetryDeadlineMs: 0 })
   const events: KernelEvent[] = []
   const dispose = client.onKernelEvent((event) => {
     events.push(event)
