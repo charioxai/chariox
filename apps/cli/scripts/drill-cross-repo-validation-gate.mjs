@@ -66,6 +66,8 @@ function printHelp() {
   "  --require-artifact-generated-evidence-kind KIND[,KIND]",
   "  --require-artifact-generated-matrix-artifact-index PATH[,PATH]",
   "  --require-artifact-generated-matrix-limitation KIND[,KIND]",
+  "  --require-artifact-generated-matrix-name NAME[,NAME]",
+  "  --require-artifact-generated-matrix-repo REPO[,REPO]",
   "  --require-artifact-generated-validation-suite-artifact-index PATH[,PATH]",
   "  --require-artifact-generated-validation-suite-failure-root ROOT[,ROOT]",
   "  --require-artifact-evidence-repo REPO[,REPO]",

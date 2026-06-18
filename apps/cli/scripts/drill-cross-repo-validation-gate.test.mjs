@@ -15,6 +15,14 @@ import { drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-cross-repo-validation-gate.mjs", import.meta.url))
 
+test("cross repo validation gate help lists artifact identity requirements", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
+
+  assert.match(stdout, /--require-artifact-generated-matrix-name NAME\[,NAME\]/)
+  assert.match(stdout, /--require-artifact-generated-matrix-repo REPO\[,REPO\]/)
+  assert.match(stdout, /--require-artifact-generated-validation-suite-artifact-index PATH\[,PATH\]/)
+})
+
 test("cross repo validation gate combines OSS and Cloud matrix evidence", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
   try {

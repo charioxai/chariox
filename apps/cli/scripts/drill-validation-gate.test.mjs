@@ -182,6 +182,8 @@ test("drill validation gate help lists presets from the registry", async () => {
   assert.match(stdout, /--require-artifact-coverage-area ID\[,ID\]/)
   assert.match(stdout, /--require-artifact-provider-account-alias P=A\[,P=A\]/)
   assert.match(stdout, /--require-artifact-generated-matrix-artifact-index PATH\[,PATH\]/)
+  assert.match(stdout, /--require-artifact-generated-matrix-name NAME\[,NAME\]/)
+  assert.match(stdout, /--require-artifact-generated-matrix-repo REPO\[,REPO\]/)
   assert.match(stdout, /--require-artifact-generated-validation-suite-artifact-index PATH\[,PATH\]/)
 })
 
