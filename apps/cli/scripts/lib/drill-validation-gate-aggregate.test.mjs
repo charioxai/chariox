@@ -220,6 +220,12 @@ test("summarizes stale matrix reports from gate reports", () => {
       classification: "matrix-staleness",
       nextAction: "regenerate stale matrix reports, then rerun the validation gate",
       count: 1,
+      sourceDetails: [{
+        source: "workspace-live-sync-matrix/managed",
+        matrix: "workspace-live-sync-matrix",
+        scenarioId: "managed",
+        reportPath: "/tmp/workspace-live-sync-matrix.json",
+      }],
     }],
   })], {
     sources: ["distributed-runtime-gate.json"],
@@ -240,6 +246,13 @@ test("summarizes stale matrix reports from gate reports", () => {
   }])
   assert.match(text, /- matrix_stale_reports: \/tmp\/workspace-live-sync-matrix\.json=1/)
   assert.match(text, /classification=matrix-staleness count=1/)
+  assert.deepEqual(aggregate.nextActions[0].sourceDetails, [{
+    source: "workspace-live-sync-matrix/managed",
+    matrix: "workspace-live-sync-matrix",
+    scenarioId: "managed",
+    reportPath: "/tmp/workspace-live-sync-matrix.json",
+  }])
+  assert.match(text, /sources: workspace-live-sync-matrix\/managed report=\/tmp\/workspace-live-sync-matrix\.json/)
 })
 
 test("summarizes stale failure manifests from gate reports", () => {

@@ -405,6 +405,7 @@ function countIncompleteScenarioPlannedActions(counts, aggregate) {
       classification: action.classification,
       nextAction: action.plannedNextAction,
       count: action.count,
+      ...(action.sourceDetails ? { sourceDetails: action.sourceDetails } : {}),
     })
   }
   return (aggregate?.incompleteScenarios ?? [])

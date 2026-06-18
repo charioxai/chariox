@@ -206,6 +206,12 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
           classification: "workspace-live-sync-conflict",
           plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
           count: 1,
+          sourceDetails: [{
+            source: "workspace/tracked",
+            matrix: "workspace",
+            scenarioId: "tracked",
+            reportPath: "/tmp/workspace-matrix.json",
+          }],
         }],
       },
     },
@@ -235,6 +241,12 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
       classification: "workspace-live-sync-conflict",
       nextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
       count: 1,
+      sourceDetails: [{
+        source: "workspace/tracked",
+        matrix: "workspace",
+        scenarioId: "tracked",
+        reportPath: "/tmp/workspace-matrix.json",
+      }],
     },
     {
       owner: "validation-harness",

@@ -412,6 +412,10 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
     lines.push("next actions:")
     for (const action of aggregate.nextActions) {
       lines.push(`- owner=${action.owner} classification=${action.classification} count=${action.count}: ${action.nextAction}`)
+      const sources = formatNextActionSourceDetails(action.sourceDetails)
+      if (sources) {
+        lines.push(`  sources: ${sources}`)
+      }
     }
   }
   if (aggregate.coverage) {
@@ -1299,6 +1303,17 @@ function formatMatrixRuntimeSignalSource(entry) {
   const report = entry.reportSource ? ` report=${entry.reportSource}` : ""
   const source = entry.source ? ` source=${entry.source}` : ""
   return `${entry.matrix}/${entry.id}(${entry.status})${source}${report}`
+}
+
+function formatNextActionSourceDetails(sourceDetails) {
+  if (!Array.isArray(sourceDetails) || sourceDetails.length === 0) return ""
+  return sourceDetails
+    .map((detail) => {
+      const source = detail.source ?? [detail.matrix, detail.scenarioId].filter(Boolean).join("/")
+      const report = detail.reportPath ? ` report=${detail.reportPath}` : ""
+      return `${source}${report}`
+    })
+    .join(", ")
 }
 
 function validateValidationGateCoverageAggregate(coverage, source) {
