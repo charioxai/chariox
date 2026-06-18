@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -10,8 +10,10 @@ use crate::config::RelayConfig;
 
 mod connection;
 mod display;
+mod health;
 use connection::handle_connection;
 use display::{handle_display_connection, is_display_http_request};
+use health::{handle_health_connection, is_health_http_request};
 
 pub use crate::registry::{ConnectedPeer, RelayRegistry};
 
@@ -21,6 +23,7 @@ pub struct RelayServer {
     registry: Arc<RwLock<RelayRegistry>>,
     relay_request_counter: Arc<AtomicU64>,
     auth_verifier: RelayAuthVerifier,
+    draining: Arc<AtomicBool>,
 }
 
 impl RelayServer {
@@ -37,6 +40,7 @@ impl RelayServer {
             config,
             registry: Arc::new(RwLock::new(RelayRegistry::default())),
             relay_request_counter: Arc::new(AtomicU64::new(0)),
+            draining: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -46,6 +50,10 @@ impl RelayServer {
 
     pub fn registry(&self) -> Arc<RwLock<RelayRegistry>> {
         Arc::clone(&self.registry)
+    }
+
+    pub fn set_draining(&self, draining: bool) {
+        self.draining.store(draining, Ordering::Relaxed);
     }
 
     pub async fn bind_listener(&self) -> Result<TcpListener, std::io::Error> {
@@ -77,8 +85,11 @@ impl RelayServer {
                     let registry = Arc::clone(&self.registry);
                     let auth_verifier = self.auth_verifier.clone();
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);
+                    let draining = Arc::clone(&self.draining);
                     tokio::spawn(async move {
-                        if is_display_http_request(&stream).await {
+                        if is_health_http_request(&stream).await {
+                            let _ = handle_health_connection(stream, registry, draining).await;
+                        } else if is_display_http_request(&stream).await {
                             let _ = handle_display_connection(stream, peer_addr, registry, relay_request_counter).await;
                         } else {
                             let _ = handle_connection(stream, peer_addr, registry, auth_verifier, relay_request_counter).await;
@@ -761,7 +772,7 @@ mod tests {
                 .expect("relay server should run");
         });
 
-        let missing = display_http_get(addr, "/display/missing/vnc.html").await;
+        let missing = relay_http_get(addr, "/display/missing/vnc.html").await;
         assert!(missing.starts_with("HTTP/1.1 404 Not Found"));
 
         {
@@ -779,10 +790,10 @@ mod tests {
                 Vec::new(),
             );
         }
-        let expired = display_http_get(addr, "/display/expired/vnc.html").await;
+        let expired = relay_http_get(addr, "/display/expired/vnc.html").await;
         assert!(expired.starts_with("HTTP/1.1 410 Gone"));
 
-        let disconnected = display_http_get(addr, "/display/disconnected/vnc.html").await;
+        let disconnected = relay_http_get(addr, "/display/disconnected/vnc.html").await;
         assert!(disconnected.starts_with("HTTP/1.1 502 Bad Gateway"));
 
         let url = format!("ws://{}:{}", addr.ip(), addr.port());
@@ -816,7 +827,7 @@ mod tests {
         let _ = daemon_socket.next().await;
 
         let response_task =
-            tokio::spawn(async move { display_http_get(addr, "/display/live/vnc.html").await });
+            tokio::spawn(async move { relay_http_get(addr, "/display/live/vnc.html").await });
         let open_payload = match daemon_socket.next().await {
             Some(Ok(Message::Text(text))) => text,
             other => panic!("unexpected display tunnel open request: {other:?}"),
@@ -944,9 +955,10 @@ mod tests {
             .expect("display tunnel register should send");
         let _ = daemon_socket.next().await;
 
-        let response_task = tokio::spawn(async move {
-            display_http_get(addr, "/display/live-disconnect/vnc.html").await
-        });
+        let response_task =
+            tokio::spawn(
+                async move { relay_http_get(addr, "/display/live-disconnect/vnc.html").await },
+            );
         match daemon_socket.next().await {
             Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text)
                 .expect("display tunnel open should decode")
@@ -973,20 +985,91 @@ mod tests {
         server_task.await.expect("server task should join");
     }
 
-    async fn display_http_get(addr: std::net::SocketAddr, path: &str) -> String {
+    async fn relay_http_get(addr: std::net::SocketAddr, path: &str) -> String {
         let mut stream = TcpStream::connect(addr)
             .await
-            .expect("display HTTP connection should open");
+            .expect("relay HTTP connection should open");
         stream
             .write_all(format!("GET {path} HTTP/1.1\r\nhost: relay.test\r\n\r\n").as_bytes())
             .await
-            .expect("display HTTP request should write");
+            .expect("relay HTTP request should write");
         let mut response = String::new();
         timeout(Duration::from_secs(2), stream.read_to_string(&mut response))
             .await
-            .expect("display HTTP response should complete")
-            .expect("display HTTP response should read");
+            .expect("relay HTTP response should complete")
+            .expect("relay HTTP response should read");
         response
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn health_endpoint_reports_healthy_and_draining_status() {
+        let healthy_server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = healthy_server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let healthy_server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            healthy_server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let healthy = relay_http_get(addr, "/healthz").await;
+        assert!(healthy.starts_with("HTTP/1.1 200 OK"));
+        assert!(healthy.contains("\"status\":\"healthy\""));
+        assert!(healthy.contains("\"draining\":false"));
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("healthy server task should join");
+
+        let draining_server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = draining_server
+            .bind_listener()
+            .await
+            .expect("draining relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let draining_server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        draining_server.set_draining(true);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            draining_server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("draining relay server should run");
+        });
+
+        let draining = relay_http_get(addr, "/readyz").await;
+        assert!(draining.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(draining.contains("\"status\":\"draining\""));
+        assert!(draining.contains("\"draining\":true"));
+
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("draining server task should join");
     }
 
     #[tokio::test(flavor = "multi_thread")]
