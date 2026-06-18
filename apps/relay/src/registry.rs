@@ -214,11 +214,24 @@ impl RelayRegistry {
         before.saturating_sub(self.display_tunnels.len())
     }
 
-    pub(crate) fn remove_display_streams_for_daemon(&mut self, daemon_key: &DaemonKey) -> usize {
-        let before = self.pending_display_streams.len();
-        self.pending_display_streams
-            .retain(|_, stream| stream.daemon_key != *daemon_key);
-        before.saturating_sub(self.pending_display_streams.len())
+    pub(crate) fn remove_display_streams_for_daemon(
+        &mut self,
+        daemon_key: &DaemonKey,
+    ) -> Vec<DisplayStreamSender> {
+        let doomed_stream_ids = self
+            .pending_display_streams
+            .iter()
+            .filter(|(_, stream)| stream.daemon_key == *daemon_key)
+            .map(|(stream_id, _)| stream_id.clone())
+            .collect::<Vec<_>>();
+        doomed_stream_ids
+            .into_iter()
+            .filter_map(|stream_id| {
+                self.pending_display_streams
+                    .remove(&stream_id)
+                    .map(|stream| stream.sender)
+            })
+            .collect()
     }
 
     pub(crate) fn resolve_daemon_sender(&self, daemon_key: &DaemonKey) -> Option<RelaySender> {

@@ -886,6 +886,93 @@ mod tests {
         server_task.await.expect("server task should join");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn display_http_request_closes_promptly_when_daemon_disconnects() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect to relay");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration("daemon-live", "machine-1", "macOS", 10),
+                })
+                .expect("register envelope should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelRegister {
+                    registration: RelayDisplayTunnelRegistration {
+                        tunnel_id: "live-disconnect".to_string(),
+                        expires_at_ms: u64::MAX,
+                        capabilities: vec!["view".to_string()],
+                    },
+                })
+                .expect("display tunnel register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("display tunnel register should send");
+        let _ = daemon_socket.next().await;
+
+        let response_task = tokio::spawn(async move {
+            display_http_get(addr, "/display/live-disconnect/vnc.html").await
+        });
+        match daemon_socket.next().await {
+            Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("display tunnel open should decode")
+            {
+                RelayEnvelope::DaemonDisplayTunnelOpen { request } => {
+                    assert_eq!(request.tunnel_id, "live-disconnect");
+                }
+                other => panic!("unexpected display tunnel open envelope: {other:?}"),
+            },
+            other => panic!("unexpected display tunnel open request: {other:?}"),
+        }
+
+        daemon_socket
+            .close(None)
+            .await
+            .expect("daemon socket should close");
+        let response = response_task
+            .await
+            .expect("display response task should join");
+        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway"));
+        assert!(response.contains("display tunnel failed: target daemon disconnected from relay"));
+
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
     async fn display_http_get(addr: std::net::SocketAddr, path: &str) -> String {
         let mut stream = TcpStream::connect(addr)
             .await

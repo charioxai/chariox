@@ -17,8 +17,8 @@ use crate::protocol::{
     RelayMetadataQuery,
 };
 use crate::registry::{
-    ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle, PendingClientRequest,
-    PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry, RelaySender,
+    ActiveSubscription, DaemonKey, DisplayStreamEvent, DisplayStreamSender, PeerHandle,
+    PendingClientRequest, PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry, RelaySender,
 };
 
 const RELAY_OUTGOING_QUEUE_CAPACITY: usize = 1024;
@@ -1107,6 +1107,7 @@ pub(crate) async fn handle_connection(
         disconnect_errors,
         disconnect_peer_errors,
         disconnect_subscription_senders,
+        disconnect_display_stream_senders,
         dropped_client_pending_requests,
     ) = remove_peer(&registry, peer_addr, registered_daemon_key.as_ref()).await;
     if connection_result.is_err()
@@ -1114,6 +1115,7 @@ pub(crate) async fn handle_connection(
         || !disconnect_errors.is_empty()
         || !disconnect_peer_errors.is_empty()
         || !disconnect_subscription_senders.is_empty()
+        || !disconnect_display_stream_senders.is_empty()
         || dropped_client_pending_requests > 0
     {
         relay_log(
@@ -1129,6 +1131,7 @@ pub(crate) async fn handle_connection(
                 "client_request_errors": disconnect_errors.len(),
                 "daemon_peer_request_errors": disconnect_peer_errors.len(),
                 "subscription_closes": disconnect_subscription_senders.len(),
+                "display_stream_closes": disconnect_display_stream_senders.len(),
                 "client_pending_request_drops": dropped_client_pending_requests,
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
             }),
@@ -1166,6 +1169,17 @@ pub(crate) async fn handle_connection(
     for sender in disconnect_subscription_senders {
         send_close(&sender, "target daemon disconnected from relay".to_string());
         let _ = sender.try_send(Message::Close(None));
+    }
+    for sender in disconnect_display_stream_senders {
+        let _ = sender
+            .send(DisplayStreamEvent::Close {
+                error: Some(relay_error(
+                    "target_disconnected",
+                    "target daemon disconnected from relay",
+                    true,
+                )),
+            })
+            .await;
     }
     drop(outgoing_tx);
     writer_task.abort();
@@ -1316,6 +1330,7 @@ async fn remove_peer(
     Vec<(RelaySender, String)>,
     Vec<(RelaySender, String, String)>,
     Vec<RelaySender>,
+    Vec<DisplayStreamSender>,
     usize,
 ) {
     let mut guard = registry.write().await;
@@ -1356,13 +1371,14 @@ async fn remove_peer(
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 dropped_client_pending_requests,
             );
         }
         guard.daemons.remove(daemon_key);
         guard.daemon_peers.remove(daemon_key);
         guard.remove_display_tunnels_for_daemon(daemon_key);
-        guard.remove_display_streams_for_daemon(daemon_key);
+        let display_stream_senders = guard.remove_display_streams_for_daemon(daemon_key);
         let daemon_subscriptions = guard
             .subscriptions
             .iter()
@@ -1431,10 +1447,12 @@ async fn remove_peer(
             client_errors,
             daemon_errors,
             subscription_client_senders,
+            display_stream_senders,
             dropped_client_pending_requests,
         );
     }
     (
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
