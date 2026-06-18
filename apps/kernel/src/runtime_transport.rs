@@ -255,6 +255,63 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tokio::sync::oneshot;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+
+    #[tokio::test]
+    async fn kernel_websocket_replies_to_ping_frames() {
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+                .expect("daemon should boot"),
+        ));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            run_kernel_websocket_server_on_listener(app, listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}"))
+            .await
+            .expect("client should connect");
+        socket
+            .send(Message::Ping(Vec::from("probe").into()))
+            .await
+            .expect("ping should send");
+
+        let pong = timeout(Duration::from_secs(2), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Pong(payload))) => break payload.to_vec(),
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => panic!("websocket read failed: {error}"),
+                    None => panic!("websocket closed before pong"),
+                }
+            }
+        })
+        .await
+        .expect("pong should arrive");
+
+        assert_eq!(pong, b"probe");
+
+        let _ = socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server should stop")
+            .expect("server task should finish")
+            .expect("server should exit cleanly");
+    }
+}
+
 async fn handle_kernel_connection(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
@@ -277,6 +334,7 @@ async fn handle_kernel_connection(
     let (event_tx, mut event_rx) = mpsc::channel::<KernelOutgoingFrame>(queue_capacity);
     let outgoing_tx = KernelOutgoingSender::new(priority_tx, event_tx);
     let (close_tx, mut close_rx) = mpsc::unbounded_channel::<ConnectionCloseCommand>();
+    let (pong_tx, mut pong_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let close_requested = Arc::new(AtomicBool::new(false));
     let inbound_request_permits = Arc::new(Semaphore::new(INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
@@ -297,6 +355,11 @@ async fn handle_kernel_connection(
                         reason: command.reason.into(),
                     }))).await;
                     break;
+                }
+                Some(payload) = pong_rx.recv() => {
+                    if writer.send(Message::Pong(payload.into())).await.is_err() {
+                        break;
+                    }
                 }
                 _ = transport_ping.tick() => {
                     if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
@@ -372,7 +435,9 @@ async fn handle_kernel_connection(
                 )
                 .await;
             }
-            Message::Ping(_) => {}
+            Message::Ping(payload) => {
+                let _ = pong_tx.send(payload.to_vec());
+            }
             Message::Close(_) => break,
             Message::Pong(_) | Message::Frame(_) => {}
         }
