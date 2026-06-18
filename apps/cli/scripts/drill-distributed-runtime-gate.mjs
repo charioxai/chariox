@@ -17,6 +17,7 @@ import {
 } from "./lib/drill-distributed-runtime-evidence.mjs"
 import { verifyDrillFailureTaxonomyRegistryParity } from "./lib/drill-failure-taxonomy-registry-parity.mjs"
 import { verifyDrillGeneratedMatrixRegistryParity } from "./lib/drill-generated-matrix-registry-parity.mjs"
+import { verifyDrillRuntimeAuthorityRegistryParity } from "./lib/drill-runtime-authority-registry-parity.mjs"
 import { verifyDrillRuntimeSignalRegistryParity } from "./lib/drill-runtime-signal-registry-parity.mjs"
 import {
   parseValidationGateRequirementArg,
@@ -63,8 +64,10 @@ function printHelp() {
     "                         Fail when OSS and Cloud generated matrix registries drift",
     "  --require-failure-taxonomy-registry-parity",
     "                         Fail when Cloud failure classifications drift from OSS diagnostics",
-    "  --require-runtime-signal-registry-parity",
-    "                         Fail when OSS and Cloud runtime signal registries drift",
+  "  --require-runtime-signal-registry-parity",
+  "                         Fail when OSS and Cloud runtime signal registries drift",
+  "  --require-runtime-authority-registry-parity",
+  "                         Fail when OSS and Cloud runtime authority invariant registries drift",
     "  --failure-manifest PATH",
     "                         Read a specific failure manifest or preserved root; repeatable",
     "  --failure-root ROOT     Discover failure manifests below ROOT; repeatable",
@@ -141,6 +144,9 @@ async function main() {
   }
   if (options.requireRuntimeSignalRegistryParity) {
     await verifyDrillRuntimeSignalRegistryParity(options)
+  }
+  if (options.requireRuntimeAuthorityRegistryParity) {
+    await verifyDrillRuntimeAuthorityRegistryParity(options)
   }
   const generatedBundleDir = options.platformBundleDir ? null : await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-platform-"))
   try {
@@ -265,6 +271,7 @@ function parseArgs(argv) {
     requireComplete: false,
     requireFailureTaxonomyRegistryParity: false,
     requireGeneratedMatrixRegistryParity: false,
+    requireRuntimeAuthorityRegistryParity: false,
     requireRuntimeSignalRegistryParity: false,
     requiredArtifactMaxAgeMs: null,
     requiredFailureMaxAgeMs: null,
@@ -286,6 +293,7 @@ function parseArgs(argv) {
     else if (arg === "--matrix-dry-run") options.matrixDryRun = true
     else if (arg === "--require-failure-taxonomy-registry-parity") options.requireFailureTaxonomyRegistryParity = true
     else if (arg === "--require-generated-matrix-registry-parity") options.requireGeneratedMatrixRegistryParity = true
+    else if (arg === "--require-runtime-authority-registry-parity") options.requireRuntimeAuthorityRegistryParity = true
     else if (arg === "--require-runtime-signal-registry-parity") options.requireRuntimeSignalRegistryParity = true
     else if (arg === "--require-complete") options.requireComplete = true
     else if (arg === "--run-matrix-reports") options.runMatrixReports = true

@@ -10,6 +10,7 @@ import { promisify } from "node:util"
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO } from "./lib/drill-distributed-runtime-evidence.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
+import { drillRuntimeAuthorityManifest } from "./lib/drill-runtime-authority-invariants.mjs"
 import { drillRuntimeSignalOwnersFor, drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -26,6 +27,7 @@ test("distributed runtime gate help lists artifact evidence requirements", async
   assert.match(stdout, /--require-artifact-validation-preset NAME\[,NAME\]/)
   assert.match(stdout, /--require-artifact-planned-owner OWNER\[,OWNER\]/)
   assert.match(stdout, /--require-artifact-planned-classification KIND\[,KIND\]/)
+  assert.match(stdout, /--require-runtime-authority-registry-parity/)
 })
 
 test("distributed runtime gate accepts a pnpm argument separator", async () => {
@@ -947,6 +949,36 @@ test("distributed runtime gate can require runtime signal registry parity", asyn
   }
 })
 
+test("distributed runtime gate can require runtime authority registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
+      evidenceRepo: "oss",
+    })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+    await writeCloudRuntimeAuthorityRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--include-default-artifacts",
+      "--require-runtime-authority-registry-parity",
+      "--json",
+    ])
+
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("distributed runtime gate can require failure taxonomy registry parity", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {
@@ -1029,6 +1061,35 @@ test("distributed runtime gate rejects runtime signal registry drift", async () 
         assert.equal(error.code, 1)
         assert.match(error.stderr, /runtime signal registry parity failed/)
         assert.match(error.stderr, /home-extension-manifest-sync/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate rejects runtime authority registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillRuntimeAuthorityManifest()
+    await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
+      invariants: manifest.invariants.filter((invariant) => invariant.id !== "shared-runtime-primitives"),
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--require-runtime-authority-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /runtime authority registry parity failed/)
+        assert.match(error.stderr, /shared-runtime-primitives/)
         return true
       },
     )
@@ -1330,6 +1391,22 @@ async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
   await writeFile(registryPath, [
     "export function cloudRuntimeSignalsManifest() {",
     `  return { schema: "arroba.drill.runtime_signals.v1", signals: ${JSON.stringify(signals)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
+}
+
+async function writeCloudRuntimeAuthorityRegistry(cloudRoot, {
+  invariants = drillRuntimeAuthorityManifest().invariants.map((invariant) => invariant.id === "relay-cloud-transport-only"
+    ? { ...invariant, id: "cloud-control-plane-only", owner: "cloud-deployment" }
+    : invariant),
+} = {}) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-authority-invariants.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudRuntimeAuthorityManifest() {",
+    `  return { schema: "arroba.drill.runtime_authority_invariants.v1", invariants: ${JSON.stringify(invariants)} }`,
     "}",
     "",
   ].join("\n"), "utf8")

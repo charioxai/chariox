@@ -10,6 +10,7 @@ import { promisify } from "node:util"
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
+import { drillRuntimeAuthorityManifest } from "./lib/drill-runtime-authority-invariants.mjs"
 import { drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -24,6 +25,7 @@ test("cross repo validation gate help lists artifact identity requirements", asy
   assert.match(stdout, /--require-artifact-validation-preset NAME\[,NAME\]/)
   assert.match(stdout, /--require-artifact-planned-owner OWNER\[,OWNER\]/)
   assert.match(stdout, /--require-artifact-planned-classification KIND\[,KIND\]/)
+  assert.match(stdout, /--require-runtime-authority-registry-parity/)
 })
 
 test("cross repo validation gate combines OSS and Cloud matrix evidence", async () => {
@@ -539,6 +541,31 @@ test("cross repo validation gate checks runtime signal registry parity", async (
   }
 })
 
+test("cross repo validation gate checks runtime authority registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeCloudRuntimeAuthorityRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--require-runtime-authority-registry-parity",
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate checks failure taxonomy registry parity", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
   try {
@@ -625,6 +652,38 @@ test("cross repo validation gate rejects runtime signal registry drift", async (
         assert.equal(error.code, 1)
         assert.match(error.stderr, /runtime signal registry parity failed/)
         assert.match(error.stderr, /workspace-live-sync-state/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("cross repo validation gate rejects runtime authority registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillRuntimeAuthorityManifest()
+    await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
+      invariants: manifest.invariants.map((invariant) => invariant.id === "home-session-authority"
+        ? { ...invariant, owner: "runtime-network" }
+        : invariant),
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--no-default-roots",
+        "--require-runtime-authority-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /runtime authority registry parity failed/)
+        assert.match(error.stderr, /home-session-authority/)
         return true
       },
     )
@@ -1022,6 +1081,22 @@ async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
   await writeFile(registryPath, [
     "export function cloudRuntimeSignalsManifest() {",
     `  return { schema: "arroba.drill.runtime_signals.v1", signals: ${JSON.stringify(signals)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
+}
+
+async function writeCloudRuntimeAuthorityRegistry(cloudRoot, {
+  invariants = drillRuntimeAuthorityManifest().invariants.map((invariant) => invariant.id === "relay-cloud-transport-only"
+    ? { ...invariant, id: "cloud-control-plane-only", owner: "cloud-deployment" }
+    : invariant),
+} = {}) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-authority-invariants.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudRuntimeAuthorityManifest() {",
+    `  return { schema: "arroba.drill.runtime_authority_invariants.v1", invariants: ${JSON.stringify(invariants)} }`,
     "}",
     "",
   ].join("\n"), "utf8")

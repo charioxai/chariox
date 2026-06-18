@@ -8,6 +8,7 @@ import {
 } from "./lib/drill-cli-args.mjs"
 import { verifyDrillFailureTaxonomyRegistryParity } from "./lib/drill-failure-taxonomy-registry-parity.mjs"
 import { verifyDrillGeneratedMatrixRegistryParity } from "./lib/drill-generated-matrix-registry-parity.mjs"
+import { verifyDrillRuntimeAuthorityRegistryParity } from "./lib/drill-runtime-authority-registry-parity.mjs"
 import { verifyDrillRuntimeSignalRegistryParity } from "./lib/drill-runtime-signal-registry-parity.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
 import {
@@ -46,8 +47,10 @@ function printHelp() {
     "                         Fail when OSS and Cloud generated matrix registries drift",
     "  --require-failure-taxonomy-registry-parity",
     "                         Fail when Cloud failure classifications drift from OSS diagnostics",
-    "  --require-runtime-signal-registry-parity",
-    "                         Fail when OSS and Cloud runtime signal registries drift",
+  "  --require-runtime-signal-registry-parity",
+  "                         Fail when OSS and Cloud runtime signal registries drift",
+  "  --require-runtime-authority-registry-parity",
+  "                         Fail when OSS and Cloud runtime authority invariant registries drift",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
     "  --matrix-root ROOT     Discover matrix reports below ROOT; repeatable",
     "  --artifact-index PATH  Read and verify a specific artifact index; repeatable",
@@ -116,6 +119,9 @@ async function main() {
   if (options.requireRuntimeSignalRegistryParity) {
     await verifyDrillRuntimeSignalRegistryParity(options)
   }
+  if (options.requireRuntimeAuthorityRegistryParity) {
+    await verifyDrillRuntimeAuthorityRegistryParity(options)
+  }
   const gateOptions = gateOptionsFor(options)
   const report = await runDrillValidationGate(gateOptions)
   if (options.outputPath) {
@@ -165,6 +171,7 @@ function parseArgs(argv) {
     requireComplete: false,
     requireFailureTaxonomyRegistryParity: false,
     requireGeneratedMatrixRegistryParity: false,
+    requireRuntimeAuthorityRegistryParity: false,
     requireRuntimeSignalRegistryParity: false,
     requiredArtifactMaxAgeMs: null,
     requiredFailureMaxAgeMs: null,
@@ -180,6 +187,7 @@ function parseArgs(argv) {
     else if (arg === "--include-default-failures") options.includeDefaultFailures = true
     else if (arg === "--require-failure-taxonomy-registry-parity") options.requireFailureTaxonomyRegistryParity = true
     else if (arg === "--require-generated-matrix-registry-parity") options.requireGeneratedMatrixRegistryParity = true
+    else if (arg === "--require-runtime-authority-registry-parity") options.requireRuntimeAuthorityRegistryParity = true
     else if (arg === "--require-runtime-signal-registry-parity") options.requireRuntimeSignalRegistryParity = true
     else if (arg === "--require-complete") options.requireComplete = true
     else {
