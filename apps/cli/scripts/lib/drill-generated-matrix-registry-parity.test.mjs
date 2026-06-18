@@ -73,6 +73,23 @@ test("rejects malformed Cloud generated matrix manifests", async () => {
   }
 })
 
+test("rejects unsupported Cloud generated matrix registry schemas", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeCloudGeneratedMatrixRegistry(cloudRoot, {
+      schema: "arroba.drill.generated_matrix_names.v1",
+    })
+
+    await assert.rejects(
+      verifyDrillGeneratedMatrixRegistryParity({ cloudRoot }),
+      /Cloud generated matrix registry has unsupported schema "arroba.drill.generated_matrix_names.v1"/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("rejects duplicate Cloud generated matrix names", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
   try {
@@ -94,13 +111,14 @@ test("rejects duplicate Cloud generated matrix names", async () => {
 })
 
 async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
+  schema = "arroba.cloud.drill.generated_matrix_names.v1",
   matrices = drillGeneratedMatrixNamesManifest().matrices,
 } = {}) {
   const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-drill-generated-matrix-names.mjs")
   await mkdir(path.dirname(registryPath), { recursive: true })
   await writeFile(registryPath, [
     "export function cloudDrillGeneratedMatrixNamesManifest() {",
-    `  return { schema: "arroba.cloud.drill.generated_matrix_names.v1", matrices: ${JSON.stringify(matrices)} }`,
+    `  return { schema: ${JSON.stringify(schema)}, matrices: ${JSON.stringify(matrices)} }`,
     "}",
     "",
   ].join("\n"), "utf8")

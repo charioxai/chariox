@@ -1,7 +1,10 @@
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { drillRuntimeSignalsManifest } from "./drill-runtime-signals.mjs"
+import {
+  DRILL_RUNTIME_SIGNALS_SCHEMA,
+  drillRuntimeSignalsManifest,
+} from "./drill-runtime-signals.mjs"
 
 export async function verifyDrillRuntimeSignalRegistryParity({ cloudRoot }) {
   const cloudRegistryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-signals.mjs")
@@ -30,6 +33,9 @@ export async function verifyDrillRuntimeSignalRegistryParity({ cloudRoot }) {
 function runtimeSignalMap(manifest, source) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${source} is not an object`)
+  }
+  if (manifest.schema !== DRILL_RUNTIME_SIGNALS_SCHEMA) {
+    throw new Error(`${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
   }
   if (!Array.isArray(manifest.signals)) {
     throw new Error(`${source} has invalid signals`)
