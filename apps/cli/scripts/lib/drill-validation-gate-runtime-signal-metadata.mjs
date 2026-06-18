@@ -66,6 +66,17 @@ export function diagnosticMetadataForValidationGateReport(report) {
     ...Object.keys(report.checks?.matrices?.aggregate?.classifications ?? {}),
     ...(report.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
   ])
+  const requiredFailureClassifications = new Set([
+    ...(report.checks?.platformBundle?.requiredFailureClassifications ?? []),
+    ...(report.checks?.artifacts?.requiredArtifactFailureClassifications ?? []),
+    ...Object.keys(report.checks?.artifacts?.aggregate?.requiredFailureClassifications ?? {}),
+    ...(report.checks?.matrices?.requiredMatrixClassifications ?? []),
+  ].filter(nonEmptyString))
+  const missingFailureClassifications = new Set([
+    ...(report.checks?.platformBundle?.missingFailureClassifications ?? []),
+    ...(report.checks?.artifacts?.missingArtifactFailureClassifications ?? []),
+    ...(report.checks?.matrices?.missingMatrixClassifications ?? []),
+  ].filter(nonEmptyString))
   const generatedEvidenceKinds = new Set(generatedEvidenceKindsFor(report.generatedEvidence))
   const generatedMatrixArtifactIndexes = new Set(generatedMatrixArtifactIndexesFor(report.generatedEvidence))
   const generatedMatrixLimitations = new Set(generatedMatrixLimitationsFor(report.generatedEvidence))
@@ -79,6 +90,8 @@ export function diagnosticMetadataForValidationGateReport(report) {
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+    ...(requiredFailureClassifications.size > 0 ? { requiredFailureClassifications: [...requiredFailureClassifications].sort().join(",") } : {}),
+    ...(missingFailureClassifications.size > 0 ? { missingFailureClassifications: [...missingFailureClassifications].sort().join(",") } : {}),
     ...(exitCriterionStatuses.size > 0 ? { exitCriterionStatuses: [...exitCriterionStatuses].sort().join(",") } : {}),
     ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
     ...(providerAccountAliases.size > 0 ? { providerAccountAliases: [...providerAccountAliases].sort().join(",") } : {}),
@@ -175,6 +188,23 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.requiredMatrixClassifications ?? []).filter(nonEmptyString),
     ...(aggregate.missingMatrixClassifications ?? []).filter(nonEmptyString),
     ...(aggregate.nextActions ?? []).map((action) => action.classification).filter(nonEmptyString),
+  ])
+  const requiredFailureClassifications = new Set([
+    ...Object.keys(aggregate.coverage?.artifactFailureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.requiredArtifactFailureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.requiredFailureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.requiredMatrixClassifications ?? {}),
+    ...(aggregate.requiredArtifactFailureClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.requiredFailureClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.requiredMatrixClassifications ?? []).filter(nonEmptyString),
+  ])
+  const missingFailureClassifications = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactFailureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.missingFailureClassifications ?? {}),
+    ...Object.keys(aggregate.coverage?.missingMatrixClassifications ?? {}),
+    ...(aggregate.missingArtifactFailureClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.missingFailureClassifications ?? []).filter(nonEmptyString),
+    ...(aggregate.missingMatrixClassifications ?? []).filter(nonEmptyString),
   ])
   const generatedEvidenceKinds = new Set([
     ...Object.keys(aggregate.coverage?.artifactGeneratedEvidenceKinds ?? {}),
@@ -307,6 +337,8 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(coverageAreas.size > 0 ? { coverageAreas: [...coverageAreas].sort().join(",") } : {}),
     ...(owners.size > 0 ? { owners: [...owners].sort().join(",") } : {}),
     ...(classifications.size > 0 ? { classifications: [...classifications].sort().join(",") } : {}),
+    ...(requiredFailureClassifications.size > 0 ? { requiredFailureClassifications: [...requiredFailureClassifications].sort().join(",") } : {}),
+    ...(missingFailureClassifications.size > 0 ? { missingFailureClassifications: [...missingFailureClassifications].sort().join(",") } : {}),
     ...(exitCriterionStatuses.size > 0 ? { exitCriterionStatuses: [...exitCriterionStatuses].sort().join(",") } : {}),
     ...(incompleteExitCriterionStatuses.size > 0 ? { incompleteExitCriterionStatuses: [...incompleteExitCriterionStatuses].sort().join(",") } : {}),
     ...(providerAccountAliases.size > 0 ? { providerAccountAliases: [...providerAccountAliases].sort().join(",") } : {}),
