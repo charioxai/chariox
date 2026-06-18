@@ -37,6 +37,7 @@ struct StaticRelayConfig {
 }
 
 const CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRelayConfigDisposition {
@@ -75,6 +76,27 @@ fn should_start_cloud_token_refresh(task: Option<&JoinHandle<()>>) -> bool {
 
 fn should_start_leased_projection_pump(task: Option<&JoinHandle<()>>) -> bool {
     task.is_none_or(|task| task.is_finished())
+}
+
+fn cloud_presence_refresh_interval(daemon_id: &str) -> Duration {
+    CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
+        + Duration::from_millis(stable_jitter_ms(
+            daemon_id,
+            CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS,
+        ))
+}
+
+fn stable_jitter_ms(value: &str, spread_ms: u64) -> u64 {
+    if spread_ms == 0 {
+        return 0;
+    }
+    value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+        % spread_ms
 }
 
 fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
@@ -442,7 +464,8 @@ async fn run_daemon_relay_connector_inner(
                         "relay registration sent",
                     ));
                 }
-                let mut last_cloud_presence_publish = Instant::now();
+                let mut next_cloud_presence_publish =
+                    Instant::now() + cloud_presence_refresh_interval(&daemon_id);
                 let mut inventory_refresh_task = static_relay
                     .is_none()
                     .then(|| spawn_remote_inventory_projection_refresh(Arc::clone(&router)));
@@ -669,9 +692,7 @@ async fn run_daemon_relay_connector_inner(
                                     outgoing_tx.clone(),
                                 ));
                             }
-                            if last_cloud_presence_publish.elapsed()
-                                >= CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
-                            {
+                            if Instant::now() >= next_cloud_presence_publish {
                                 if static_relay.is_none()
                                     && should_start_cloud_presence_publish(
                                         cloud_presence_task.as_ref(),
@@ -682,7 +703,8 @@ async fn run_daemon_relay_connector_inner(
                                         true,
                                         "relay heartbeat",
                                     ));
-                                    last_cloud_presence_publish = Instant::now();
+                                    next_cloud_presence_publish =
+                                        Instant::now() + cloud_presence_refresh_interval(&daemon_id);
                                 }
                             }
                         }
@@ -833,6 +855,25 @@ mod tests {
 
         assert!(should_start_leased_projection_pump(None));
         assert!(should_start_leased_projection_pump(Some(&task)));
+    }
+
+    #[test]
+    fn cloud_presence_refresh_interval_is_stable_and_bounded() {
+        let first = cloud_presence_refresh_interval("daemon-a");
+        let second = cloud_presence_refresh_interval("daemon-a");
+
+        assert_eq!(first, second);
+        assert!(first >= CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL);
+        assert!(
+            first
+                < CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
+                    + Duration::from_millis(CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS)
+        );
+    }
+
+    #[test]
+    fn stable_jitter_ms_honors_zero_spread() {
+        assert_eq!(stable_jitter_ms("daemon-a", 0), 0);
     }
 
     #[tokio::test]
