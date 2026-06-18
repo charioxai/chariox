@@ -281,6 +281,10 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     ]),
     "requiredFailureClassifications",
   )
+  const requiredRuntimeAuthorityInvariants = sortedRuntimeAuthorityInvariantArray(
+    (manifest.validationPresets ?? []).flatMap((preset) => preset?.requiredRuntimeAuthorityInvariants ?? []),
+    "requiredRuntimeAuthorityInvariants",
+  )
   if (runtimeSignals.length > 0 || requiredFailureClassifications.length > 0) {
     validateDrillFailureTaxonomyManifest(manifest.failureTaxonomyManifest, "validation suite failureTaxonomyManifest")
   }
@@ -315,7 +319,9 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
       }
       : {}),
     runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
-    requiredRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
+    ...(requiredRuntimeAuthorityInvariants.length > 0
+      ? { requiredRuntimeAuthorityInvariants: requiredRuntimeAuthorityInvariants.join(",") }
+      : {}),
     ...(requiredFailureClassifications.length > 0
       ? { requiredFailureClassifications: requiredFailureClassifications.join(",") }
       : {}),
@@ -429,6 +435,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactIncompleteExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactIncompleteExitCriterionStatuses, `${preset.name}.requiredArtifactIncompleteExitCriterionStatuses`),
     requiredRuntimeSignals,
     requiredRuntimeSignalOwners,
+    requiredRuntimeAuthorityInvariants: sortedRuntimeAuthorityInvariantArray(preset.requiredRuntimeAuthorityInvariants, `${preset.name}.requiredRuntimeAuthorityInvariants`),
     requiredFailureClassifications: sortedFailureClassificationArray(preset.requiredFailureClassifications, `${preset.name}.requiredFailureClassifications`),
     requiredMatrices: sortedStringArray(preset.requiredMatrices, `${preset.name}.requiredMatrices`),
     requiredMatrixClassifications: sortedFailureClassificationArray(preset.requiredMatrixClassifications, `${preset.name}.requiredMatrixClassifications`),

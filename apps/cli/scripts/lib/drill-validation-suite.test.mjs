@@ -168,6 +168,7 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactIncompleteExitCriterionStatuses: [],
       requiredRuntimeSignals: [],
       requiredRuntimeSignalOwners: [],
+      requiredRuntimeAuthorityInvariants: [],
       requiredFailureClassifications: [],
       requiredMatrices: ["sample-matrix"],
       requiredMatrixClassifications: [],
@@ -291,6 +292,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactPlannedOwners: ["validation-platform", "kernel-authority", "validation-platform"],
     requiredArtifactPlannedClassifications: ["matrix-coverage", "workspace-live-sync-conflict", "matrix-coverage"],
     requiredRuntimeSignals: ["provider-run-lifecycle", "session-authority", "provider-run-lifecycle"],
+    requiredRuntimeAuthorityInvariants: ["home-session-authority", "shared-runtime-primitives", "home-session-authority"],
     requiredMatrices: ["workspace-live-sync-matrix"],
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -331,6 +333,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactIncompleteExitCriterionStatuses: [],
     requiredRuntimeSignals: ["provider-run-lifecycle", "session-authority"],
     requiredRuntimeSignalOwners: ["kernel-authority", "provider-runtime"],
+    requiredRuntimeAuthorityInvariants: ["home-session-authority", "shared-runtime-primitives"],
     requiredFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
     requiredMatrices: ["workspace-live-sync-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -359,6 +362,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad runtime signal",
     requiredRuntimeSignals: ["workspace-live-synch-state"],
   }]), /requiredRuntimeSignals\[0\] has unknown runtime signal "workspace-live-synch-state"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-runtime-authority-invariant",
+    description: "bad runtime authority invariant",
+    requiredRuntimeAuthorityInvariants: ["home-session-authroity"],
+  }]), /requiredRuntimeAuthorityInvariants\[0\] has unknown runtime authority invariant "home-session-authroity"/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-runtime-signal-owner",
     description: "bad runtime signal owner",

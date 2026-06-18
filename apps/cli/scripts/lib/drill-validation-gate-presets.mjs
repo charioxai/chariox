@@ -43,6 +43,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),
     requiredArtifactValidationPresets: Object.freeze(["distributed-runtime", "distributed-state-health", "runtime-authority"]),
     requiredArtifactRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
+    requiredRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
     requiredArtifactRuntimeSignals: Object.freeze([
       "agent-lifecycle",
       "client-projection-health",
@@ -428,6 +429,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactProviderAccountAliases: [...(preset.requiredArtifactProviderAccountAliases ?? [])],
       requiredArtifactValidationPresets: [...(preset.requiredArtifactValidationPresets ?? [])],
       requiredArtifactRuntimeAuthorityInvariants: [...(preset.requiredArtifactRuntimeAuthorityInvariants ?? [])],
+      requiredRuntimeAuthorityInvariants: [...(preset.requiredRuntimeAuthorityInvariants ?? [])],
       requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
       requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
       requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
@@ -473,6 +475,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactProviderAccountAliases = [],
   requiredArtifactValidationPresets = [],
   requiredArtifactRuntimeAuthorityInvariants = [],
+  requiredRuntimeAuthorityInvariants = [],
   requiredArtifactRuntimeSignals = [],
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
@@ -514,6 +517,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
     requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
     requiredArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
+    requiredRuntimeAuthorityInvariants: [...requiredRuntimeAuthorityInvariants],
     requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
     requiredArtifactOwners: [...requiredArtifactOwners],
@@ -556,6 +560,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactProviderAccountAliases.push(...(preset.requiredArtifactProviderAccountAliases ?? []))
     expanded.requiredArtifactValidationPresets.push(...(preset.requiredArtifactValidationPresets ?? []))
     expanded.requiredArtifactRuntimeAuthorityInvariants.push(...(preset.requiredArtifactRuntimeAuthorityInvariants ?? []))
+    expanded.requiredRuntimeAuthorityInvariants.push(...(preset.requiredRuntimeAuthorityInvariants ?? []))
     expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
     expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
