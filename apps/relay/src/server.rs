@@ -2357,6 +2357,139 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn duplicate_daemon_aliases_do_not_bind_clients_arbitrarily() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_a, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon A should connect");
+        let (mut daemon_b, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon B should connect");
+        let mut registration_a = test_registration("daemon-a", "machine-1", "Linux", 10);
+        registration_a.daemon_alias = Some("shared-alias".to_string());
+        registration_a.public_key = "public-key-a".to_string();
+        let mut registration_b = test_registration("daemon-b", "machine-2", "Linux", 20);
+        registration_b.daemon_alias = Some("shared-alias".to_string());
+        registration_b.public_key = "public-key-b".to_string();
+        for (socket, registration) in [
+            (&mut daemon_a, registration_a),
+            (&mut daemon_b, registration_b),
+        ] {
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                        .expect("register should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("register should send");
+        }
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut ambiguous_client, _) = connect_async_with_retry(&url)
+            .await
+            .expect("ambiguous client should connect");
+        ambiguous_client
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "secret".to_string(),
+                    target: ClientTarget {
+                        daemon_id: None,
+                        daemon_alias: Some("shared-alias".to_string()),
+                    },
+                })
+                .expect("ambiguous connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("ambiguous connect should send");
+        let close_payload = match timeout(Duration::from_millis(500), ambiguous_client.next()).await
+        {
+            Ok(Some(Ok(Message::Text(text)))) => text,
+            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => String::new().into(),
+            Ok(other) => panic!("unexpected ambiguous connect response: {other:?}"),
+            Err(_) => panic!("ambiguous connect did not close promptly"),
+        };
+        if !close_payload.is_empty() {
+            match serde_json::from_str::<RelayEnvelope>(&close_payload)
+                .expect("ambiguous close should decode")
+            {
+                RelayEnvelope::Close { reason } => {
+                    assert_eq!(reason, "target daemon is not connected to relay");
+                }
+                RelayEnvelope::ClientConnected {
+                    daemon_public_key, ..
+                } => {
+                    panic!("ambiguous alias connected to daemon key {daemon_public_key}")
+                }
+                other => panic!("unexpected ambiguous connect envelope: {other:?}"),
+            }
+        }
+
+        let (mut exact_client, _) = connect_async_with_retry(&url)
+            .await
+            .expect("exact client should connect");
+        exact_client
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "secret".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-a".to_string()),
+                        daemon_alias: None,
+                    },
+                })
+                .expect("exact connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("exact connect should send");
+        match exact_client.next().await {
+            Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("exact connect response should decode")
+            {
+                RelayEnvelope::ClientConnected {
+                    daemon_public_key, ..
+                } => assert_eq!(daemon_public_key, "public-key-a"),
+                other => panic!("unexpected exact connect envelope: {other:?}"),
+            },
+            other => panic!("unexpected exact connect response: {other:?}"),
+        }
+
+        let _ = ambiguous_client.close(None).await;
+        let _ = exact_client.close(None).await;
+        let _ = daemon_a.close(None).await;
+        let _ = daemon_b.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn scoped_client_tokens_gate_packet_routing() {
         let mut claims = BTreeMap::new();
         claims.insert(

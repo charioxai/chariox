@@ -1501,13 +1501,19 @@ async fn resolve_target_daemon_key(
         return guard.daemons.get(&key).map(|_| key);
     }
     let alias = target.daemon_alias.as_ref()?;
-    guard
+    let mut matches = guard
         .daemons
         .iter()
-        .find(|(key, registration)| {
+        .filter(|(key, registration)| {
             key.realm_id == realm_id && registration.daemon_alias.as_ref() == Some(alias)
         })
-        .map(|(key, _)| key.clone())
+        .map(|(key, _)| key.clone());
+    let daemon_key = matches.next()?;
+    if matches.next().is_some() {
+        None
+    } else {
+        Some(daemon_key)
+    }
 }
 
 async fn log_target_not_connected(
