@@ -219,14 +219,17 @@ export function distributedRuntimeMatrixOutputDirFor(options, repo) {
 }
 
 export function distributedRuntimeMatrixCommandSummary(command) {
+  const reportPath = path.join(command.outputDir, command.reportFileName)
+  const artifactIndexPath = path.join(command.outputDir, `${path.basename(command.reportFileName, ".json")}-artifacts.json`)
   return {
     artifactIndexFlag: command.artifactIndexFlag,
-    artifactIndexPath: path.join(command.outputDir, `${path.basename(command.reportFileName, ".json")}-artifacts.json`),
+    artifactIndexPath,
     args: [...command.args],
     cwd: command.cwd,
     matrix: command.matrix,
+    nodeArgs: [command.scriptPath, ...command.args, "--report", reportPath, command.artifactIndexFlag, artifactIndexPath],
     repo: command.repo,
-    reportPath: path.join(command.outputDir, command.reportFileName),
+    reportPath,
     scriptPath: command.scriptPath,
   }
 }
@@ -345,12 +348,25 @@ export function distributedRuntimeValidationSuiteCommandsFor({
 }
 
 export function distributedRuntimeValidationSuiteCommandSummary(command) {
+  const artifactIndexPath = path.join(command.outputDir, "arroba-drill-artifacts.json")
+  const reportPath = path.join(command.outputDir, command.reportFileName)
+  const args = ["--run-json", "--preserve-failure-root", command.preserveFailureRoot]
   return {
-    artifactIndexPath: path.join(command.outputDir, "arroba-drill-artifacts.json"),
-    args: ["--run-json", "--preserve-failure-root", command.preserveFailureRoot],
+    artifactIndexPath,
+    args,
     cwd: command.cwd,
     failureRoot: command.preserveFailureRoot,
-    reportPath: path.join(command.outputDir, command.reportFileName),
+    nodeArgs: [
+      command.scriptPath,
+      "--run-json",
+      "--output",
+      reportPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+      "--preserve-failure-root",
+      command.preserveFailureRoot,
+    ],
+    reportPath,
     scriptPath: command.scriptPath,
   }
 }
