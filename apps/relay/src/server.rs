@@ -113,7 +113,7 @@ impl RelayServer {
 }
 
 async fn reject_draining_connection(mut stream: TcpStream) -> Result<(), std::io::Error> {
-    let body = r#"{"status":"draining","error":"relay is draining"}"#;
+    let body = r#"{"status":"draining","error":"relay is draining","retry_after_seconds":5}"#;
     let response = format!(
         "HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: {}\r\ncache-control: no-store\r\nretry-after: 5\r\nconnection: close\r\n\r\n{body}",
         body.len()
@@ -1107,6 +1107,7 @@ mod tests {
         let draining_ready = relay_http_get(addr, "/readyz").await;
         assert!(draining_ready.starts_with("HTTP/1.1 503 Service Unavailable"));
         assert!(draining_ready.contains("\r\nretry-after: 5\r\n"));
+        assert!(draining_ready.contains("\"retry_after_seconds\":5"));
         assert!(draining_ready.contains("\"status\":\"draining\""));
         assert!(draining_ready.contains("\"draining\":true"));
 
@@ -1121,6 +1122,7 @@ mod tests {
         let websocket_response = relay_http_get_until_close_or_reset(addr, "/runtime").await;
         assert!(websocket_response.starts_with("HTTP/1.1 503 Service Unavailable"));
         assert!(websocket_response.contains("\r\nretry-after: 5\r\n"));
+        assert!(websocket_response.contains("\"retry_after_seconds\":5"));
 
         let _ = shutdown_tx.send(());
         server_task.await.expect("draining server task should join");

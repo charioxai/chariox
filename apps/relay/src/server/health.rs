@@ -51,7 +51,7 @@ pub(crate) async fn handle_health_connection(
         200
     };
     let guard = registry.read().await;
-    let body = json!({
+    let mut body = json!({
         "status": status,
         "draining": is_draining,
         "unix_ms": current_unix_ms(),
@@ -62,6 +62,9 @@ pub(crate) async fn handle_health_connection(
         "display_tunnel_count": guard.display_tunnel_count(),
     });
     drop(guard);
+    if http_status == 503 {
+        body["retry_after_seconds"] = json!(DRAINING_RETRY_AFTER_SECONDS);
+    }
 
     write_json_response(
         &mut stream,
