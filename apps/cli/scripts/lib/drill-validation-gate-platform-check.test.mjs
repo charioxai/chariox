@@ -68,9 +68,11 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
     assert.equal(check.runtimeSignals.some((signal) => signal.id === "lease-health"), true)
     assert.deepEqual(check.validationSuite.validationPresets.map((preset) => preset.name), [
       "distributed-runtime",
+      "distributed-state-health",
       "native-provider-tui",
       "remote-agent-runtime",
       "remote-home-extension",
+      "runtime-authority",
       "slice-runtime",
       "workspace-live-sync",
     ])

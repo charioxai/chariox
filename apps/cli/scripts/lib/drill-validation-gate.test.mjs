@@ -28,10 +28,18 @@ import {
 
 test("describes validation gate presets", () => {
   const presets = describeDrillValidationGatePresets()
-  assert.deepEqual(presets.map((preset) => preset.name), ["distributed-runtime", "native-provider-tui", "remote-agent-runtime", "remote-home-extension", "slice-runtime", "workspace-live-sync"])
+  assert.deepEqual(presets.map((preset) => preset.name), ["distributed-runtime", "distributed-state-health", "native-provider-tui", "remote-agent-runtime", "remote-home-extension", "runtime-authority", "slice-runtime", "workspace-live-sync"])
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["distributed-runtime"] })[0].requiredMatrices,
     ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
+  )
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["runtime-authority"] })[0].requiredRuntimeSignals,
+    ["agent-lifecycle", "client-projection-health", "lease-health", "permission-interaction", "provider-run-lifecycle", "runtime-projection-health", "session-authority"],
+  )
+  assert.deepEqual(
+    describeDrillValidationGatePresets({ names: ["distributed-state-health"] })[0].requiredMatrices,
+    ["cloud-slice-runtime-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
   )
   assert.deepEqual(
     describeDrillValidationGatePresets({ names: ["workspace-live-sync"] })[0].requiredMatrixClassifications,

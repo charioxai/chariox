@@ -78,9 +78,11 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     ])
     assert.deepEqual(validationSuite.validationPresets.map((preset) => preset.name), [
       "distributed-runtime",
+      "distributed-state-health",
       "native-provider-tui",
       "remote-agent-runtime",
       "remote-home-extension",
+      "runtime-authority",
       "slice-runtime",
       "workspace-live-sync",
     ])

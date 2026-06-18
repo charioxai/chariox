@@ -178,7 +178,7 @@ test("drill validation gate lists presets", async () => {
 test("drill validation gate help lists presets from the registry", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--help"])
 
-  assert.match(stdout, /Known: distributed-runtime, native-provider-tui, remote-agent-runtime, remote-home-extension, slice-runtime, workspace-live-sync/)
+  assert.match(stdout, /Known: distributed-runtime, distributed-state-health, native-provider-tui, remote-agent-runtime, remote-home-extension, runtime-authority, slice-runtime, workspace-live-sync/)
   assert.match(stdout, /--require-artifact-coverage-area ID\[,ID\]/)
   assert.match(stdout, /--require-artifact-provider-account-alias P=A\[,P=A\]/)
   assert.match(stdout, /--require-artifact-generated-matrix-artifact-index PATH\[,PATH\]/)
