@@ -307,6 +307,7 @@ async function artifactCoverageReportForSummary(options) {
     requiredArtifactGeneratedValidationSuiteFailureRoots: options.requiredArtifactGeneratedValidationSuiteFailureRoots,
     requiredArtifactEvidenceRepos: options.requiredArtifactEvidenceRepos,
     requiredArtifactProviderAccountAliases: options.requiredArtifactProviderAccountAliases,
+    requiredArtifactValidationPresets: options.requiredArtifactValidationPresets,
     requiredArtifactRuntimeSignals: options.requiredArtifactRuntimeSignals,
     requiredArtifactRuntimeSignalOwners: options.requiredArtifactRuntimeSignalOwners,
     requiredArtifactOwners: options.requiredArtifactOwners,
