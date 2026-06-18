@@ -353,6 +353,20 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             }
+                            if let Some(error) =
+                                invalid_runtime_identifier("request_id", &request_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::DaemonPeerResponse {
+                                        request_id,
+                                        from_daemon_id: String::new(),
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
                             let Some(target_daemon_key) = resolve_target_daemon_key(
                                 &registry,
                                 &requester_daemon_key.realm_id,

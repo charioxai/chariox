@@ -3583,6 +3583,7 @@ mod tests {
             port: addr.port(),
             shared_token: Some("secret".to_string()),
         });
+        let registry = server.registry();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_task = tokio::spawn(async move {
             server
@@ -3640,6 +3641,47 @@ mod tests {
             nonce: "nonce".to_string(),
             ciphertext: "ciphertext".to_string(),
         };
+        daemon_a
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
+                    request_id: "".to_string(),
+                    target: ClientTarget {
+                        daemon_id: None,
+                        daemon_alias: Some("beta".to_string()),
+                    },
+                    encrypted_request: encrypted_request.clone(),
+                })
+                .expect("invalid peer request should serialize")
+                .into(),
+            ))
+            .await
+            .expect("invalid peer request should send");
+        match timeout(Duration::from_millis(500), daemon_a.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("invalid peer response should decode")
+            {
+                RelayEnvelope::DaemonPeerResponse {
+                    request_id,
+                    from_daemon_id,
+                    encrypted_response: None,
+                    error: Some(error),
+                } => {
+                    assert_eq!(request_id, "");
+                    assert_eq!(from_daemon_id, "");
+                    assert_eq!(error.code, "invalid_runtime_identifier");
+                    assert!(!error.retryable);
+                }
+                other => panic!("unexpected invalid peer response: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected invalid peer response frame: {other:?}"),
+            Err(_) => panic!("invalid peer response was not delivered"),
+        }
+        match timeout(Duration::from_millis(100), daemon_b.next()).await {
+            Err(_) => {}
+            Ok(other) => panic!("invalid peer request reached target daemon: {other:?}"),
+        }
+        assert_eq!(registry.read().await.pending_request_count(), 0);
+
         daemon_a
             .send(Message::Text(
                 serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
