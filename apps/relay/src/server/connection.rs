@@ -11,7 +11,6 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::auth::{
     RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, VerifiedRelayIdentity,
-    DEFAULT_RELAY_REALM_ID,
 };
 use crate::protocol::{
     ClientTarget, RelayCallerIdentity, RelayConnectionRole, RelayEnvelope, RelayError,
@@ -434,7 +433,15 @@ pub(crate) async fn handle_connection(
                             target,
                             encrypted_request,
                         } => {
-                            let realm_id = peer_realm_id(&registry, peer_addr).await;
+                            let Some(realm_id) =
+                                connected_client_realm_id(&registry, peer_addr).await
+                            else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "client must connect before sending requests".to_string(),
+                                );
+                                break;
+                            };
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &realm_id, &target).await
                             else {
@@ -524,7 +531,15 @@ pub(crate) async fn handle_connection(
                             subscription_scope,
                             resume_from_event_id,
                         } => {
-                            let realm_id = peer_realm_id(&registry, peer_addr).await;
+                            let Some(realm_id) =
+                                connected_client_realm_id(&registry, peer_addr).await
+                            else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "client must connect before subscribing".to_string(),
+                                );
+                                break;
+                            };
                             relay_log(
                                 "info",
                                 "client_subscribe_received",
@@ -660,6 +675,16 @@ pub(crate) async fn handle_connection(
                             subscription_id,
                             client_public_key,
                         } => {
+                            if connected_client_realm_id(&registry, peer_addr)
+                                .await
+                                .is_none()
+                            {
+                                send_close(
+                                    &outgoing_tx,
+                                    "client must connect before unsubscribing".to_string(),
+                                );
+                                break;
+                            }
                             let relay_request_id = format!(
                                 "relay-request-{}",
                                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
@@ -742,9 +767,23 @@ pub(crate) async fn handle_connection(
                             encrypted_response,
                             error,
                         } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before sending responses".to_string(),
+                                );
+                                break;
+                            };
                             let client_target = {
                                 let mut guard = registry.write().await;
-                                let pending = guard.pending_requests.remove(&relay_request_id);
+                                let pending = guard
+                                    .pending_requests
+                                    .get(&relay_request_id)
+                                    .filter(|pending| pending.daemon_key == current_daemon_key)
+                                    .cloned();
+                                if pending.is_some() {
+                                    guard.pending_requests.remove(&relay_request_id);
+                                }
                                 pending.and_then(|pending| {
                                     if error.is_none() {
                                         match &pending.kind {
@@ -784,10 +823,26 @@ pub(crate) async fn handle_connection(
                             encrypted_response,
                             error,
                         } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before sending peer responses"
+                                        .to_string(),
+                                );
+                                break;
+                            };
                             let daemon_target = {
                                 let mut guard = registry.write().await;
-                                let pending =
+                                let pending = guard
+                                    .pending_daemon_peer_requests
+                                    .get(&relay_request_id)
+                                    .filter(|pending| {
+                                        pending.target_daemon_key == current_daemon_key
+                                    })
+                                    .cloned();
+                                if pending.is_some() {
                                     guard.pending_daemon_peer_requests.remove(&relay_request_id);
+                                }
                                 pending.and_then(|pending| {
                                     resolve_daemon_sender_locked(
                                         &guard,
@@ -953,11 +1008,19 @@ pub(crate) async fn handle_connection(
                             event_id,
                             encrypted_event,
                         } => {
+                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon must register before sending events".to_string(),
+                                );
+                                break;
+                            };
                             let client_sender = {
                                 let guard = registry.read().await;
                                 guard
                                     .subscriptions
                                     .get(&subscription_id)
+                                    .filter(|active| active.daemon_key == current_daemon_key)
                                     .and_then(|active| guard.peers.get(&active.client_addr))
                                     .map(|peer| peer.sender.clone())
                             };
@@ -1139,14 +1202,17 @@ async fn log_daemon_sender_missing(
     );
 }
 
-async fn peer_realm_id(registry: &Arc<RwLock<RelayRegistry>>, peer_addr: SocketAddr) -> String {
+async fn connected_client_realm_id(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    peer_addr: SocketAddr,
+) -> Option<String> {
     registry
         .read()
         .await
         .peers
         .get(&peer_addr)
+        .filter(|peer| peer.role == RelayConnectionRole::Client)
         .and_then(|peer| peer.realm_id.clone())
-        .unwrap_or_else(|| DEFAULT_RELAY_REALM_ID.to_string())
 }
 
 async fn peer_identity(
@@ -1374,6 +1440,7 @@ mod tests {
     use tokio::sync::{mpsc, RwLock};
 
     use super::*;
+    use crate::auth::DEFAULT_RELAY_REALM_ID;
     use crate::protocol::DaemonRegistration;
 
     fn peer_addr(port: u16) -> SocketAddr {

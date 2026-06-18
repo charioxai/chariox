@@ -1665,6 +1665,475 @@ mod tests {
         server_task.await.expect("server task should join");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runtime_client_frames_require_accepted_client_connect() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration("daemon-1", "machine-1", "Linux", 10),
+                })
+                .expect("register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut client_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client should connect");
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientRequest {
+                    request_id: "request-before-connect".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-1".to_string()),
+                        daemon_alias: None,
+                    },
+                    encrypted_request: EncryptedRelayPayload {
+                        sender_public_key: "client-public".to_string(),
+                        nonce: "nonce".to_string(),
+                        ciphertext: "ciphertext".to_string(),
+                    },
+                })
+                .expect("client request should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client request should send");
+
+        let close_payload = match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => text,
+            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => String::new().into(),
+            Ok(other) => panic!("unexpected pre-connect client response: {other:?}"),
+            Err(_) => panic!("pre-connect client request did not close promptly"),
+        };
+        if !close_payload.is_empty() {
+            match serde_json::from_str::<RelayEnvelope>(&close_payload)
+                .expect("relay close should decode")
+            {
+                RelayEnvelope::Close { reason } => {
+                    assert_eq!(reason, "client must connect before sending requests");
+                }
+                other => panic!("unexpected pre-connect response envelope: {other:?}"),
+            }
+        }
+        match timeout(Duration::from_millis(100), daemon_socket.next()).await {
+            Err(_) => {}
+            Ok(other) => panic!("pre-connect request reached daemon: {other:?}"),
+        }
+        assert_eq!(registry.read().await.pending_request_count(), 0);
+
+        let _ = daemon_socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_responses_must_match_pending_request_owner() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_a, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon A should connect");
+        let (mut daemon_b, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon B should connect");
+        for (socket, daemon_id) in [(&mut daemon_a, "daemon-a"), (&mut daemon_b, "daemon-b")] {
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                        registration: test_registration(daemon_id, "machine-1", "Linux", 10),
+                    })
+                    .expect("register should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("register should send");
+        }
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut client_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client should connect");
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "secret".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-a".to_string()),
+                        daemon_alias: None,
+                    },
+                })
+                .expect("client connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client connect should send");
+        match client_socket.next().await {
+            Some(Ok(Message::Text(text))) => {
+                assert!(matches!(
+                    serde_json::from_str::<RelayEnvelope>(&text)
+                        .expect("client connected should decode"),
+                    RelayEnvelope::ClientConnected { .. }
+                ));
+            }
+            other => panic!("unexpected client connect response: {other:?}"),
+        }
+
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientRequest {
+                    request_id: "client-request-1".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-a".to_string()),
+                        daemon_alias: None,
+                    },
+                    encrypted_request: EncryptedRelayPayload {
+                        sender_public_key: "client-public".to_string(),
+                        nonce: "nonce".to_string(),
+                        ciphertext: "ciphertext".to_string(),
+                    },
+                })
+                .expect("client request should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client request should send");
+
+        let relay_request_id = match daemon_a.next().await {
+            Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("daemon request should decode")
+            {
+                RelayEnvelope::DaemonRequest {
+                    relay_request_id, ..
+                } => relay_request_id,
+                other => panic!("unexpected daemon request envelope: {other:?}"),
+            },
+            other => panic!("unexpected daemon request frame: {other:?}"),
+        };
+
+        let encrypted_response = EncryptedRelayPayload {
+            sender_public_key: "daemon-public".to_string(),
+            nonce: "nonce-response".to_string(),
+            ciphertext: "ciphertext-response".to_string(),
+        };
+        daemon_b
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonResponse {
+                    relay_request_id: relay_request_id.clone(),
+                    encrypted_response: Some(encrypted_response.clone()),
+                    error: None,
+                })
+                .expect("wrong daemon response should serialize")
+                .into(),
+            ))
+            .await
+            .expect("wrong daemon response should send");
+        match timeout(Duration::from_millis(100), client_socket.next()).await {
+            Err(_) => {}
+            Ok(other) => panic!("wrong daemon completed client request: {other:?}"),
+        }
+        assert_eq!(registry.read().await.pending_request_count(), 1);
+
+        daemon_a
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: Some(encrypted_response.clone()),
+                    error: None,
+                })
+                .expect("owner daemon response should serialize")
+                .into(),
+            ))
+            .await
+            .expect("owner daemon response should send");
+        match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("client response should decode")
+            {
+                RelayEnvelope::ClientResponse {
+                    request_id,
+                    encrypted_response: Some(response),
+                    error: None,
+                } => {
+                    assert_eq!(request_id, "client-request-1");
+                    assert_eq!(response, encrypted_response);
+                }
+                other => panic!("unexpected client response envelope: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected client response frame: {other:?}"),
+            Err(_) => panic!("owner daemon response was not delivered"),
+        }
+        assert_eq!(registry.read().await.pending_request_count(), 0);
+
+        let _ = client_socket.close(None).await;
+        let _ = daemon_a.close(None).await;
+        let _ = daemon_b.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_events_must_match_subscription_owner() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_a, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon A should connect");
+        let (mut daemon_b, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon B should connect");
+        for (socket, daemon_id) in [(&mut daemon_a, "daemon-a"), (&mut daemon_b, "daemon-b")] {
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                        registration: test_registration(daemon_id, "machine-1", "Linux", 10),
+                    })
+                    .expect("register should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("register should send");
+        }
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut client_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client should connect");
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "secret".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-a".to_string()),
+                        daemon_alias: None,
+                    },
+                })
+                .expect("client connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client connect should send");
+        match client_socket.next().await {
+            Some(Ok(Message::Text(text))) => {
+                assert!(matches!(
+                    serde_json::from_str::<RelayEnvelope>(&text)
+                        .expect("client connected should decode"),
+                    RelayEnvelope::ClientConnected { .. }
+                ));
+            }
+            other => panic!("unexpected client connect response: {other:?}"),
+        }
+
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientSubscribe {
+                    request_id: "subscribe-1".to_string(),
+                    subscription_id: "subscription-1".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-a".to_string()),
+                        daemon_alias: None,
+                    },
+                    session_id: "session-1".to_string(),
+                    attachment_id: "terminal".to_string(),
+                    client_public_key: "client-public".to_string(),
+                    subscription_scope: None,
+                    resume_from_event_id: None,
+                })
+                .expect("client subscribe should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client subscribe should send");
+
+        let subscribe_relay_request_id = match daemon_a.next().await {
+            Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("daemon subscribe should decode")
+            {
+                RelayEnvelope::DaemonSubscribe {
+                    relay_request_id,
+                    relay_subscription_id,
+                    ..
+                } => {
+                    assert_eq!(relay_subscription_id, "subscription-1");
+                    relay_request_id
+                }
+                other => panic!("unexpected daemon subscribe envelope: {other:?}"),
+            },
+            other => panic!("unexpected daemon subscribe frame: {other:?}"),
+        };
+        daemon_a
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonResponse {
+                    relay_request_id: subscribe_relay_request_id,
+                    encrypted_response: None,
+                    error: None,
+                })
+                .expect("subscribe response should serialize")
+                .into(),
+            ))
+            .await
+            .expect("subscribe response should send");
+        match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("subscribe response should decode")
+            {
+                RelayEnvelope::ClientResponse {
+                    request_id,
+                    encrypted_response: None,
+                    error: None,
+                } => assert_eq!(request_id, "subscribe-1"),
+                other => panic!("unexpected subscribe response envelope: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected subscribe response frame: {other:?}"),
+            Err(_) => panic!("subscribe response was not delivered"),
+        }
+        assert_eq!(registry.read().await.subscription_count(), 1);
+
+        let encrypted_event = EncryptedRelayPayload {
+            sender_public_key: "daemon-public".to_string(),
+            nonce: "nonce-event".to_string(),
+            ciphertext: "ciphertext-event".to_string(),
+        };
+        daemon_b
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonEvent {
+                    subscription_id: "subscription-1".to_string(),
+                    event_id: 1,
+                    encrypted_event: encrypted_event.clone(),
+                })
+                .expect("wrong daemon event should serialize")
+                .into(),
+            ))
+            .await
+            .expect("wrong daemon event should send");
+        match timeout(Duration::from_millis(100), client_socket.next()).await {
+            Err(_) => {}
+            Ok(other) => panic!("wrong daemon emitted subscription event: {other:?}"),
+        }
+
+        daemon_a
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonEvent {
+                    subscription_id: "subscription-1".to_string(),
+                    event_id: 2,
+                    encrypted_event: encrypted_event.clone(),
+                })
+                .expect("owner daemon event should serialize")
+                .into(),
+            ))
+            .await
+            .expect("owner daemon event should send");
+        match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("client event should decode")
+            {
+                RelayEnvelope::ClientEvent {
+                    subscription_id,
+                    event_id,
+                    encrypted_event: response,
+                } => {
+                    assert_eq!(subscription_id, "subscription-1");
+                    assert_eq!(event_id, 2);
+                    assert_eq!(response, encrypted_event);
+                }
+                other => panic!("unexpected client event envelope: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected client event frame: {other:?}"),
+            Err(_) => panic!("owner daemon event was not delivered"),
+        }
+
+        let _ = client_socket.close(None).await;
+        let _ = daemon_a.close(None).await;
+        let _ = daemon_b.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
     async fn assert_no_relay_close(
         socket: &mut tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
