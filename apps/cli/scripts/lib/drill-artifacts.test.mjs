@@ -693,6 +693,8 @@ test("summarizes drill artifact indexes", async () => {
         missingRuntimeSignals: "relay-target-freshness",
         missingRuntimeSignalOwners: "runtime-network",
         validationPresets: "distributed-runtime,workspace-live-sync",
+        requiredFailureClassifications: "kernel-authority,provider-auth",
+        missingFailureClassifications: "provider-auth",
         artifactKinds: "validation-gate,validation-suite-run",
         generatedEvidenceKinds: "validation-suite-run",
         generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
@@ -720,6 +722,7 @@ test("summarizes drill artifact indexes", async () => {
         requiredRuntimeSignals: "lease-health,session-authority",
         requiredRuntimeSignalOwners: "kernel-authority",
         validationPresets: "distributed-runtime,slice-runtime",
+        requiredFailureClassifications: "relay-target-freshness,workspace-live-sync-conflict",
         artifactKinds: "matrix-report",
         generatedEvidenceKinds: "matrix-report",
         generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
@@ -790,6 +793,15 @@ test("summarizes drill artifact indexes", async () => {
       "artifact-coverage": 1,
       "matrix-coverage": 1,
       "validation-gate": 1,
+    })
+    assert.deepEqual(aggregate.requiredFailureClassifications, {
+      "kernel-authority": 1,
+      "provider-auth": 1,
+      "relay-target-freshness": 1,
+      "workspace-live-sync-conflict": 1,
+    })
+    assert.deepEqual(aggregate.missingFailureClassifications, {
+      "provider-auth": 1,
     })
     assert.deepEqual(aggregate.plannedClassifications, {
       "workspace-live-sync-conflict": 1,
@@ -916,6 +928,8 @@ test("summarizes drill artifact indexes", async () => {
       artifactCoverageInputCount: "1",
       artifactCoverageInputSources: "artifact metadata inputs",
       classifications: "artifact-coverage,matrix-coverage,validation-gate",
+      requiredFailureClassifications: "kernel-authority,provider-auth,relay-target-freshness,workspace-live-sync-conflict",
+      missingFailureClassifications: "provider-auth",
       exitCriterionStatuses: "dry-run",
       incompleteExitCriterionStatuses: "dry-run",
       evidenceRepos: "cloud,oss",
@@ -961,6 +975,8 @@ test("summarizes drill artifact indexes", async () => {
       "validationPresets",
       "owners",
       "classifications",
+      "requiredFailureClassifications",
+      "missingFailureClassifications",
       "plannedOwners",
       "plannedClassifications",
       "exitCriterionStatuses",
@@ -1007,6 +1023,8 @@ test("summarizes drill artifact indexes", async () => {
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /validation_presets: distributed-runtime=2 slice-runtime=1 workspace-live-sync=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /owners: runtime-network=1 validation-harness=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /required_failure_classifications: kernel-authority=1 provider-auth=1 relay-target-freshness=1 workspace-live-sync-conflict=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /missing_failure_classifications: provider-auth=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /planned_owners: runtime-state=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /planned_classifications: workspace-live-sync-conflict=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /exit_criterion_statuses: dry-run=1/)
@@ -1212,6 +1230,12 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
       validationPresets: { "distributed-runtmie": 1 },
     })),
     /validationPresets has unknown validation preset "distributed-runtmie"/,
+  )
+  assert.throws(
+    () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({
+      requiredFailureClassifications: { "provider-aut": 1 },
+    })),
+    /requiredFailureClassifications has unknown failure classification "provider-aut"/,
   )
   assert.throws(
     () => validateDrillArtifactDiagnosticDimensions(emptyDrillArtifactDiagnosticDimensions({

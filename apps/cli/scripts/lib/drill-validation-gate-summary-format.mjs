@@ -186,6 +186,14 @@ export function formatDrillValidationGateSummary(report) {
     if (classifications.length > 0) {
       lines.push(`artifact_classifications=${classifications.map(([classification, count]) => `${classification}:${count}`).join(",")}`)
     }
+    const requiredFailureClassifications = Object.entries(artifacts.aggregate.requiredFailureClassifications ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (requiredFailureClassifications.length > 0) {
+      lines.push(`artifact_required_failure_classifications=${requiredFailureClassifications.map(([classification, count]) => `${classification}:${count}`).join(",")}`)
+    }
+    const missingFailureClassifications = Object.entries(artifacts.aggregate.missingFailureClassifications ?? {}).sort(([left], [right]) => left.localeCompare(right))
+    if (missingFailureClassifications.length > 0) {
+      lines.push(`artifact_missing_failure_classifications=${missingFailureClassifications.map(([classification, count]) => `${classification}:${count}`).join(",")}`)
+    }
     const plannedOwners = Object.entries(artifacts.aggregate.plannedOwners ?? {}).sort(([left], [right]) => left.localeCompare(right))
     if (plannedOwners.length > 0) {
       lines.push(`artifact_planned_owners=${plannedOwners.map(([owner, count]) => `${owner}:${count}`).join(",")}`)

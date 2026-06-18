@@ -26,7 +26,10 @@ import { isKnownDrillArtifactEvidenceRepo } from "./lib/drill-evidence-repos.mjs
 import { validateDrillGeneratedEvidenceKind } from "./lib/drill-generated-evidence-metadata.mjs"
 import { validateDrillGeneratedMatrixName } from "./lib/drill-generated-matrix-metadata.mjs"
 import { validateDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
-import { drillFailureOwnerForClassification } from "./lib/drill-failure-taxonomy.mjs"
+import {
+  drillFailureOwnerForClassification,
+  validateDrillFailureClassification,
+} from "./lib/drill-failure-taxonomy.mjs"
 import {
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalNextAction,
@@ -71,6 +74,8 @@ function printHelp() {
     "                         Exit non-zero when dry-run planned classification metadata is missing; repeatable",
     "  --require-validation-preset PRESET",
     "                         Exit non-zero when validation preset metadata is missing; repeatable",
+    "  --require-failure-classification CLASS",
+    "                         Exit non-zero when required failure classification metadata is missing; repeatable",
     "  --require-runtime-signal ID[,ID]",
     "                         Exit non-zero when runtime signal metadata is missing; repeatable",
     "  --require-runtime-signal-owner OWNER[,OWNER]",
@@ -111,6 +116,7 @@ async function main() {
   Object.assign(aggregate, providerAccountAliasDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, plannedDiagnosticRequirementDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, validationPresetDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, failureClassificationDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, runtimeSignalDiagnosticsFor(aggregate, options))
   aggregate.nextActions = artifactIndexSummaryNextActions(aggregate)
   if (options.outputPath) {
@@ -132,6 +138,7 @@ async function main() {
         ...providerAccountAliasRequirementMetadataFor(aggregate),
         ...plannedDiagnosticRequirementMetadataFor(aggregate),
         ...validationPresetRequirementMetadataFor(aggregate),
+        ...failureClassificationRequirementMetadataFor(aggregate),
         ...runtimeSignalRequirementMetadataFor(aggregate),
       },
     })
@@ -155,6 +162,7 @@ async function main() {
     || (aggregate.missingPlannedOwners ?? []).length > 0
     || (aggregate.missingPlannedClassifications ?? []).length > 0
     || (aggregate.missingValidationPresets ?? []).length > 0
+    || (aggregate.missingFailureClassificationRequirements ?? []).length > 0
     || (aggregate.missingRuntimeSignalRequirements ?? []).length > 0
     || (aggregate.missingRuntimeSignalOwnerRequirements ?? []).length > 0
   ) {
@@ -179,6 +187,7 @@ function parseArgs(argv) {
     requiredGeneratedValidationSuiteArtifactIndexes: [],
     requiredGeneratedValidationSuiteFailureRoots: [],
     requiredGeneratedMatrixArtifactIndexes: [],
+    requiredFailureClassifications: [],
     requiredMatrixMaxAgeMs: null,
     requiredPlannedClassifications: [],
     requiredPlannedOwners: [],
@@ -316,6 +325,14 @@ function parseArgs(argv) {
         arg.slice("--require-validation-preset=".length),
         "--require-validation-preset",
       ))
+    } else if (arg === "--require-failure-classification") {
+      options.requiredFailureClassifications.push(parseFailureClassificationRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-failure-classification=")) {
+      options.requiredFailureClassifications.push(parseFailureClassificationRequirement(
+        arg.slice("--require-failure-classification=".length),
+        "--require-failure-classification",
+      ))
     } else if (arg === "--require-runtime-signal") {
       options.requiredRuntimeSignals.push(...parseRuntimeSignalRequirement(readValue(argv, index, arg), arg))
       index += 1
@@ -428,6 +445,13 @@ function parseGeneratedMatrixRepoRequirement(value, flag) {
 function parseValidationPresetRequirement(value, flag) {
   validateDrillArtifactValidationPreset(value, flag, {
     message: () => `${flag} has unknown validation preset: ${value}`,
+  })
+  return value
+}
+
+function parseFailureClassificationRequirement(value, flag) {
+  validateDrillFailureClassification(value, flag, {
+    label: "failure classification",
   })
   return value
 }
@@ -706,6 +730,25 @@ function validationPresetRequirementMetadataFor(aggregate) {
   }
 }
 
+function failureClassificationDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredFailureClassifications)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.requiredFailureClassifications ?? {}))
+  return {
+    requiredFailureClassificationRequirements: required,
+    missingFailureClassificationRequirements: required.filter((classification) => !available.has(classification)),
+  }
+}
+
+function failureClassificationRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredFailureClassificationRequirements ?? []
+  const missing = aggregate.missingFailureClassificationRequirements ?? []
+  return {
+    ...(required.length > 0 ? { requiredFailureClassifications: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingFailureClassifications: missing.join(",") } : {}),
+  }
+}
+
 function runtimeSignalDiagnosticsFor(aggregate, options) {
   const required = [...new Set(options.requiredRuntimeSignals)].sort()
   const requiredOwners = [...new Set(options.requiredRuntimeSignalOwners)].sort()
@@ -797,6 +840,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingValidationPresets ?? []
     lines.push(`validation_presets_required=${aggregate.requiredValidationPresets.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredFailureClassificationRequirements !== undefined) {
+    const missing = aggregate.missingFailureClassificationRequirements ?? []
+    lines.push(`failure_classifications_required=${aggregate.requiredFailureClassificationRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if (aggregate.requiredRuntimeSignalRequirements !== undefined) {
     const missing = aggregate.missingRuntimeSignalRequirements ?? []
     lines.push(`runtime_signals_required=${aggregate.requiredRuntimeSignalRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
@@ -849,6 +896,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingValidationPresets ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes that record validation presets: ${aggregate.missingValidationPresets.join(", ")}`)
+  }
+  if ((aggregate.missingFailureClassificationRequirements ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes with required failure classification coverage: ${aggregate.missingFailureClassificationRequirements.join(", ")}`)
   }
   for (const signal of aggregate.missingRuntimeSignalRequirements ?? []) {
     lines.push(`next: ${drillRuntimeSignalNextAction(signal, { target: "artifact-index" })}`)
@@ -942,6 +992,13 @@ function artifactIndexSummaryNextActions(aggregate) {
     "artifact-coverage",
     "include drill artifact indexes that record validation presets",
   )
+  for (const classification of aggregate.missingFailureClassificationRequirements ?? []) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      owner: artifactIndexSummaryOwnerForClassification(classification),
+      classification,
+      nextAction: `include drill artifact indexes with required failure classification coverage: ${classification}`,
+    })
+  }
   for (const signal of aggregate.missingRuntimeSignalRequirements ?? []) {
     countArtifactIndexSummaryNextAction(nextActions, {
       owner: drillRuntimeSignalOwnersFor([signal])[0],

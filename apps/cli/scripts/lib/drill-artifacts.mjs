@@ -5,7 +5,10 @@ import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
-import { validateDrillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
+import {
+  validateDrillFailureClassification,
+  validateDrillFailureTaxonomyManifest,
+} from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -49,6 +52,8 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "validationPresets",
   "owners",
   "classifications",
+  "requiredFailureClassifications",
+  "missingFailureClassifications",
   "plannedOwners",
   "plannedClassifications",
   "exitCriterionStatuses",
@@ -93,6 +98,8 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   validationPresets: "validation_presets",
   owners: "owners",
   classifications: "classifications",
+  requiredFailureClassifications: "required_failure_classifications",
+  missingFailureClassifications: "missing_failure_classifications",
   plannedOwners: "planned_owners",
   plannedClassifications: "planned_classifications",
   exitCriterionStatuses: "exit_criterion_statuses",
@@ -271,6 +278,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const validationPresets = new Map()
   const owners = new Map()
   const classifications = new Map()
+  const requiredFailureClassifications = new Map()
+  const missingFailureClassifications = new Map()
   const plannedOwners = new Map()
   const plannedClassifications = new Map()
   const exitCriterionStatuses = new Map()
@@ -315,6 +324,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
     const indexClassifications = metadataListFromMetadata(index.metadata, "classifications")
+    const indexRequiredFailureClassifications = metadataListFromMetadata(index.metadata, "requiredFailureClassifications")
+    const indexMissingFailureClassifications = metadataListFromMetadata(index.metadata, "missingFailureClassifications")
     const indexPlannedOwners = metadataListFromMetadata(index.metadata, "plannedOwners")
     const indexPlannedClassifications = metadataListFromMetadata(index.metadata, "plannedClassifications")
     const indexExitCriterionStatuses = metadataListFromMetadata(index.metadata, "exitCriterionStatuses")
@@ -352,6 +363,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexValidationPresets, validationPresets)
     countValues(indexOwners, owners)
     countValues(indexClassifications, classifications)
+    countValues(indexRequiredFailureClassifications, requiredFailureClassifications)
+    countValues(indexMissingFailureClassifications, missingFailureClassifications)
     countValues(indexPlannedOwners, plannedOwners)
     countValues(indexPlannedClassifications, plannedClassifications)
     countValues(indexExitCriterionStatuses, exitCriterionStatuses)
@@ -403,6 +416,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       validationPresets: countValues(indexValidationPresets),
       owners: countValues(indexOwners),
       classifications: countValues(indexClassifications),
+      requiredFailureClassifications: countValues(indexRequiredFailureClassifications),
+      missingFailureClassifications: countValues(indexMissingFailureClassifications),
       plannedOwners: countValues(indexPlannedOwners),
       plannedClassifications: countValues(indexPlannedClassifications),
       exitCriterionStatuses: countValues(indexExitCriterionStatuses),
@@ -446,6 +461,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     validationPresets: sortedCountObject(validationPresets),
     owners: sortedCountObject(owners),
     classifications: sortedCountObject(classifications),
+    requiredFailureClassifications: sortedCountObject(requiredFailureClassifications),
+    missingFailureClassifications: sortedCountObject(missingFailureClassifications),
     plannedOwners: sortedCountObject(plannedOwners),
     plannedClassifications: sortedCountObject(plannedClassifications),
     exitCriterionStatuses: sortedCountObject(exitCriterionStatuses),
@@ -814,6 +831,13 @@ function validateDiagnosticCountObject(value, source, key) {
   if (key === "validationPresets") {
     for (const preset of Object.keys(value)) {
       validateDrillArtifactValidationPreset(preset, source)
+    }
+  }
+  if (["requiredFailureClassifications", "missingFailureClassifications"].includes(key)) {
+    for (const classification of Object.keys(value)) {
+      validateDrillFailureClassification(classification, source, {
+        label: "failure classification",
+      })
     }
   }
 }

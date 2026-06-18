@@ -56,6 +56,10 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       "distributed-runtime": 1,
       "workspace-live-sync": 1,
     })
+    assert.deepEqual(stdoutAggregate.requiredFailureClassifications, {
+      "kernel-authority": 1,
+      "workspace-live-sync-conflict": 1,
+    })
     assert.deepEqual(stdoutAggregate.artifactKinds, {
       "artifact-index": 1,
       "matrix-report": 1,
@@ -885,6 +889,68 @@ test("drill artifact index summary gates validation presets", async () => {
   }
 })
 
+test("drill artifact index summary gates required failure classifications", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-failure-classification",
+      "kernel-authority",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredFailureClassificationRequirements, ["kernel-authority"])
+    assert.deepEqual(aggregate.missingFailureClassificationRequirements, [])
+    assert.deepEqual(aggregate.nextActions, [])
+    assert.equal(artifactIndex.metadata.requiredFailureClassifications, "kernel-authority")
+    assert.equal(artifactIndex.metadata.missingFailureClassifications, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-failure-classification=workspace-live-sync-conflict",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /failure_classifications_required=workspace-live-sync-conflict missing=workspace-live-sync-conflict/)
+        assert.match(error.stdout, /next: include drill artifact indexes with required failure classification coverage: workspace-live-sync-conflict/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-failure-classification",
+        "kernel-autohority",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-failure-classification has unknown failure classification "kernel-autohority"/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary gates runtime signals with owner-routed next actions", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
@@ -1089,6 +1155,9 @@ async function writeIndexedReport(rootDir, name, schema) {
       validationPresets: name === "one"
         ? "distributed-runtime"
         : "workspace-live-sync",
+      requiredFailureClassifications: name === "one"
+        ? "kernel-authority"
+        : "workspace-live-sync-conflict",
       artifactKinds: name === "one"
         ? "validation-gate,artifact-index"
         : "matrix-report",
