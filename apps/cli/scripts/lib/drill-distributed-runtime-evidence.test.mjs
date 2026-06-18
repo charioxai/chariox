@@ -399,7 +399,7 @@ test("matrix report child failures include generated evidence context", async ()
     await assert.rejects(
       runDistributedRuntimeMatrixReportCommand({
         artifactIndexFlag: "--artifact-index",
-        args: ["--include-hetzner"],
+        args: ["--label", "Alice's matrix run", "--include-hetzner"],
         cwd: rootDir,
         matrix: "remote-agent-runtime-matrix",
         outputDir: path.join(rootDir, "out"),
@@ -412,6 +412,7 @@ test("matrix report child failures include generated evidence context", async ()
         assert.match(error.message, new RegExp(`cwd: ${escapeRegExp(rootDir)}`))
         assert.match(error.message, /repo: oss/)
         assert.match(error.message, /matrix: remote-agent-runtime-matrix/)
+        assert.match(error.message, /--label 'Alice'\\''s matrix run'/)
         assert.match(error.message, /args: .*--include-hetzner .*--report .*matrix\.json .*--artifact-index .*matrix-artifacts\.json/)
         assert.match(error.message, /report: .*matrix\.json/)
         assert.match(error.message, /artifact-index: .*matrix-artifacts\.json/)

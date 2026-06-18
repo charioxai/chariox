@@ -5,6 +5,7 @@ import {
   DRILL_GENERATED_MATRIX_NAMES,
   DRILL_GENERATED_MATRIX_NAMES_BY_REPO,
 } from "./drill-generated-matrix-names.mjs"
+import { formatDrillCommandLine } from "./drill-runtime-helpers.mjs"
 
 const execFile = promisify(execFileWithCallback)
 
@@ -391,7 +392,7 @@ function childCommandContextFor({
     ...(repo ? [`\nrepo: ${repo}`] : []),
     ...(matrix ? [`\nmatrix: ${matrix}`] : []),
     ...(validationSuite ? [`\nvalidation-suite: ${validationSuite}`] : []),
-    `\nargs: ${args.join(" ")}`,
+    `\nargs: ${formatDrillCommandLine(args[0] ?? "", args.slice(1))}`,
     `\nreport: ${reportPath}`,
     `\nartifact-index: ${artifactIndexPath}`,
     ...(failureRoot ? [`\nfailure-root: ${failureRoot}`] : []),
