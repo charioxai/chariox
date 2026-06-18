@@ -1293,6 +1293,8 @@ test("summarizes validation gate matrix coverage across reports", async () => {
       missingArtifactGeneratedMatrixNames: {},
       requiredArtifactGeneratedMatrixRepos: {},
       missingArtifactGeneratedMatrixRepos: {},
+      requiredArtifactGeneratedValidationSuiteFailureRoots: {},
+      missingArtifactGeneratedValidationSuiteFailureRoots: {},
       requiredArtifactEvidenceRepos: {},
       missingArtifactEvidenceRepos: {},
       requiredArtifactProviderAccountAliases: {},

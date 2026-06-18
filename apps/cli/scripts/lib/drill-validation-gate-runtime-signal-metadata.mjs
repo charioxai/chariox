@@ -303,11 +303,15 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.missingGeneratedValidationSuiteArtifactIndexes ?? []).filter(nonEmptyString),
   ])
   const requiredGeneratedValidationSuiteFailureRoots = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedValidationSuiteFailureRoots ?? {}),
     ...Object.keys(aggregate.coverage?.requiredGeneratedValidationSuiteFailureRoots ?? {}),
+    ...(aggregate.requiredArtifactGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
     ...(aggregate.requiredGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
   ])
   const missingGeneratedValidationSuiteFailureRoots = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactGeneratedValidationSuiteFailureRoots ?? {}),
     ...Object.keys(aggregate.coverage?.missingGeneratedValidationSuiteFailureRoots ?? {}),
+    ...(aggregate.missingArtifactGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
     ...(aggregate.missingGeneratedValidationSuiteFailureRoots ?? []).filter(nonEmptyString),
   ])
   const providerAccountAliases = new Set([

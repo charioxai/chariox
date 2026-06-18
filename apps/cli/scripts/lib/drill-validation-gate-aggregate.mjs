@@ -77,6 +77,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactGeneratedMatrixNames: new Map(),
     requiredArtifactGeneratedMatrixRepos: new Map(),
     missingArtifactGeneratedMatrixRepos: new Map(),
+    requiredArtifactGeneratedValidationSuiteFailureRoots: new Map(),
+    missingArtifactGeneratedValidationSuiteFailureRoots: new Map(),
     requiredArtifactEvidenceRepos: new Map(),
     missingArtifactEvidenceRepos: new Map(),
     requiredArtifactProviderAccountAliases: new Map(),
@@ -324,6 +326,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactGeneratedMatrixNames: missingRequirements.missingArtifactGeneratedMatrixNames,
     requiredArtifactGeneratedMatrixRepos: normalizedAggregateRequirements.requiredArtifactGeneratedMatrixRepos,
     missingArtifactGeneratedMatrixRepos: missingRequirements.missingArtifactGeneratedMatrixRepos,
+    requiredArtifactGeneratedValidationSuiteFailureRoots: normalizedAggregateRequirements.requiredArtifactGeneratedValidationSuiteFailureRoots,
+    missingArtifactGeneratedValidationSuiteFailureRoots: missingRequirements.missingArtifactGeneratedValidationSuiteFailureRoots,
     requiredArtifactEvidenceRepos: normalizedAggregateRequirements.requiredArtifactEvidenceRepos,
     missingArtifactEvidenceRepos: missingRequirements.missingArtifactEvidenceRepos,
     requiredArtifactProviderAccountAliases: normalizedAggregateRequirements.requiredArtifactProviderAccountAliases,
@@ -425,6 +429,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_artifact_generated_matrix_limitations", aggregate.requiredArtifactGeneratedMatrixLimitations, aggregate.missingArtifactGeneratedMatrixLimitations)
   appendAggregateRequirementLine(lines, "required_artifact_generated_matrix_names", aggregate.requiredArtifactGeneratedMatrixNames, aggregate.missingArtifactGeneratedMatrixNames)
   appendAggregateRequirementLine(lines, "required_artifact_generated_matrix_repos", aggregate.requiredArtifactGeneratedMatrixRepos, aggregate.missingArtifactGeneratedMatrixRepos)
+  appendAggregateRequirementLine(lines, "required_artifact_generated_validation_suite_failure_roots", aggregate.requiredArtifactGeneratedValidationSuiteFailureRoots, aggregate.missingArtifactGeneratedValidationSuiteFailureRoots)
   appendAggregateRequirementLine(lines, "required_artifact_evidence_repos", aggregate.requiredArtifactEvidenceRepos, aggregate.missingArtifactEvidenceRepos)
   appendAggregateRequirementLine(lines, "required_artifact_provider_account_aliases", aggregate.requiredArtifactProviderAccountAliases, aggregate.missingArtifactProviderAccountAliases)
   appendAggregateRequirementLine(lines, "required_artifact_validation_presets", aggregate.requiredArtifactValidationPresets, aggregate.missingArtifactValidationPresets)
@@ -502,6 +507,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingArtifactGeneratedMatrixNames ?? [], `${source}.missingArtifactGeneratedMatrixNames`)
   validateArtifactEvidenceRepoArray(aggregate.requiredArtifactGeneratedMatrixRepos ?? [], `${source}.requiredArtifactGeneratedMatrixRepos`)
   validateArtifactEvidenceRepoArray(aggregate.missingArtifactGeneratedMatrixRepos ?? [], `${source}.missingArtifactGeneratedMatrixRepos`)
+  validateGeneratedEvidencePathArray(aggregate.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [], `${source}.requiredArtifactGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathArray(aggregate.missingArtifactGeneratedValidationSuiteFailureRoots ?? [], `${source}.missingArtifactGeneratedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoArray(aggregate.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(aggregate.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateProviderAccountAliasArray(aggregate.requiredArtifactProviderAccountAliases ?? [], `${source}.requiredArtifactProviderAccountAliases`)
@@ -596,6 +603,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredArtifactGeneratedMatrixLimitations: aggregate.requiredArtifactGeneratedMatrixLimitations ?? [],
     requiredArtifactGeneratedMatrixNames: aggregate.requiredArtifactGeneratedMatrixNames ?? [],
     requiredArtifactGeneratedMatrixRepos: aggregate.requiredArtifactGeneratedMatrixRepos ?? [],
+    requiredArtifactGeneratedValidationSuiteFailureRoots: aggregate.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [],
     requiredArtifactEvidenceRepos: aggregate.requiredArtifactEvidenceRepos ?? [],
     requiredArtifactProviderAccountAliases: aggregate.requiredArtifactProviderAccountAliases ?? [],
     requiredArtifactValidationPresets: aggregate.requiredArtifactValidationPresets ?? [],
@@ -738,6 +746,8 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countStringValues(coverage.missingArtifactGeneratedMatrixNames, artifactCoverage.missingArtifactGeneratedMatrixNames)
   countStringValues(coverage.requiredArtifactGeneratedMatrixRepos, artifactCoverage.requiredArtifactGeneratedMatrixRepos)
   countStringValues(coverage.missingArtifactGeneratedMatrixRepos, artifactCoverage.missingArtifactGeneratedMatrixRepos)
+  countStringValues(coverage.requiredArtifactGeneratedValidationSuiteFailureRoots, artifactCoverage.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [])
+  countStringValues(coverage.missingArtifactGeneratedValidationSuiteFailureRoots, artifactCoverage.missingArtifactGeneratedValidationSuiteFailureRoots ?? [])
   countStringValues(coverage.requiredArtifactEvidenceRepos, artifactCoverage.requiredArtifactEvidenceRepos)
   countStringValues(coverage.missingArtifactEvidenceRepos, artifactCoverage.missingArtifactEvidenceRepos)
   countStringValues(coverage.requiredArtifactProviderAccountAliases, artifactCoverage.requiredArtifactProviderAccountAliases)
@@ -859,6 +869,7 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingArtifactGeneratedMatrixLimitations: missingCoverageRequirements(coverage.artifactGeneratedMatrixLimitations, requirements.requiredArtifactGeneratedMatrixLimitations ?? []),
     missingArtifactGeneratedMatrixNames: missingCoverageRequirements(coverage.artifactGeneratedMatrixNames, requirements.requiredArtifactGeneratedMatrixNames ?? []),
     missingArtifactGeneratedMatrixRepos: missingCoverageRequirements(coverage.artifactGeneratedMatrixRepos, requirements.requiredArtifactGeneratedMatrixRepos ?? []),
+    missingArtifactGeneratedValidationSuiteFailureRoots: missingCoverageRequirements(coverage.artifactGeneratedValidationSuiteFailureRoots, requirements.requiredArtifactGeneratedValidationSuiteFailureRoots ?? []),
     missingArtifactEvidenceRepos: missingCoverageRequirements(coverage.artifactEvidenceRepos, requirements.requiredArtifactEvidenceRepos ?? []),
     missingArtifactProviderAccountAliases: missingCoverageRequirements(coverage.artifactProviderAccountAliases, requirements.requiredArtifactProviderAccountAliases ?? []),
     missingArtifactValidationPresets: missingCoverageRequirements(coverage.artifactValidationPresets, requirements.requiredArtifactValidationPresets ?? []),
@@ -903,6 +914,7 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingArtifactGeneratedMatrixLimitations", "generated-evidence", "provide validation gate artifact indexes with generated matrix limitations"],
     ["missingArtifactGeneratedMatrixNames", "generated-evidence", "provide validation gate artifact indexes with generated matrix names"],
     ["missingArtifactGeneratedMatrixRepos", "generated-evidence", "provide validation gate artifact indexes with generated matrix repos"],
+    ["missingArtifactGeneratedValidationSuiteFailureRoots", "generated-evidence", "provide validation gate artifact indexes with generated validation-suite failure roots"],
     ["missingArtifactEvidenceRepos", "artifact-coverage", "provide validation gate reports with artifact evidence repos"],
     ["missingArtifactProviderAccountAliases", "artifact-coverage", "provide validation gate reports with artifact provider account aliases"],
     ["missingArtifactValidationPresets", "artifact-coverage", "provide validation gate reports with artifact validation presets"],
@@ -1025,6 +1037,8 @@ function formatValidationGateCoverageCounts(coverage) {
     missingArtifactGeneratedMatrixNames: countMapToObject(coverage.missingArtifactGeneratedMatrixNames),
     requiredArtifactGeneratedMatrixRepos: countMapToObject(coverage.requiredArtifactGeneratedMatrixRepos),
     missingArtifactGeneratedMatrixRepos: countMapToObject(coverage.missingArtifactGeneratedMatrixRepos),
+    requiredArtifactGeneratedValidationSuiteFailureRoots: countMapToObject(coverage.requiredArtifactGeneratedValidationSuiteFailureRoots),
+    missingArtifactGeneratedValidationSuiteFailureRoots: countMapToObject(coverage.missingArtifactGeneratedValidationSuiteFailureRoots),
     requiredArtifactEvidenceRepos: countMapToObject(coverage.requiredArtifactEvidenceRepos),
     missingArtifactEvidenceRepos: countMapToObject(coverage.missingArtifactEvidenceRepos),
     requiredArtifactProviderAccountAliases: countMapToObject(coverage.requiredArtifactProviderAccountAliases),
@@ -1143,6 +1157,8 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_artifact_generated_matrix_names", coverage.missingArtifactGeneratedMatrixNames)
   appendCoverageLine(lines, "required_artifact_generated_matrix_repos", coverage.requiredArtifactGeneratedMatrixRepos)
   appendCoverageLine(lines, "missing_artifact_generated_matrix_repos", coverage.missingArtifactGeneratedMatrixRepos)
+  appendCoverageLine(lines, "required_artifact_generated_validation_suite_failure_roots", coverage.requiredArtifactGeneratedValidationSuiteFailureRoots)
+  appendCoverageLine(lines, "missing_artifact_generated_validation_suite_failure_roots", coverage.missingArtifactGeneratedValidationSuiteFailureRoots)
   appendCoverageLine(lines, "required_artifact_evidence_repos", coverage.requiredArtifactEvidenceRepos)
   appendCoverageLine(lines, "missing_artifact_evidence_repos", coverage.missingArtifactEvidenceRepos)
   appendCoverageLine(lines, "required_artifact_provider_account_aliases", coverage.requiredArtifactProviderAccountAliases)
@@ -1290,6 +1306,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingArtifactGeneratedMatrixNames ?? {}, `${source}.missingArtifactGeneratedMatrixNames`)
   validateArtifactEvidenceRepoCountObject(coverage.requiredArtifactGeneratedMatrixRepos ?? {}, `${source}.requiredArtifactGeneratedMatrixRepos`)
   validateArtifactEvidenceRepoCountObject(coverage.missingArtifactGeneratedMatrixRepos ?? {}, `${source}.missingArtifactGeneratedMatrixRepos`)
+  validateGeneratedEvidencePathCountObject(coverage.requiredArtifactGeneratedValidationSuiteFailureRoots ?? {}, `${source}.requiredArtifactGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathCountObject(coverage.missingArtifactGeneratedValidationSuiteFailureRoots ?? {}, `${source}.missingArtifactGeneratedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoCountObject(coverage.requiredArtifactEvidenceRepos ?? {}, `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoCountObject(coverage.missingArtifactEvidenceRepos ?? {}, `${source}.missingArtifactEvidenceRepos`)
   validateProviderAccountAliasCountObject(coverage.requiredArtifactProviderAccountAliases ?? {}, `${source}.requiredArtifactProviderAccountAliases`)
@@ -1507,6 +1525,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingArtifactGeneratedMatrixNames: new Map(),
     requiredArtifactGeneratedMatrixRepos: new Map(),
     missingArtifactGeneratedMatrixRepos: new Map(),
+    requiredArtifactGeneratedValidationSuiteFailureRoots: new Map(),
+    missingArtifactGeneratedValidationSuiteFailureRoots: new Map(),
     requiredArtifactEvidenceRepos: new Map(),
     missingArtifactEvidenceRepos: new Map(),
     requiredArtifactProviderAccountAliases: new Map(),
@@ -1634,6 +1654,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactGeneratedMatrixNames, report.artifactCoverage?.missingArtifactGeneratedMatrixNames ?? [])
     countStringValues(expected.requiredArtifactGeneratedMatrixRepos, report.artifactCoverage?.requiredArtifactGeneratedMatrixRepos ?? [])
     countStringValues(expected.missingArtifactGeneratedMatrixRepos, report.artifactCoverage?.missingArtifactGeneratedMatrixRepos ?? [])
+    countStringValues(expected.requiredArtifactGeneratedValidationSuiteFailureRoots, report.artifactCoverage?.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [])
+    countStringValues(expected.missingArtifactGeneratedValidationSuiteFailureRoots, report.artifactCoverage?.missingArtifactGeneratedValidationSuiteFailureRoots ?? [])
     countStringValues(expected.requiredArtifactEvidenceRepos, report.artifactCoverage?.requiredArtifactEvidenceRepos ?? [])
     countStringValues(expected.missingArtifactEvidenceRepos, report.artifactCoverage?.missingArtifactEvidenceRepos ?? [])
     countStringValues(expected.requiredArtifactProviderAccountAliases, report.artifactCoverage?.requiredArtifactProviderAccountAliases ?? [])
@@ -1747,6 +1769,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactGeneratedMatrixNames, input.artifactCoverage?.missingArtifactGeneratedMatrixNames ?? [])
     countStringValues(expected.requiredArtifactGeneratedMatrixRepos, input.artifactCoverage?.requiredArtifactGeneratedMatrixRepos ?? [])
     countStringValues(expected.missingArtifactGeneratedMatrixRepos, input.artifactCoverage?.missingArtifactGeneratedMatrixRepos ?? [])
+    countStringValues(expected.requiredArtifactGeneratedValidationSuiteFailureRoots, input.artifactCoverage?.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [])
+    countStringValues(expected.missingArtifactGeneratedValidationSuiteFailureRoots, input.artifactCoverage?.missingArtifactGeneratedValidationSuiteFailureRoots ?? [])
     countStringValues(expected.requiredArtifactEvidenceRepos, input.artifactCoverage?.requiredArtifactEvidenceRepos ?? [])
     countStringValues(expected.missingArtifactEvidenceRepos, input.artifactCoverage?.missingArtifactEvidenceRepos ?? [])
     countStringValues(expected.requiredArtifactProviderAccountAliases, input.artifactCoverage?.requiredArtifactProviderAccountAliases ?? [])
@@ -2079,6 +2103,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateStringArray(coverage.missingArtifactGeneratedMatrixNames ?? [], `${source}.missingArtifactGeneratedMatrixNames`)
   validateArtifactEvidenceRepoArray(coverage.requiredArtifactGeneratedMatrixRepos ?? [], `${source}.requiredArtifactGeneratedMatrixRepos`)
   validateArtifactEvidenceRepoArray(coverage.missingArtifactGeneratedMatrixRepos ?? [], `${source}.missingArtifactGeneratedMatrixRepos`)
+  validateGeneratedEvidencePathArray(coverage.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [], `${source}.requiredArtifactGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathArray(coverage.missingArtifactGeneratedValidationSuiteFailureRoots ?? [], `${source}.missingArtifactGeneratedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoArray(coverage.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(coverage.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateProviderAccountAliasArray(coverage.requiredArtifactProviderAccountAliases ?? [], `${source}.requiredArtifactProviderAccountAliases`)

@@ -131,6 +131,14 @@ export function validationGateNextActions(checks) {
         nextAction: `provide artifact metadata with generated matrix limitations: ${missingArtifactGeneratedMatrixLimitations.join(", ")}`,
       })
     }
+    const missingArtifactGeneratedValidationSuiteFailureRoots = checks.artifacts.missingArtifactGeneratedValidationSuiteFailureRoots ?? []
+    if (missingArtifactGeneratedValidationSuiteFailureRoots.length > 0) {
+      countDrillAggregateNextAction(counts, {
+        owner: "validation-harness",
+        classification: "generated-evidence",
+        nextAction: `provide artifact metadata with generated validation-suite failure roots: ${missingArtifactGeneratedValidationSuiteFailureRoots.join(", ")}`,
+      })
+    }
     const missingArtifactEvidenceRepos = checks.artifacts.missingArtifactEvidenceRepos ?? []
     if (missingArtifactEvidenceRepos.length > 0) {
       countDrillAggregateNextAction(counts, {

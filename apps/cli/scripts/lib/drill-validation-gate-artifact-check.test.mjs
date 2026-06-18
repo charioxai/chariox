@@ -36,6 +36,8 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactGeneratedMatrixNames: [],
     requiredArtifactGeneratedMatrixRepos: [],
     missingArtifactGeneratedMatrixRepos: [],
+    requiredArtifactGeneratedValidationSuiteFailureRoots: [],
+    missingArtifactGeneratedValidationSuiteFailureRoots: [],
     requiredArtifactEvidenceRepos: [],
     missingArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
@@ -133,6 +135,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
         generatedMatrixLimitations: "dry-run-classification-coverage",
         generatedMatrixNames: "workspace-live-sync-matrix",
         generatedMatrixRepos: "oss",
+        generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
         evidenceRepos: "oss",
       },
     })
@@ -148,6 +151,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
       requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
       requiredArtifactGeneratedMatrixRepos: ["oss"],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
       requiredArtifactEvidenceRepos: ["oss"],
     })
     assert.equal(pass.status, "passed")
@@ -163,6 +167,8 @@ test("gates required artifact kinds and evidence repos from artifact index metad
     assert.deepEqual(pass.missingArtifactGeneratedMatrixNames, [])
     assert.deepEqual(pass.requiredArtifactGeneratedMatrixRepos, ["oss"])
     assert.deepEqual(pass.missingArtifactGeneratedMatrixRepos, [])
+    assert.deepEqual(pass.requiredArtifactGeneratedValidationSuiteFailureRoots, ["/tmp/generated-suite/failed-run"])
+    assert.deepEqual(pass.missingArtifactGeneratedValidationSuiteFailureRoots, [])
     assert.deepEqual(pass.requiredArtifactEvidenceRepos, ["oss"])
     assert.deepEqual(pass.missingArtifactEvidenceRepos, [])
     assert.deepEqual(pass.aggregate.artifactKinds, {
@@ -182,6 +188,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
       requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredArtifactGeneratedMatrixNames: ["missing-matrix"],
       requiredArtifactGeneratedMatrixRepos: ["cloud"],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/missing-run"],
       requiredArtifactEvidenceRepos: ["cloud"],
     })
     assert.equal(fail.status, "failed")
@@ -191,12 +198,14 @@ test("gates required artifact kinds and evidence repos from artifact index metad
     assert.deepEqual(fail.missingArtifactGeneratedMatrixLimitations, [])
     assert.deepEqual(fail.missingArtifactGeneratedMatrixNames, ["missing-matrix"])
     assert.deepEqual(fail.missingArtifactGeneratedMatrixRepos, ["cloud"])
+    assert.deepEqual(fail.missingArtifactGeneratedValidationSuiteFailureRoots, ["/tmp/generated-suite/missing-run"])
     assert.deepEqual(fail.missingArtifactEvidenceRepos, ["cloud"])
     assert.match(fail.error, /missing required artifact kinds: validation-suite-run/)
     assert.match(fail.error, /missing required artifact generated evidence kinds: matrix-report/)
     assert.match(fail.error, /missing required artifact generated matrix artifact indexes: \/tmp\/generated-matrix\/missing-artifacts\.json/)
     assert.match(fail.error, /missing required artifact generated matrix names: missing-matrix/)
     assert.match(fail.error, /missing required artifact generated matrix repos: cloud/)
+    assert.match(fail.error, /missing required artifact generated validation-suite failure roots: \/tmp\/generated-suite\/missing-run/)
     assert.match(fail.error, /missing required artifact evidence repos: cloud/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })

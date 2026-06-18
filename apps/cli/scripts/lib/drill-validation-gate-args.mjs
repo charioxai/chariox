@@ -3,6 +3,7 @@ import { redactDrillSecretText } from "./drill-secrets.mjs"
 
 const SECRET_SENSITIVE_REQUIREMENT_KEYS = new Set([
   "requiredArtifactGeneratedMatrixArtifactIndexes",
+  "requiredArtifactGeneratedValidationSuiteFailureRoots",
   "requiredArtifactPlannedClassifications",
   "requiredArtifactPlannedOwners",
   "requiredArtifactGeneratedMatrixNames",
@@ -21,6 +22,7 @@ const REQUIREMENT_FLAGS = Object.freeze([
   ["--require-artifact-generated-matrix-limitation", "requiredArtifactGeneratedMatrixLimitations"],
   ["--require-artifact-generated-matrix-name", "requiredArtifactGeneratedMatrixNames"],
   ["--require-artifact-generated-matrix-repo", "requiredArtifactGeneratedMatrixRepos"],
+  ["--require-artifact-generated-validation-suite-failure-root", "requiredArtifactGeneratedValidationSuiteFailureRoots"],
   ["--require-artifact-evidence-repo", "requiredArtifactEvidenceRepos"],
   ["--require-artifact-provider-account-alias", "requiredArtifactProviderAccountAliases"],
   ["--require-artifact-validation-preset", "requiredArtifactValidationPresets"],
@@ -61,6 +63,7 @@ export function validationGateRequirementOptionDefaults({ presetKey = "presets" 
     requiredArtifactGeneratedMatrixLimitations: [],
     requiredArtifactGeneratedMatrixNames: [],
     requiredArtifactGeneratedMatrixRepos: [],
+    requiredArtifactGeneratedValidationSuiteFailureRoots: [],
     requiredArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
     requiredArtifactValidationPresets: [],

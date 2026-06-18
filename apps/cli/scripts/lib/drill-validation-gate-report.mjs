@@ -153,6 +153,8 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactGeneratedMatrixNames ?? [], `${source}.missingArtifactGeneratedMatrixNames`)
   validateArtifactEvidenceRepoArray(check.requiredArtifactGeneratedMatrixRepos ?? [], `${source}.requiredArtifactGeneratedMatrixRepos`)
   validateArtifactEvidenceRepoArray(check.missingArtifactGeneratedMatrixRepos ?? [], `${source}.missingArtifactGeneratedMatrixRepos`)
+  validateGeneratedEvidencePathArray(check.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [], `${source}.requiredArtifactGeneratedValidationSuiteFailureRoots`)
+  validateGeneratedEvidencePathArray(check.missingArtifactGeneratedValidationSuiteFailureRoots ?? [], `${source}.missingArtifactGeneratedValidationSuiteFailureRoots`)
   validateArtifactEvidenceRepoArray(check.requiredArtifactEvidenceRepos ?? [], `${source}.requiredArtifactEvidenceRepos`)
   validateArtifactEvidenceRepoArray(check.missingArtifactEvidenceRepos ?? [], `${source}.missingArtifactEvidenceRepos`)
   validateProviderAccountAliasArray(check.requiredArtifactProviderAccountAliases ?? [], `${source}.requiredArtifactProviderAccountAliases`)

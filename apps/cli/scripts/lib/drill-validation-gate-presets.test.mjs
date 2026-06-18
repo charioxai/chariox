@@ -26,6 +26,7 @@ import {
   normalizeRequiredArtifactSchemas,
   normalizeRequiredArtifactGeneratedMatrixArtifactIndexes,
   normalizeRequiredArtifactGeneratedMatrixNames,
+  normalizeRequiredArtifactGeneratedValidationSuiteFailureRoots,
   normalizeRequiredFailureClassifications,
   normalizeRequiredGeneratedEvidenceKinds,
   normalizeRequiredGeneratedMatrixArtifactIndexes,
@@ -96,6 +97,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactGeneratedMatrixNames: ["cloud-slice-runtime-matrix", "native-provider-tui-matrix", "remote-agent-runtime-matrix", "remote-home-extension-matrix", "slice-runtime-matrix", "workspace-live-sync-matrix"],
       requiredArtifactGeneratedMatrixRepos: ["cloud", "oss"],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: ["cloud", "oss"],
       requiredArtifactProviderAccountAliases: [],
       requiredArtifactValidationPresets: ["distributed-runtime"],
@@ -138,6 +140,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactGeneratedMatrixNames: [],
       requiredArtifactGeneratedMatrixRepos: [],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
       requiredArtifactValidationPresets: [],
@@ -193,6 +196,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactGeneratedMatrixNames: [],
       requiredArtifactGeneratedMatrixRepos: [],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
       requiredArtifactValidationPresets: [],
@@ -235,6 +239,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactGeneratedMatrixNames: [],
       requiredArtifactGeneratedMatrixRepos: [],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
       requiredArtifactValidationPresets: [],
@@ -277,6 +282,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactGeneratedMatrixNames: [],
       requiredArtifactGeneratedMatrixRepos: [],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
       requiredArtifactValidationPresets: [],
@@ -330,6 +336,7 @@ test("expands validation gate preset requirements", () => {
     requiredArtifactGeneratedMatrixLimitations: [],
     requiredArtifactGeneratedMatrixNames: [],
     requiredArtifactGeneratedMatrixRepos: [],
+    requiredArtifactGeneratedValidationSuiteFailureRoots: [],
     requiredArtifactEvidenceRepos: [],
     requiredArtifactProviderAccountAliases: [],
     requiredArtifactValidationPresets: [],
@@ -650,6 +657,10 @@ test("rejects unknown validation gate requirements", () => {
   assert.throws(
     () => normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(["/tmp/Bearer abcdefghijklmnop.json"]),
     /requiredArtifactGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/,
+  )
+  assert.throws(
+    () => normalizeRequiredArtifactGeneratedValidationSuiteFailureRoots(["/tmp/Bearer abcdefghijklmnop"]),
+    /requiredArtifactGeneratedValidationSuiteFailureRoots\[0\] includes secret-looking generated evidence path/,
   )
   assert.throws(
     () => normalizeRequiredGeneratedMatrixArtifactIndexes(["/tmp/Bearer abcdefghijklmnop.json"]),

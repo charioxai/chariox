@@ -29,6 +29,7 @@ import {
   normalizeRequiredArtifactGeneratedMatrixLimitations,
   normalizeRequiredArtifactGeneratedMatrixNames,
   normalizeRequiredArtifactGeneratedMatrixRepos,
+  normalizeRequiredArtifactGeneratedValidationSuiteFailureRoots,
   normalizeRequiredArtifactProviderAccountAliases,
   normalizeRequiredArtifactValidationPresets,
   normalizeRequiredArtifactClassifications,
@@ -119,6 +120,7 @@ export async function runDrillValidationGate({
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactGeneratedMatrixNames = [],
   requiredArtifactGeneratedMatrixRepos = [],
+  requiredArtifactGeneratedValidationSuiteFailureRoots = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
   requiredArtifactValidationPresets = [],
@@ -157,6 +159,7 @@ export async function runDrillValidationGate({
     requiredArtifactGeneratedMatrixLimitations,
     requiredArtifactGeneratedMatrixNames,
     requiredArtifactGeneratedMatrixRepos,
+    requiredArtifactGeneratedValidationSuiteFailureRoots,
     requiredArtifactEvidenceRepos,
     requiredArtifactProviderAccountAliases,
     requiredArtifactValidationPresets,
@@ -191,6 +194,7 @@ export async function runDrillValidationGate({
   const normalizedRequiredArtifactGeneratedMatrixLimitations = normalizeRequiredArtifactGeneratedMatrixLimitations(expandedRequirements.requiredArtifactGeneratedMatrixLimitations)
   const normalizedRequiredArtifactGeneratedMatrixNames = normalizeRequiredArtifactGeneratedMatrixNames(expandedRequirements.requiredArtifactGeneratedMatrixNames)
   const normalizedRequiredArtifactGeneratedMatrixRepos = normalizeRequiredArtifactGeneratedMatrixRepos(expandedRequirements.requiredArtifactGeneratedMatrixRepos)
+  const normalizedRequiredArtifactGeneratedValidationSuiteFailureRoots = normalizeRequiredArtifactGeneratedValidationSuiteFailureRoots(expandedRequirements.requiredArtifactGeneratedValidationSuiteFailureRoots)
   const normalizedRequiredArtifactEvidenceRepos = normalizeRequiredArtifactEvidenceRepos(expandedRequirements.requiredArtifactEvidenceRepos)
   const normalizedRequiredArtifactProviderAccountAliases = normalizeRequiredArtifactProviderAccountAliases(expandedRequirements.requiredArtifactProviderAccountAliases)
   const normalizedRequiredArtifactValidationPresets = normalizeRequiredArtifactValidationPresets(expandedRequirements.requiredArtifactValidationPresets)
@@ -230,6 +234,7 @@ export async function runDrillValidationGate({
       requiredArtifactGeneratedMatrixLimitations: normalizedRequiredArtifactGeneratedMatrixLimitations,
       requiredArtifactGeneratedMatrixNames: normalizedRequiredArtifactGeneratedMatrixNames,
       requiredArtifactGeneratedMatrixRepos: normalizedRequiredArtifactGeneratedMatrixRepos,
+      requiredArtifactGeneratedValidationSuiteFailureRoots: normalizedRequiredArtifactGeneratedValidationSuiteFailureRoots,
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
       requiredArtifactProviderAccountAliases: normalizedRequiredArtifactProviderAccountAliases,
       requiredArtifactValidationPresets: normalizedRequiredArtifactValidationPresets,
@@ -271,6 +276,7 @@ export async function runDrillValidationGate({
       requiredArtifactGeneratedMatrixLimitations: normalizedRequiredArtifactGeneratedMatrixLimitations,
       requiredArtifactGeneratedMatrixNames: normalizedRequiredArtifactGeneratedMatrixNames,
       requiredArtifactGeneratedMatrixRepos: normalizedRequiredArtifactGeneratedMatrixRepos,
+      requiredArtifactGeneratedValidationSuiteFailureRoots: normalizedRequiredArtifactGeneratedValidationSuiteFailureRoots,
       requiredArtifactEvidenceRepos: normalizedRequiredArtifactEvidenceRepos,
       requiredArtifactProviderAccountAliases: normalizedRequiredArtifactProviderAccountAliases,
       requiredArtifactValidationPresets: normalizedRequiredArtifactValidationPresets,
@@ -343,6 +349,7 @@ function normalizeValidationGateAggregateRequirements(options) {
     requiredArtifactGeneratedMatrixLimitations: normalizeRequiredArtifactGeneratedMatrixLimitations(options.requiredArtifactGeneratedMatrixLimitations ?? []),
     requiredArtifactGeneratedMatrixNames: normalizeRequiredArtifactGeneratedMatrixNames(options.requiredArtifactGeneratedMatrixNames ?? []),
     requiredArtifactGeneratedMatrixRepos: normalizeRequiredArtifactGeneratedMatrixRepos(options.requiredArtifactGeneratedMatrixRepos ?? []),
+    requiredArtifactGeneratedValidationSuiteFailureRoots: normalizeRequiredArtifactGeneratedValidationSuiteFailureRoots(options.requiredArtifactGeneratedValidationSuiteFailureRoots ?? []),
     requiredArtifactEvidenceRepos: normalizeRequiredArtifactEvidenceRepos(options.requiredArtifactEvidenceRepos ?? []),
     requiredArtifactProviderAccountAliases: normalizeRequiredArtifactProviderAccountAliases(options.requiredArtifactProviderAccountAliases ?? []),
     requiredArtifactValidationPresets: normalizeRequiredArtifactValidationPresets(options.requiredArtifactValidationPresets ?? []),

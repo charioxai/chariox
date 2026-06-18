@@ -28,6 +28,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-repo", "oss"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-evidence-repo", "oss"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-provider-account-alias", "codex=work"], 0, options)
@@ -84,6 +86,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
     requiredArtifactGeneratedMatrixRepos: ["oss"],
+    requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["oss"],
     requiredArtifactProviderAccountAliases: ["codex=work"],
     requiredArtifactValidationPresets: ["distributed-runtime"],
