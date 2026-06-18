@@ -33,7 +33,7 @@ mod subscriptions;
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
 use command_cache::{CommandFingerprint, CommandReservation, CommandResultCache};
-use outgoing::try_send_outgoing_frame;
+use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
 };
@@ -273,7 +273,9 @@ async fn handle_kernel_connection(
     let (queue_capacity, write_delay_ms) = router.kernel_websocket_connection_config();
 
     let (mut writer, mut reader) = socket.split();
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<KernelOutgoingFrame>(queue_capacity);
+    let (priority_tx, mut priority_rx) = mpsc::channel::<KernelOutgoingFrame>(queue_capacity);
+    let (event_tx, mut event_rx) = mpsc::channel::<KernelOutgoingFrame>(queue_capacity);
+    let outgoing_tx = KernelOutgoingSender::new(priority_tx, event_tx);
     let (close_tx, mut close_rx) = mpsc::unbounded_channel::<ConnectionCloseCommand>();
     let close_requested = Arc::new(AtomicBool::new(false));
     let inbound_request_permits = Arc::new(Semaphore::new(INBOUND_REQUEST_LIMIT));
@@ -288,11 +290,7 @@ async fn handle_kernel_connection(
         transport_ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                _ = transport_ping.tick() => {
-                    if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
-                        break;
-                    }
-                }
+                biased;
                 Some(command) = close_rx.recv() => {
                     let _ = writer.send(Message::Close(Some(CloseFrame {
                         code: CloseCode::Policy,
@@ -300,7 +298,24 @@ async fn handle_kernel_connection(
                     }))).await;
                     break;
                 }
-                Some(frame) = outgoing_rx.recv() => {
+                _ = transport_ping.tick() => {
+                    if writer.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        break;
+                    }
+                }
+                Some(frame) = priority_rx.recv() => {
+                    let payload = match serialize_frame(&frame) {
+                        Ok(payload) => payload,
+                        Err(_) => break,
+                    };
+                    if write_delay_ms > 0 {
+                        sleep(Duration::from_millis(write_delay_ms)).await;
+                    }
+                    if writer.send(Message::Text(payload.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Some(frame) = event_rx.recv() => {
                     let payload = match serialize_frame(&frame) {
                         Ok(payload) => payload,
                         Err(_) => break,
@@ -386,7 +401,7 @@ async fn handle_incoming_payload(
     router: &Arc<CommandRouter>,
     connection_state: &Arc<Mutex<ConnectionState>>,
     inbound_request_permits: &Arc<Semaphore>,
-    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    outgoing_tx: &KernelOutgoingSender,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
     payload: &[u8],

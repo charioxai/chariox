@@ -20,7 +20,7 @@ use crate::transport::kernel_protocol::{
     KernelSubscriptionScope, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
-use super::outgoing::try_send_outgoing_frame;
+use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use super::{
     ConnectionCloseCommand, KernelSubscription, KernelTransportRuntime, HEARTBEAT_INTERVAL_TICKS,
     RELAY_DISCOVERY_INTERVAL_TICKS, STATE_INTERVAL_TICKS, WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
@@ -30,7 +30,7 @@ use super::{
 pub(super) async fn run_subscription_loop(
     router: Arc<CommandRouter>,
     runtime: Arc<KernelTransportRuntime>,
-    outgoing_tx: mpsc::Sender<KernelOutgoingFrame>,
+    outgoing_tx: KernelOutgoingSender,
     close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: Arc<AtomicBool>,
     subscription: KernelSubscription,
@@ -465,7 +465,7 @@ pub(crate) fn watch_subscription_state(
 
 async fn emit_kernel_event(
     runtime: &Arc<KernelTransportRuntime>,
-    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    outgoing_tx: &KernelOutgoingSender,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
     event: KernelEvent,
@@ -543,7 +543,7 @@ pub(super) enum ReplaySubscriptionResult {
 
 pub(super) async fn replay_recent_events(
     runtime: &Arc<KernelTransportRuntime>,
-    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    outgoing_tx: &KernelOutgoingSender,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
     session_id: &str,
@@ -648,7 +648,7 @@ pub(super) async fn replay_recent_events(
 pub(super) async fn emit_replay_gap_snapshot(
     router: &Arc<CommandRouter>,
     runtime: &Arc<KernelTransportRuntime>,
-    outgoing_tx: &mpsc::Sender<KernelOutgoingFrame>,
+    outgoing_tx: &KernelOutgoingSender,
     close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: &Arc<AtomicBool>,
     session_id: &str,
@@ -691,7 +691,7 @@ pub(super) async fn emit_replay_gap_snapshot(
 async fn run_waiting_room_inventory_subscription_loop(
     router: Arc<CommandRouter>,
     runtime: Arc<KernelTransportRuntime>,
-    outgoing_tx: mpsc::Sender<KernelOutgoingFrame>,
+    outgoing_tx: KernelOutgoingSender,
     close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: Arc<AtomicBool>,
 ) {
