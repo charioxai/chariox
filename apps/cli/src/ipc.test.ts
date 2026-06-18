@@ -260,6 +260,24 @@ test("LocalIpcClient close force-terminates stalled websocket close handshakes",
   }
 })
 
+test("LocalIpcClient applies jitter to reconnect backoff without delaying forced restarts", () => {
+  const client = new LocalIpcClient("ws://127.0.0.1:1", {
+    reconnectJitterMs: 200,
+    reconnectRandom: () => 0.5,
+  })
+  const internals = client as unknown as {
+    reconnectDelayWithJitter: (delayMs: number) => number
+    nextReconnectDelayMs: (delayMs: number) => number
+  }
+
+  assert.equal(internals.reconnectDelayWithJitter(25), 25)
+  assert.equal(internals.reconnectDelayWithJitter(250), 350)
+  assert.equal(internals.reconnectDelayWithJitter(5_000), 5_100)
+  assert.equal(internals.nextReconnectDelayMs(25), 250)
+  assert.equal(internals.nextReconnectDelayMs(250), 500)
+  assert.equal(internals.nextReconnectDelayMs(5_000), 5_000)
+})
+
 test("LocalIpcClient preserves websocket close reasons in transport_closed events", async (t) => {
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")

@@ -43,6 +43,9 @@ const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
 const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
 const IPC_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000
 const IPC_CLIENT_CLOSE_TIMEOUT_MS = 1_500
+const KERNEL_RECONNECT_BASE_DELAY_MS = 250
+const KERNEL_RECONNECT_MAX_DELAY_MS = 5_000
+const KERNEL_RECONNECT_JITTER_MS = 250
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
@@ -54,6 +57,8 @@ type LocalIpcClientOptions = {
   kernelEventStaleMs?: number | undefined
   kernelPingIntervalMs?: number | undefined
   kernelMaxMissedPongs?: number | undefined
+  reconnectJitterMs?: number | undefined
+  reconnectRandom?: (() => number) | undefined
 }
 
 export class LocalIpcClient {
@@ -74,6 +79,8 @@ export class LocalIpcClient {
   private kernelEventWatchdog: NodeJS.Timeout | null = null
   private controlHeartbeat: NodeJS.Timeout | null = null
   private eventHeartbeat: NodeJS.Timeout | null = null
+  private readonly reconnectJitterMs: number
+  private readonly reconnectRandom: () => number
   private missedControlPongs = 0
   private missedEventPongs = 0
   private suppressNextControlCloseEvent = false
@@ -90,6 +97,8 @@ export class LocalIpcClient {
     this.kernelEventStaleMs = staleMs > 0 ? Math.max(staleMs, 250) : 0
     this.kernelPingIntervalMs = Math.max(options.kernelPingIntervalMs ?? DEFAULT_KERNEL_PING_INTERVAL_MS, 250)
     this.kernelMaxMissedPongs = Math.max(options.kernelMaxMissedPongs ?? DEFAULT_KERNEL_MAX_MISSED_PONGS, 1)
+    this.reconnectJitterMs = Math.max(options.reconnectJitterMs ?? KERNEL_RECONNECT_JITTER_MS, 0)
+    this.reconnectRandom = options.reconnectRandom ?? Math.random
     this.relayAuthToken = options.relayAuthToken?.trim() || null
     this.relayTarget = this.relayAuthToken
       ? {
@@ -605,7 +614,7 @@ export class LocalIpcClient {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
     }
-    this.reconnectDelayMs = 250
+    this.reconnectDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
   }
 
   private markKernelEventReceived() {
@@ -713,8 +722,24 @@ export class LocalIpcClient {
     this.reconnectTimeout = setTimeout(() => {
       this.reconnectTimeout = null
       void this.resumeKernelSubscription()
-    }, delayMs)
-    this.reconnectDelayMs = Math.min(Math.max(delayMs * 2, 250), 5_000)
+    }, this.reconnectDelayWithJitter(delayMs))
+    this.reconnectDelayMs = this.nextReconnectDelayMs(delayMs)
+  }
+
+  private reconnectDelayWithJitter(delayMs: number): number {
+    const boundedDelayMs = Math.max(delayMs, 0)
+    if (boundedDelayMs < KERNEL_RECONNECT_BASE_DELAY_MS || this.reconnectJitterMs === 0) {
+      return boundedDelayMs
+    }
+    const jitterMs = Math.floor(clampRandom(this.reconnectRandom()) * this.reconnectJitterMs)
+    return Math.min(boundedDelayMs + jitterMs, KERNEL_RECONNECT_MAX_DELAY_MS + this.reconnectJitterMs)
+  }
+
+  private nextReconnectDelayMs(delayMs: number): number {
+    return Math.min(
+      Math.max(delayMs * 2, KERNEL_RECONNECT_BASE_DELAY_MS),
+      KERNEL_RECONNECT_MAX_DELAY_MS,
+    )
   }
 
   private async resumeKernelSubscription() {
@@ -851,4 +876,11 @@ export class LocalIpcClient {
       socket.terminate()
     }
   }
+}
+
+function clampRandom(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+  return Math.min(Math.max(value, 0), 0.999999)
 }
