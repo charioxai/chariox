@@ -19,6 +19,10 @@ import {
   DRILL_RUNTIME_SIGNAL_IDS,
   drillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
+import {
+  DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
+  drillRuntimeAuthorityManifest,
+} from "./drill-runtime-authority-invariants.mjs"
 import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
@@ -133,6 +137,7 @@ test("builds shared drill validation suite manifest", () => {
     }],
     failureTaxonomyManifest: drillFailureTaxonomyManifest(),
     runtimeSignalsManifest: drillRuntimeSignalsManifest(),
+    runtimeAuthorityManifest: drillRuntimeAuthorityManifest(),
     validationPresets: [{
       name: "sample-preset",
       description: "sample preset",
@@ -183,6 +188,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
   const manifest = drillValidationSuiteManifest()
   assert.deepEqual(manifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
   assert.deepEqual(manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
+  assert.deepEqual(manifest.runtimeAuthorityManifest, drillRuntimeAuthorityManifest())
 
   assert.deepEqual(drillValidationSuiteArtifactMetadata(manifest), {
     drill: "validation-suite",
@@ -197,6 +203,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
     requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
   assert.deepEqual(drillValidationSuiteArtifactMetadata({
@@ -218,8 +225,16 @@ test("builds validation suite artifact metadata from manifest and run report", (
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
     requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
+  assert.throws(() => drillValidationSuiteArtifactMetadata({
+    ...manifest,
+    runtimeAuthorityManifest: {
+      ...drillRuntimeAuthorityManifest(),
+      invariants: drillRuntimeAuthorityManifest().invariants.filter((invariant) => invariant.id !== "shared-runtime-primitives"),
+    },
+  }), /validation suite runtimeAuthorityManifest does not match required runtime authority invariants/)
   assert.throws(() => drillValidationSuiteArtifactMetadata({
     ...manifest,
     runtimeSignalsManifest: {

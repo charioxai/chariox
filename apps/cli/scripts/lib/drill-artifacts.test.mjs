@@ -841,6 +841,7 @@ test("summarizes drill artifact indexes", async () => {
         requiredRuntimeSignalOwners: "kernel-authority,provider-runtime",
         missingRuntimeSignals: "relay-target-freshness",
         missingRuntimeSignalOwners: "runtime-network",
+        runtimeAuthorityInvariants: "client-render-request,home-session-authority",
         validationPresets: "distributed-runtime,workspace-live-sync",
         requiredFailureClassifications: "kernel-authority,provider-auth",
         missingFailureClassifications: "provider-auth",
@@ -932,6 +933,10 @@ test("summarizes drill artifact indexes", async () => {
     })
     assert.deepEqual(aggregate.missingRuntimeSignalOwners, {
       "runtime-network": 1,
+    })
+    assert.deepEqual(aggregate.runtimeAuthorityInvariants, {
+      "client-render-request": 1,
+      "home-session-authority": 1,
     })
     assert.deepEqual(aggregate.validationPresets, {
       "distributed-runtime": 2,
@@ -1126,6 +1131,7 @@ test("summarizes drill artifact indexes", async () => {
       requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       requiredRuntimeSignalOwners: "kernel-authority,provider-runtime",
       requiredRuntimeSignals: "lease-health,provider-run-lifecycle,session-authority",
+      runtimeAuthorityInvariants: "client-render-request,home-session-authority",
       runtimeSignalOwners: "kernel-authority,provider-runtime",
       runtimeSignals: "lease-health,provider-run-lifecycle,session-authority",
       validationPresets: "distributed-runtime,slice-runtime,workspace-live-sync",
@@ -1137,6 +1143,7 @@ test("summarizes drill artifact indexes", async () => {
       "requiredRuntimeSignalOwners",
       "missingRuntimeSignals",
       "missingRuntimeSignalOwners",
+      "runtimeAuthorityInvariants",
       "coverageAreas",
       "validationPresets",
       "owners",
@@ -1189,6 +1196,7 @@ test("summarizes drill artifact indexes", async () => {
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_signal_owners: kernel-authority=2 provider-runtime=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /required_runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /missing_runtime_signals: relay-target-freshness=1/)
+    assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /runtime_authority_invariants: client-render-request=1 home-session-authority=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /validation_presets: distributed-runtime=2 slice-runtime=1 workspace-live-sync=1/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /owners: runtime-network=1 validation-harness=2/)
     assert.match(formatDrillArtifactIndexAggregateSummary(aggregate), /classifications: artifact-coverage=1 matrix-coverage=1 validation-gate=1/)

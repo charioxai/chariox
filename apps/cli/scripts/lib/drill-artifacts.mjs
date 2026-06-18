@@ -39,6 +39,10 @@ import {
   validateDrillRuntimeSignals,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
+import {
+  validateDrillRuntimeAuthorityInvariant,
+  validateDrillRuntimeAuthorityManifest,
+} from "./drill-runtime-authority-invariants.mjs"
 
 export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
 export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
@@ -49,6 +53,7 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "requiredRuntimeSignalOwners",
   "missingRuntimeSignals",
   "missingRuntimeSignalOwners",
+  "runtimeAuthorityInvariants",
   "coverageAreas",
   "validationPresets",
   "owners",
@@ -98,6 +103,7 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   requiredRuntimeSignalOwners: "required_runtime_signal_owners",
   missingRuntimeSignals: "missing_runtime_signals",
   missingRuntimeSignalOwners: "missing_runtime_signal_owners",
+  runtimeAuthorityInvariants: "runtime_authority_invariants",
   coverageAreas: "coverage_areas",
   validationPresets: "validation_presets",
   owners: "owners",
@@ -283,6 +289,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const requiredRuntimeSignalOwners = new Map()
   const missingRuntimeSignals = new Map()
   const missingRuntimeSignalOwners = new Map()
+  const runtimeAuthorityInvariants = new Map()
   const coverageAreas = new Map()
   const validationPresets = new Map()
   const owners = new Map()
@@ -332,6 +339,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexRequiredRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexRequiredRuntimeSignals)
     const indexMissingRuntimeSignals = metadataListFromMetadata(index.metadata, "missingRuntimeSignals")
     const indexMissingRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexMissingRuntimeSignals)
+    const indexRuntimeAuthorityInvariants = metadataListFromMetadata(index.metadata, "runtimeAuthorityInvariants")
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
@@ -374,6 +382,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexRequiredRuntimeSignalOwners, requiredRuntimeSignalOwners)
     countValues(indexMissingRuntimeSignals, missingRuntimeSignals)
     countValues(indexMissingRuntimeSignalOwners, missingRuntimeSignalOwners)
+    countValues(indexRuntimeAuthorityInvariants, runtimeAuthorityInvariants)
     countValues(indexCoverageAreas, coverageAreas)
     countValues(indexValidationPresets, validationPresets)
     countValues(indexOwners, owners)
@@ -430,6 +439,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       requiredRuntimeSignalOwners: countValues(indexRequiredRuntimeSignalOwners),
       missingRuntimeSignals: countValues(indexMissingRuntimeSignals),
       missingRuntimeSignalOwners: countValues(indexMissingRuntimeSignalOwners),
+      runtimeAuthorityInvariants: countValues(indexRuntimeAuthorityInvariants),
       coverageAreas: countValues(indexCoverageAreas),
       validationPresets: countValues(indexValidationPresets),
       owners: countValues(indexOwners),
@@ -478,6 +488,7 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     requiredRuntimeSignalOwners: sortedCountObject(requiredRuntimeSignalOwners),
     missingRuntimeSignals: sortedCountObject(missingRuntimeSignals),
     missingRuntimeSignalOwners: sortedCountObject(missingRuntimeSignalOwners),
+    runtimeAuthorityInvariants: sortedCountObject(runtimeAuthorityInvariants),
     coverageAreas: sortedCountObject(coverageAreas),
     validationPresets: sortedCountObject(validationPresets),
     owners: sortedCountObject(owners),
@@ -837,6 +848,11 @@ function validateDiagnosticCountObject(value, source, key) {
       validateDrillRuntimeSignal(signal, source)
     }
   }
+  if (key === "runtimeAuthorityInvariants") {
+    for (const invariant of Object.keys(value)) {
+      validateDrillRuntimeAuthorityInvariant(invariant, source)
+    }
+  }
   if (key === "exitCriterionStatuses" || key === "incompleteExitCriterionStatuses") {
     for (const status of Object.keys(value)) {
       validateDrillExitCriterionStatus(status, source)
@@ -932,6 +948,7 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     return
   }
   const requiresRuntimeSignalManifest = runtimeSignalsFromMetadata(metadata).length > 0
+  const requiresRuntimeAuthorityManifest = metadataListFromMetadata(metadata, "runtimeAuthorityInvariants").length > 0
   if (parsed?.schema === "arroba.drill.validation_suite.v1") {
     validateValidationSuiteManifestArtifact(parsed, artifactPath)
     validateValidationSuiteArtifactMetadata({
@@ -946,11 +963,17 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     if (requiresRuntimeSignalManifest && parsed.failureTaxonomyManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing failureTaxonomyManifest`)
     }
+    if (requiresRuntimeAuthorityManifest && parsed.runtimeAuthorityManifest === undefined) {
+      throw new Error(`drill artifact ${artifactPath} is missing runtimeAuthorityManifest`)
+    }
     if (parsed.failureTaxonomyManifest !== undefined) {
       validateDrillFailureTaxonomyManifest(parsed.failureTaxonomyManifest, `${artifactPath}.failureTaxonomyManifest`)
     }
     if (parsed.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.runtimeSignalsManifest, `${artifactPath}.runtimeSignalsManifest`)
+    }
+    if (parsed.runtimeAuthorityManifest !== undefined) {
+      validateDrillRuntimeAuthorityManifest(parsed.runtimeAuthorityManifest, `${artifactPath}.runtimeAuthorityManifest`)
     }
   }
   if (parsed?.schema === "arroba.drill.validation_suite_run.v1") {
@@ -968,11 +991,17 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     if (requiresRuntimeSignalManifest && parsed.manifest?.failureTaxonomyManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing manifest.failureTaxonomyManifest`)
     }
+    if (requiresRuntimeAuthorityManifest && parsed.manifest?.runtimeAuthorityManifest === undefined) {
+      throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeAuthorityManifest`)
+    }
     if (parsed.manifest?.failureTaxonomyManifest !== undefined) {
       validateDrillFailureTaxonomyManifest(parsed.manifest.failureTaxonomyManifest, `${artifactPath}.manifest.failureTaxonomyManifest`)
     }
     if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)
+    }
+    if (parsed.manifest?.runtimeAuthorityManifest !== undefined) {
+      validateDrillRuntimeAuthorityManifest(parsed.manifest.runtimeAuthorityManifest, `${artifactPath}.manifest.runtimeAuthorityManifest`)
     }
   }
   if (parsed?.schema === "arroba.drill.matrix.v1") {

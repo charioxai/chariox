@@ -7,6 +7,11 @@ import {
   validateDrillRuntimeSignalOwner,
   validateDrillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
+import {
+  DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
+  drillRuntimeAuthorityManifest,
+  validateDrillRuntimeAuthorityManifest,
+} from "./drill-runtime-authority-invariants.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
@@ -72,6 +77,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-outcome-statuses.test.mjs",
   "apps/cli/scripts/lib/drill-platform-bundle.test.mjs",
   "apps/cli/scripts/lib/drill-provider-profiles.test.mjs",
+  "apps/cli/scripts/lib/drill-runtime-authority-invariants.test.mjs",
   "apps/cli/scripts/lib/drill-runtime-helpers.test.mjs",
   "apps/cli/scripts/lib/drill-runtime-signal-registry-parity.test.mjs",
   "apps/cli/scripts/lib/drill-runtime-signals.test.mjs",
@@ -110,6 +116,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
     description: "Runtime signal contracts for authority, health, projection, sync, slice, provider, and relay diagnostics.",
     testPaths: Object.freeze([
       "apps/cli/scripts/lib/drill-runtime-signals.test.mjs",
+      "apps/cli/scripts/lib/drill-runtime-authority-invariants.test.mjs",
       "apps/cli/scripts/lib/drill-runtime-signal-registry-parity.test.mjs",
     ]),
   },
@@ -236,6 +243,7 @@ export function drillValidationSuiteManifest({
     coverage,
     failureTaxonomyManifest: drillFailureTaxonomyManifest(),
     runtimeSignalsManifest: drillRuntimeSignalsManifest(),
+    runtimeAuthorityManifest: drillRuntimeAuthorityManifest(),
     validationPresets: normalizeValidationSuitePresetContracts(validationPresets),
     testPaths: [...testPaths],
   }
@@ -276,6 +284,9 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
   if (runtimeSignals.length > 0) {
     validateDrillRuntimeSignalsManifest(manifest.runtimeSignalsManifest, "validation suite runtimeSignalsManifest")
   }
+  if (manifest.runtimeAuthorityManifest !== undefined) {
+    validateDrillRuntimeAuthorityManifest(manifest.runtimeAuthorityManifest, "validation suite runtimeAuthorityManifest")
+  }
   const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)
   return {
     drill: "validation-suite",
@@ -300,6 +311,7 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
         requiredRuntimeSignalOwners: runtimeSignalOwners.join(","),
       }
       : {}),
+    runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
     ...(requiredFailureClassifications.length > 0
       ? { requiredFailureClassifications: requiredFailureClassifications.join(",") }
       : {}),

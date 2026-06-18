@@ -12,6 +12,10 @@ import {
   DRILL_RUNTIME_SIGNAL_IDS,
   drillRuntimeSignalsManifest,
 } from "./lib/drill-runtime-signals.mjs"
+import {
+  DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
+  drillRuntimeAuthorityManifest,
+} from "./lib/drill-runtime-authority-invariants.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 import { SHARED_DRILL_TEST_PATHS } from "./lib/drill-validation-suite.mjs"
 
@@ -141,6 +145,7 @@ test("drill validation suite prints coverage manifest", async () => {
   )
   assert.deepEqual(manifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
   assert.deepEqual(manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
+  assert.deepEqual(manifest.runtimeAuthorityManifest, drillRuntimeAuthorityManifest())
   assert.match(manifest.command, /^node --test /)
 })
 
@@ -165,6 +170,7 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(fileManifest.schema, "arroba.drill.validation_suite.v1")
     assert.deepEqual(fileManifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
     assert.deepEqual(fileManifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
+    assert.deepEqual(fileManifest.runtimeAuthorityManifest, drillRuntimeAuthorityManifest())
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.tests, SHARED_DRILL_TEST_PATHS.length)
     assert.equal(artifactIndex.metadata.owners, "validation-platform")
@@ -177,6 +183,7 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
     assert.equal(artifactIndex.metadata.requiredRuntimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))
     assert.equal(artifactIndex.metadata.requiredRuntimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
+    assert.equal(artifactIndex.metadata.runtimeAuthorityInvariants, DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","))
     assert.equal(artifactIndex.metadata.requiredFailureClassifications, EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS)
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
@@ -226,6 +233,7 @@ test("drill validation suite writes passing run report artifact output", async (
     assert.equal(fileReport.manifest.schema, "arroba.drill.validation_suite.v1")
     assert.deepEqual(fileReport.manifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
     assert.deepEqual(fileReport.manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
+    assert.deepEqual(fileReport.manifest.runtimeAuthorityManifest, drillRuntimeAuthorityManifest())
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.status, "passed")
     assert.equal(artifactIndex.metadata.exitCriterionStatuses, "satisfied")

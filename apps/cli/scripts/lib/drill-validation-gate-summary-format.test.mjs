@@ -339,6 +339,7 @@ function artifactAggregateFixture() {
     },
     missingRuntimeSignals: {},
     missingRuntimeSignalOwners: {},
+    runtimeAuthorityInvariants: {},
     coverageAreas: {
       "distributed-observability": 1,
     },
@@ -468,6 +469,7 @@ function artifactAggregateFixture() {
       },
       missingRuntimeSignals: {},
       missingRuntimeSignalOwners: {},
+      runtimeAuthorityInvariants: {},
       coverageAreas: {
         "distributed-observability": 1,
       },
