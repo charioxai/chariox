@@ -248,6 +248,34 @@ test("drill artifact index summary gates stale indexes", async () => {
         assert.equal(error.code, 1)
         assert.match(error.stdout, /artifact_required_max_age_ms=100 stale_indexes=1/)
         assert.match(error.stdout, /next: regenerate stale drill artifact indexes/)
+        assert.match(error.stdout, /sources: artifact-index report=.*arroba-drill-artifacts\.json/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-artifact-max-age-ms=100",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const aggregate = JSON.parse(error.stdout)
+        assert.deepEqual(aggregate.nextActions.map(({ classification, count, sourceDetails }) => ({
+          classification,
+          count,
+          sourceDetails,
+        })), [{
+          classification: "artifact-staleness",
+          count: 1,
+          sourceDetails: [{
+            source: "artifact-index",
+            reportPath: indexPath,
+          }],
+        }])
         return true
       },
     )
@@ -284,6 +312,35 @@ test("drill artifact index summary gates stale matrix reports", async () => {
         assert.equal(error.code, 1)
         assert.match(error.stdout, /matrix_required_max_age_ms=100 stale_reports=1/)
         assert.match(error.stdout, /next: regenerate stale drill matrix reports/)
+        assert.match(error.stdout, /sources: artifact-index-summary-matrix report=.*reports\/report\.json/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-matrix-max-age-ms=100",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const aggregate = JSON.parse(error.stdout)
+        assert.deepEqual(aggregate.nextActions.map(({ classification, count, sourceDetails }) => ({
+          classification,
+          count,
+          sourceDetails,
+        })), [{
+          classification: "matrix-staleness",
+          count: 1,
+          sourceDetails: [{
+            source: "artifact-index-summary-matrix",
+            matrix: "artifact-index-summary-matrix",
+            reportPath: path.join(rootDir, "two", "reports", "report.json"),
+          }],
+        }])
         return true
       },
     )

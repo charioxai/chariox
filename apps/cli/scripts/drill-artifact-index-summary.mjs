@@ -920,12 +920,16 @@ function artifactIndexSummaryNextActions(aggregate) {
     countArtifactIndexSummaryNextAction(nextActions, {
       classification: "artifact-staleness",
       nextAction: "regenerate stale drill artifact indexes before using them as validation evidence",
+      count: aggregate.staleArtifactIndexes.length,
+      sourceDetails: aggregate.staleArtifactIndexes.map(staleArtifactIndexSourceDetail),
     })
   }
   if ((aggregate.staleMatrixReports ?? []).length > 0) {
     countArtifactIndexSummaryNextAction(nextActions, {
       classification: "matrix-staleness",
       nextAction: "regenerate stale drill matrix reports before using them as validation evidence",
+      count: aggregate.staleMatrixReports.length,
+      sourceDetails: aggregate.staleMatrixReports.map(staleMatrixReportSourceDetail),
     })
   }
   addMissingListActions(
@@ -1034,8 +1038,25 @@ function countArtifactIndexSummaryNextAction(nextActions, {
   owner = "validation-harness",
   classification,
   nextAction,
+  count = 1,
+  sourceDetails,
 }) {
-  countDrillAggregateNextAction(nextActions, { owner, classification, nextAction })
+  countDrillAggregateNextAction(nextActions, { owner, classification, nextAction, count, sourceDetails })
+}
+
+function staleArtifactIndexSourceDetail(staleIndex) {
+  return {
+    source: "artifact-index",
+    ...(staleIndex.source ? { reportPath: staleIndex.source } : {}),
+  }
+}
+
+function staleMatrixReportSourceDetail(staleReport) {
+  return {
+    source: staleReport.matrix ?? "matrix-report",
+    ...(staleReport.matrix ? { matrix: staleReport.matrix } : {}),
+    ...(staleReport.source ? { reportPath: staleReport.source } : {}),
+  }
 }
 
 function artifactIndexSummaryOwnerForClassification(classification) {
