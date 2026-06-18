@@ -161,6 +161,7 @@ pub(crate) async fn handle_connection(
                                     realm_id: Some(identity.realm_id.clone()),
                                     identity: Some(identity.into()),
                                     daemon_registration: Some(registration.clone()),
+                                    client_daemon_key: None,
                                 },
                             );
                             guard.daemons.insert(daemon_key.clone(), registration);
@@ -230,6 +231,24 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
+                            let existing_client_key = {
+                                let guard = registry.read().await;
+                                guard
+                                    .peers
+                                    .get(&peer_addr)
+                                    .filter(|peer| peer.role == RelayConnectionRole::Client)
+                                    .and_then(|peer| peer.client_daemon_key.clone())
+                            };
+                            if existing_client_key
+                                .as_ref()
+                                .is_some_and(|existing| existing != &daemon_key)
+                            {
+                                send_close(
+                                    &outgoing_tx,
+                                    "client connection already bound to target".to_string(),
+                                );
+                                break;
+                            }
                             let daemon_public_key = {
                                 let guard = registry.read().await;
                                 guard
@@ -246,6 +265,7 @@ pub(crate) async fn handle_connection(
                                     realm_id: Some(identity.realm_id.clone()),
                                     identity: Some(identity.into()),
                                     daemon_registration: None,
+                                    client_daemon_key: Some(daemon_key.clone()),
                                 },
                             );
                             send_envelope(
@@ -444,8 +464,8 @@ pub(crate) async fn handle_connection(
                             target,
                             encrypted_request,
                         } => {
-                            let Some(realm_id) =
-                                connected_client_realm_id(&registry, peer_addr).await
+                            let Some((realm_id, connected_daemon_key)) =
+                                connected_client_binding(&registry, peer_addr).await
                             else {
                                 send_close(
                                     &outgoing_tx,
@@ -478,6 +498,21 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             };
+                            if daemon_key != connected_daemon_key {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "target_mismatch",
+                                            "client connection is bound to another relay target",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            }
                             let relay_request_id = format!(
                                 "relay-request-{}",
                                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
@@ -542,8 +577,8 @@ pub(crate) async fn handle_connection(
                             subscription_scope,
                             resume_from_event_id,
                         } => {
-                            let Some(realm_id) =
-                                connected_client_realm_id(&registry, peer_addr).await
+                            let Some((realm_id, connected_daemon_key)) =
+                                connected_client_binding(&registry, peer_addr).await
                             else {
                                 send_close(
                                     &outgoing_tx,
@@ -591,6 +626,21 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             };
+                            if daemon_key != connected_daemon_key {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(relay_error(
+                                            "target_mismatch",
+                                            "client connection is bound to another relay target",
+                                            false,
+                                        )),
+                                    },
+                                )?;
+                                continue;
+                            }
                             relay_log(
                                 "info",
                                 "client_subscribe_target_resolved",
@@ -709,7 +759,7 @@ pub(crate) async fn handle_connection(
                             subscription_id,
                             client_public_key,
                         } => {
-                            if connected_client_realm_id(&registry, peer_addr)
+                            if connected_client_binding(&registry, peer_addr)
                                 .await
                                 .is_none()
                             {
@@ -1265,17 +1315,17 @@ async fn log_daemon_sender_missing(
     );
 }
 
-async fn connected_client_realm_id(
+async fn connected_client_binding(
     registry: &Arc<RwLock<RelayRegistry>>,
     peer_addr: SocketAddr,
-) -> Option<String> {
+) -> Option<(String, DaemonKey)> {
     registry
         .read()
         .await
         .peers
         .get(&peer_addr)
         .filter(|peer| peer.role == RelayConnectionRole::Client)
-        .and_then(|peer| peer.realm_id.clone())
+        .and_then(|peer| peer.realm_id.clone().zip(peer.client_daemon_key.clone()))
 }
 
 async fn close_slow_subscription(
@@ -1617,6 +1667,7 @@ mod tests {
             realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
             identity: None,
             daemon_registration: Some(registration),
+            client_daemon_key: None,
         }
     }
 
@@ -1627,6 +1678,7 @@ mod tests {
             realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
             identity: None,
             daemon_registration: None,
+            client_daemon_key: None,
         }
     }
 

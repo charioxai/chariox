@@ -20,6 +20,7 @@ pub(crate) struct PeerHandle {
     pub(crate) realm_id: Option<String>,
     pub(crate) identity: Option<RelayCallerIdentity>,
     pub(crate) daemon_registration: Option<DaemonRegistration>,
+    pub(crate) client_daemon_key: Option<DaemonKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
