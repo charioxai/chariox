@@ -477,6 +477,30 @@
     </section>
 
     <section>
+      <h2>Landed Hardening Baseline</h2>
+      <div class="two-col">
+        <div class="card">
+          <h3>Relay And Endpoint Recovery</h3>
+          <ul>
+            <li>Relay health now reports healthy versus draining state and exposes runtime load counters.</li>
+            <li>Draining relays refuse new runtime admissions with HTTP 503 while health checks keep returning drain status.</li>
+            <li>Relay endpoint configuration accepts explicit health states and rejects unsupported states at startup/readiness.</li>
+            <li>Cloud ranks endpoint sets by health so healthy alternates precede draining or stale relay URLs.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Client And Authority Recovery</h3>
+          <ul>
+            <li>Browser bootstrap treats non-empty Cloud relay endpoint sets as authoritative instead of appending legacy URLs.</li>
+            <li>Browser reconnect skips cooling relay endpoints when any non-cooling alternate is available.</li>
+            <li>Browser control replay keeps stable command IDs and restores pending state when a replay send fails before leaving the socket.</li>
+            <li>Authority invariant summary gates cover Cloud and OSS runtime boundaries so relay and Cloud stay out of kernel-owned runtime truth.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>Reference Architecture</h2>
       <p class="dek">
         Keep the existing authority boundary, but add durable recovery contracts and
