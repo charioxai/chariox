@@ -961,18 +961,24 @@ function artifactIndexSummaryNextActions(aggregate) {
     aggregate.missingGeneratedValidationSuiteFailureRootRequirements,
     "generated-evidence",
     "rerun generated validation suites with --preserve-failure-root or include the artifact index that records the preserved failure root",
+    "validation-harness",
+    { sourceDetails: (aggregate.missingGeneratedValidationSuiteFailureRootRequirements ?? []).map(missingPathSourceDetail) },
   )
   addMissingListActions(
     nextActions,
     aggregate.missingGeneratedValidationSuiteArtifactIndexPaths,
     "generated-evidence",
     "rerun generated validation suites with artifact indexes or include the artifact index that records generated validation-suite artifact indexes",
+    "validation-harness",
+    { sourceDetails: (aggregate.missingGeneratedValidationSuiteArtifactIndexPaths ?? []).map(missingPathSourceDetail) },
   )
   addMissingListActions(
     nextActions,
     aggregate.missingGeneratedMatrixArtifactIndexPaths,
     "generated-evidence",
     "rerun generated matrix drills with artifact indexes or include the artifact index that records generated matrix artifact indexes",
+    "validation-harness",
+    { sourceDetails: (aggregate.missingGeneratedMatrixArtifactIndexPaths ?? []).map(missingPathSourceDetail) },
   )
   addMissingListActions(
     nextActions,
@@ -1025,12 +1031,13 @@ function artifactIndexSummaryNextActions(aggregate) {
   return formatDrillAggregateNextActionCounts(nextActions)
 }
 
-function addMissingListActions(nextActions, values, classification, prefix, owner = "validation-harness") {
+function addMissingListActions(nextActions, values, classification, prefix, owner = "validation-harness", { sourceDetails } = {}) {
   if ((values ?? []).length === 0) return
   countArtifactIndexSummaryNextAction(nextActions, {
     owner,
     classification,
     nextAction: `${prefix}: ${values.join(", ")}`,
+    sourceDetails,
   })
 }
 
@@ -1057,6 +1064,10 @@ function staleMatrixReportSourceDetail(staleReport) {
     ...(staleReport.matrix ? { matrix: staleReport.matrix } : {}),
     ...(staleReport.source ? { reportPath: staleReport.source } : {}),
   }
+}
+
+function missingPathSourceDetail(pathValue) {
+  return { source: pathValue }
 }
 
 function artifactIndexSummaryOwnerForClassification(classification) {

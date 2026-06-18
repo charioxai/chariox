@@ -387,6 +387,25 @@ test("drill artifact index summary gates generated validation-suite failure root
         assert.equal(error.code, 1)
         assert.match(error.stdout, /generated_validation_suite_failure_roots_required=\/tmp\/generated-suite\/missing-run missing=\/tmp\/generated-suite\/missing-run/)
         assert.match(error.stdout, /next: rerun generated validation suites with --preserve-failure-root .*\/tmp\/generated-suite\/missing-run/)
+        assert.match(error.stdout, /sources: \/tmp\/generated-suite\/missing-run/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-validation-suite-failure-root=/tmp/generated-suite/missing-run",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const missing = JSON.parse(error.stdout)
+        assert.deepEqual(missing.nextActions.map(({ classification, sourceDetails }) => ({ classification, sourceDetails })), [{
+          classification: "generated-evidence",
+          sourceDetails: [{ source: "/tmp/generated-suite/missing-run" }],
+        }])
         return true
       },
     )
@@ -447,6 +466,25 @@ test("drill artifact index summary gates generated validation-suite artifact ind
         assert.equal(error.code, 1)
         assert.match(error.stdout, /generated_validation_suite_artifact_indexes_required=\/tmp\/generated-suite\/missing-artifacts\.json missing=\/tmp\/generated-suite\/missing-artifacts\.json/)
         assert.match(error.stdout, /next: rerun generated validation suites with artifact indexes .*\/tmp\/generated-suite\/missing-artifacts\.json/)
+        assert.match(error.stdout, /sources: \/tmp\/generated-suite\/missing-artifacts\.json/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-validation-suite-artifact-index=/tmp/generated-suite/missing-artifacts.json",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const missing = JSON.parse(error.stdout)
+        assert.deepEqual(missing.nextActions.map(({ classification, sourceDetails }) => ({ classification, sourceDetails })), [{
+          classification: "generated-evidence",
+          sourceDetails: [{ source: "/tmp/generated-suite/missing-artifacts.json" }],
+        }])
         return true
       },
     )
@@ -711,6 +749,25 @@ test("drill artifact index summary gates generated matrix artifact indexes", asy
         assert.equal(error.code, 1)
         assert.match(error.stdout, /generated_matrix_artifact_indexes_required=\/tmp\/generated-matrix\/missing-artifacts\.json missing=\/tmp\/generated-matrix\/missing-artifacts\.json/)
         assert.match(error.stdout, /next: rerun generated matrix drills with artifact indexes .*\/tmp\/generated-matrix\/missing-artifacts\.json/)
+        assert.match(error.stdout, /sources: \/tmp\/generated-matrix\/missing-artifacts\.json/)
+        return true
+      },
+    )
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-generated-matrix-artifact-index=/tmp/generated-matrix/missing-artifacts.json",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const missing = JSON.parse(error.stdout)
+        assert.deepEqual(missing.nextActions.map(({ classification, sourceDetails }) => ({ classification, sourceDetails })), [{
+          classification: "generated-evidence",
+          sourceDetails: [{ source: "/tmp/generated-matrix/missing-artifacts.json" }],
+        }])
         return true
       },
     )
