@@ -86,9 +86,10 @@ impl KernelTransportRuntime {
         let event_counter_path = event_counter_path.into();
         let command_result_cache_path = event_counter_path.with_file_name("command-results.jsonl");
         Ok(Self {
-            event_log: EventLog::new_with_persistent_event_ids(
+            event_log: EventLog::new_with_persistent_event_store(
                 RECENT_EVENT_LIMIT,
-                event_counter_path,
+                event_counter_path.clone(),
+                event_counter_path.with_file_name("events.jsonl"),
             )
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "reserve kernel event ids",

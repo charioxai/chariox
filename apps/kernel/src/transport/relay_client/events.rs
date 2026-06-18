@@ -11,10 +11,12 @@ impl RelayEventRuntime {
     pub(super) fn new(
         event_counter_path: impl Into<std::path::PathBuf>,
     ) -> Result<Self, DaemonError> {
+        let event_counter_path = event_counter_path.into();
         Ok(Self {
-            event_log: EventLog::new_with_persistent_event_ids(
+            event_log: EventLog::new_with_persistent_event_store(
                 RECENT_EVENT_LIMIT,
-                event_counter_path,
+                event_counter_path.clone(),
+                event_counter_path.with_file_name("relay-events.jsonl"),
             )
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "reserve relay kernel event ids",

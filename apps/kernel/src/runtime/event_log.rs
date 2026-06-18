@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 pub const DEFAULT_EVENT_ID_RESERVATION_BLOCK: u64 = 100_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedEvent<E> {
     pub event_id: u64,
     pub stream_id: String,
@@ -54,14 +55,16 @@ pub struct EventLog<E> {
     event_ids: EventIdAllocator,
     retention_limit: usize,
     streams: Mutex<BTreeMap<String, EventStream<E>>>,
+    persistence: Option<PersistentEventStore>,
 }
 
-impl<E: Clone> EventLog<E> {
+impl<E: Clone + Serialize> EventLog<E> {
     pub fn new(retention_limit: usize) -> Self {
         Self {
             event_ids: EventIdAllocator::memory(1),
             retention_limit,
             streams: Mutex::new(BTreeMap::new()),
+            persistence: None,
         }
     }
 
@@ -76,6 +79,7 @@ impl<E: Clone> EventLog<E> {
             )?,
             retention_limit,
             streams: Mutex::new(BTreeMap::new()),
+            persistence: None,
         })
     }
 
@@ -86,19 +90,37 @@ impl<E: Clone> EventLog<E> {
     ) -> io::Result<LoggedEvent<E>> {
         let stream_id = stream_id.into();
         let event_id = self.event_ids.next()?;
-        let mut streams = self.streams.lock().await;
-        let stream = streams.entry(stream_id.clone()).or_default();
-        let logged = LoggedEvent {
-            event_id,
-            stream_id,
-            stream_seq: stream.next_stream_seq,
-            event,
+        let (logged, compact_snapshot) = {
+            let mut streams = self.streams.lock().await;
+            let stream = streams.entry(stream_id.clone()).or_default();
+            let logged = LoggedEvent {
+                event_id,
+                stream_id,
+                stream_seq: stream.next_stream_seq,
+                event,
+            };
+            stream.next_stream_seq += 1;
+            stream.latest_event_id = Some(event_id);
+            stream.retained.push_back(logged.clone());
+            let mut compact_after_append = false;
+            while stream.retained.len() > self.retention_limit {
+                stream.retained.pop_front();
+                compact_after_append = true;
+            }
+            let compact_snapshot = compact_after_append.then(|| {
+                let mut events = streams
+                    .values()
+                    .flat_map(|stream| stream.retained.iter().cloned())
+                    .collect::<Vec<_>>();
+                events.sort_by_key(|event| event.event_id);
+                events
+            });
+            (logged, compact_snapshot)
         };
-        stream.next_stream_seq += 1;
-        stream.latest_event_id = Some(event_id);
-        stream.retained.push_back(logged.clone());
-        while stream.retained.len() > self.retention_limit {
-            stream.retained.pop_front();
+        if let Some(persistence) = &self.persistence {
+            persistence
+                .persist_event(&logged, compact_snapshot.as_deref())
+                .await?;
         }
         Ok(logged)
     }
@@ -134,6 +156,117 @@ impl<E: Clone> EventLog<E> {
                 .collect(),
         )
     }
+}
+
+impl<E> EventLog<E>
+where
+    E: Clone + Serialize + DeserializeOwned,
+{
+    pub fn new_with_persistent_event_store(
+        retention_limit: usize,
+        event_counter_path: impl Into<PathBuf>,
+        event_store_path: impl Into<PathBuf>,
+    ) -> io::Result<Self> {
+        let event_counter_path = event_counter_path.into();
+        let event_store_path = event_store_path.into();
+        Ok(Self {
+            event_ids: EventIdAllocator::persistent(
+                event_counter_path,
+                DEFAULT_EVENT_ID_RESERVATION_BLOCK,
+            )?,
+            retention_limit,
+            streams: Mutex::new(load_retained_streams(&event_store_path, retention_limit)?),
+            persistence: Some(PersistentEventStore {
+                path: event_store_path,
+                io_lock: Mutex::new(()),
+            }),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct PersistentEventStore {
+    path: PathBuf,
+    io_lock: Mutex<()>,
+}
+
+impl PersistentEventStore {
+    async fn persist_event<E>(
+        &self,
+        logged: &LoggedEvent<E>,
+        compact_snapshot: Option<&[LoggedEvent<E>]>,
+    ) -> io::Result<()>
+    where
+        E: Clone + Serialize,
+    {
+        let _guard = self.io_lock.lock().await;
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        append_logged_event(&self.path, logged)?;
+        if let Some(snapshot) = compact_snapshot {
+            rewrite_logged_events(&self.path, snapshot)?;
+        }
+        Ok(())
+    }
+}
+
+fn load_retained_streams<E>(
+    path: &Path,
+    retention_limit: usize,
+) -> io::Result<BTreeMap<String, EventStream<E>>>
+where
+    E: Clone + DeserializeOwned,
+{
+    let payload = match fs::read_to_string(path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(error),
+    };
+    let mut streams = BTreeMap::<String, EventStream<E>>::new();
+    for line in payload.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(logged) = serde_json::from_str::<LoggedEvent<E>>(line) else {
+            continue;
+        };
+        let stream = streams.entry(logged.stream_id.clone()).or_default();
+        stream.next_stream_seq = stream
+            .next_stream_seq
+            .max(logged.stream_seq.saturating_add(1));
+        stream.latest_event_id = Some(stream.latest_event_id.unwrap_or(0).max(logged.event_id));
+        stream.retained.push_back(logged);
+        while stream.retained.len() > retention_limit {
+            stream.retained.pop_front();
+        }
+    }
+    Ok(streams)
+}
+
+fn append_logged_event<E>(path: &Path, logged: &LoggedEvent<E>) -> io::Result<()>
+where
+    E: Serialize,
+{
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, logged).map_err(io::Error::other)?;
+    file.write_all(b"\n")
+}
+
+fn rewrite_logged_events<E>(path: &Path, events: &[LoggedEvent<E>]) -> io::Result<()>
+where
+    E: Serialize,
+{
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_extension("jsonl.tmp");
+    let mut file = fs::File::create(&tmp_path)?;
+    for event in events {
+        serde_json::to_writer(&mut file, event).map_err(io::Error::other)?;
+        file.write_all(b"\n")?;
+    }
+    fs::rename(tmp_path, path)
 }
 
 #[derive(Debug)]
@@ -344,6 +477,87 @@ mod tests {
             restarted.event_id > DEFAULT_EVENT_ID_RESERVATION_BLOCK,
             "restarted kernel must not emit event ids below the previous browser cursor"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn persistent_event_store_replays_after_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-event-store-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        ));
+        let counter_path = root.join("counter.json");
+        let events_path = root.join("events.jsonl");
+        let first_log =
+            EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+                .expect("first persistent event store should initialize");
+        let first = first_log
+            .append("session:a", "first".to_string())
+            .await
+            .expect("first event should append");
+        let second = first_log
+            .append("session:a", "second".to_string())
+            .await
+            .expect("second event should append");
+
+        let restarted_log =
+            EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+                .expect("restarted persistent event store should initialize");
+        let replay = restarted_log
+            .replay_after("session:a", first.event_id)
+            .await;
+
+        match replay {
+            ReplayOutcome::Replayed(events) => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].event_id, second.event_id);
+                assert_eq!(events[0].event, "second");
+            }
+            ReplayOutcome::Gap(gap) => panic!("unexpected replay gap: {gap:?}"),
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn persistent_event_store_skips_malformed_lines() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-event-store-malformed-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        ));
+        let counter_path = root.join("counter.json");
+        let events_path = root.join("events.jsonl");
+        std::fs::create_dir_all(&root).expect("event store root should create");
+        std::fs::write(
+            &events_path,
+            concat!(
+                "not-json\n",
+                "{\"event_id\":7,\"stream_id\":\"session:a\",\"stream_seq\":1,\"event\":\"first\"}\n",
+                "{\"event_id\":8,\"stream_id\":\"session:a\",\"stream_seq\":2,\"event\":\"second\"}\n"
+            ),
+        )
+        .expect("event store should seed");
+
+        let log =
+            EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
+                .expect("persistent event store should tolerate malformed lines");
+        let replay = log.replay_after("session:a", 7).await;
+
+        match replay {
+            ReplayOutcome::Replayed(events) => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].event_id, 8);
+                assert_eq!(events[0].event, "second");
+            }
+            ReplayOutcome::Gap(gap) => panic!("unexpected replay gap: {gap:?}"),
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 }
