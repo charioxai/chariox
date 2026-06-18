@@ -30,6 +30,8 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
       providerAccountAliases: "opencode=zen",
+      plannedOwners: "validation-platform",
+      plannedClassifications: "workspace-live-sync-conflict",
     })
 
     const { stdout } = await execFile(process.execPath, [
@@ -50,6 +52,10 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       "opencode=zen",
       "--require-artifact-validation-preset",
       "cloud-distributed-runtime",
+      "--require-artifact-planned-owner",
+      "validation-platform",
+      "--require-artifact-planned-classification",
+      "workspace-live-sync-conflict",
       "--json",
       "--output",
       outputPath,
@@ -100,6 +106,10 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
       "cloud-distributed-runtime": 1,
       "distributed-runtime": 1,
     })
+    assert.deepEqual(report.checks.artifacts.requiredArtifactPlannedOwners, ["validation-platform"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactPlannedOwners, [])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactPlannedClassifications, ["workspace-live-sync-conflict"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactPlannedClassifications, [])
     assert.deepEqual(report.presets, ["distributed-runtime"])
     assert.deepEqual(report.checks.matrices.missingMatrices, [])
     assert.deepEqual(report.checks.matrices.missingDeploymentPresets, [])
@@ -1160,6 +1170,8 @@ async function writeValidationSuiteArtifact(rootDir, {
   coverageAreas = ["distributed-observability", "suite-contract"],
   evidenceRepo = "cloud",
   providerAccountAliases = "",
+  plannedOwners = "",
+  plannedClassifications = "",
   validationPresets = evidenceRepo === "oss" ? "distributed-runtime" : "cloud-distributed-runtime",
 } = {}) {
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
@@ -1210,6 +1222,8 @@ async function writeValidationSuiteArtifact(rootDir, {
       generatedMatrixRepos: evidenceRepo,
       validationPresets,
       ...(providerAccountAliases ? { providerAccountAliases } : {}),
+      ...(plannedOwners ? { plannedOwners } : {}),
+      ...(plannedClassifications ? { plannedClassifications } : {}),
       exitCriterionStatuses: "satisfied",
     },
   })

@@ -21,6 +21,9 @@ test("cross repo validation gate help lists artifact identity requirements", asy
   assert.match(stdout, /--require-artifact-generated-matrix-name NAME\[,NAME\]/)
   assert.match(stdout, /--require-artifact-generated-matrix-repo REPO\[,REPO\]/)
   assert.match(stdout, /--require-artifact-generated-validation-suite-artifact-index PATH\[,PATH\]/)
+  assert.match(stdout, /--require-artifact-validation-preset NAME\[,NAME\]/)
+  assert.match(stdout, /--require-artifact-planned-owner OWNER\[,OWNER\]/)
+  assert.match(stdout, /--require-artifact-planned-classification KIND\[,KIND\]/)
 })
 
 test("cross repo validation gate combines OSS and Cloud matrix evidence", async () => {
@@ -60,7 +63,12 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       ],
     })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
-      metadata: { providerAccountAliases: "codex=work" },
+      metadata: {
+        plannedClassifications: "workspace-live-sync-conflict",
+        plannedOwners: "validation-platform",
+        providerAccountAliases: "codex=work",
+        validationPresets: "cloud-distributed-runtime",
+      },
     })
 
     const { stdout } = await execFile(process.execPath, [
@@ -80,6 +88,12 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
       "slice-auth-state",
       "--require-artifact-provider-account-alias",
       "codex=work",
+      "--require-artifact-validation-preset",
+      "cloud-distributed-runtime",
+      "--require-artifact-planned-owner",
+      "validation-platform",
+      "--require-artifact-planned-classification",
+      "workspace-live-sync-conflict",
       "--require-complete",
       "--json",
       "--output",
@@ -98,6 +112,12 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.deepEqual(report.checks.artifacts.requiredArtifactProviderAccountAliases, ["codex=work"])
     assert.deepEqual(report.checks.artifacts.missingArtifactProviderAccountAliases, [])
     assert.deepEqual(report.checks.artifacts.aggregate.providerAccountAliases, { "codex=work": 1 })
+    assert.deepEqual(report.checks.artifacts.requiredArtifactValidationPresets, ["cloud-distributed-runtime"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactValidationPresets, [])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactPlannedOwners, ["validation-platform"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactPlannedOwners, [])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactPlannedClassifications, ["workspace-live-sync-conflict"])
+    assert.deepEqual(report.checks.artifacts.missingArtifactPlannedClassifications, [])
     assert.deepEqual(report.checks.artifacts.aggregate.indexes.map((index) => path.relative(cloudRoot, index.rootDir)), [
       path.join(".artifacts", "validation-suite"),
     ])
