@@ -5,8 +5,14 @@ import { validateDrillGeneratedMatrixCommandMetadata } from "./drill-generated-m
 
 test("validates generated matrix command metadata", () => {
   assert.doesNotThrow(() => validateDrillGeneratedMatrixCommandMetadata({
+    artifactIndexFlag: "--artifact-index",
     matrix: "workspace-live-sync-matrix",
     repo: "oss",
+  }, "command"))
+  assert.doesNotThrow(() => validateDrillGeneratedMatrixCommandMetadata({
+    artifactIndexFlag: "--output-artifact-index",
+    matrix: "cloud-slice-runtime-matrix",
+    repo: "cloud",
   }, "command"))
   assert.doesNotThrow(() => validateDrillGeneratedMatrixCommandMetadata({}, "command"))
 
@@ -32,6 +38,10 @@ test("validates generated matrix command metadata", () => {
       repo: "oss",
     }, "command"),
     /command\.repo does not match generated matrix "cloud-slice-runtime-matrix"/,
+  )
+  assert.throws(
+    () => validateDrillGeneratedMatrixCommandMetadata({ artifactIndexFlag: "--artifact-output" }, "command"),
+    /command\.artifactIndexFlag has unknown generated matrix artifact index flag "--artifact-output"/,
   )
   assert.throws(
     () => validateDrillGeneratedMatrixCommandMetadata({ matrix: "Bearer abcdefghijklmnop" }, "command"),

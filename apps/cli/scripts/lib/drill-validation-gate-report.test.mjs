@@ -88,6 +88,7 @@ test("validates optional generated evidence provenance", () => {
           ...generatedEvidence().matrixReports,
           commands: [{
             args: [],
+            artifactIndexFlag: "--artifact-index",
             artifactIndexPath: "/tmp/matrix-artifacts.json",
             cwd: "/repo/arroba",
             reportPath: "",
@@ -98,6 +99,21 @@ test("validates optional generated evidence provenance", () => {
     })),
     /generatedEvidence\.matrixReports\.commands\[0\] has invalid reportPath/,
   )
+  {
+    const { artifactIndexFlag: _artifactIndexFlag, ...commandWithoutFlag } = generatedEvidence().matrixReports.commands[0]
+    assert.throws(
+      () => validateDrillValidationGateReport(report({
+        generatedEvidence: {
+          ...generatedEvidence(),
+          matrixReports: {
+            ...generatedEvidence().matrixReports,
+            commands: [commandWithoutFlag],
+          },
+        },
+      })),
+      /generatedEvidence\.matrixReports\.commands\[0\] has invalid artifactIndexFlag/,
+    )
+  }
   {
     const { nodeArgs: _nodeArgs, ...commandWithoutNodeArgs } = generatedEvidence().validationSuites.commands[0]
     assert.throws(

@@ -1986,6 +1986,7 @@ function validationGateReportGeneratedEvidence(report) {
       commands: (Array.isArray(matrixReports.commands) ? matrixReports.commands : []).map((command) => {
         const commandRecord = command && typeof command === "object" && !Array.isArray(command) ? command : {}
         return {
+          artifactIndexFlag: commandRecord.artifactIndexFlag,
           artifactIndexPath: commandRecord.artifactIndexPath,
           args: stringArray(commandRecord.args),
           cwd: commandRecord.cwd,
@@ -2103,11 +2104,13 @@ function validateGeneratedMatrixCommandSummary(command, source) {
     throw new Error(`${source} is not an object`)
   }
   validateDrillGeneratedMatrixCommandMetadata(command, source)
-  for (const key of ["artifactIndexPath", "cwd", "reportPath", "scriptPath"]) {
+  for (const key of ["artifactIndexFlag", "artifactIndexPath", "cwd", "reportPath", "scriptPath"]) {
     if (!nonEmptyString(command[key])) {
       throw new Error(`${source} has invalid ${key}`)
     }
-    validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
+    if (key !== "artifactIndexFlag") {
+      validateGeneratedEvidencePathText(command[key], `${source}.${key}`)
+    }
   }
   validateGeneratedEvidencePathArray(command.args ?? [], `${source}.args`)
   validateGeneratedEvidencePathArray(command.nodeArgs, `${source}.nodeArgs`)

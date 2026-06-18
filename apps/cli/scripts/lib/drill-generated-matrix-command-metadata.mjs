@@ -5,7 +5,17 @@ import {
 } from "./drill-generated-matrix-names.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
 
+const GENERATED_MATRIX_ARTIFACT_INDEX_FLAGS = Object.freeze([
+  "--artifact-index",
+  "--output-artifact-index",
+])
+
 export function validateDrillGeneratedMatrixCommandMetadata(command, source) {
+  if (command.artifactIndexFlag !== undefined) {
+    if (!GENERATED_MATRIX_ARTIFACT_INDEX_FLAGS.includes(command.artifactIndexFlag)) {
+      throw new Error(`${source}.artifactIndexFlag has unknown generated matrix artifact index flag ${JSON.stringify(command.artifactIndexFlag)}`)
+    }
+  }
   if (command.matrix !== undefined) {
     if (!nonEmptyString(command.matrix)) {
       throw new Error(`${source} has invalid matrix`)

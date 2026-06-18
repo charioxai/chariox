@@ -456,9 +456,13 @@ test("rejects unknown generated matrix limitation labels in aggregate reports", 
         enabled: true,
         roots: ["/tmp/generated-matrix"],
         commands: [{
+          artifactIndexFlag: "--artifact-index",
           artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
           args: ["--dry-run"],
           cwd: "/repo/arroba",
+          matrix: "workspace-live-sync-matrix",
+          nodeArgs: ["/repo/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs", "--dry-run", "--report", "/tmp/generated-matrix/workspace-live-sync-matrix.json", "--artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
+          repo: "oss",
           reportPath: "/tmp/generated-matrix/workspace-live-sync-matrix.json",
           scriptPath: "/repo/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
         }],
@@ -1087,6 +1091,7 @@ test("aggregates generated evidence provenance from gate reports", () => {
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
+        artifactIndexFlag: "--artifact-index",
         cwd: "/repo/arroba",
         matrix: "native-provider-tui-matrix",
         nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
@@ -1201,6 +1206,25 @@ test("rejects secret-looking generated evidence paths in validation gate aggrega
         }],
       }),
       /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\]\.nodeArgs is not an array/,
+    )
+  }
+  {
+    const { artifactIndexFlag: _artifactIndexFlag, ...commandWithoutFlag } = aggregate.reports[0].generatedEvidence.matrixReports.commands[0]
+    assert.throws(
+      () => validateDrillValidationGateAggregate({
+        ...aggregate,
+        reports: [{
+          ...aggregate.reports[0],
+          generatedEvidence: {
+            ...aggregate.reports[0].generatedEvidence,
+            matrixReports: {
+              ...aggregate.reports[0].generatedEvidence.matrixReports,
+              commands: [commandWithoutFlag],
+            },
+          },
+        }],
+      }),
+      /reports\[0\]\.generatedEvidence\.matrixReports\.commands\[0\] has invalid artifactIndexFlag/,
     )
   }
   assert.throws(
@@ -1513,6 +1537,7 @@ function generatedEvidenceFixture() {
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
+        artifactIndexFlag: "--artifact-index",
         cwd: "/repo/arroba",
         matrix: "native-provider-tui-matrix",
         nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
