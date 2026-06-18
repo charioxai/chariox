@@ -257,8 +257,10 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     ]),
     "requiredFailureClassifications",
   )
-  if (runtimeSignals.length > 0) {
+  if (runtimeSignals.length > 0 || requiredFailureClassifications.length > 0) {
     validateDrillFailureTaxonomyManifest(manifest.failureTaxonomyManifest, "validation suite failureTaxonomyManifest")
+  }
+  if (runtimeSignals.length > 0) {
     validateDrillRuntimeSignalsManifest(manifest.runtimeSignalsManifest, "validation suite runtimeSignalsManifest")
   }
   const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)
