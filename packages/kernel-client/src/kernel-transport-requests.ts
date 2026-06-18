@@ -2,6 +2,7 @@ export type KernelTransportRequest =
   | {
     type: "request"
     request_id: string
+    command_id: string
     request: unknown
   }
   | {
@@ -48,6 +49,7 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown): 
   return {
     type: "request",
     request_id: requestId,
+    command_id: requestId,
     request,
   }
 }

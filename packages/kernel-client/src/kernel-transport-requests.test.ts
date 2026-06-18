@@ -9,6 +9,7 @@ test("normalizeWebSocketRequest wraps regular daemon requests", () => {
   assert.deepEqual(normalizeWebSocketRequest("request-1", request), {
     type: "request",
     request_id: "request-1",
+    command_id: "request-1",
     request,
   })
 })
