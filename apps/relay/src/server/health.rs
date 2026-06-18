@@ -27,7 +27,7 @@ pub(crate) async fn handle_health_connection(
     registry: Arc<RwLock<RelayRegistry>>,
     draining: Arc<AtomicBool>,
 ) -> Result<(), std::io::Error> {
-    if read_health_request(&mut stream).await.is_none() {
+    let Some(path) = read_health_request(&mut stream).await else {
         write_json_response(
             &mut stream,
             400,
@@ -39,12 +39,18 @@ pub(crate) async fn handle_health_connection(
         )
         .await?;
         return Ok(());
-    }
+    };
 
     let is_draining = draining.load(Ordering::Relaxed);
+    let status = if is_draining { "draining" } else { "healthy" };
+    let http_status = if is_draining && path == HealthRequestPath::Ready {
+        503
+    } else {
+        200
+    };
     let guard = registry.read().await;
     let body = json!({
-        "status": if is_draining { "draining" } else { "healthy" },
+        "status": status,
         "draining": is_draining,
         "unix_ms": current_unix_ms(),
         "peer_count": guard.peer_count(),
@@ -55,10 +61,10 @@ pub(crate) async fn handle_health_connection(
     });
     drop(guard);
 
-    write_json_response(&mut stream, if is_draining { 503 } else { 200 }, body).await
+    write_json_response(&mut stream, http_status, body).await
 }
 
-async fn read_health_request(stream: &mut TcpStream) -> Option<()> {
+async fn read_health_request(stream: &mut TcpStream) -> Option<HealthRequestPath> {
     let mut buffer = Vec::with_capacity(256);
     let mut chunk = [0_u8; 512];
     loop {
@@ -74,12 +80,18 @@ async fn read_health_request(stream: &mut TcpStream) -> Option<()> {
         }
         buffer.extend_from_slice(&chunk[..size]);
         if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-            return health_request_path(&buffer).map(|_| ());
+            return health_request_path(&buffer);
         }
     }
 }
 
-fn health_request_path(buffer: &[u8]) -> Option<&str> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HealthRequestPath {
+    Health,
+    Ready,
+}
+
+fn health_request_path(buffer: &[u8]) -> Option<HealthRequestPath> {
     let end = buffer
         .windows(2)
         .position(|window| window == b"\r\n")
@@ -88,7 +100,14 @@ fn health_request_path(buffer: &[u8]) -> Option<&str> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next()?;
     let path = parts.next()?;
-    (method == "GET" && matches!(path, "/healthz" | "/health" | "/readyz")).then_some(path)
+    if method != "GET" {
+        return None;
+    }
+    match path {
+        "/healthz" | "/health" => Some(HealthRequestPath::Health),
+        "/readyz" => Some(HealthRequestPath::Ready),
+        _ => None,
+    }
 }
 
 async fn write_json_response(
@@ -128,11 +147,11 @@ mod tests {
     fn health_request_path_accepts_only_health_gets() {
         assert_eq!(
             health_request_path(b"GET /healthz HTTP/1.1\r\n"),
-            Some("/healthz")
+            Some(HealthRequestPath::Health)
         );
         assert_eq!(
             health_request_path(b"GET /readyz HTTP/1.1\r\n"),
-            Some("/readyz")
+            Some(HealthRequestPath::Ready)
         );
         assert_eq!(health_request_path(b"POST /healthz HTTP/1.1\r\n"), None);
         assert_eq!(

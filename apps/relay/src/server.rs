@@ -1077,10 +1077,15 @@ mod tests {
                 .expect("draining relay server should run");
         });
 
-        let draining = relay_http_get(addr, "/readyz").await;
-        assert!(draining.starts_with("HTTP/1.1 503 Service Unavailable"));
-        assert!(draining.contains("\"status\":\"draining\""));
-        assert!(draining.contains("\"draining\":true"));
+        let draining_health = relay_http_get(addr, "/healthz").await;
+        assert!(draining_health.starts_with("HTTP/1.1 200 OK"));
+        assert!(draining_health.contains("\"status\":\"draining\""));
+        assert!(draining_health.contains("\"draining\":true"));
+
+        let draining_ready = relay_http_get(addr, "/readyz").await;
+        assert!(draining_ready.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(draining_ready.contains("\"status\":\"draining\""));
+        assert!(draining_ready.contains("\"draining\":true"));
 
         let websocket_error = connect_async(format!("ws://{addr}"))
             .await
