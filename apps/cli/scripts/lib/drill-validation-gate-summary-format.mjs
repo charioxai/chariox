@@ -123,6 +123,11 @@ export function formatDrillValidationGateSummary(report) {
   if (requiredArtifactClassifications.length > 0) {
     lines.push(`artifact_required_classifications=${requiredArtifactClassifications.join(",")} missing=${missingArtifactClassifications.join(",") || "none"}`)
   }
+  const requiredArtifactFailureClassifications = artifacts.requiredArtifactFailureClassifications ?? []
+  const missingArtifactFailureClassifications = artifacts.missingArtifactFailureClassifications ?? []
+  if (requiredArtifactFailureClassifications.length > 0) {
+    lines.push(`artifact_required_failure_classifications=${requiredArtifactFailureClassifications.join(",")} missing=${missingArtifactFailureClassifications.join(",") || "none"}`)
+  }
   const requiredArtifactPlannedOwners = artifacts.requiredArtifactPlannedOwners ?? []
   const missingArtifactPlannedOwners = artifacts.missingArtifactPlannedOwners ?? []
   if (requiredArtifactPlannedOwners.length > 0) {

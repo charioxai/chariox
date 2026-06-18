@@ -22,6 +22,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactFailureClassifications = [],
   requiredArtifactPlannedOwners = [],
   requiredArtifactPlannedClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
@@ -45,6 +46,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       || requiredArtifactRuntimeSignalOwners.length > 0
       || requiredArtifactOwners.length > 0
       || requiredArtifactClassifications.length > 0
+      || requiredArtifactFailureClassifications.length > 0
       || requiredArtifactPlannedOwners.length > 0
       || requiredArtifactPlannedClassifications.length > 0
       || requiredArtifactExitCriterionStatuses.length > 0
@@ -87,6 +89,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactOwners: [...requiredArtifactOwners],
         requiredArtifactClassifications: [...requiredArtifactClassifications],
         missingArtifactClassifications: [...requiredArtifactClassifications],
+        requiredArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
+        missingArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
         requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
         missingArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
         requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
@@ -111,6 +115,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactRuntimeSignalOwners: requiredArtifactRuntimeSignalOwners,
           missingArtifactOwners: requiredArtifactOwners,
           missingArtifactClassifications: requiredArtifactClassifications,
+          missingArtifactFailureClassifications: requiredArtifactFailureClassifications,
           missingArtifactPlannedOwners: requiredArtifactPlannedOwners,
           missingArtifactPlannedClassifications: requiredArtifactPlannedClassifications,
           missingArtifactExitCriterionStatuses: requiredArtifactExitCriterionStatuses,
@@ -156,6 +161,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactOwners: [],
       requiredArtifactClassifications: [],
       missingArtifactClassifications: [],
+      requiredArtifactFailureClassifications: [],
+      missingArtifactFailureClassifications: [],
       requiredArtifactPlannedOwners: [],
       missingArtifactPlannedOwners: [],
       requiredArtifactPlannedClassifications: [],
@@ -209,6 +216,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactOwners: [...requiredArtifactOwners],
         requiredArtifactClassifications: [...requiredArtifactClassifications],
         missingArtifactClassifications: [...requiredArtifactClassifications],
+        requiredArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
+        missingArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
         requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
         missingArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
         requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
@@ -241,6 +250,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactRuntimeSignalOwners = requiredArtifactRuntimeSignalOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.runtimeSignalOwners ?? {}, owner))
     const missingArtifactOwners = requiredArtifactOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.owners ?? {}, owner))
     const missingArtifactClassifications = requiredArtifactClassifications.filter((classification) => !Object.prototype.hasOwnProperty.call(aggregate.classifications ?? {}, classification))
+    const missingArtifactFailureClassifications = requiredArtifactFailureClassifications.filter((classification) => !Object.prototype.hasOwnProperty.call(aggregate.requiredFailureClassifications ?? {}, classification))
     const missingArtifactPlannedOwners = requiredArtifactPlannedOwners.filter((owner) => !Object.prototype.hasOwnProperty.call(aggregate.plannedOwners ?? {}, owner))
     const missingArtifactPlannedClassifications = requiredArtifactPlannedClassifications.filter((classification) => !Object.prototype.hasOwnProperty.call(aggregate.plannedClassifications ?? {}, classification))
     const missingArtifactExitCriterionStatuses = requiredArtifactExitCriterionStatuses.filter((status) => !Object.prototype.hasOwnProperty.call(aggregate.exitCriterionStatuses ?? {}, status))
@@ -260,6 +270,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       + missingArtifactRuntimeSignalOwners.length
       + missingArtifactOwners.length
       + missingArtifactClassifications.length
+      + missingArtifactFailureClassifications.length
       + missingArtifactPlannedOwners.length
       + missingArtifactPlannedClassifications.length
       + missingArtifactExitCriterionStatuses.length
@@ -302,6 +313,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactOwners,
       requiredArtifactClassifications: [...requiredArtifactClassifications],
       missingArtifactClassifications,
+      requiredArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
+      missingArtifactFailureClassifications,
       requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
       missingArtifactPlannedOwners,
       requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
@@ -329,6 +342,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactRuntimeSignalOwners,
             missingArtifactOwners,
             missingArtifactClassifications,
+            missingArtifactFailureClassifications,
             missingArtifactPlannedOwners,
             missingArtifactPlannedClassifications,
             missingArtifactExitCriterionStatuses,
@@ -376,6 +390,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactOwners: [...requiredArtifactOwners],
       requiredArtifactClassifications: [...requiredArtifactClassifications],
       missingArtifactClassifications: [...requiredArtifactClassifications],
+      requiredArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
+      missingArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
       requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
       missingArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
       requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
@@ -405,6 +421,7 @@ function artifactRequirementError({
   missingArtifactRuntimeSignalOwners,
   missingArtifactOwners,
   missingArtifactClassifications,
+  missingArtifactFailureClassifications,
   missingArtifactPlannedOwners,
   missingArtifactPlannedClassifications,
   missingArtifactExitCriterionStatuses,
@@ -456,6 +473,9 @@ function artifactRequirementError({
   }
   if (missingArtifactClassifications.length > 0) {
     messages.push(`missing required artifact classifications: ${missingArtifactClassifications.join(", ")}`)
+  }
+  if (missingArtifactFailureClassifications.length > 0) {
+    messages.push(`missing required artifact failure classifications: ${missingArtifactFailureClassifications.join(", ")}`)
   }
   if (missingArtifactPlannedOwners.length > 0) {
     messages.push(`missing required artifact planned owners: ${missingArtifactPlannedOwners.join(", ")}`)

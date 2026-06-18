@@ -167,6 +167,8 @@ function validateArtifactIndexCheck(check, source) {
   validateStringArray(check.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
   validateStringArray(check.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
   validateStringArray(check.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
+  validateFailureClassificationArray(check.requiredArtifactFailureClassifications ?? [], `${source}.requiredArtifactFailureClassifications`)
+  validateFailureClassificationArray(check.missingArtifactFailureClassifications ?? [], `${source}.missingArtifactFailureClassifications`)
   validateStringArray(check.requiredArtifactPlannedOwners ?? [], `${source}.requiredArtifactPlannedOwners`)
   validateStringArray(check.missingArtifactPlannedOwners ?? [], `${source}.missingArtifactPlannedOwners`)
   validateStringArray(check.requiredArtifactPlannedClassifications ?? [], `${source}.requiredArtifactPlannedClassifications`)

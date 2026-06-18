@@ -50,6 +50,8 @@ test("skips artifact validation when no roots or indexes are configured", async 
     missingArtifactOwners: [],
     requiredArtifactClassifications: [],
     missingArtifactClassifications: [],
+    requiredArtifactFailureClassifications: [],
+    missingArtifactFailureClassifications: [],
     requiredArtifactPlannedOwners: [],
     missingArtifactPlannedOwners: [],
     requiredArtifactPlannedClassifications: [],
@@ -214,6 +216,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
         validationPresets: "distributed-runtime",
         owners: "validation-platform",
         classifications: "validation-gate",
+        requiredFailureClassifications: "kernel-authority,workspace-live-sync-conflict",
         plannedOwners: "validation-harness",
         plannedClassifications: "matrix-coverage",
       },
@@ -230,6 +233,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
       requiredArtifactValidationPresets: ["distributed-runtime"],
       requiredArtifactOwners: ["validation-platform"],
       requiredArtifactClassifications: ["validation-gate"],
+      requiredArtifactFailureClassifications: ["workspace-live-sync-conflict"],
       requiredArtifactPlannedOwners: ["validation-harness"],
       requiredArtifactPlannedClassifications: ["matrix-coverage"],
     })
@@ -239,6 +243,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
     assert.deepEqual(pass.missingArtifactValidationPresets, [])
     assert.deepEqual(pass.missingArtifactOwners, [])
     assert.deepEqual(pass.missingArtifactClassifications, [])
+    assert.deepEqual(pass.missingArtifactFailureClassifications, [])
     assert.deepEqual(pass.missingArtifactPlannedOwners, [])
     assert.deepEqual(pass.missingArtifactPlannedClassifications, [])
 
@@ -252,6 +257,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
       requiredArtifactValidationPresets: ["workspace-live-sync"],
       requiredArtifactOwners: ["runtime-network"],
       requiredArtifactClassifications: ["relay-runtime"],
+      requiredArtifactFailureClassifications: ["remote-extension-sync"],
       requiredArtifactPlannedOwners: ["kernel-authority"],
       requiredArtifactPlannedClassifications: ["workspace-live-sync-conflict"],
     })
@@ -261,6 +267,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
     assert.deepEqual(fail.missingArtifactValidationPresets, ["workspace-live-sync"])
     assert.deepEqual(fail.missingArtifactOwners, ["runtime-network"])
     assert.deepEqual(fail.missingArtifactClassifications, ["relay-runtime"])
+    assert.deepEqual(fail.missingArtifactFailureClassifications, ["remote-extension-sync"])
     assert.deepEqual(fail.missingArtifactPlannedOwners, ["kernel-authority"])
     assert.deepEqual(fail.missingArtifactPlannedClassifications, ["workspace-live-sync-conflict"])
     assert.match(fail.error, /missing required artifact runtime signals: lease-health/)
@@ -268,6 +275,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
     assert.match(fail.error, /missing required artifact validation presets: workspace-live-sync/)
     assert.match(fail.error, /missing required artifact owners: runtime-network/)
     assert.match(fail.error, /missing required artifact classifications: relay-runtime/)
+    assert.match(fail.error, /missing required artifact failure classifications: remote-extension-sync/)
     assert.match(fail.error, /missing required artifact planned owners: kernel-authority/)
     assert.match(fail.error, /missing required artifact planned classifications: workspace-live-sync-conflict/)
   } finally {

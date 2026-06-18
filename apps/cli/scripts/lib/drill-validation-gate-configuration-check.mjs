@@ -22,6 +22,7 @@ export function configurationValidationGateCheck({
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactFailureClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
   requiredArtifactIncompleteExitCriterionStatuses = [],
   requiredArtifactMaxAgeMs = null,
@@ -58,6 +59,7 @@ export function configurationValidationGateCheck({
     || requiredArtifactRuntimeSignalOwners.length > 0
     || requiredArtifactOwners.length > 0
     || requiredArtifactClassifications.length > 0
+    || requiredArtifactFailureClassifications.length > 0
     || requiredArtifactExitCriterionStatuses.length > 0
     || requiredArtifactIncompleteExitCriterionStatuses.length > 0
     || requiredArtifactMaxAgeMs !== null

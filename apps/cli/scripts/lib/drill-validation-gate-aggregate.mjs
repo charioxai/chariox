@@ -91,6 +91,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactOwners: new Map(),
     requiredArtifactClassifications: new Map(),
     missingArtifactClassifications: new Map(),
+    requiredArtifactFailureClassifications: new Map(),
+    missingArtifactFailureClassifications: new Map(),
     requiredArtifactPlannedOwners: new Map(),
     missingArtifactPlannedOwners: new Map(),
     requiredArtifactPlannedClassifications: new Map(),
@@ -107,6 +109,7 @@ export function summarizeValidationGateReportAggregate(
     artifactRuntimeSignalOwners: new Map(),
     artifactOwners: new Map(),
     artifactClassifications: new Map(),
+    artifactFailureClassifications: new Map(),
     artifactPlannedOwners: new Map(),
     artifactPlannedClassifications: new Map(),
     artifactExitCriterionStatuses: new Map(),
@@ -335,6 +338,8 @@ export function summarizeValidationGateReportAggregate(
     missingArtifactOwners: missingRequirements.missingArtifactOwners,
     requiredArtifactClassifications: normalizedAggregateRequirements.requiredArtifactClassifications,
     missingArtifactClassifications: missingRequirements.missingArtifactClassifications,
+    requiredArtifactFailureClassifications: normalizedAggregateRequirements.requiredArtifactFailureClassifications,
+    missingArtifactFailureClassifications: missingRequirements.missingArtifactFailureClassifications,
     requiredArtifactPlannedOwners: normalizedAggregateRequirements.requiredArtifactPlannedOwners,
     missingArtifactPlannedOwners: missingRequirements.missingArtifactPlannedOwners,
     requiredArtifactPlannedClassifications: normalizedAggregateRequirements.requiredArtifactPlannedClassifications,
@@ -427,6 +432,7 @@ export function formatDrillValidationGateAggregateSummary(aggregate) {
   appendAggregateRequirementLine(lines, "required_artifact_runtime_signal_owners", aggregate.requiredArtifactRuntimeSignalOwners, aggregate.missingArtifactRuntimeSignalOwners)
   appendAggregateRequirementLine(lines, "required_artifact_owners", aggregate.requiredArtifactOwners, aggregate.missingArtifactOwners)
   appendAggregateRequirementLine(lines, "required_artifact_classifications", aggregate.requiredArtifactClassifications, aggregate.missingArtifactClassifications)
+  appendAggregateRequirementLine(lines, "required_artifact_failure_classifications", aggregate.requiredArtifactFailureClassifications, aggregate.missingArtifactFailureClassifications)
   appendAggregateRequirementLine(lines, "required_artifact_planned_owners", aggregate.requiredArtifactPlannedOwners, aggregate.missingArtifactPlannedOwners)
   appendAggregateRequirementLine(lines, "required_artifact_planned_classifications", aggregate.requiredArtifactPlannedClassifications, aggregate.missingArtifactPlannedClassifications)
   appendAggregateRequirementLine(lines, "required_artifact_exit_criterion_statuses", aggregate.requiredArtifactExitCriterionStatuses, aggregate.missingArtifactExitCriterionStatuses)
@@ -510,6 +516,8 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
   validateStringArray(aggregate.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
   validateStringArray(aggregate.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
   validateStringArray(aggregate.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
+  validateFailureClassificationArray(aggregate.requiredArtifactFailureClassifications ?? [], `${source}.requiredArtifactFailureClassifications`)
+  validateFailureClassificationArray(aggregate.missingArtifactFailureClassifications ?? [], `${source}.missingArtifactFailureClassifications`)
   validateStringArray(aggregate.requiredArtifactPlannedOwners ?? [], `${source}.requiredArtifactPlannedOwners`)
   validateStringArray(aggregate.missingArtifactPlannedOwners ?? [], `${source}.missingArtifactPlannedOwners`)
   validateStringArray(aggregate.requiredArtifactPlannedClassifications ?? [], `${source}.requiredArtifactPlannedClassifications`)
@@ -595,6 +603,7 @@ export function validateDrillValidationGateAggregate(aggregate, source = "valida
     requiredArtifactRuntimeSignalOwners: aggregate.requiredArtifactRuntimeSignalOwners ?? [],
     requiredArtifactOwners: aggregate.requiredArtifactOwners ?? [],
     requiredArtifactClassifications: aggregate.requiredArtifactClassifications ?? [],
+    requiredArtifactFailureClassifications: aggregate.requiredArtifactFailureClassifications ?? [],
     requiredArtifactPlannedOwners: aggregate.requiredArtifactPlannedOwners ?? [],
     requiredArtifactPlannedClassifications: aggregate.requiredArtifactPlannedClassifications ?? [],
     requiredArtifactExitCriterionStatuses: aggregate.requiredArtifactExitCriterionStatuses ?? [],
@@ -678,6 +687,8 @@ function validationGateReportArtifactCoverage(report) {
     missingArtifactOwners: [...(report.checks.artifacts.missingArtifactOwners ?? [])],
     requiredArtifactClassifications: [...(report.checks.artifacts.requiredArtifactClassifications ?? [])],
     missingArtifactClassifications: [...(report.checks.artifacts.missingArtifactClassifications ?? [])],
+    requiredArtifactFailureClassifications: [...(report.checks.artifacts.requiredArtifactFailureClassifications ?? [])],
+    missingArtifactFailureClassifications: [...(report.checks.artifacts.missingArtifactFailureClassifications ?? [])],
     requiredArtifactPlannedOwners: [...(report.checks.artifacts.requiredArtifactPlannedOwners ?? [])],
     missingArtifactPlannedOwners: [...(report.checks.artifacts.missingArtifactPlannedOwners ?? [])],
     requiredArtifactPlannedClassifications: [...(report.checks.artifacts.requiredArtifactPlannedClassifications ?? [])],
@@ -692,6 +703,7 @@ function validationGateReportArtifactCoverage(report) {
     runtimeSignalOwners: { ...(report.checks.artifacts.aggregate?.runtimeSignalOwners ?? {}) },
     owners: { ...(report.checks.artifacts.aggregate?.owners ?? {}) },
     classifications: { ...(report.checks.artifacts.aggregate?.classifications ?? {}) },
+    failureClassifications: { ...(report.checks.artifacts.aggregate?.requiredFailureClassifications ?? {}) },
     plannedOwners: { ...(report.checks.artifacts.aggregate?.plannedOwners ?? {}) },
     plannedClassifications: { ...(report.checks.artifacts.aggregate?.plannedClassifications ?? {}) },
     exitCriterionStatuses: { ...(report.checks.artifacts.aggregate?.exitCriterionStatuses ?? {}) },
@@ -740,6 +752,8 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countStringValues(coverage.missingArtifactOwners, artifactCoverage.missingArtifactOwners)
   countStringValues(coverage.requiredArtifactClassifications, artifactCoverage.requiredArtifactClassifications)
   countStringValues(coverage.missingArtifactClassifications, artifactCoverage.missingArtifactClassifications)
+  countStringValues(coverage.requiredArtifactFailureClassifications, artifactCoverage.requiredArtifactFailureClassifications)
+  countStringValues(coverage.missingArtifactFailureClassifications, artifactCoverage.missingArtifactFailureClassifications)
   countStringValues(coverage.requiredArtifactPlannedOwners, artifactCoverage.requiredArtifactPlannedOwners)
   countStringValues(coverage.missingArtifactPlannedOwners, artifactCoverage.missingArtifactPlannedOwners)
   countStringValues(coverage.requiredArtifactPlannedClassifications, artifactCoverage.requiredArtifactPlannedClassifications)
@@ -756,6 +770,7 @@ function countValidationGateArtifactCoverage(coverage, artifactCoverage) {
   countObjectValues(coverage.artifactRuntimeSignalOwners, artifactCoverage.runtimeSignalOwners)
   countObjectValues(coverage.artifactOwners, artifactCoverage.owners)
   countObjectValues(coverage.artifactClassifications, artifactCoverage.classifications)
+  countObjectValues(coverage.artifactFailureClassifications, artifactCoverage.failureClassifications)
   countObjectValues(coverage.artifactPlannedOwners, artifactCoverage.plannedOwners)
   countObjectValues(coverage.artifactPlannedClassifications, artifactCoverage.plannedClassifications)
   countObjectValues(coverage.artifactExitCriterionStatuses, artifactCoverage.exitCriterionStatuses)
@@ -851,6 +866,7 @@ function missingValidationGateAggregateRequirements(coverage, requirements) {
     missingArtifactRuntimeSignalOwners: missingCoverageRequirements(coverage.artifactRuntimeSignalOwners, requirements.requiredArtifactRuntimeSignalOwners ?? []),
     missingArtifactOwners: missingCoverageRequirements(coverage.artifactOwners, requirements.requiredArtifactOwners ?? []),
     missingArtifactClassifications: missingCoverageRequirements(coverage.artifactClassifications, requirements.requiredArtifactClassifications ?? []),
+    missingArtifactFailureClassifications: missingCoverageRequirements(coverage.artifactFailureClassifications, requirements.requiredArtifactFailureClassifications ?? []),
     missingArtifactPlannedOwners: missingCoverageRequirements(coverage.artifactPlannedOwners, requirements.requiredArtifactPlannedOwners ?? []),
     missingArtifactPlannedClassifications: missingCoverageRequirements(coverage.artifactPlannedClassifications, requirements.requiredArtifactPlannedClassifications ?? []),
     missingArtifactExitCriterionStatuses: missingCoverageRequirements(coverage.artifactExitCriterionStatuses, requirements.requiredArtifactExitCriterionStatuses ?? []),
@@ -894,6 +910,7 @@ function appendMissingValidationGateAggregateNextActions(nextActions, missing) {
     ["missingArtifactRuntimeSignalOwners", "artifact-coverage", "provide validation gate reports with artifact runtime signal owners"],
     ["missingArtifactOwners", "artifact-coverage", "provide validation gate reports with artifact owners"],
     ["missingArtifactClassifications", "artifact-coverage", "provide validation gate reports with artifact classifications"],
+    ["missingArtifactFailureClassifications", "artifact-coverage", "provide validation gate reports with artifact failure classifications"],
     ["missingArtifactPlannedOwners", "artifact-coverage", "provide validation gate reports with artifact planned owners"],
     ["missingArtifactPlannedClassifications", "artifact-coverage", "provide validation gate reports with artifact planned classifications"],
     ["missingArtifactExitCriterionStatuses", "artifact-coverage", "provide validation gate reports with artifact exit criterion statuses"],
@@ -1022,6 +1039,8 @@ function formatValidationGateCoverageCounts(coverage) {
     missingArtifactOwners: countMapToObject(coverage.missingArtifactOwners),
     requiredArtifactClassifications: countMapToObject(coverage.requiredArtifactClassifications),
     missingArtifactClassifications: countMapToObject(coverage.missingArtifactClassifications),
+    requiredArtifactFailureClassifications: countMapToObject(coverage.requiredArtifactFailureClassifications),
+    missingArtifactFailureClassifications: countMapToObject(coverage.missingArtifactFailureClassifications),
     requiredArtifactPlannedOwners: countMapToObject(coverage.requiredArtifactPlannedOwners),
     missingArtifactPlannedOwners: countMapToObject(coverage.missingArtifactPlannedOwners),
     requiredArtifactPlannedClassifications: countMapToObject(coverage.requiredArtifactPlannedClassifications),
@@ -1042,6 +1061,7 @@ function formatValidationGateCoverageCounts(coverage) {
     artifactRuntimeSignalOwners: countMapToObject(coverage.artifactRuntimeSignalOwners),
     artifactOwners: countMapToObject(coverage.artifactOwners),
     artifactClassifications: countMapToObject(coverage.artifactClassifications),
+    artifactFailureClassifications: countMapToObject(coverage.artifactFailureClassifications),
     artifactPlannedOwners: countMapToObject(coverage.artifactPlannedOwners),
     artifactPlannedClassifications: countMapToObject(coverage.artifactPlannedClassifications),
     artifactExitCriterionStatuses: countMapToObject(coverage.artifactExitCriterionStatuses),
@@ -1137,6 +1157,8 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "missing_artifact_owners", coverage.missingArtifactOwners)
   appendCoverageLine(lines, "required_artifact_classifications", coverage.requiredArtifactClassifications)
   appendCoverageLine(lines, "missing_artifact_classifications", coverage.missingArtifactClassifications)
+  appendCoverageLine(lines, "required_artifact_failure_classifications", coverage.requiredArtifactFailureClassifications)
+  appendCoverageLine(lines, "missing_artifact_failure_classifications", coverage.missingArtifactFailureClassifications)
   appendCoverageLine(lines, "required_artifact_planned_owners", coverage.requiredArtifactPlannedOwners)
   appendCoverageLine(lines, "missing_artifact_planned_owners", coverage.missingArtifactPlannedOwners)
   appendCoverageLine(lines, "required_artifact_planned_classifications", coverage.requiredArtifactPlannedClassifications)
@@ -1157,6 +1179,7 @@ function formatValidationGateCoverageSummary(coverage) {
   appendCoverageLine(lines, "artifact_runtime_signal_owners", coverage.artifactRuntimeSignalOwners)
   appendCoverageLine(lines, "artifact_owners", coverage.artifactOwners)
   appendCoverageLine(lines, "artifact_classifications", coverage.artifactClassifications)
+  appendCoverageLine(lines, "artifact_failure_classifications", coverage.artifactFailureClassifications)
   appendCoverageLine(lines, "artifact_planned_owners", coverage.artifactPlannedOwners)
   appendCoverageLine(lines, "artifact_planned_classifications", coverage.artifactPlannedClassifications)
   appendCoverageLine(lines, "artifact_exit_criterion_statuses", coverage.artifactExitCriterionStatuses)
@@ -1281,6 +1304,8 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateCountObject(coverage.missingArtifactOwners ?? {}, `${source}.missingArtifactOwners`)
   validateCountObject(coverage.requiredArtifactClassifications ?? {}, `${source}.requiredArtifactClassifications`)
   validateCountObject(coverage.missingArtifactClassifications ?? {}, `${source}.missingArtifactClassifications`)
+  validateFailureClassificationCountObject(coverage.requiredArtifactFailureClassifications ?? {}, `${source}.requiredArtifactFailureClassifications`)
+  validateFailureClassificationCountObject(coverage.missingArtifactFailureClassifications ?? {}, `${source}.missingArtifactFailureClassifications`)
   validateCountObject(coverage.requiredArtifactPlannedOwners ?? {}, `${source}.requiredArtifactPlannedOwners`)
   validateCountObject(coverage.missingArtifactPlannedOwners ?? {}, `${source}.missingArtifactPlannedOwners`)
   validateCountObject(coverage.requiredArtifactPlannedClassifications ?? {}, `${source}.requiredArtifactPlannedClassifications`)
@@ -1301,6 +1326,7 @@ function validateValidationGateCoverageAggregate(coverage, source) {
   validateRuntimeSignalOwnerCountObject(coverage.artifactRuntimeSignalOwners ?? {}, `${source}.artifactRuntimeSignalOwners`)
   validateCountObject(coverage.artifactOwners ?? {}, `${source}.artifactOwners`)
   validateCountObject(coverage.artifactClassifications ?? {}, `${source}.artifactClassifications`)
+  validateFailureClassificationCountObject(coverage.artifactFailureClassifications ?? {}, `${source}.artifactFailureClassifications`)
   validateCountObject(coverage.artifactPlannedOwners ?? {}, `${source}.artifactPlannedOwners`)
   validateCountObject(coverage.artifactPlannedClassifications ?? {}, `${source}.artifactPlannedClassifications`)
   validateExitCriterionStatusCountObject(coverage.artifactExitCriterionStatuses ?? {}, `${source}.artifactExitCriterionStatuses`)
@@ -1495,6 +1521,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     missingArtifactOwners: new Map(),
     requiredArtifactClassifications: new Map(),
     missingArtifactClassifications: new Map(),
+    requiredArtifactFailureClassifications: new Map(),
+    missingArtifactFailureClassifications: new Map(),
     requiredArtifactPlannedOwners: new Map(),
     missingArtifactPlannedOwners: new Map(),
     requiredArtifactPlannedClassifications: new Map(),
@@ -1515,6 +1543,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     artifactRuntimeSignalOwners: new Map(),
     artifactOwners: new Map(),
     artifactClassifications: new Map(),
+    artifactFailureClassifications: new Map(),
     artifactPlannedOwners: new Map(),
     artifactPlannedClassifications: new Map(),
     artifactExitCriterionStatuses: new Map(),
@@ -1619,6 +1648,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactOwners, report.artifactCoverage?.missingArtifactOwners ?? [])
     countStringValues(expected.requiredArtifactClassifications, report.artifactCoverage?.requiredArtifactClassifications ?? [])
     countStringValues(expected.missingArtifactClassifications, report.artifactCoverage?.missingArtifactClassifications ?? [])
+    countStringValues(expected.requiredArtifactFailureClassifications, report.artifactCoverage?.requiredArtifactFailureClassifications ?? [])
+    countStringValues(expected.missingArtifactFailureClassifications, report.artifactCoverage?.missingArtifactFailureClassifications ?? [])
     countStringValues(expected.requiredArtifactPlannedOwners, report.artifactCoverage?.requiredArtifactPlannedOwners ?? [])
     countStringValues(expected.missingArtifactPlannedOwners, report.artifactCoverage?.missingArtifactPlannedOwners ?? [])
     countStringValues(expected.requiredArtifactPlannedClassifications, report.artifactCoverage?.requiredArtifactPlannedClassifications ?? [])
@@ -1633,6 +1664,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactRuntimeSignalOwners, report.artifactCoverage?.runtimeSignalOwners)
     countObjectValues(expected.artifactOwners, report.artifactCoverage?.owners)
     countObjectValues(expected.artifactClassifications, report.artifactCoverage?.classifications)
+    countObjectValues(expected.artifactFailureClassifications, report.artifactCoverage?.failureClassifications)
     countObjectValues(expected.artifactPlannedOwners, report.artifactCoverage?.plannedOwners)
     countObjectValues(expected.artifactPlannedClassifications, report.artifactCoverage?.plannedClassifications)
     countObjectValues(expected.artifactExitCriterionStatuses, report.artifactCoverage?.exitCriterionStatuses)
@@ -1729,6 +1761,8 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countStringValues(expected.missingArtifactOwners, input.artifactCoverage?.missingArtifactOwners ?? [])
     countStringValues(expected.requiredArtifactClassifications, input.artifactCoverage?.requiredArtifactClassifications ?? [])
     countStringValues(expected.missingArtifactClassifications, input.artifactCoverage?.missingArtifactClassifications ?? [])
+    countStringValues(expected.requiredArtifactFailureClassifications, input.artifactCoverage?.requiredArtifactFailureClassifications ?? [])
+    countStringValues(expected.missingArtifactFailureClassifications, input.artifactCoverage?.missingArtifactFailureClassifications ?? [])
     countStringValues(expected.requiredArtifactPlannedOwners, input.artifactCoverage?.requiredArtifactPlannedOwners ?? [])
     countStringValues(expected.missingArtifactPlannedOwners, input.artifactCoverage?.missingArtifactPlannedOwners ?? [])
     countStringValues(expected.requiredArtifactPlannedClassifications, input.artifactCoverage?.requiredArtifactPlannedClassifications ?? [])
@@ -1743,6 +1777,7 @@ function assertValidationGateCoverageMatchesReports(aggregate, source) {
     countObjectValues(expected.artifactRuntimeSignalOwners, input.artifactCoverage?.runtimeSignalOwners)
     countObjectValues(expected.artifactOwners, input.artifactCoverage?.owners)
     countObjectValues(expected.artifactClassifications, input.artifactCoverage?.classifications)
+    countObjectValues(expected.artifactFailureClassifications, input.artifactCoverage?.failureClassifications)
     countObjectValues(expected.artifactPlannedOwners, input.artifactCoverage?.plannedOwners)
     countObjectValues(expected.artifactPlannedClassifications, input.artifactCoverage?.plannedClassifications)
     countObjectValues(expected.artifactExitCriterionStatuses, input.artifactCoverage?.exitCriterionStatuses)
@@ -2058,6 +2093,8 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateStringArray(coverage.missingArtifactOwners ?? [], `${source}.missingArtifactOwners`)
   validateStringArray(coverage.requiredArtifactClassifications ?? [], `${source}.requiredArtifactClassifications`)
   validateStringArray(coverage.missingArtifactClassifications ?? [], `${source}.missingArtifactClassifications`)
+  validateFailureClassificationArray(coverage.requiredArtifactFailureClassifications ?? [], `${source}.requiredArtifactFailureClassifications`)
+  validateFailureClassificationArray(coverage.missingArtifactFailureClassifications ?? [], `${source}.missingArtifactFailureClassifications`)
   validateStringArray(coverage.requiredArtifactPlannedOwners ?? [], `${source}.requiredArtifactPlannedOwners`)
   validateStringArray(coverage.missingArtifactPlannedOwners ?? [], `${source}.missingArtifactPlannedOwners`)
   validateStringArray(coverage.requiredArtifactPlannedClassifications ?? [], `${source}.requiredArtifactPlannedClassifications`)
@@ -2072,6 +2109,7 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateRuntimeSignalOwnerCountObject(coverage.runtimeSignalOwners ?? {}, `${source}.runtimeSignalOwners`)
   validateCountObject(coverage.owners ?? {}, `${source}.owners`)
   validateCountObject(coverage.classifications ?? {}, `${source}.classifications`)
+  validateFailureClassificationCountObject(coverage.failureClassifications ?? {}, `${source}.failureClassifications`)
   validateCountObject(coverage.plannedOwners ?? {}, `${source}.plannedOwners`)
   validateCountObject(coverage.plannedClassifications ?? {}, `${source}.plannedClassifications`)
   validateExitCriterionStatusCountObject(coverage.exitCriterionStatuses ?? {}, `${source}.exitCriterionStatuses`)

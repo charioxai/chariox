@@ -42,6 +42,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-classification=validation-gate"], 0, options)
   assert.equal(index, 0)
+  index = parseValidationGateRequirementArg(["--require-artifact-failure-classification", "workspace-live-sync-conflict"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-planned-owner", "validation-harness"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-planned-classification=matrix-coverage"], 0, options)
@@ -89,6 +91,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactRuntimeSignalOwners: ["kernel-authority"],
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-gate"],
+    requiredArtifactFailureClassifications: ["workspace-live-sync-conflict"],
     requiredArtifactPlannedOwners: ["validation-harness"],
     requiredArtifactPlannedClassifications: ["matrix-coverage"],
     requiredArtifactExitCriterionStatuses: ["satisfied"],

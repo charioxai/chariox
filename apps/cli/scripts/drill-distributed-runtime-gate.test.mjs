@@ -1203,6 +1203,7 @@ async function writeValidationSuiteArtifact(rootDir, {
       runtimeSignalOwners: drillRuntimeSignalOwnersFor(DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS).join(","),
       owners: "validation-platform",
       classifications: evidenceRepo === "cloud" ? "cloud-validation-suite" : "validation-suite",
+      requiredFailureClassifications: DISTRIBUTED_RUNTIME_REQUIRED_FAILURE_CLASSIFICATIONS.join(","),
       artifactKinds: "validation-suite-run",
       evidenceRepos: evidenceRepo,
       generatedMatrixNames: generatedMatrixNamesForEvidenceRepo(evidenceRepo).join(","),
@@ -1290,6 +1291,26 @@ const DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS = Object.freeze([
   "slice-auth-state",
   "slice-runtime-state",
   "workspace-live-sync-state",
+])
+
+const DISTRIBUTED_RUNTIME_REQUIRED_FAILURE_CLASSIFICATIONS = Object.freeze([
+  "cloud-runtime",
+  "docker-runtime",
+  "kernel-authority",
+  "provider-auth",
+  "provider-error",
+  "projection-staleness",
+  "relay-runtime",
+  "relay-target-freshness",
+  "remote-extension-sync",
+  "remote-host-capacity",
+  "remote-worker-version",
+  "runtime-projection-health",
+  "slice-auth",
+  "slice-runtime",
+  "ui-client-projection",
+  "worker-execution",
+  "workspace-live-sync-conflict",
 ])
 
 async function writeValidationSuiteManifestArtifact(rootDir) {
@@ -1608,6 +1629,7 @@ const index = {
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     owners: "validation-platform",
     classifications: ${JSON.stringify(classification)},
+    requiredFailureClassifications: ${JSON.stringify(DISTRIBUTED_RUNTIME_REQUIRED_FAILURE_CLASSIFICATIONS.join(","))},
     artifactKinds: "validation-suite-run",
     evidenceRepos: ${JSON.stringify(evidenceRepo)},
     generatedMatrixNames: ${JSON.stringify(generatedMatrixNamesForEvidenceRepo(evidenceRepo).join(","))},

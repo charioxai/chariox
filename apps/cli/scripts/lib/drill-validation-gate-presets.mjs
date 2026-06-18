@@ -61,6 +61,25 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     ]),
     requiredArtifactOwners: Object.freeze(["validation-platform"]),
     requiredArtifactClassifications: Object.freeze(["cloud-validation-suite", "validation-suite"]),
+    requiredArtifactFailureClassifications: Object.freeze([
+      "cloud-runtime",
+      "docker-runtime",
+      "kernel-authority",
+      "provider-auth",
+      "provider-error",
+      "projection-staleness",
+      "relay-runtime",
+      "relay-target-freshness",
+      "remote-extension-sync",
+      "remote-host-capacity",
+      "remote-worker-version",
+      "runtime-projection-health",
+      "slice-auth",
+      "slice-runtime",
+      "ui-client-projection",
+      "worker-execution",
+      "workspace-live-sync-conflict",
+    ]),
     requiredArtifactExitCriterionStatuses: Object.freeze(["satisfied"]),
     requiredRuntimeSignals: Object.freeze([
       "agent-lifecycle",
@@ -264,6 +283,7 @@ export function describeDrillValidationGatePresets({ names = null } = {}) {
       requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
       requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
       requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
+      requiredArtifactFailureClassifications: [...(preset.requiredArtifactFailureClassifications ?? [])],
       requiredArtifactPlannedOwners: [...(preset.requiredArtifactPlannedOwners ?? [])],
       requiredArtifactPlannedClassifications: [...(preset.requiredArtifactPlannedClassifications ?? [])],
       requiredArtifactExitCriterionStatuses: [...(preset.requiredArtifactExitCriterionStatuses ?? [])],
@@ -304,6 +324,7 @@ export function expandValidationGatePresetRequirements({
   requiredArtifactRuntimeSignalOwners = [],
   requiredArtifactOwners = [],
   requiredArtifactClassifications = [],
+  requiredArtifactFailureClassifications = [],
   requiredArtifactPlannedOwners = [],
   requiredArtifactPlannedClassifications = [],
   requiredArtifactExitCriterionStatuses = [],
@@ -340,6 +361,7 @@ export function expandValidationGatePresetRequirements({
     requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
     requiredArtifactOwners: [...requiredArtifactOwners],
     requiredArtifactClassifications: [...requiredArtifactClassifications],
+    requiredArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
     requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
     requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
     requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
@@ -377,6 +399,7 @@ export function expandValidationGatePresetRequirements({
     expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
     expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
     expanded.requiredArtifactClassifications.push(...(preset.requiredArtifactClassifications ?? []))
+    expanded.requiredArtifactFailureClassifications.push(...(preset.requiredArtifactFailureClassifications ?? []))
     expanded.requiredArtifactPlannedOwners.push(...(preset.requiredArtifactPlannedOwners ?? []))
     expanded.requiredArtifactPlannedClassifications.push(...(preset.requiredArtifactPlannedClassifications ?? []))
     expanded.requiredArtifactExitCriterionStatuses.push(...(preset.requiredArtifactExitCriterionStatuses ?? []))
@@ -652,6 +675,19 @@ export function normalizeRequiredArtifactClassifications(requiredArtifactClassif
     fieldName: "requiredArtifactClassifications",
     itemName: "classification",
   })
+}
+
+export function normalizeRequiredArtifactFailureClassifications(requiredArtifactFailureClassifications) {
+  const classifications = normalizeCommaSeparatedStrings(requiredArtifactFailureClassifications, {
+    fieldName: "requiredArtifactFailureClassifications",
+    itemName: "classification",
+  })
+  for (const classification of classifications) {
+    validateDrillFailureClassification(classification, "required artifact failure classifications", {
+      message: () => `unknown required artifact failure classification: ${classification}`,
+    })
+  }
+  return classifications
 }
 
 export function normalizeRequiredArtifactPlannedOwners(requiredArtifactPlannedOwners) {

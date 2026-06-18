@@ -105,6 +105,10 @@ test("writes and verifies drill platform bundle artifacts", async () => {
       ["cloud-validation-suite", "validation-suite"],
     )
     assert.deepEqual(
+      validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactFailureClassifications,
+      ["cloud-runtime", "docker-runtime", "kernel-authority", "projection-staleness", "provider-auth", "provider-error", "relay-runtime", "relay-target-freshness", "remote-extension-sync", "remote-host-capacity", "remote-worker-version", "runtime-projection-health", "slice-auth", "slice-runtime", "ui-client-projection", "worker-execution", "workspace-live-sync-conflict"],
+    )
+    assert.deepEqual(
       validationSuite.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactExitCriterionStatuses,
       ["satisfied"],
     )
