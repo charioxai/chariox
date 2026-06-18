@@ -1961,6 +1961,216 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn runtime_client_frames_reject_empty_identifiers_without_pending_state() {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+
+        let server = RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        });
+        let registry = server.registry();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        });
+
+        let url = format!("ws://{}:{}", addr.ip(), addr.port());
+        let (mut daemon_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon should connect");
+        daemon_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: test_registration("daemon-1", "machine-1", "Linux", 10),
+                })
+                .expect("register should serialize")
+                .into(),
+            ))
+            .await
+            .expect("register should send");
+        sleep(Duration::from_millis(50)).await;
+
+        let (mut client_socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client should connect");
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientConnect {
+                    auth_token: "secret".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-1".to_string()),
+                        daemon_alias: None,
+                    },
+                })
+                .expect("client connect should serialize")
+                .into(),
+            ))
+            .await
+            .expect("client connect should send");
+        match client_socket.next().await {
+            Some(Ok(Message::Text(text))) => assert!(matches!(
+                serde_json::from_str::<RelayEnvelope>(&text).expect("connect should decode"),
+                RelayEnvelope::ClientConnected { .. }
+            )),
+            other => panic!("unexpected client connect response: {other:?}"),
+        }
+
+        let encrypted_request = EncryptedRelayPayload {
+            sender_public_key: "client-public".to_string(),
+            nonce: "nonce".to_string(),
+            ciphertext: "ciphertext".to_string(),
+        };
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientRequest {
+                    request_id: "   ".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-1".to_string()),
+                        daemon_alias: None,
+                    },
+                    encrypted_request: encrypted_request.clone(),
+                })
+                .expect("invalid request should serialize")
+                .into(),
+            ))
+            .await
+            .expect("invalid request should send");
+        match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("invalid request response should decode")
+            {
+                RelayEnvelope::ClientResponse {
+                    request_id,
+                    encrypted_response: None,
+                    error: Some(error),
+                } => {
+                    assert_eq!(request_id, "   ");
+                    assert_eq!(error.code, "invalid_runtime_identifier");
+                    assert!(!error.retryable);
+                }
+                other => panic!("unexpected invalid request response: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected invalid request frame: {other:?}"),
+            Err(_) => panic!("invalid request response was not delivered"),
+        }
+        match timeout(Duration::from_millis(100), daemon_socket.next()).await {
+            Err(_) => {}
+            Ok(other) => panic!("invalid request reached daemon: {other:?}"),
+        }
+        assert_eq!(registry.read().await.pending_request_count(), 0);
+
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientSubscribe {
+                    request_id: "invalid-subscription".to_string(),
+                    subscription_id: "\t".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("daemon-1".to_string()),
+                        daemon_alias: None,
+                    },
+                    session_id: "session-1".to_string(),
+                    attachment_id: "terminal".to_string(),
+                    client_public_key: "client-public".to_string(),
+                    subscription_scope: None,
+                    resume_from_event_id: None,
+                })
+                .expect("invalid subscribe should serialize")
+                .into(),
+            ))
+            .await
+            .expect("invalid subscribe should send");
+        match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("invalid subscribe response should decode")
+            {
+                RelayEnvelope::ClientResponse {
+                    request_id,
+                    encrypted_response: None,
+                    error: Some(error),
+                } => {
+                    assert_eq!(request_id, "invalid-subscription");
+                    assert_eq!(error.code, "invalid_runtime_identifier");
+                    assert_eq!(error.message, "subscription_id must not be empty");
+                    assert!(!error.retryable);
+                }
+                other => panic!("unexpected invalid subscribe response: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected invalid subscribe frame: {other:?}"),
+            Err(_) => panic!("invalid subscribe response was not delivered"),
+        }
+        match timeout(Duration::from_millis(100), daemon_socket.next()).await {
+            Err(_) => {}
+            Ok(other) => panic!("invalid subscribe reached daemon: {other:?}"),
+        }
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.pending_request_count(), 0);
+            assert_eq!(guard.subscription_count(), 0);
+        }
+
+        client_socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::ClientUnsubscribe {
+                    request_id: "invalid-unsubscribe".to_string(),
+                    subscription_id: "".to_string(),
+                    client_public_key: "client-public".to_string(),
+                })
+                .expect("invalid unsubscribe should serialize")
+                .into(),
+            ))
+            .await
+            .expect("invalid unsubscribe should send");
+        match timeout(Duration::from_millis(500), client_socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("invalid unsubscribe response should decode")
+            {
+                RelayEnvelope::ClientResponse {
+                    request_id,
+                    encrypted_response: None,
+                    error: Some(error),
+                } => {
+                    assert_eq!(request_id, "invalid-unsubscribe");
+                    assert_eq!(error.code, "invalid_runtime_identifier");
+                    assert_eq!(error.message, "subscription_id must not be empty");
+                    assert!(!error.retryable);
+                }
+                other => panic!("unexpected invalid unsubscribe response: {other:?}"),
+            },
+            Ok(other) => panic!("unexpected invalid unsubscribe frame: {other:?}"),
+            Err(_) => panic!("invalid unsubscribe response was not delivered"),
+        }
+        match timeout(Duration::from_millis(100), daemon_socket.next()).await {
+            Err(_) => {}
+            Ok(other) => panic!("invalid unsubscribe reached daemon: {other:?}"),
+        }
+        {
+            let guard = registry.read().await;
+            assert_eq!(guard.pending_request_count(), 0);
+            assert_eq!(guard.subscription_count(), 0);
+        }
+
+        let _ = client_socket.close(None).await;
+        let _ = daemon_socket.close(None).await;
+        let _ = shutdown_tx.send(());
+        server_task.await.expect("server task should join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn runtime_client_frames_must_match_connected_target() {
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".to_string(),

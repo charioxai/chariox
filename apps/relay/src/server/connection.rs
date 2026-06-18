@@ -536,6 +536,19 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             }
+                            if let Some(error) =
+                                invalid_runtime_identifier("request_id", &request_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
                             let Some(daemon_key) =
                                 resolve_target_daemon_key(&registry, &realm_id, &target).await
                             else {
@@ -672,6 +685,71 @@ pub(crate) async fn handle_connection(
                                             "client token does not allow packet routing",
                                             false,
                                         )),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("request_id", &request_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("subscription_id", &subscription_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("session_id", &session_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("attachment_id", &attachment_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("client_public_key", &client_public_key)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
                                     },
                                 )?;
                                 continue;
@@ -882,6 +960,45 @@ pub(crate) async fn handle_connection(
                                             "client token does not allow packet routing",
                                             false,
                                         )),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("request_id", &request_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("subscription_id", &subscription_id)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(error) =
+                                invalid_runtime_identifier("client_public_key", &client_public_key)
+                            {
+                                send_envelope(
+                                    &outgoing_tx,
+                                    &RelayEnvelope::ClientResponse {
+                                        request_id,
+                                        encrypted_response: None,
+                                        error: Some(error),
                                     },
                                 )?;
                                 continue;
@@ -1790,6 +1907,18 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
         code: code.to_string(),
         message: message.to_string(),
         retryable,
+    }
+}
+
+fn invalid_runtime_identifier(field: &str, value: &str) -> Option<RelayError> {
+    if value.trim().is_empty() {
+        Some(relay_error(
+            "invalid_runtime_identifier",
+            &format!("{field} must not be empty"),
+            false,
+        ))
+    } else {
+        None
     }
 }
 
