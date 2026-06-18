@@ -37,6 +37,10 @@ import {
   validateDrillRuntimeSignal,
   validateDrillRuntimeSignalOwner,
 } from "./lib/drill-runtime-signals.mjs"
+import {
+  drillRuntimeAuthorityInvariantOwner,
+  validateDrillRuntimeAuthorityInvariant,
+} from "./lib/drill-runtime-authority-invariants.mjs"
 import { validateDrillArtifactValidationPreset } from "./lib/drill-validation-gate-presets.mjs"
 
 function printHelp() {
@@ -77,6 +81,8 @@ function printHelp() {
     "                         Exit non-zero when validation preset metadata is missing; repeatable",
     "  --require-failure-classification CLASS",
     "                         Exit non-zero when required failure classification metadata is missing; repeatable",
+    "  --require-runtime-authority-invariant ID[,ID]",
+    "                         Exit non-zero when runtime authority invariant metadata is missing; repeatable",
     "  --require-runtime-signal ID[,ID]",
     "                         Exit non-zero when runtime signal metadata is missing; repeatable",
     "  --require-runtime-signal-owner OWNER[,OWNER]",
@@ -118,6 +124,7 @@ async function main() {
   Object.assign(aggregate, plannedDiagnosticRequirementDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, validationPresetDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, failureClassificationDiagnosticsFor(aggregate, options))
+  Object.assign(aggregate, runtimeAuthorityInvariantDiagnosticsFor(aggregate, options))
   Object.assign(aggregate, runtimeSignalDiagnosticsFor(aggregate, options))
   aggregate.nextActions = artifactIndexSummaryNextActions(aggregate)
   if (options.outputPath) {
@@ -140,6 +147,7 @@ async function main() {
         ...plannedDiagnosticRequirementMetadataFor(aggregate),
         ...validationPresetRequirementMetadataFor(aggregate),
         ...failureClassificationRequirementMetadataFor(aggregate),
+        ...runtimeAuthorityInvariantRequirementMetadataFor(aggregate),
         ...runtimeSignalRequirementMetadataFor(aggregate),
       },
     })
@@ -164,6 +172,7 @@ async function main() {
     || (aggregate.missingPlannedClassifications ?? []).length > 0
     || (aggregate.missingValidationPresets ?? []).length > 0
     || (aggregate.missingFailureClassificationRequirements ?? []).length > 0
+    || (aggregate.missingRuntimeAuthorityInvariantRequirements ?? []).length > 0
     || (aggregate.missingRuntimeSignalRequirements ?? []).length > 0
     || (aggregate.missingRuntimeSignalOwnerRequirements ?? []).length > 0
   ) {
@@ -193,6 +202,7 @@ function parseArgs(argv) {
     requiredPlannedClassifications: [],
     requiredPlannedOwners: [],
     requiredProviderAccountAliases: [],
+    requiredRuntimeAuthorityInvariants: [],
     requiredRuntimeSignalOwners: [],
     requiredRuntimeSignals: [],
     requiredValidationPresets: [],
@@ -334,6 +344,14 @@ function parseArgs(argv) {
         arg.slice("--require-failure-classification=".length),
         "--require-failure-classification",
       ))
+    } else if (arg === "--require-runtime-authority-invariant") {
+      options.requiredRuntimeAuthorityInvariants.push(...parseRuntimeAuthorityInvariantRequirement(readValue(argv, index, arg), arg))
+      index += 1
+    } else if (arg.startsWith("--require-runtime-authority-invariant=")) {
+      options.requiredRuntimeAuthorityInvariants.push(...parseRuntimeAuthorityInvariantRequirement(
+        arg.slice("--require-runtime-authority-invariant=".length),
+        "--require-runtime-authority-invariant",
+      ))
     } else if (arg === "--require-runtime-signal") {
       options.requiredRuntimeSignals.push(...parseRuntimeSignalRequirement(readValue(argv, index, arg), arg))
       index += 1
@@ -455,6 +473,19 @@ function parseFailureClassificationRequirement(value, flag) {
     label: "failure classification",
   })
   return value
+}
+
+function parseRuntimeAuthorityInvariantRequirement(value, flag) {
+  const invariants = String(value ?? "").split(",").map((invariant) => invariant.trim()).filter(Boolean)
+  if (invariants.length === 0) {
+    throw new Error(`${flag} requires a value`)
+  }
+  for (const invariant of invariants) {
+    validateDrillRuntimeAuthorityInvariant(invariant, flag, {
+      message: () => `${flag} has unknown runtime authority invariant: ${invariant}`,
+    })
+  }
+  return invariants
 }
 
 function parseRuntimeSignalRequirement(value, flag) {
@@ -750,6 +781,25 @@ function failureClassificationRequirementMetadataFor(aggregate) {
   }
 }
 
+function runtimeAuthorityInvariantDiagnosticsFor(aggregate, options) {
+  const required = [...new Set(options.requiredRuntimeAuthorityInvariants)].sort()
+  if (required.length === 0) return {}
+  const available = new Set(Object.keys(aggregate.runtimeAuthorityInvariants ?? {}))
+  return {
+    requiredRuntimeAuthorityInvariantRequirements: required,
+    missingRuntimeAuthorityInvariantRequirements: required.filter((invariant) => !available.has(invariant)),
+  }
+}
+
+function runtimeAuthorityInvariantRequirementMetadataFor(aggregate) {
+  const required = aggregate.requiredRuntimeAuthorityInvariantRequirements ?? []
+  const missing = aggregate.missingRuntimeAuthorityInvariantRequirements ?? []
+  return {
+    ...(required.length > 0 ? { requiredRuntimeAuthorityInvariants: required.join(",") } : {}),
+    ...(missing.length > 0 ? { missingRuntimeAuthorityInvariants: missing.join(",") } : {}),
+  }
+}
+
 function runtimeSignalDiagnosticsFor(aggregate, options) {
   const required = [...new Set(options.requiredRuntimeSignals)].sort()
   const requiredOwners = [...new Set(options.requiredRuntimeSignalOwners)].sort()
@@ -845,6 +895,10 @@ function formatAggregateSummaryWithFreshness(aggregate) {
     const missing = aggregate.missingFailureClassificationRequirements ?? []
     lines.push(`failure_classifications_required=${aggregate.requiredFailureClassificationRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
   }
+  if (aggregate.requiredRuntimeAuthorityInvariantRequirements !== undefined) {
+    const missing = aggregate.missingRuntimeAuthorityInvariantRequirements ?? []
+    lines.push(`runtime_authority_invariants_required=${aggregate.requiredRuntimeAuthorityInvariantRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
+  }
   if (aggregate.requiredRuntimeSignalRequirements !== undefined) {
     const missing = aggregate.missingRuntimeSignalRequirements ?? []
     lines.push(`runtime_signals_required=${aggregate.requiredRuntimeSignalRequirements.join(",") || "none"} missing=${missing.join(",") || "none"}`)
@@ -904,6 +958,9 @@ function formatAggregateSummaryWithFreshness(aggregate) {
   }
   if ((aggregate.missingFailureClassificationRequirements ?? []).length > 0) {
     lines.push(`next: include drill artifact indexes with required failure classification coverage: ${aggregate.missingFailureClassificationRequirements.join(", ")}`)
+  }
+  if ((aggregate.missingRuntimeAuthorityInvariantRequirements ?? []).length > 0) {
+    lines.push(`next: include drill artifact indexes with runtime authority invariant coverage: ${aggregate.missingRuntimeAuthorityInvariantRequirements.join(", ")}`)
   }
   for (const signal of aggregate.missingRuntimeSignalRequirements ?? []) {
     lines.push(`next: ${drillRuntimeSignalNextAction(signal, { target: "artifact-index" })}`)
@@ -1012,6 +1069,13 @@ function artifactIndexSummaryNextActions(aggregate) {
       owner: artifactIndexSummaryOwnerForClassification(classification),
       classification,
       nextAction: `include drill artifact indexes with required failure classification coverage: ${classification}`,
+    })
+  }
+  for (const invariant of aggregate.missingRuntimeAuthorityInvariantRequirements ?? []) {
+    countArtifactIndexSummaryNextAction(nextActions, {
+      owner: drillRuntimeAuthorityInvariantOwner(invariant),
+      classification: "runtime-authority-coverage",
+      nextAction: `include drill artifact indexes with runtime authority invariant coverage: ${invariant}`,
     })
   }
   for (const signal of aggregate.missingRuntimeSignalRequirements ?? []) {

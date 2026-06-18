@@ -54,6 +54,8 @@ export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "missingRuntimeSignals",
   "missingRuntimeSignalOwners",
   "runtimeAuthorityInvariants",
+  "requiredRuntimeAuthorityInvariants",
+  "missingRuntimeAuthorityInvariants",
   "coverageAreas",
   "validationPresets",
   "owners",
@@ -104,6 +106,8 @@ const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   missingRuntimeSignals: "missing_runtime_signals",
   missingRuntimeSignalOwners: "missing_runtime_signal_owners",
   runtimeAuthorityInvariants: "runtime_authority_invariants",
+  requiredRuntimeAuthorityInvariants: "required_runtime_authority_invariants",
+  missingRuntimeAuthorityInvariants: "missing_runtime_authority_invariants",
   coverageAreas: "coverage_areas",
   validationPresets: "validation_presets",
   owners: "owners",
@@ -290,6 +294,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
   const missingRuntimeSignals = new Map()
   const missingRuntimeSignalOwners = new Map()
   const runtimeAuthorityInvariants = new Map()
+  const requiredRuntimeAuthorityInvariants = new Map()
+  const missingRuntimeAuthorityInvariants = new Map()
   const coverageAreas = new Map()
   const validationPresets = new Map()
   const owners = new Map()
@@ -340,6 +346,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     const indexMissingRuntimeSignals = metadataListFromMetadata(index.metadata, "missingRuntimeSignals")
     const indexMissingRuntimeSignalOwners = runtimeSignalOwnersFromRuntimeSignals(indexMissingRuntimeSignals)
     const indexRuntimeAuthorityInvariants = metadataListFromMetadata(index.metadata, "runtimeAuthorityInvariants")
+    const indexRequiredRuntimeAuthorityInvariants = metadataListFromMetadata(index.metadata, "requiredRuntimeAuthorityInvariants")
+    const indexMissingRuntimeAuthorityInvariants = metadataListFromMetadata(index.metadata, "missingRuntimeAuthorityInvariants")
     const indexCoverageAreas = metadataListFromMetadata(index.metadata, "coverageAreas")
     const indexValidationPresets = metadataListFromMetadata(index.metadata, "validationPresets")
     const indexOwners = metadataListFromMetadata(index.metadata, "owners")
@@ -383,6 +391,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     countValues(indexMissingRuntimeSignals, missingRuntimeSignals)
     countValues(indexMissingRuntimeSignalOwners, missingRuntimeSignalOwners)
     countValues(indexRuntimeAuthorityInvariants, runtimeAuthorityInvariants)
+    countValues(indexRequiredRuntimeAuthorityInvariants, requiredRuntimeAuthorityInvariants)
+    countValues(indexMissingRuntimeAuthorityInvariants, missingRuntimeAuthorityInvariants)
     countValues(indexCoverageAreas, coverageAreas)
     countValues(indexValidationPresets, validationPresets)
     countValues(indexOwners, owners)
@@ -440,6 +450,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
       missingRuntimeSignals: countValues(indexMissingRuntimeSignals),
       missingRuntimeSignalOwners: countValues(indexMissingRuntimeSignalOwners),
       runtimeAuthorityInvariants: countValues(indexRuntimeAuthorityInvariants),
+      requiredRuntimeAuthorityInvariants: countValues(indexRequiredRuntimeAuthorityInvariants),
+      missingRuntimeAuthorityInvariants: countValues(indexMissingRuntimeAuthorityInvariants),
       coverageAreas: countValues(indexCoverageAreas),
       validationPresets: countValues(indexValidationPresets),
       owners: countValues(indexOwners),
@@ -489,6 +501,8 @@ export function summarizeDrillArtifactIndexes(indexes, { sources = [] } = {}) {
     missingRuntimeSignals: sortedCountObject(missingRuntimeSignals),
     missingRuntimeSignalOwners: sortedCountObject(missingRuntimeSignalOwners),
     runtimeAuthorityInvariants: sortedCountObject(runtimeAuthorityInvariants),
+    requiredRuntimeAuthorityInvariants: sortedCountObject(requiredRuntimeAuthorityInvariants),
+    missingRuntimeAuthorityInvariants: sortedCountObject(missingRuntimeAuthorityInvariants),
     coverageAreas: sortedCountObject(coverageAreas),
     validationPresets: sortedCountObject(validationPresets),
     owners: sortedCountObject(owners),
@@ -848,7 +862,7 @@ function validateDiagnosticCountObject(value, source, key) {
       validateDrillRuntimeSignal(signal, source)
     }
   }
-  if (key === "runtimeAuthorityInvariants") {
+  if (["runtimeAuthorityInvariants", "requiredRuntimeAuthorityInvariants", "missingRuntimeAuthorityInvariants"].includes(key)) {
     for (const invariant of Object.keys(value)) {
       validateDrillRuntimeAuthorityInvariant(invariant, source)
     }

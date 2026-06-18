@@ -1144,6 +1144,8 @@ test("summarizes drill artifact indexes", async () => {
       "missingRuntimeSignals",
       "missingRuntimeSignalOwners",
       "runtimeAuthorityInvariants",
+      "requiredRuntimeAuthorityInvariants",
+      "missingRuntimeAuthorityInvariants",
       "coverageAreas",
       "validationPresets",
       "owners",

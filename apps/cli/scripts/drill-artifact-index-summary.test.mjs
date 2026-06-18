@@ -52,6 +52,10 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       "kernel-authority": 2,
       "runtime-state": 1,
     })
+    assert.deepEqual(stdoutAggregate.runtimeAuthorityInvariants, {
+      "client-render-request": 1,
+      "home-session-authority": 1,
+    })
     assert.deepEqual(stdoutAggregate.validationPresets, {
       "distributed-runtime": 1,
       "workspace-live-sync": 1,
@@ -1073,6 +1077,68 @@ test("drill artifact index summary gates required failure classifications", asyn
   }
 })
 
+test("drill artifact index summary gates runtime authority invariants", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const outputPath = path.join(rootDir, "aggregate.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  try {
+    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--artifact-index",
+      indexPath,
+      "--require-runtime-authority-invariant",
+      "home-session-authority",
+      "--json",
+      "--output",
+      outputPath,
+      "--output-artifact-index",
+      artifactIndexPath,
+    ])
+    const aggregate = JSON.parse(stdout)
+    const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.deepEqual(aggregate.requiredRuntimeAuthorityInvariantRequirements, ["home-session-authority"])
+    assert.deepEqual(aggregate.missingRuntimeAuthorityInvariantRequirements, [])
+    assert.deepEqual(aggregate.nextActions, [])
+    assert.equal(artifactIndex.metadata.requiredRuntimeAuthorityInvariants, "home-session-authority")
+    assert.equal(artifactIndex.metadata.missingRuntimeAuthorityInvariants, undefined)
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-runtime-authority-invariant=worker-execution-authority",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stdout, /runtime_authority_invariants_required=worker-execution-authority missing=worker-execution-authority/)
+        assert.match(error.stdout, /next: include drill artifact indexes with runtime authority invariant coverage: worker-execution-authority/)
+        return true
+      },
+    )
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--artifact-index",
+        indexPath,
+        "--require-runtime-authority-invariant",
+        "home-session-authroity",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /--require-runtime-authority-invariant has unknown runtime authority invariant "home-session-authroity"/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("drill artifact index summary gates runtime signals with owner-routed next actions", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
@@ -1274,6 +1340,9 @@ async function writeIndexedReport(rootDir, name, schema) {
         : "dry-run",
       runtimeSignals: runtimeSignals.join(","),
       runtimeSignalOwners: drillRuntimeSignalOwnersFor(runtimeSignals).join(","),
+      runtimeAuthorityInvariants: name === "one"
+        ? "home-session-authority"
+        : "client-render-request",
       validationPresets: name === "one"
         ? "distributed-runtime"
         : "workspace-live-sync",
