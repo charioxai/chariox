@@ -169,6 +169,15 @@ Remote-agent note:
 - from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
 - home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, keeps credentials local to home, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for local browser/PTY targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled.
 
+Runtime authority invariants:
+
+- clients render state and submit typed requests; they must not synthesize session, agent, provider-run, permission, history, or health state
+- the home kernel owns sessions, prompts, attachments, transcript history, runtime interactions, Workspace Live Sync policy, extension grants, and remote-agent leases
+- worker kernels own only the execution they host: provider process lifecycle, worker-local tool execution, slice container/runtime state, and leased-agent transport to home
+- relay and Cloud remain bootstrap/transport/control-plane surfaces; neither may inspect or mutate runtime prompts, provider payloads, workspace files, extension credentials, or session history
+- provider-native TUIs, web terminals, local TUIs, remote TUIs, and slice-backed agents must enter through the same kernel-owned prompt, permission, provider-run, and projection primitives
+- every projected remote state with authority implications, including lease health, active worker provider run, remote extension manifest sync, slice auth, and Workspace Live Sync mode, must have a kernel-owned health/audit projection and a validation-platform runtime signal
+
 ### 3.3.1 Internal Kernel Subsystems
 
 The kernel should be understood as containing several internal subsystems even when they are not yet split into separate processes.
