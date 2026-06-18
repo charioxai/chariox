@@ -338,6 +338,18 @@ test("rejects validation suite preset artifact provenance drift", async () => {
     await replaceBundleArtifact(rootDir, "validation-suite.json", {
       ...suite,
       validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
+        ? { ...preset, requiredArtifactGeneratedEvidenceRepos: ["clodu"] }
+        : preset),
+    })
+
+    await assert.rejects(
+      verifyDrillPlatformBundle(rootDir),
+      /requiredArtifactGeneratedEvidenceRepos\[0\] has unknown artifact evidence repo "clodu"/,
+    )
+
+    await replaceBundleArtifact(rootDir, "validation-suite.json", {
+      ...suite,
+      validationPresets: suite.validationPresets.map((preset) => preset.name === "distributed-runtime"
         ? { ...preset, requiredArtifactGeneratedEvidenceKinds: ["matrix-reprot"] }
         : preset),
     })

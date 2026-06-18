@@ -446,6 +446,11 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactEvidenceRepos: ["clodu"],
   }]), /requiredArtifactEvidenceRepos\[0\] has unknown artifact evidence repo "clodu"/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-generated-evidence-repo",
+    description: "bad artifact generated evidence repo",
+    requiredArtifactGeneratedEvidenceRepos: ["clodu"],
+  }]), /requiredArtifactGeneratedEvidenceRepos\[0\] has unknown artifact evidence repo "clodu"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-failure-classification",
     description: "bad failure classification",
     requiredFailureClassifications: ["kernel-autohority"],

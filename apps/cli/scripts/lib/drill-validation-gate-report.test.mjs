@@ -471,6 +471,36 @@ test("rejects unknown artifact evidence repo labels in report checks", () => {
           roots: [],
           inputs: [],
           indexPaths: [],
+          requiredArtifactGeneratedEvidenceRepos: ["cluod"],
+          missingArtifactGeneratedEvidenceRepos: [],
+        },
+      },
+    })),
+    /checks\.artifacts\.requiredArtifactGeneratedEvidenceRepos\[0\] has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
+          requiredArtifactGeneratedEvidenceRepos: [],
+          missingArtifactGeneratedEvidenceRepos: ["cluod"],
+        },
+      },
+    })),
+    /checks\.artifacts\.missingArtifactGeneratedEvidenceRepos\[0\] has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateReport(report({
+      checks: {
+        artifacts: {
+          status: "passed",
+          roots: [],
+          inputs: [],
+          indexPaths: [],
           requiredArtifactEvidenceRepos: ["cluod"],
           missingArtifactEvidenceRepos: [],
         },

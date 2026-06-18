@@ -2169,6 +2169,7 @@ function validateValidationGateArtifactCoverage(coverage, source) {
   validateArtifactKindArray(coverage.missingArtifactKinds ?? [], `${source}.missingArtifactKinds`)
   validateGeneratedEvidenceKindArray(coverage.requiredArtifactGeneratedEvidenceKinds ?? [], `${source}.requiredArtifactGeneratedEvidenceKinds`)
   validateGeneratedEvidenceKindArray(coverage.missingArtifactGeneratedEvidenceKinds ?? [], `${source}.missingArtifactGeneratedEvidenceKinds`)
+  validateArtifactEvidenceRepoCountObject(coverage.generatedEvidenceRepos ?? {}, `${source}.generatedEvidenceRepos`)
   validateArtifactEvidenceRepoArray(coverage.requiredArtifactGeneratedEvidenceRepos ?? [], `${source}.requiredArtifactGeneratedEvidenceRepos`)
   validateArtifactEvidenceRepoArray(coverage.missingArtifactGeneratedEvidenceRepos ?? [], `${source}.missingArtifactGeneratedEvidenceRepos`)
   validateGeneratedEvidencePathArray(coverage.requiredArtifactGeneratedMatrixArtifactIndexes ?? [], `${source}.requiredArtifactGeneratedMatrixArtifactIndexes`)

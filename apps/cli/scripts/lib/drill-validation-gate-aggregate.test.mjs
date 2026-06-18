@@ -306,6 +306,36 @@ test("rejects unknown artifact evidence repo labels in aggregate reports", () =>
   assert.throws(
     () => validateDrillValidationGateAggregate({
       ...aggregate,
+      requiredArtifactGeneratedEvidenceRepos: ["cluod"],
+    }),
+    /requiredArtifactGeneratedEvidenceRepos\[0\] has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      coverage: {
+        ...aggregate.coverage,
+        artifactGeneratedEvidenceRepos: { cluod: 1 },
+      },
+    }),
+    /coverage\.artifactGeneratedEvidenceRepos has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
+      reports: [{
+        ...aggregate.reports[0],
+        artifactCoverage: {
+          ...aggregate.reports[0].artifactCoverage,
+          generatedEvidenceRepos: { cluod: 1 },
+        },
+      }],
+    }),
+    /reports\[0\]\.artifactCoverage\.generatedEvidenceRepos has unknown evidence repo "cluod"/,
+  )
+  assert.throws(
+    () => validateDrillValidationGateAggregate({
+      ...aggregate,
       requiredArtifactEvidenceRepos: ["cluod"],
     }),
     /requiredArtifactEvidenceRepos\[0\] has unknown evidence repo "cluod"/,
