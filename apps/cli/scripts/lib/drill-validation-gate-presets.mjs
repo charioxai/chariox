@@ -19,6 +19,7 @@ import {
   validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import {
+  DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
   validateDrillRuntimeAuthorityInvariant,
 } from "./drill-runtime-authority-invariants.mjs"
 import {
@@ -41,6 +42,7 @@ export const DRILL_VALIDATION_GATE_PRESETS = Object.freeze({
     requiredArtifactGeneratedMatrixRepos: DISTRIBUTED_RUNTIME_GENERATED_MATRIX_REPOS,
     requiredArtifactEvidenceRepos: Object.freeze(["cloud", "oss"]),
     requiredArtifactValidationPresets: Object.freeze(["distributed-runtime", "distributed-state-health", "runtime-authority"]),
+    requiredArtifactRuntimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
     requiredArtifactRuntimeSignals: Object.freeze([
       "agent-lifecycle",
       "client-projection-health",

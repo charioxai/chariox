@@ -10,7 +10,10 @@ import { promisify } from "node:util"
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO } from "./lib/drill-distributed-runtime-evidence.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
-import { drillRuntimeAuthorityManifest } from "./lib/drill-runtime-authority-invariants.mjs"
+import {
+  DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
+  drillRuntimeAuthorityManifest,
+} from "./lib/drill-runtime-authority-invariants.mjs"
 import { drillRuntimeSignalOwnersFor, drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -1327,6 +1330,7 @@ async function writeValidationSuiteArtifact(rootDir, {
         testPaths: ["scripts/cloud-validation-suite.test.mjs"],
       }],
       failureTaxonomyManifest: drillFailureTaxonomyManifest(),
+      runtimeAuthorityManifest: drillRuntimeAuthorityManifest(),
       runtimeSignalsManifest: drillRuntimeSignalsManifest(),
       testPaths: ["scripts/cloud-validation-suite.test.mjs"],
     },
@@ -1338,6 +1342,7 @@ async function writeValidationSuiteArtifact(rootDir, {
       drill: "cloud-validation-suite",
       tests: 1,
       coverageAreas: coverageAreas.join(","),
+      runtimeAuthorityInvariants: DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","),
       runtimeSignals: DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS.join(","),
       runtimeSignalOwners: drillRuntimeSignalOwnersFor(DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS).join(","),
       owners: "validation-platform",
@@ -1770,6 +1775,7 @@ const report = {
       },
     ],
     failureTaxonomyManifest: ${JSON.stringify(drillFailureTaxonomyManifest())},
+    runtimeAuthorityManifest: ${JSON.stringify(drillRuntimeAuthorityManifest())},
     runtimeSignalsManifest: ${JSON.stringify(drillRuntimeSignalsManifest())},
     testPaths: ["fake-validation-suite.test.mjs"],
   },
@@ -1784,6 +1790,7 @@ const index = {
     drill: "validation-suite",
     tests: 1,
     coverageAreas: "distributed-observability,suite-contract",
+    runtimeAuthorityInvariants: ${JSON.stringify(DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS.join(","))},
     runtimeSignals: ${JSON.stringify(DISTRIBUTED_RUNTIME_ARTIFACT_SIGNALS.join(","))},
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     owners: "validation-platform",

@@ -42,6 +42,7 @@ import {
   normalizeRequiredRuntimeSignals,
   normalizeRequiredScenarios,
 } from "./drill-validation-gate-presets.mjs"
+import { DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS } from "./drill-runtime-authority-invariants.mjs"
 import { workspaceLiveSyncRequiredScenarioIds } from "./workspace-live-sync-fixtures.mjs"
 
 test("describes stable validation gate presets", () => {
@@ -110,7 +111,7 @@ test("describes stable validation gate presets", () => {
       requiredArtifactEvidenceRepos: ["cloud", "oss"],
       requiredArtifactProviderAccountAliases: [],
       requiredArtifactValidationPresets: ["distributed-runtime", "distributed-state-health", "runtime-authority"],
-      requiredArtifactRuntimeAuthorityInvariants: [],
+      requiredArtifactRuntimeAuthorityInvariants: [...DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS],
       requiredArtifactRuntimeSignals: ["agent-lifecycle", "client-projection-health", "home-extension-manifest-sync", "lease-health", "permission-interaction", "provider-run-lifecycle", "relay-target-freshness", "runtime-projection-health", "session-authority", "slice-auth-state", "slice-runtime-state", "workspace-live-sync-state"],
       requiredArtifactRuntimeSignalOwners: ["kernel-authority", "provider-account", "provider-runtime", "runtime-network", "runtime-state", "ui-client", "worker-kernel"],
       requiredArtifactOwners: ["validation-platform"],
