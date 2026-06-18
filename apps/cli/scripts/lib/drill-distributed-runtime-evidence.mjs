@@ -220,6 +220,7 @@ export function distributedRuntimeMatrixOutputDirFor(options, repo) {
 
 export function distributedRuntimeMatrixCommandSummary(command) {
   return {
+    artifactIndexFlag: command.artifactIndexFlag,
     artifactIndexPath: path.join(command.outputDir, `${path.basename(command.reportFileName, ".json")}-artifacts.json`),
     args: [...command.args],
     cwd: command.cwd,

@@ -260,6 +260,7 @@ test("builds distributed runtime generated evidence summary", () => {
   ])
   assert.equal(summary.matrixReports.commands.length, 6)
   assert.deepEqual(summary.matrixReports.commands[0], {
+    artifactIndexFlag: "--artifact-index",
     artifactIndexPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix-artifacts.json"),
     args: ["--dry-run", "--continue-on-failure", "--provider-account", "codex=work_codex", "--include-hetzner"],
     cwd: "/repo/arroba",
@@ -268,6 +269,14 @@ test("builds distributed runtime generated evidence summary", () => {
     reportPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix.json"),
     scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
   })
+  assert.deepEqual(summary.matrixReports.commands.map((command) => command.artifactIndexFlag), [
+    "--artifact-index",
+    "--artifact-index",
+    "--artifact-index",
+    "--artifact-index",
+    "--artifact-index",
+    "--output-artifact-index",
+  ])
   assert.deepEqual(summary.validationSuites, {
     artifactIndexes: [
       "/tmp/suites/cloud/arroba-drill-artifacts.json",
