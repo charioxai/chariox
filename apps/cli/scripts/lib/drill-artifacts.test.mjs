@@ -91,6 +91,74 @@ function matrixReportArtifact(overrides = {}) {
   }
 }
 
+function focusedRuntimeGateReportArtifact(overrides = {}) {
+  const reports = overrides.reports ?? [
+    focusedRuntimeGateReportEntry("runtime-authority"),
+    focusedRuntimeGateReportEntry("distributed-state-health"),
+  ]
+  return {
+    schema: "arroba.drill.focused_runtime_gate.v1",
+    status: reports.some((entry) => entry.report.status === "failed") ? "failed" : "passed",
+    presets: ["runtime-authority", "distributed-state-health"],
+    reports,
+    nextActions: reports.flatMap((entry) =>
+      entry.report.nextActions.map((action) => ({ ...action, preset: entry.preset })),
+    ),
+    ...overrides,
+  }
+}
+
+function focusedRuntimeGateReportEntry(preset, overrides = {}) {
+  return {
+    preset,
+    report: validationGateReportArtifact({ preset, ...overrides }),
+  }
+}
+
+function validationGateReportArtifact({ preset = "runtime-authority", status = "passed", nextActions = [] } = {}) {
+  return {
+    schema: "arroba.drill.validation_gate.v1",
+    status,
+    presets: [preset],
+    checks: {
+      configuration: { status: "passed" },
+      platformBundle: {
+        status: "passed",
+        dir: "/tmp/platform",
+        artifacts: [],
+        validationSuite: {
+          testCount: 1,
+          coverageAreas: [{ id: "matrix-validation", testCount: 1 }],
+          validationPresets: [],
+        },
+      },
+      artifacts: {
+        status: "skipped",
+        roots: [],
+        inputs: [],
+        indexPaths: [],
+      },
+      matrices: {
+        status: status === "passed" ? "passed" : "failed",
+        roots: [],
+        inputs: [],
+        reportPaths: [],
+        requireComplete: false,
+        reports: [],
+        ...(status === "failed" ? { error: "missing focused runtime evidence" } : {}),
+      },
+      failures: {
+        status: "skipped",
+        inputs: [],
+        roots: [],
+        manifestPaths: [],
+        manifests: [],
+      },
+    },
+    nextActions,
+  }
+}
+
 function emptyDrillArtifactDiagnosticDimensions(overrides = {}) {
   return {
     ...Object.fromEntries(DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS.map((key) => [key, {}])),
@@ -482,6 +550,51 @@ test("rejects malformed matrix report artifacts", async () => {
     await assert.rejects(
       verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
       /matrix\.json is missing matrix/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("verifies focused runtime gate artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-focused-runtime-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "focused.json"), `${JSON.stringify(focusedRuntimeGateReportArtifact(), null, 2)}\n`, "utf8")
+
+    const index = await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/focused.json"],
+      metadata: {
+        drill: "focused-runtime-gate",
+        runtimeSignals: "session-authority",
+        runtimeSignalOwners: "kernel-authority",
+      },
+    })
+    const verified = await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json"))
+
+    assert.deepEqual(verified, index)
+    assert.deepEqual(index.artifacts.map((artifact) => artifact.schema), ["arroba.drill.focused_runtime_gate.v1"])
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
+test("rejects malformed focused runtime gate artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-focused-runtime-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "focused.json"), `${JSON.stringify(focusedRuntimeGateReportArtifact({
+      status: "failed",
+    }), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/focused.json"],
+    })
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /focused\.json status does not match embedded report statuses/,
     )
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })

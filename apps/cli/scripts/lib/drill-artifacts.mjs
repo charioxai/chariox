@@ -25,6 +25,7 @@ import {
   sanitizeDrillMetadata,
 } from "./drill-secrets.mjs"
 import { validateDrillMatrixReport } from "./drill-matrix-report.mjs"
+import { validateDrillFocusedRuntimeGateReport } from "./drill-focused-runtime-gate-report.mjs"
 import {
   parseProviderAccountAlias,
   validateDrillProvider,
@@ -977,6 +978,9 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   if (parsed?.schema === "arroba.drill.matrix.v1") {
     validateDrillMatrixReport(parsed, artifactPath)
     validateMatrixArtifactMetadata(parsed, artifactPath, metadata)
+  }
+  if (parsed?.schema === "arroba.drill.focused_runtime_gate.v1") {
+    validateDrillFocusedRuntimeGateReport(parsed, artifactPath)
   }
 }
 
