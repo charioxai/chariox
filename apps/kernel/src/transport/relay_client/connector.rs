@@ -34,6 +34,8 @@ struct StaticRelayConfig {
     relay_token: String,
 }
 
+const CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRelayConfigDisposition {
     LocalIdle,
@@ -56,6 +58,51 @@ fn missing_relay_config_disposition(
 
 fn should_start_cloud_presence_publish(task: Option<&JoinHandle<()>>) -> bool {
     task.is_none_or(|task| task.is_finished())
+}
+
+fn should_start_cloud_token_refresh(task: Option<&JoinHandle<()>>) -> bool {
+    task.is_none_or(|task| task.is_finished())
+}
+
+fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        match timeout(
+            CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT,
+            router.ensure_cloud_relay_connection(),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "cloud relay token refresh completed",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                    }),
+                );
+            }
+            Ok(Err(error)) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "failed to refresh cloud relay token",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+            Err(_) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "cloud relay token refresh timed out",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                        "timeout_ms": CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis(),
+                    }),
+                );
+            }
+        }
+    })
 }
 
 async fn disconnect_relay(
@@ -332,6 +379,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut token_refresh_interval =
                     tokio::time::interval(CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL);
                 token_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                let mut token_refresh_task = None;
                 let mut heartbeat_tick: u64 = 0;
 
                 loop {
@@ -413,17 +461,13 @@ async fn run_daemon_relay_connector_inner(
                             if static_relay.is_some() {
                                 continue;
                             }
-                            if router.cloud_relay_token_refresh_due() {
-                                if let Err(error) = router.ensure_cloud_relay_connection().await {
-                                    crate::logging::warn_with_fields(
-                                        "daemon.relay_client",
-                                        "failed to refresh cloud relay token",
-                                        serde_json::json!({
-                                            "relay_url": relay_url,
-                                            "error": error.to_string(),
-                                        }),
-                                    );
-                                }
+                            if router.cloud_relay_token_refresh_due()
+                                && should_start_cloud_token_refresh(token_refresh_task.as_ref())
+                            {
+                                token_refresh_task = Some(spawn_cloud_token_refresh(
+                                    Arc::clone(&router),
+                                    relay_url.clone(),
+                                ));
                             }
                             match relay_config_continuity(
                                 &relay_url,
@@ -651,5 +695,28 @@ mod tests {
 
         assert!(should_start_cloud_presence_publish(None));
         assert!(should_start_cloud_presence_publish(Some(&task)));
+    }
+
+    #[tokio::test]
+    async fn cloud_token_refresh_gate_skips_running_task() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = rx.await;
+        });
+
+        assert!(!should_start_cloud_token_refresh(Some(&task)));
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn cloud_token_refresh_gate_allows_finished_or_missing_task() {
+        let task = tokio::spawn(async {});
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(should_start_cloud_token_refresh(None));
+        assert!(should_start_cloud_token_refresh(Some(&task)));
     }
 }
