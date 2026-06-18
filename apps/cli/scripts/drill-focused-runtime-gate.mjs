@@ -9,6 +9,11 @@ import {
   parseDrillNonNegativeInteger,
 } from "./lib/drill-cli-args.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
+import {
+  DRILL_FOCUSED_RUNTIME_GATE_SCHEMA,
+  FOCUSED_RUNTIME_GATE_PRESETS,
+  validateDrillFocusedRuntimeGateReport,
+} from "./lib/drill-focused-runtime-gate-report.mjs"
 import { diagnosticMetadataForValidationGateReport } from "./lib/drill-validation-gate-runtime-signal-metadata.mjs"
 import { validationGateEvidenceSourceMetadata } from "./lib/drill-validation-gate-source-metadata.mjs"
 import {
@@ -20,9 +25,6 @@ import {
   validationGateRequirementOptionDefaults,
 } from "./lib/drill-validation-gate-args.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
-
-const FOCUSED_RUNTIME_GATE_SCHEMA = "arroba.drill.focused_runtime_gate.v1"
-const FOCUSED_RUNTIME_PRESETS = Object.freeze(["runtime-authority", "distributed-state-health"])
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -76,21 +78,22 @@ async function main() {
       await writeDrillPlatformBundle(platformBundleDir)
     }
     const reports = []
-    for (const preset of FOCUSED_RUNTIME_PRESETS) {
+    for (const preset of FOCUSED_RUNTIME_GATE_PRESETS) {
       reports.push({
         preset,
         report: await runFocusedPresetGate(options, platformBundleDir, preset),
       })
     }
     const outputReport = {
-      schema: FOCUSED_RUNTIME_GATE_SCHEMA,
+      schema: DRILL_FOCUSED_RUNTIME_GATE_SCHEMA,
       status: reports.every(({ report }) => report.status === "passed") ? "passed" : "failed",
-      presets: [...FOCUSED_RUNTIME_PRESETS],
+      presets: [...FOCUSED_RUNTIME_GATE_PRESETS],
       reports,
       nextActions: reports.flatMap(({ preset, report }) =>
         report.nextActions.map((action) => ({ ...action, preset })),
       ),
     }
+    validateDrillFocusedRuntimeGateReport(outputReport)
     if (options.outputPath) {
       await writeDrillJsonArtifactOutput({
         outputPath: options.outputPath,
