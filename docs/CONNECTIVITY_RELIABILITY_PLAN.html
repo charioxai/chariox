@@ -496,6 +496,7 @@
             <li>Browser bootstrap filters draining, stale, offline, and revoked relay endpoints out of reconnect candidates.</li>
             <li>Browser reconnect skips cooling relay endpoints when any non-cooling alternate is available.</li>
             <li>Browser event reconnect skips subscriptions removed during async resume so closed views do not receive stale recovery events.</li>
+            <li>Browser token refresh is best effort before actual expiry, so temporary Cloud outages do not block reconnect while the current relay token is still valid.</li>
             <li>Browser control replay keeps stable command IDs and restores pending state when a replay send fails before leaving the socket.</li>
             <li>Authority invariant summary gates cover Cloud and OSS runtime boundaries so relay and Cloud stay out of kernel-owned runtime truth.</li>
           </ul>
