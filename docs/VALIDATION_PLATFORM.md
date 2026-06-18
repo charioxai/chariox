@@ -21,6 +21,7 @@ Arroba runtime features must be validated through reusable drill primitives, not
 Run the shared non-live validation platform checks with:
 
 ```bash
+pnpm run validation:suite
 node apps/cli/scripts/drill-validation-suite.mjs
 node apps/cli/scripts/drill-validation-suite.mjs --check
 node apps/cli/scripts/drill-validation-suite.mjs --json
@@ -103,6 +104,7 @@ Use focused gates before the release-level distributed-runtime gate when the
 change is isolated to one quality axis:
 
 ```bash
+pnpm run validation:focused-runtime-gate
 pnpm --filter @arroba/cli run validation:focused-runtime-gate
 
 node apps/cli/scripts/drill-focused-runtime-gate.mjs \

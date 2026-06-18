@@ -43,6 +43,12 @@ test("drill validation suite lists selected tests", async () => {
   assert.deepEqual(stdout.trim().split("\n"), SHARED_DRILL_TEST_PATHS)
 })
 
+test("drill validation suite accepts a pnpm argument separator", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--", "--list"])
+
+  assert.deepEqual(stdout.trim().split("\n"), SHARED_DRILL_TEST_PATHS)
+})
+
 test("drill validation suite prints runnable command", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--command"])
 
