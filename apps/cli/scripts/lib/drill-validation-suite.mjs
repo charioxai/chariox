@@ -11,7 +11,11 @@ import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
-import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import {
+  drillFailureTaxonomyManifest,
+  validateDrillFailureClassification,
+  validateDrillFailureTaxonomyManifest,
+} from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -215,6 +219,7 @@ export function drillValidationSuiteManifest({
     testCount: testPaths.length,
     command: drillValidationSuiteCommand({ nodeCommand, testPaths }),
     coverage,
+    failureTaxonomyManifest: drillFailureTaxonomyManifest(),
     runtimeSignalsManifest: drillRuntimeSignalsManifest(),
     validationPresets: normalizeValidationSuitePresetContracts(validationPresets),
     testPaths: [...testPaths],
@@ -244,6 +249,7 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     "runtimeSignals",
   )
   if (runtimeSignals.length > 0) {
+    validateDrillFailureTaxonomyManifest(manifest.failureTaxonomyManifest, "validation suite failureTaxonomyManifest")
     validateDrillRuntimeSignalsManifest(manifest.runtimeSignalsManifest, "validation suite runtimeSignalsManifest")
   }
   const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)

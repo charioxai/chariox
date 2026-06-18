@@ -164,3 +164,35 @@ export function drillFailureTaxonomyManifest({ target = "scenario" } = {}) {
     })),
   }
 }
+
+export function validateDrillFailureTaxonomyManifest(manifest, source = "drill failure taxonomy manifest") {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`${source} is not an object`)
+  }
+  if (manifest.schema !== "arroba.drill.failure_taxonomy.v1") {
+    throw new Error(`${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
+  }
+  if (manifest.target !== "scenario") {
+    throw new Error(`${source} has invalid target ${JSON.stringify(manifest.target)}`)
+  }
+  if (!Array.isArray(manifest.classifications)) {
+    throw new Error(`${source} has invalid classifications`)
+  }
+  const kinds = manifest.classifications.map((classification) => classification?.kind).sort()
+  if (JSON.stringify(kinds) !== JSON.stringify(DRILL_FAILURE_CLASSIFICATION_KINDS)) {
+    throw new Error(`${source} classifications do not match drill failure taxonomy`)
+  }
+  for (const [index, classification] of manifest.classifications.entries()) {
+    const classificationSource = `${source}.classifications[${index}]`
+    if (!classification || typeof classification !== "object" || Array.isArray(classification)) {
+      throw new Error(`${classificationSource} is not an object`)
+    }
+    validateDrillFailureClassification(classification.kind, classificationSource, { label: "kind" })
+    if (classification.owner !== drillFailureOwnerForClassification(classification.kind)) {
+      throw new Error(`${classificationSource} has invalid owner`)
+    }
+    if (classification.nextAction !== drillFailureNextActionForClassification(classification.kind, { target: "scenario" })) {
+      throw new Error(`${classificationSource} has invalid nextAction`)
+    }
+  }
+}

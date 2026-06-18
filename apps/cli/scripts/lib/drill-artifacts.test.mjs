@@ -23,6 +23,7 @@ import {
   writeDrillArtifactIndex,
   writeDrillJsonArtifactOutput,
 } from "./drill-artifacts.mjs"
+import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 import { drillRuntimeSignalsManifest } from "./drill-runtime-signals.mjs"
 
 function validationSuiteRunArtifact(overrides = {}) {
@@ -51,6 +52,7 @@ function validationSuiteManifestArtifact(overrides = {}) {
     command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
     testCount: 1,
     testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
+    failureTaxonomyManifest: drillFailureTaxonomyManifest(),
     runtimeSignalsManifest: drillRuntimeSignalsManifest(),
     ...overrides,
   }
@@ -324,6 +326,7 @@ test("rejects validation artifacts with malformed runtime signal manifests", asy
         command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
         testCount: 1,
         testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
+        failureTaxonomyManifest: drillFailureTaxonomyManifest(),
         runtimeSignalsManifest: {
           ...manifest,
           signals: manifest.signals.filter((signal) => signal.id !== "lease-health"),

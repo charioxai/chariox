@@ -5,6 +5,7 @@ import { validateDrillAggregateNextAction } from "./drill-aggregate-actions.mjs"
 import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
 import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
 import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
+import { validateDrillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 import {
   validateDrillGeneratedEvidenceKind,
   validateDrillGeneratedEvidencePath,
@@ -894,6 +895,12 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     if (requiresRuntimeSignalManifest && parsed.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing runtimeSignalsManifest`)
     }
+    if (requiresRuntimeSignalManifest && parsed.failureTaxonomyManifest === undefined) {
+      throw new Error(`drill artifact ${artifactPath} is missing failureTaxonomyManifest`)
+    }
+    if (parsed.failureTaxonomyManifest !== undefined) {
+      validateDrillFailureTaxonomyManifest(parsed.failureTaxonomyManifest, `${artifactPath}.failureTaxonomyManifest`)
+    }
     if (parsed.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.runtimeSignalsManifest, `${artifactPath}.runtimeSignalsManifest`)
     }
@@ -909,6 +916,12 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     })
     if (requiresRuntimeSignalManifest && parsed.manifest?.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeSignalsManifest`)
+    }
+    if (requiresRuntimeSignalManifest && parsed.manifest?.failureTaxonomyManifest === undefined) {
+      throw new Error(`drill artifact ${artifactPath} is missing manifest.failureTaxonomyManifest`)
+    }
+    if (parsed.manifest?.failureTaxonomyManifest !== undefined) {
+      validateDrillFailureTaxonomyManifest(parsed.manifest.failureTaxonomyManifest, `${artifactPath}.manifest.failureTaxonomyManifest`)
     }
     if (parsed.manifest?.runtimeSignalsManifest !== undefined) {
       validateDrillRuntimeSignalsManifest(parsed.manifest.runtimeSignalsManifest, `${artifactPath}.manifest.runtimeSignalsManifest`)

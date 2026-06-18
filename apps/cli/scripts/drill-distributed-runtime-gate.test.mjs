@@ -9,6 +9,7 @@ import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO } from "./lib/drill-distributed-runtime-evidence.mjs"
+import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 import { drillRuntimeSignalOwnersFor, drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -1125,6 +1126,7 @@ async function writeValidationSuiteArtifact(rootDir, {
         testCount: 1,
         testPaths: ["scripts/cloud-validation-suite.test.mjs"],
       }],
+      failureTaxonomyManifest: drillFailureTaxonomyManifest(),
       runtimeSignalsManifest: drillRuntimeSignalsManifest(),
       testPaths: ["scripts/cloud-validation-suite.test.mjs"],
     },
@@ -1503,6 +1505,7 @@ const report = {
         testPaths: ["fake-validation-suite.test.mjs"],
       },
     ],
+    failureTaxonomyManifest: ${JSON.stringify(drillFailureTaxonomyManifest())},
     runtimeSignalsManifest: ${JSON.stringify(drillRuntimeSignalsManifest())},
     testPaths: ["fake-validation-suite.test.mjs"],
   },

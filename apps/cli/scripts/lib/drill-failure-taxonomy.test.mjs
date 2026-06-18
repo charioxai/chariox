@@ -9,6 +9,7 @@ import {
   drillFailureOwnerForClassification,
   isKnownDrillFailureClassification,
   validateDrillFailureClassification,
+  validateDrillFailureTaxonomyManifest,
 } from "./drill-failure-taxonomy.mjs"
 
 test("maps classifications to owners", () => {
@@ -161,4 +162,25 @@ test("builds stable failure taxonomy manifest", () => {
       && entry.owner === "worker-kernel"
       && entry.nextAction.includes("slice lifecycle events")
   )))
+  assert.doesNotThrow(() => validateDrillFailureTaxonomyManifest(manifest))
+  assert.throws(
+    () => validateDrillFailureTaxonomyManifest({ ...manifest, target: "drill" }),
+    /has invalid target "drill"/,
+  )
+  assert.throws(
+    () => validateDrillFailureTaxonomyManifest({
+      ...manifest,
+      classifications: manifest.classifications.filter((entry) => entry.kind !== "workspace-live-sync-conflict"),
+    }),
+    /classifications do not match drill failure taxonomy/,
+  )
+  assert.throws(
+    () => validateDrillFailureTaxonomyManifest({
+      ...manifest,
+      classifications: manifest.classifications.map((entry) => entry.kind === "kernel-authority"
+        ? { ...entry, owner: "runtime-state" }
+        : entry),
+    }),
+    /classifications\[\d+\] has invalid owner/,
+  )
 })

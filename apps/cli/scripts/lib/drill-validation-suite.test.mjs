@@ -19,6 +19,7 @@ import {
   DRILL_RUNTIME_SIGNAL_IDS,
   drillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
+import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 
 test("shared drill validation suite lists stable test paths", () => {
   assert(SHARED_DRILL_TEST_PATHS.includes("apps/cli/scripts/lib/drill-matrix-runner.test.mjs"))
@@ -109,6 +110,7 @@ test("builds shared drill validation suite manifest", () => {
       testCount: 2,
       testPaths: ["one.test.mjs", "two words.test.mjs"],
     }],
+    failureTaxonomyManifest: drillFailureTaxonomyManifest(),
     runtimeSignalsManifest: drillRuntimeSignalsManifest(),
     validationPresets: [{
       name: "sample-preset",
@@ -151,6 +153,7 @@ test("builds shared drill validation suite manifest", () => {
 
 test("builds validation suite artifact metadata from manifest and run report", () => {
   const manifest = drillValidationSuiteManifest()
+  assert.deepEqual(manifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
   assert.deepEqual(manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
 
   assert.deepEqual(drillValidationSuiteArtifactMetadata(manifest), {

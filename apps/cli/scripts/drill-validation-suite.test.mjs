@@ -12,6 +12,7 @@ import {
   DRILL_RUNTIME_SIGNAL_IDS,
   drillRuntimeSignalsManifest,
 } from "./lib/drill-runtime-signals.mjs"
+import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 import { SHARED_DRILL_TEST_PATHS } from "./lib/drill-validation-suite.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -99,6 +100,7 @@ test("drill validation suite prints coverage manifest", async () => {
     manifest.validationPresets.find((preset) => preset.name === "slice-runtime").requiredScenarios,
     ["agent-reuse", "provider-auth", "session-start", "slice-lifecycle", "ui-projection"],
   )
+  assert.deepEqual(manifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
   assert.deepEqual(manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
   assert.match(manifest.command, /^node --test /)
 })
@@ -122,6 +124,7 @@ test("drill validation suite writes coverage manifest", async () => {
 
     assert.deepEqual(fileManifest, stdoutManifest)
     assert.equal(fileManifest.schema, "arroba.drill.validation_suite.v1")
+    assert.deepEqual(fileManifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
     assert.deepEqual(fileManifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.tests, SHARED_DRILL_TEST_PATHS.length)
@@ -181,6 +184,7 @@ test("drill validation suite writes passing run report artifact output", async (
     assert.equal(fileReport.testCount, 1)
     assert.deepEqual(fileReport.testPaths, [testPath])
     assert.equal(fileReport.manifest.schema, "arroba.drill.validation_suite.v1")
+    assert.deepEqual(fileReport.manifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
     assert.deepEqual(fileReport.manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
     assert.equal(artifactIndex.metadata.drill, "validation-suite")
     assert.equal(artifactIndex.metadata.status, "passed")
