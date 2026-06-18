@@ -92,6 +92,10 @@ test("drill validation suite prints coverage manifest", async () => {
     ["cloud", "oss"],
   )
   assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactValidationPresets,
+    ["distributed-runtime"],
+  )
+  assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactCoverageAreas,
     ["distributed-observability"],
   )

@@ -26,7 +26,10 @@ import {
   parseProviderAccountAlias,
   validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
-import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
+import {
+  describeDrillValidationGatePresets,
+  validateDrillArtifactValidationPreset,
+} from "./drill-validation-gate-presets.mjs"
 
 export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/drill-artifact-index-summary.test.mjs",
@@ -386,6 +389,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactGeneratedValidationSuiteFailureRoots: sortedGeneratedEvidencePathArray(preset.requiredArtifactGeneratedValidationSuiteFailureRoots, `${preset.name}.requiredArtifactGeneratedValidationSuiteFailureRoots`),
     requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactProviderAccountAliases: sortedProviderAccountAliasArray(preset.requiredArtifactProviderAccountAliases, `${preset.name}.requiredArtifactProviderAccountAliases`),
+    requiredArtifactValidationPresets: sortedArtifactValidationPresetArray(preset.requiredArtifactValidationPresets, `${preset.name}.requiredArtifactValidationPresets`),
     requiredArtifactRuntimeSignals: sortedRuntimeSignalArray(preset.requiredArtifactRuntimeSignals, `${preset.name}.requiredArtifactRuntimeSignals`),
     requiredArtifactRuntimeSignalOwners: sortedRuntimeSignalOwnerArray(preset.requiredArtifactRuntimeSignalOwners, `${preset.name}.requiredArtifactRuntimeSignalOwners`),
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
@@ -525,6 +529,16 @@ function sortedProviderAccountAliasArray(value, source) {
     validateDrillProvider(provider, `validation suite preset ${source}[${index}]`)
   }
   return aliases
+}
+
+function sortedArtifactValidationPresetArray(value, source) {
+  const presets = sortedStringArray(value, source)
+  for (const [index, preset] of presets.entries()) {
+    validateDrillArtifactValidationPreset(preset, `validation suite preset ${source}[${index}]`, {
+      label: "artifact validation preset",
+    })
+  }
+  return presets
 }
 
 function sortedRuntimeSignalOwnerArray(value, source) {

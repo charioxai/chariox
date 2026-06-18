@@ -148,6 +148,7 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
+      requiredArtifactValidationPresets: [],
       requiredArtifactRuntimeSignals: [],
       requiredArtifactRuntimeSignalOwners: [],
       requiredArtifactOwners: [],
@@ -257,6 +258,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run", "/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["oss", "cloud", "oss"],
     requiredArtifactProviderAccountAliases: ["codex=work", "codex=work", "opencode=zen"],
+    requiredArtifactValidationPresets: ["workspace-live-sync", "distributed-runtime", "workspace-live-sync"],
     requiredArtifactRuntimeSignals: ["workspace-live-sync-state", "session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
@@ -289,6 +291,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["cloud", "oss"],
     requiredArtifactProviderAccountAliases: ["codex=work", "opencode=zen"],
+    requiredArtifactValidationPresets: ["distributed-runtime", "workspace-live-sync"],
     requiredArtifactRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
     requiredArtifactRuntimeSignalOwners: ["runtime-state"],
     requiredArtifactOwners: ["validation-platform"],
@@ -417,6 +420,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad provider account alias",
     requiredArtifactProviderAccountAliases: ["codx=work"],
   }]), /requiredArtifactProviderAccountAliases\[0\] has unknown provider "codx"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-validation-preset",
+    description: "bad artifact validation preset",
+    requiredArtifactValidationPresets: ["workspace-live-synch"],
+  }]), /requiredArtifactValidationPresets\[0\] has unknown artifact validation preset "workspace-live-synch"/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-artifact-evidence-repo",
     description: "bad artifact evidence repo",
