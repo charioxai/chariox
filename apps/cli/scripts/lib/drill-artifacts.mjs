@@ -962,7 +962,11 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     return
   }
   const requiresRuntimeSignalManifest = runtimeSignalsFromMetadata(metadata).length > 0
-  const requiresRuntimeAuthorityManifest = metadataListFromMetadata(metadata, "runtimeAuthorityInvariants").length > 0
+  const requiresRuntimeAuthorityManifest = [
+    "runtimeAuthorityInvariants",
+    "requiredRuntimeAuthorityInvariants",
+    "missingRuntimeAuthorityInvariants",
+  ].some((key) => metadataListFromMetadata(metadata, key).length > 0)
   if (parsed?.schema === "arroba.drill.validation_suite.v1") {
     validateValidationSuiteManifestArtifact(parsed, artifactPath)
     validateValidationSuiteArtifactMetadata({

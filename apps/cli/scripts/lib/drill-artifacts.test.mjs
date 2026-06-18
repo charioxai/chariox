@@ -383,6 +383,29 @@ test("rejects validation artifacts that advertise runtime signals without a mani
   }
 })
 
+test("rejects validation artifacts that advertise required runtime authority invariants without a manifest", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-authority-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact(), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+      metadata: {
+        requiredRuntimeAuthorityInvariants: "home-session-authority",
+      },
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /suite-run\.json is missing manifest\.runtimeAuthorityManifest/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
 test("rejects validation artifacts with malformed runtime signal manifests", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
   try {
