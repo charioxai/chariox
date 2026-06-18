@@ -36,18 +36,23 @@ function generatedMatrixRepoMap(manifest, source) {
   if (!Array.isArray(manifest.matrices)) {
     throw new Error(`${source} has invalid matrices`)
   }
-  return Object.fromEntries(manifest.matrices
-    .map((matrix, index) => {
-      if (!matrix || typeof matrix !== "object" || Array.isArray(matrix)) {
-        throw new Error(`${source}.matrices[${index}] is not an object`)
-      }
-      if (typeof matrix.name !== "string" || matrix.name.length === 0) {
-        throw new Error(`${source}.matrices[${index}] has invalid name`)
-      }
-      if (typeof matrix.repo !== "string" || matrix.repo.length === 0) {
-        throw new Error(`${source}.matrices[${index}] has invalid repo`)
-      }
-      return [matrix.name, matrix.repo]
-    })
-    .sort(([left], [right]) => left.localeCompare(right)))
+  const matrixEntries = []
+  const seenNames = new Set()
+  for (const [index, matrix] of manifest.matrices.entries()) {
+    if (!matrix || typeof matrix !== "object" || Array.isArray(matrix)) {
+      throw new Error(`${source}.matrices[${index}] is not an object`)
+    }
+    if (typeof matrix.name !== "string" || matrix.name.length === 0) {
+      throw new Error(`${source}.matrices[${index}] has invalid name`)
+    }
+    if (seenNames.has(matrix.name)) {
+      throw new Error(`${source}.matrices[${index}] duplicates matrix ${JSON.stringify(matrix.name)}`)
+    }
+    seenNames.add(matrix.name)
+    if (typeof matrix.repo !== "string" || matrix.repo.length === 0) {
+      throw new Error(`${source}.matrices[${index}] has invalid repo`)
+    }
+    matrixEntries.push([matrix.name, matrix.repo])
+  }
+  return Object.fromEntries(matrixEntries.sort(([left], [right]) => left.localeCompare(right)))
 }
