@@ -20,6 +20,7 @@ import {
   drillRuntimeSignalsManifest,
 } from "./drill-runtime-signals.mjs"
 import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
+import { describeDrillValidationGatePresets } from "./drill-validation-gate-presets.mjs"
 
 const EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS = [
   "cloud-runtime",
@@ -461,6 +462,18 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad provider",
     requiredProviders: ["cdoex"],
   }]), /requiredProviders\[0\] has unknown provider "cdoex"/)
+})
+
+test("validation suite preset contracts preserve validation gate preset fields", () => {
+  const described = describeDrillValidationGatePresets()
+  const normalized = normalizeValidationSuitePresetContracts(described)
+  const describedKeys = new Set(described.flatMap((preset) => Object.keys(preset))
+    .filter((key) => key !== "name" && key !== "description"))
+  const normalizedKeys = new Set(normalized.flatMap((preset) => Object.keys(preset))
+    .filter((key) => key !== "name" && key !== "description"))
+
+  assert.deepEqual([...describedKeys].filter((key) => !normalizedKeys.has(key)).sort(), [])
+  assert.deepEqual([...normalizedKeys].filter((key) => !describedKeys.has(key)).sort(), [])
 })
 
 test("finds missing shared drill validation suite paths", async () => {
