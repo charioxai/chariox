@@ -226,6 +226,14 @@ test("classifies common drill failure owners and next actions", () => {
   assert.deepEqual(classifyDrillFailureManifest(validManifest({
     error: { name: "Error", message: "projection invariant failed: session prompt read-model stale", stack: null },
   })), {
+    kind: "runtime-projection-health",
+    owner: "kernel-authority",
+    nextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the drill",
+  })
+
+  assert.deepEqual(classifyDrillFailureManifest(validManifest({
+    error: { name: "Error", message: "session projection stale after projection reconciliation failed", stack: null },
+  })), {
     kind: "projection-staleness",
     owner: "kernel-authority",
     nextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the drill",

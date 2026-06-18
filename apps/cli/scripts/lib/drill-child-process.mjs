@@ -117,11 +117,19 @@ const REMOTE_EXTENSION_SYNC_PATTERNS = [
   /pending revoke/i,
 ]
 
-const PROJECTION_STALENESS_PATTERNS = [
+const RUNTIME_PROJECTION_HEALTH_PATTERNS = [
+  /runtime[-_ ]projection[-_ ]health/i,
+  /daemon health .*projection/i,
+  /kernel .*projection .*invariant/i,
   /projection invariant .*failed/i,
+  /read[- ]model .*stale/i,
+  /runtime .*projection .*stale/i,
+  /runtime .*projection .*reconciliation .*failed/i,
+]
+
+const PROJECTION_STALENESS_PATTERNS = [
   /projection .*stale/i,
   /stale .*projection/i,
-  /read[- ]model .*stale/i,
   /projection .*reconciliation .*failed/i,
 ]
 
@@ -186,6 +194,9 @@ export function classifyDrillChildFailure(text) {
   if (REMOTE_EXTENSION_SYNC_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'remote-extension-sync'
   }
+  if (RUNTIME_PROJECTION_HEALTH_PATTERNS.some((pattern) => pattern.test(text))) {
+    return 'runtime-projection-health'
+  }
   if (PROJECTION_STALENESS_PATTERNS.some((pattern) => pattern.test(text))) {
     return 'projection-staleness'
   }
@@ -249,6 +260,9 @@ export function formatDrillChildFailure(label, code, signal, stdout, stderr) {
       : null,
     classification === 'remote-extension-sync'
       ? 'Remote extension manifest state did not reconcile between home and worker kernels.'
+      : null,
+    classification === 'runtime-projection-health'
+      ? 'Runtime projection health failed; inspect kernel read-model freshness, invariant drift, and reconciliation events.'
       : null,
     classification === 'projection-staleness'
       ? 'Kernel projection state is stale; inspect projection health, read-model freshness, and reconciliation events.'

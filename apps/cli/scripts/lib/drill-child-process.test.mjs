@@ -140,8 +140,18 @@ test('classifies remote extension manifest sync failures', () => {
   )
 })
 
-test('classifies stale projection failures separately from client rendering failures', () => {
+test('classifies runtime projection health failures separately from client rendering failures', () => {
   const text = 'daemon health projection invariant failed: session prompt read-model stale for session session-1'
+
+  assert.equal(classifyDrillChildFailure(text), 'runtime-projection-health')
+  assert.match(
+    formatDrillChildFailure('projection health drill', 1, null, '', text),
+    /Runtime projection health failed/,
+  )
+})
+
+test('keeps generic stale projection failures in the projection-staleness bucket', () => {
+  const text = 'session projection stale after projection reconciliation failed'
 
   assert.equal(classifyDrillChildFailure(text), 'projection-staleness')
   assert.match(
