@@ -485,7 +485,7 @@
             <li>Relay liveness stays healthy during drain while readiness reports draining and exposes runtime load counters.</li>
             <li>Draining relays refuse new runtime admissions with HTTP 503 while health checks keep returning drain status.</li>
             <li>Relay endpoint configuration accepts explicit health states and rejects unsupported states at startup/readiness.</li>
-            <li>Cloud ranks endpoint sets by health so healthy alternates precede draining or stale relay URLs.</li>
+            <li>Cloud treats configured relay endpoint sets as authoritative and ranks them by health so healthy alternates precede draining or stale relay URLs.</li>
           </ul>
         </div>
         <div class="card">
