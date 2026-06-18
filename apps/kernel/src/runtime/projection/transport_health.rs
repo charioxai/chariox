@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,11 @@ pub struct TransportHealthSnapshot {
     pub duplicate_command_conflicts: u64,
     pub outgoing_queue_overflows: u64,
     pub slow_consumer_closes: u64,
+    pub relay_reconnect_attempts: u64,
+    pub relay_last_reconnect_reason: Option<String>,
+    pub relay_last_reconnect_delay_ms: Option<u64>,
+    pub relay_last_reconnect_url: Option<String>,
+    pub relay_last_connected_url: Option<String>,
 }
 
 impl Default for TransportHealthSnapshot {
@@ -34,6 +40,11 @@ impl Default for TransportHealthSnapshot {
             duplicate_command_conflicts: 0,
             outgoing_queue_overflows: 0,
             slow_consumer_closes: 0,
+            relay_reconnect_attempts: 0,
+            relay_last_reconnect_reason: None,
+            relay_last_reconnect_delay_ms: None,
+            relay_last_reconnect_url: None,
+            relay_last_connected_url: None,
         }
     }
 }
@@ -54,6 +65,8 @@ struct TransportHealthState {
     duplicate_command_conflicts: AtomicU64,
     outgoing_queue_overflows: AtomicU64,
     slow_consumer_closes: AtomicU64,
+    relay_reconnect_attempts: AtomicU64,
+    relay_health: Mutex<RelayTransportHealth>,
 }
 
 impl TransportHealthStore {
@@ -113,12 +126,34 @@ impl TransportHealthStore {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_relay_connected(&self, relay_url: &str) {
+        let mut relay_health = lock_relay_health(&self.state.relay_health);
+        relay_health.last_connected_url = Some(relay_url.to_string());
+    }
+
+    pub(crate) fn record_relay_reconnect_attempt(
+        &self,
+        relay_url: &str,
+        reason: &str,
+        delay: Duration,
+    ) {
+        self.state
+            .relay_reconnect_attempts
+            .fetch_add(1, Ordering::Relaxed);
+        let mut relay_health = lock_relay_health(&self.state.relay_health);
+        relay_health.last_reconnect_reason = Some(reason.to_string());
+        relay_health.last_reconnect_delay_ms =
+            Some(delay.as_millis().min(u128::from(u64::MAX)) as u64);
+        relay_health.last_reconnect_url = Some(relay_url.to_string());
+    }
+
     pub(crate) fn snapshot(
         &self,
         retained_event_limit: usize,
         command_result_cache_limit: usize,
         inbound_request_limit: usize,
     ) -> TransportHealthSnapshot {
+        let relay_health = lock_relay_health(&self.state.relay_health);
         TransportHealthSnapshot {
             active_connections: self.state.active_connections.load(Ordering::Relaxed),
             active_subscriptions: self.state.active_subscriptions.load(Ordering::Relaxed),
@@ -138,12 +173,66 @@ impl TransportHealthStore {
                 .load(Ordering::Relaxed),
             outgoing_queue_overflows: self.state.outgoing_queue_overflows.load(Ordering::Relaxed),
             slow_consumer_closes: self.state.slow_consumer_closes.load(Ordering::Relaxed),
+            relay_reconnect_attempts: self.state.relay_reconnect_attempts.load(Ordering::Relaxed),
+            relay_last_reconnect_reason: relay_health.last_reconnect_reason.clone(),
+            relay_last_reconnect_delay_ms: relay_health.last_reconnect_delay_ms,
+            relay_last_reconnect_url: relay_health.last_reconnect_url.clone(),
+            relay_last_connected_url: relay_health.last_connected_url.clone(),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct RelayTransportHealth {
+    last_reconnect_reason: Option<String>,
+    last_reconnect_delay_ms: Option<u64>,
+    last_reconnect_url: Option<String>,
+    last_connected_url: Option<String>,
+}
+
+fn lock_relay_health(
+    relay_health: &Mutex<RelayTransportHealth>,
+) -> std::sync::MutexGuard<'_, RelayTransportHealth> {
+    relay_health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn decrement_saturating(value: &AtomicUsize) {
     let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         current.checked_sub(1)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_health_records_relay_reconnect_details() {
+        let store = TransportHealthStore::default();
+
+        store.record_relay_connected("wss://relay-a.example.test");
+        store.record_relay_reconnect_attempt(
+            "wss://relay-b.example.test",
+            "relay heartbeat send failed",
+            Duration::from_millis(750),
+        );
+
+        let snapshot = store.snapshot(256, 512, 8);
+        assert_eq!(snapshot.relay_reconnect_attempts, 1);
+        assert_eq!(
+            snapshot.relay_last_reconnect_reason.as_deref(),
+            Some("relay heartbeat send failed")
+        );
+        assert_eq!(snapshot.relay_last_reconnect_delay_ms, Some(750));
+        assert_eq!(
+            snapshot.relay_last_reconnect_url.as_deref(),
+            Some("wss://relay-b.example.test")
+        );
+        assert_eq!(
+            snapshot.relay_last_connected_url.as_deref(),
+            Some("wss://relay-a.example.test")
+        );
+    }
 }

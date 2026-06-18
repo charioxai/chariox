@@ -238,7 +238,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
     `provider run actor: enqueued=${providerRunActor.enqueued_commands} rejected=${providerRunActor.enqueue_rejections}`,
     `capabilities: running=${capability.running_jobs}/${capability.max_concurrent_jobs} submitted=${capability.submitted_jobs} failed=${capability.failed_jobs} rejected=${capability.rejected_jobs} join_errors=${capability.join_errors}`,
-    `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`,
+    `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes} relay_reconnects=${transport.relay_reconnect_attempts}`,
     `terminal stream: pending_output=${terminalStream.pending_output_records} pending_notices=${terminalStream.pending_notice_records} pending_completions=${terminalStream.pending_completion_records} trimmed_recipients=${terminalStream.trimmed_pending_output_recipients} limit=${terminalStream.pending_output_record_limit_per_attachment}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
@@ -366,7 +366,10 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 
   const transportIssueCount = transportHealthIssueCount(health)
   if (transportIssueCount > 0) {
-    lines.push(`transport issues: replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes}`)
+    lines.push(`transport issues: replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes} relay_reconnects=${transport.relay_reconnect_attempts}`)
+    if (transport.relay_reconnect_attempts > 0) {
+      lines.push(`relay reconnect: attempts=${transport.relay_reconnect_attempts} last_url=${transport.relay_last_reconnect_url ?? "-"} last_delay=${formatDuration(transport.relay_last_reconnect_delay_ms)} last_reason=${transport.relay_last_reconnect_reason ?? "-"} last_connected=${transport.relay_last_connected_url ?? "-"}`)
+    }
     lines.push("  next: reconnect stale clients; if overloads persist, reduce concurrent clients or restart the affected relay/kernel")
   }
 
@@ -810,6 +813,7 @@ function transportHealthIssueCount(health: DaemonHealthProjection): number {
     + transport.duplicate_command_conflicts
     + transport.outgoing_queue_overflows
     + transport.slow_consumer_closes
+    + transport.relay_reconnect_attempts
 }
 
 function terminalStreamHealthIssueCount(health: DaemonHealthProjection): number {

@@ -120,6 +120,12 @@ async fn wait_for_reconnect_delay(shutdown: &mut watch::Receiver<bool>, delay: D
     }
 }
 
+fn record_relay_reconnect(router: &CommandRouter, relay_url: &str, reason: &str, delay: Duration) {
+    router
+        .transport_health_store()
+        .record_relay_reconnect_attempt(relay_url, reason, delay);
+}
+
 fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
     if let Some(handle) = task.take() {
         handle.abort();
@@ -418,6 +424,7 @@ async fn run_daemon_relay_connector_inner(
                 .await;
                 let daemon_id = router.relay_daemon_id();
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                record_relay_reconnect(&router, &relay_url, "relay connect timed out", delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
                     return;
@@ -496,6 +503,12 @@ async fn run_daemon_relay_connector_inner(
                     )
                     .await;
                     let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                    record_relay_reconnect(
+                        &router,
+                        &relay_url,
+                        "failed to send relay registration",
+                        delay,
+                    );
                     reconnect_attempt = reconnect_attempt.saturating_add(1);
                     if wait_for_reconnect_delay(shutdown, delay).await {
                         return;
@@ -513,6 +526,9 @@ async fn run_daemon_relay_connector_inner(
                     }),
                 );
                 set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await;
+                router
+                    .transport_health_store()
+                    .record_relay_connected(&relay_url);
                 reconnect_attempt = 0;
                 let mut cloud_presence_task = None;
                 if static_relay.is_none() {
@@ -536,7 +552,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
 
-                loop {
+                let reconnect_reason = loop {
                     tokio::select! {
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
@@ -584,7 +600,7 @@ async fn run_daemon_relay_connector_inner(
                                         writer_task.abort();
                                         clear_remote_inventory_projection(&router);
                                         disconnect_relay(&router, &state, "relay payload handling failed", static_relay.is_none()).await;
-                                        break;
+                                        break "relay payload handling failed";
                                     }
                                 }
                                 Some(Ok(Message::Close(_))) => {
@@ -596,7 +612,7 @@ async fn run_daemon_relay_connector_inner(
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay close frame received", static_relay.is_none()).await;
-                                    break;
+                                    break "relay close frame received";
                                 }
                                 Some(Ok(_)) => {}
                                 Some(Err(_)) | None => {
@@ -608,7 +624,7 @@ async fn run_daemon_relay_connector_inner(
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay read failed or ended", static_relay.is_none()).await;
-                                    break;
+                                    break "relay read failed or ended";
                                 }
                             }
                         }
@@ -620,7 +636,7 @@ async fn run_daemon_relay_connector_inner(
                             writer_task.abort();
                             clear_remote_inventory_projection(&router);
                             disconnect_relay(&router, &state, "relay writer ended", static_relay.is_none()).await;
-                            break;
+                            break "relay writer ended";
                         }
                         _ = token_refresh_interval.tick() => {
                             if static_relay.is_some() {
@@ -669,7 +685,7 @@ async fn run_daemon_relay_connector_inner(
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay configuration changed", true).await;
-                                    break;
+                                    break "relay configuration changed";
                                 }
                             }
                         }
@@ -713,7 +729,7 @@ async fn run_daemon_relay_connector_inner(
                                         writer_task.abort();
                                         clear_remote_inventory_projection(&router);
                                         disconnect_relay(&router, &state, "relay configuration changed", true).await;
-                                        break;
+                                        break "relay configuration changed";
                                     }
                                 }
                             }
@@ -740,7 +756,7 @@ async fn run_daemon_relay_connector_inner(
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
-                                break;
+                                break "relay heartbeat send failed";
                             }
                             if should_start_leased_projection_pump(
                                 leased_projection_pump_task.as_ref(),
@@ -767,8 +783,9 @@ async fn run_daemon_relay_connector_inner(
                             }
                         }
                     }
-                }
+                };
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                record_relay_reconnect(&router, &relay_url, reconnect_reason, delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
                     return;
@@ -794,6 +811,7 @@ async fn run_daemon_relay_connector_inner(
                 .await;
                 let daemon_id = router.relay_daemon_id();
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                record_relay_reconnect(&router, &relay_url, "relay socket connect failed", delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
                     return;

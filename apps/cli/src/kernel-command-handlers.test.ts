@@ -64,6 +64,11 @@ function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthPr
       duplicate_command_conflicts: 0,
       outgoing_queue_overflows: 0,
       slow_consumer_closes: 0,
+      relay_reconnect_attempts: 0,
+      relay_last_reconnect_reason: null,
+      relay_last_reconnect_delay_ms: null,
+      relay_last_reconnect_url: null,
+      relay_last_connected_url: null,
     },
     terminal_stream: {
       pending_output_records: 0,
@@ -151,7 +156,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
   assert.match(rendered, /provider run actor: enqueued=3 rejected=0/)
   assert.match(rendered, /capabilities: running=0\/64 submitted=0 failed=0 rejected=0 join_errors=0/)
-  assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0/)
+  assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0 relay_reconnects=0/)
   assert.match(rendered, /terminal stream: pending_output=0 pending_notices=0 pending_completions=0 trimmed_recipients=0 limit=4096/)
   assert.match(rendered, /slices: total=0 running=0 starting=0 stopping=0 stopped=0 unhealthy=0 agents=0 failed_ops=0 in_progress_ops=0 auth_missing=0 auth_unconfigured=0/)
   assert.match(rendered, /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
@@ -862,6 +867,11 @@ test("kernel health formatter reports transport terminal and capability issues",
       duplicate_command_conflicts: 1,
       outgoing_queue_overflows: 1,
       slow_consumer_closes: 2,
+      relay_reconnect_attempts: 3,
+      relay_last_reconnect_reason: "relay heartbeat send failed",
+      relay_last_reconnect_delay_ms: 750,
+      relay_last_reconnect_url: "wss://relay-b.example.test",
+      relay_last_connected_url: "wss://relay-a.example.test",
     },
     terminal_stream: {
       pending_output_records: 4,
@@ -873,12 +883,13 @@ test("kernel health formatter reports transport terminal and capability issues",
   })
   const rendered = formatKernelHealth(unhealthy)
 
-  assert.equal(kernelHealthIssueCount(unhealthy), 12)
+  assert.equal(kernelHealthIssueCount(unhealthy), 15)
   assert.match(rendered, /capabilities: running=4\/64 submitted=8 failed=1 rejected=2 join_errors=1/)
-  assert.match(rendered, /transport: connections=2 subscriptions=3 incoming=9 emitted=10 replay_gaps=1 overloads=2 duplicate_commands=1 outgoing_overflows=1 slow_consumers=2/)
+  assert.match(rendered, /transport: connections=2 subscriptions=3 incoming=9 emitted=10 replay_gaps=1 overloads=2 duplicate_commands=1 outgoing_overflows=1 slow_consumers=2 relay_reconnects=3/)
   assert.match(rendered, /terminal stream: pending_output=4 pending_notices=3 pending_completions=2 trimmed_recipients=2 limit=4096/)
   assert.match(rendered, /capability executor issues: rejected=2 join_errors=1/)
-  assert.match(rendered, /transport issues: replay_gaps=1 overloads=2 duplicate_commands=1 outgoing_overflows=1 slow_consumers=2/)
+  assert.match(rendered, /transport issues: replay_gaps=1 overloads=2 duplicate_commands=1 outgoing_overflows=1 slow_consumers=2 relay_reconnects=3/)
+  assert.match(rendered, /relay reconnect: attempts=3 last_url=wss:\/\/relay-b\.example\.test last_delay=750ms last_reason=relay heartbeat send failed last_connected=wss:\/\/relay-a\.example\.test/)
   assert.match(rendered, /next: reconnect stale clients/)
   assert.match(rendered, /terminal stream trimmed pending output for 2 recipients/)
   assert.match(rendered, /next: refresh the terminal session/)

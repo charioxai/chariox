@@ -58,6 +58,11 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
       duplicate_command_conflicts: 0,
       outgoing_queue_overflows: 0,
       slow_consumer_closes: 0,
+      relay_reconnect_attempts: 0,
+      relay_last_reconnect_reason: null,
+      relay_last_reconnect_delay_ms: null,
+      relay_last_reconnect_url: null,
+      relay_last_connected_url: null,
     },
     terminal_stream: {
       pending_output_records: 1,

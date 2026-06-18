@@ -922,6 +922,11 @@ mod tests {
                 duplicate_command_conflicts: 1,
                 outgoing_queue_overflows: 1,
                 slow_consumer_closes: 1,
+                relay_reconnect_attempts: 2,
+                relay_last_reconnect_reason: Some("relay heartbeat send failed".to_string()),
+                relay_last_reconnect_delay_ms: Some(750),
+                relay_last_reconnect_url: Some("wss://relay-b.example.test".to_string()),
+                relay_last_connected_url: Some("wss://relay-a.example.test".to_string()),
             },
             TerminalStreamHealthSnapshot {
                 pending_output_records: 4,
@@ -1127,6 +1132,11 @@ mod tests {
         );
         assert_eq!(projection.transport.active_connections, 2);
         assert_eq!(projection.transport.slow_consumer_closes, 1);
+        assert_eq!(projection.transport.relay_reconnect_attempts, 2);
+        assert_eq!(
+            projection.transport.relay_last_reconnect_reason.as_deref(),
+            Some("relay heartbeat send failed")
+        );
         assert_eq!(projection.terminal_stream.pending_output_records, 4);
         assert_eq!(
             projection.terminal_stream.trimmed_pending_output_recipients,

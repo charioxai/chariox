@@ -483,6 +483,11 @@ export type TransportHealthSnapshot = {
   duplicate_command_conflicts: number
   outgoing_queue_overflows: number
   slow_consumer_closes: number
+  relay_reconnect_attempts: number
+  relay_last_reconnect_reason: string | null
+  relay_last_reconnect_delay_ms: number | null
+  relay_last_reconnect_url: string | null
+  relay_last_connected_url: string | null
 }
 
 export type TerminalStreamHealthSnapshot = {
@@ -1415,7 +1420,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 148
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 149
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
