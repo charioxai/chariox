@@ -154,6 +154,8 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactOwners: [],
       requiredArtifactClassifications: [],
       requiredArtifactFailureClassifications: [],
+      requiredArtifactPlannedOwners: [],
+      requiredArtifactPlannedClassifications: [],
       requiredArtifactExitCriterionStatuses: [],
       requiredArtifactIncompleteExitCriterionStatuses: [],
       requiredRuntimeSignals: [],
@@ -264,6 +266,8 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-suite"],
     requiredArtifactFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority"],
+    requiredArtifactPlannedOwners: ["validation-platform", "kernel-authority", "validation-platform"],
+    requiredArtifactPlannedClassifications: ["matrix-coverage", "workspace-live-sync-conflict", "matrix-coverage"],
     requiredRuntimeSignals: ["provider-run-lifecycle", "session-authority", "provider-run-lifecycle"],
     requiredMatrices: ["workspace-live-sync-matrix"],
     requiredFailureClassifications: ["workspace-live-sync-conflict", "kernel-authority"],
@@ -297,6 +301,8 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactOwners: ["validation-platform"],
     requiredArtifactClassifications: ["validation-suite"],
     requiredArtifactFailureClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
+    requiredArtifactPlannedOwners: ["kernel-authority", "validation-platform"],
+    requiredArtifactPlannedClassifications: ["matrix-coverage", "workspace-live-sync-conflict"],
     requiredArtifactExitCriterionStatuses: [],
     requiredArtifactIncompleteExitCriterionStatuses: [],
     requiredRuntimeSignals: ["provider-run-lifecycle", "session-authority"],
@@ -425,6 +431,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad artifact validation preset",
     requiredArtifactValidationPresets: ["workspace-live-synch"],
   }]), /requiredArtifactValidationPresets\[0\] has unknown artifact validation preset "workspace-live-synch"/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-planned-owner",
+    description: "bad artifact planned owner",
+    requiredArtifactPlannedOwners: ["Bearer abcdefghijklmnop"],
+  }]), /requiredArtifactPlannedOwners\[0\] includes secret-looking diagnostic text/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-artifact-evidence-repo",
     description: "bad artifact evidence repo",

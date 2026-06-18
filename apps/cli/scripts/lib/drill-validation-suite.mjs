@@ -28,6 +28,8 @@ import {
 } from "./drill-provider-profiles.mjs"
 import {
   describeDrillValidationGatePresets,
+  normalizeRequiredArtifactPlannedClassifications,
+  normalizeRequiredArtifactPlannedOwners,
   validateDrillArtifactValidationPreset,
 } from "./drill-validation-gate-presets.mjs"
 
@@ -395,6 +397,8 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactOwners: sortedStringArray(preset.requiredArtifactOwners, `${preset.name}.requiredArtifactOwners`),
     requiredArtifactClassifications: sortedStringArray(preset.requiredArtifactClassifications, `${preset.name}.requiredArtifactClassifications`),
     requiredArtifactFailureClassifications: sortedFailureClassificationArray(preset.requiredArtifactFailureClassifications, `${preset.name}.requiredArtifactFailureClassifications`),
+    requiredArtifactPlannedOwners: normalizeRequiredArtifactPlannedOwners(preset.requiredArtifactPlannedOwners ?? []),
+    requiredArtifactPlannedClassifications: normalizeRequiredArtifactPlannedClassifications(preset.requiredArtifactPlannedClassifications ?? []),
     requiredArtifactExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactExitCriterionStatuses, `${preset.name}.requiredArtifactExitCriterionStatuses`),
     requiredArtifactIncompleteExitCriterionStatuses: sortedExitCriterionStatusArray(preset.requiredArtifactIncompleteExitCriterionStatuses, `${preset.name}.requiredArtifactIncompleteExitCriterionStatuses`),
     requiredRuntimeSignals,

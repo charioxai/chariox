@@ -96,6 +96,14 @@ test("drill validation suite prints coverage manifest", async () => {
     ["distributed-runtime"],
   )
   assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactPlannedOwners,
+    [],
+  )
+  assert.deepEqual(
+    manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactPlannedClassifications,
+    [],
+  )
+  assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactCoverageAreas,
     ["distributed-observability"],
   )
