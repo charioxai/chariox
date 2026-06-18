@@ -871,6 +871,67 @@ test("distributed runtime gate can require runtime signal registry parity", asyn
   }
 })
 
+test("distributed runtime gate can require failure taxonomy registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
+      evidenceRepo: "oss",
+    })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+    await writeCloudFailureTaxonomyRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--include-default-artifacts",
+      "--require-failure-taxonomy-registry-parity",
+      "--json",
+    ])
+
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate rejects failure taxonomy registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillFailureTaxonomyManifest()
+    await writeCloudFailureTaxonomyRegistry(cloudRoot, {
+      classifications: manifest.classifications
+        .filter((classification) => classification.kind === "kernel-authority")
+        .map((classification) => ({ ...classification, owner: "runtime-state" })),
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--require-failure-taxonomy-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /failure taxonomy registry parity failed/)
+        assert.match(error.stderr, /kernel-authority/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("distributed runtime gate rejects runtime signal registry drift", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {
@@ -1187,6 +1248,29 @@ async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
   await writeFile(registryPath, [
     "export function cloudRuntimeSignalsManifest() {",
     `  return { schema: "arroba.drill.runtime_signals.v1", signals: ${JSON.stringify(signals)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
+}
+
+async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
+  classifications = drillFailureTaxonomyManifest().classifications
+    .filter((classification) => [
+      "docker-runtime",
+      "kernel-authority",
+      "runtime-projection-health",
+      "workspace-live-sync-conflict",
+    ].includes(classification.kind))
+    .map((classification) => classification.kind === "docker-runtime"
+      ? { ...classification, owner: "worker-kernel" }
+      : classification),
+} = {}) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-failure-taxonomy.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudFailureTaxonomyManifest() {",
+    `  return { schema: "arroba.drill.failure_taxonomy.v1", target: "scenario", classifications: ${JSON.stringify(classifications)} }`,
     "}",
     "",
   ].join("\n"), "utf8")

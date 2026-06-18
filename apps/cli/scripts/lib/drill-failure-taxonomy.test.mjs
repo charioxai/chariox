@@ -23,6 +23,7 @@ test("maps classifications to owners", () => {
   assert.equal(drillFailureOwnerForClassification("kernel-authority"), "kernel-authority")
   assert.equal(drillFailureOwnerForClassification("remote-extension-sync"), "kernel-authority")
   assert.equal(drillFailureOwnerForClassification("projection-staleness"), "kernel-authority")
+  assert.equal(drillFailureOwnerForClassification("runtime-projection-health"), "kernel-authority")
   assert.equal(drillFailureOwnerForClassification("worker-execution"), "worker-kernel")
   assert.equal(drillFailureOwnerForClassification("ui-client-projection"), "ui-client")
   assert.equal(drillFailureOwnerForClassification("workspace-live-sync-conflict"), "runtime-state")
@@ -39,6 +40,7 @@ test("exposes known classifications", () => {
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("remote-worker-version"))
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("remote-host-capacity"))
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("projection-staleness"))
+  assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("runtime-projection-health"))
   assert(DRILL_FAILURE_CLASSIFICATION_KINDS.includes("slice-runtime"))
   assert.deepEqual(DRILL_FAILURE_CLASSIFICATION_KINDS, [...DRILL_FAILURE_CLASSIFICATION_KINDS].sort())
   assert.equal(isKnownDrillFailureClassification("slice-runtime"), true)
@@ -85,6 +87,10 @@ test("formats target-specific next actions", () => {
   )
   assert.equal(
     drillFailureNextActionForClassification("projection-staleness", { target: "scenario" }),
+    "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the scenario",
+  )
+  assert.equal(
+    drillFailureNextActionForClassification("runtime-projection-health", { target: "scenario" }),
     "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the scenario",
   )
   assert.equal(
@@ -149,6 +155,11 @@ test("builds stable failure taxonomy manifest", () => {
   )))
   assert(manifest.classifications.some((entry) => (
     entry.kind === "projection-staleness"
+      && entry.owner === "kernel-authority"
+      && entry.nextAction.includes("projection health")
+  )))
+  assert(manifest.classifications.some((entry) => (
+    entry.kind === "runtime-projection-health"
       && entry.owner === "kernel-authority"
       && entry.nextAction.includes("projection health")
   )))

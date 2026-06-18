@@ -75,11 +75,11 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.equal(report.checks.configuration.status, "passed")
     assert.equal(report.checks.platformBundle.status, "passed")
     assert.deepEqual(report.checks.platformBundle.validationSuite, {
-      testCount: 63,
+      testCount: 64,
       coverageAreas: [
         { id: "distributed-observability", testCount: 2 },
         { id: "artifact-contracts", testCount: 19 },
-        { id: "failure-diagnostics", testCount: 3 },
+        { id: "failure-diagnostics", testCount: 4 },
         { id: "matrix-validation", testCount: 29 },
         { id: "runtime-fixtures", testCount: 8 },
         { id: "suite-contract", testCount: 2 },
@@ -93,7 +93,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
     assert.deepEqual(report.nextActions, [])
     assert.doesNotThrow(() => validateDrillValidationGateReport(report))
     assert.match(formatDrillValidationGateSummary(report), /status=passed/)
-    assert.match(formatDrillValidationGateSummary(report), /platform_validation_suite_tests=63 coverage=distributed-observability:2/)
+    assert.match(formatDrillValidationGateSummary(report), /platform_validation_suite_tests=64 coverage=distributed-observability:2/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

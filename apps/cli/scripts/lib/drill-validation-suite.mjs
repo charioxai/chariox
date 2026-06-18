@@ -49,6 +49,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-evidence-repos.test.mjs",
   "apps/cli/scripts/lib/drill-exit-criterion-statuses.test.mjs",
   "apps/cli/scripts/lib/drill-failure-manifest.test.mjs",
+  "apps/cli/scripts/lib/drill-failure-taxonomy-registry-parity.test.mjs",
   "apps/cli/scripts/lib/drill-failure-taxonomy.test.mjs",
   "apps/cli/scripts/lib/drill-generated-evidence-metadata.test.mjs",
   "apps/cli/scripts/lib/drill-generated-matrix-command-metadata.test.mjs",
@@ -134,6 +135,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
     testPaths: Object.freeze([
       "apps/cli/scripts/drill-failure-taxonomy.test.mjs",
       "apps/cli/scripts/lib/drill-child-process.test.mjs",
+      "apps/cli/scripts/lib/drill-failure-taxonomy-registry-parity.test.mjs",
       "apps/cli/scripts/lib/drill-failure-taxonomy.test.mjs",
     ]),
   },

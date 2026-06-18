@@ -6,6 +6,7 @@ import {
   parseDrillMaxDepth,
   parseDrillNonNegativeInteger,
 } from "./lib/drill-cli-args.mjs"
+import { verifyDrillFailureTaxonomyRegistryParity } from "./lib/drill-failure-taxonomy-registry-parity.mjs"
 import { verifyDrillGeneratedMatrixRegistryParity } from "./lib/drill-generated-matrix-registry-parity.mjs"
 import { verifyDrillRuntimeSignalRegistryParity } from "./lib/drill-runtime-signal-registry-parity.mjs"
 import { writeDrillJsonArtifactOutput } from "./lib/drill-artifacts.mjs"
@@ -43,6 +44,8 @@ function printHelp() {
     "                         Discover failure manifests under each repo's .artifacts root",
     "  --require-generated-matrix-registry-parity",
     "                         Fail when OSS and Cloud generated matrix registries drift",
+    "  --require-failure-taxonomy-registry-parity",
+    "                         Fail when Cloud failure classifications drift from OSS diagnostics",
     "  --require-runtime-signal-registry-parity",
     "                         Fail when OSS and Cloud runtime signal registries drift",
     "  --platform-bundle DIR  Verify a drill platform bundle directory",
@@ -99,6 +102,9 @@ async function main() {
   if (options.requireGeneratedMatrixRegistryParity) {
     await verifyDrillGeneratedMatrixRegistryParity(options)
   }
+  if (options.requireFailureTaxonomyRegistryParity) {
+    await verifyDrillFailureTaxonomyRegistryParity(options)
+  }
   if (options.requireRuntimeSignalRegistryParity) {
     await verifyDrillRuntimeSignalRegistryParity(options)
   }
@@ -149,6 +155,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    requireFailureTaxonomyRegistryParity: false,
     requireGeneratedMatrixRegistryParity: false,
     requireRuntimeSignalRegistryParity: false,
     requiredArtifactMaxAgeMs: null,
@@ -163,6 +170,7 @@ function parseArgs(argv) {
     else if (arg === "--no-default-roots") options.defaultRoots = false
     else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
     else if (arg === "--include-default-failures") options.includeDefaultFailures = true
+    else if (arg === "--require-failure-taxonomy-registry-parity") options.requireFailureTaxonomyRegistryParity = true
     else if (arg === "--require-generated-matrix-registry-parity") options.requireGeneratedMatrixRegistryParity = true
     else if (arg === "--require-runtime-signal-registry-parity") options.requireRuntimeSignalRegistryParity = true
     else if (arg === "--require-complete") options.requireComplete = true

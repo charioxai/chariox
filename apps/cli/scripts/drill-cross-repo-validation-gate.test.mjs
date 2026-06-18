@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 import { drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
@@ -510,6 +511,68 @@ test("cross repo validation gate checks runtime signal registry parity", async (
   }
 })
 
+test("cross repo validation gate checks failure taxonomy registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeCloudFailureTaxonomyRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--require-failure-taxonomy-registry-parity",
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("cross repo validation gate rejects failure taxonomy registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillFailureTaxonomyManifest()
+    await writeCloudFailureTaxonomyRegistry(cloudRoot, {
+      classifications: [
+        ...manifest.classifications.filter((classification) => classification.kind === "kernel-authority"),
+        {
+          kind: "future-cloud-only-classification",
+          owner: "kernel-authority",
+          nextAction: "inspect future diagnostics",
+        },
+      ],
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--no-default-roots",
+        "--require-failure-taxonomy-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /failure taxonomy registry parity failed/)
+        assert.match(error.stderr, /future-cloud-only-classification/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate rejects runtime signal registry drift", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
   try {
@@ -717,6 +780,29 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
     metadata,
     scenarios,
   }, null, 2)}\n`, "utf8")
+}
+
+async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
+  classifications = drillFailureTaxonomyManifest().classifications
+    .filter((classification) => [
+      "docker-runtime",
+      "kernel-authority",
+      "runtime-projection-health",
+      "workspace-live-sync-conflict",
+    ].includes(classification.kind))
+    .map((classification) => classification.kind === "docker-runtime"
+      ? { ...classification, owner: "worker-kernel" }
+      : classification),
+} = {}) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-failure-taxonomy.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudFailureTaxonomyManifest() {",
+    `  return { schema: "arroba.drill.failure_taxonomy.v1", target: "scenario", classifications: ${JSON.stringify(classifications)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
 }
 
 async function writeValidationSuiteArtifact(rootDir, { metadata = {} } = {}) {

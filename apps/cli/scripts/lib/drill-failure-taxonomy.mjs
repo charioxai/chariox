@@ -64,6 +64,11 @@ const FAILURE_CLASSIFICATIONS = {
     drillNextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the drill",
     scenarioNextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the scenario",
   },
+  "runtime-projection-health": {
+    owner: "kernel-authority",
+    drillNextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the drill",
+    scenarioNextAction: "inspect kernel projection health, read-model freshness, and reconciliation events before rerunning the scenario",
+  },
   "worker-execution": {
     owner: "worker-kernel",
     drillNextAction: "inspect worker kernel logs, leased-agent launch state, and preserved worker artifacts, then rerun the drill",
