@@ -126,11 +126,22 @@ pub(crate) async fn handle_connection(
                                 identity.realm_id.clone(),
                                 registration.daemon_id.clone(),
                             );
+                            if registered_daemon_key
+                                .as_ref()
+                                .is_some_and(|current_key| current_key != &daemon_key)
+                            {
+                                send_close(
+                                    &outgoing_tx,
+                                    "daemon connection already registered".to_string(),
+                                );
+                                break;
+                            }
                             registered_daemon_key = Some(daemon_key.clone());
                             let mut replaced_senders = Vec::new();
                             let mut guard = registry.write().await;
-                            guard.peers.retain(|_, peer| {
-                                let replace = peer.role == RelayConnectionRole::Daemon
+                            guard.peers.retain(|addr, peer| {
+                                let replace = *addr != peer_addr
+                                    && peer.role == RelayConnectionRole::Daemon
                                     && peer.realm_id.as_deref() == Some(identity.realm_id.as_str())
                                     && peer
                                         .daemon_registration
