@@ -73,6 +73,26 @@ test("rejects malformed Cloud runtime signal manifests", async () => {
   }
 })
 
+test("rejects duplicate Cloud runtime signal ids", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-signal-parity-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeCloudRuntimeSignalsRegistry(cloudRoot, {
+      signals: [
+        ...drillRuntimeSignalsManifest().signals,
+        drillRuntimeSignalsManifest().signals.find((signal) => signal.id === "lease-health"),
+      ],
+    })
+
+    await assert.rejects(
+      verifyDrillRuntimeSignalRegistryParity({ cloudRoot }),
+      /Cloud runtime signal registry\.signals\[\d+\] duplicates signal "lease-health"/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
   signals = drillRuntimeSignalsManifest().signals,
 } = {}) {

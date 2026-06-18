@@ -110,6 +110,26 @@ test("rejects malformed Cloud failure taxonomy manifests", async () => {
   }
 })
 
+test("rejects duplicate Cloud failure classifications", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeCloudFailureTaxonomyRegistry(cloudRoot, {
+      classifications: [
+        ...drillFailureTaxonomyManifest().classifications,
+        drillFailureTaxonomyManifest().classifications.find((classification) => classification.kind === "kernel-authority"),
+      ],
+    })
+
+    await assert.rejects(
+      verifyDrillFailureTaxonomyRegistryParity({ cloudRoot }),
+      /Cloud failure taxonomy registry\.classifications\[\d+\] duplicates classification "kernel-authority"/,
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
   classifications,
 } = {}) {

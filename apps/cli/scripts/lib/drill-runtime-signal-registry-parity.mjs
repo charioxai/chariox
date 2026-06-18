@@ -34,24 +34,29 @@ function runtimeSignalMap(manifest, source) {
   if (!Array.isArray(manifest.signals)) {
     throw new Error(`${source} has invalid signals`)
   }
-  return Object.fromEntries(manifest.signals
-    .map((signal, index) => {
-      if (!signal || typeof signal !== "object" || Array.isArray(signal)) {
-        throw new Error(`${source}.signals[${index}] is not an object`)
-      }
-      if (typeof signal.id !== "string" || signal.id.length === 0) {
-        throw new Error(`${source}.signals[${index}] has invalid id`)
-      }
-      if (typeof signal.owner !== "string" || signal.owner.length === 0) {
-        throw new Error(`${source}.signals[${index}] has invalid owner`)
-      }
-      if (typeof signal.description !== "string" || signal.description.length === 0) {
-        throw new Error(`${source}.signals[${index}] has invalid description`)
-      }
-      return [signal.id, {
-        description: signal.description,
-        owner: signal.owner,
-      }]
-    })
-    .sort(([left], [right]) => left.localeCompare(right)))
+  const signalEntries = []
+  const seenIds = new Set()
+  for (const [index, signal] of manifest.signals.entries()) {
+    if (!signal || typeof signal !== "object" || Array.isArray(signal)) {
+      throw new Error(`${source}.signals[${index}] is not an object`)
+    }
+    if (typeof signal.id !== "string" || signal.id.length === 0) {
+      throw new Error(`${source}.signals[${index}] has invalid id`)
+    }
+    if (seenIds.has(signal.id)) {
+      throw new Error(`${source}.signals[${index}] duplicates signal ${JSON.stringify(signal.id)}`)
+    }
+    seenIds.add(signal.id)
+    if (typeof signal.owner !== "string" || signal.owner.length === 0) {
+      throw new Error(`${source}.signals[${index}] has invalid owner`)
+    }
+    if (typeof signal.description !== "string" || signal.description.length === 0) {
+      throw new Error(`${source}.signals[${index}] has invalid description`)
+    }
+    signalEntries.push([signal.id, {
+      description: signal.description,
+      owner: signal.owner,
+    }])
+  }
+  return Object.fromEntries(signalEntries.sort(([left], [right]) => left.localeCompare(right)))
 }

@@ -62,26 +62,31 @@ function failureClassificationMap(manifest, source) {
   if (!Array.isArray(manifest.classifications)) {
     throw new Error(`${source} has invalid classifications`)
   }
-  return Object.fromEntries(manifest.classifications
-    .map((classification, index) => {
-      if (!classification || typeof classification !== "object" || Array.isArray(classification)) {
-        throw new Error(`${source}.classifications[${index}] is not an object`)
-      }
-      if (typeof classification.kind !== "string" || classification.kind.length === 0) {
-        throw new Error(`${source}.classifications[${index}] has invalid kind`)
-      }
-      if (typeof classification.owner !== "string" || classification.owner.length === 0) {
-        throw new Error(`${source}.classifications[${index}] has invalid owner`)
-      }
-      if (typeof classification.nextAction !== "string" || classification.nextAction.length === 0) {
-        throw new Error(`${source}.classifications[${index}] has invalid nextAction`)
-      }
-      return [classification.kind, {
-        nextAction: classification.nextAction,
-        owner: classification.owner,
-      }]
-    })
-    .sort(([left], [right]) => left.localeCompare(right)))
+  const classificationEntries = []
+  const seenKinds = new Set()
+  for (const [index, classification] of manifest.classifications.entries()) {
+    if (!classification || typeof classification !== "object" || Array.isArray(classification)) {
+      throw new Error(`${source}.classifications[${index}] is not an object`)
+    }
+    if (typeof classification.kind !== "string" || classification.kind.length === 0) {
+      throw new Error(`${source}.classifications[${index}] has invalid kind`)
+    }
+    if (seenKinds.has(classification.kind)) {
+      throw new Error(`${source}.classifications[${index}] duplicates classification ${JSON.stringify(classification.kind)}`)
+    }
+    seenKinds.add(classification.kind)
+    if (typeof classification.owner !== "string" || classification.owner.length === 0) {
+      throw new Error(`${source}.classifications[${index}] has invalid owner`)
+    }
+    if (typeof classification.nextAction !== "string" || classification.nextAction.length === 0) {
+      throw new Error(`${source}.classifications[${index}] has invalid nextAction`)
+    }
+    classificationEntries.push([classification.kind, {
+      nextAction: classification.nextAction,
+      owner: classification.owner,
+    }])
+  }
+  return Object.fromEntries(classificationEntries.sort(([left], [right]) => left.localeCompare(right)))
 }
 
 function allowedCloudOwnerOverride(kind, ossOwner, cloudOwner) {
