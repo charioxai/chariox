@@ -524,6 +524,7 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "workspace-live-sync-matrix",
     ].join(","))
     assert.equal(artifactIndex.metadata.generatedMatrixRepos, "cloud,oss")
+    assert.equal(artifactIndex.metadata.generatedEvidenceRepos, "cloud,external,oss")
     assert.equal(artifactIndex.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex,opencode=zen")
     assert.equal(artifactIndex.metadata.generatedMatrixRoots, [
       path.join(matrixOutputRoot, "cloud"),

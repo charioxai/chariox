@@ -217,7 +217,7 @@ async function main() {
           ...generatedEvidenceMetadataFor(generatedEvidence),
           ossRoot: options.ossRoot,
           cloudRoot: options.cloudRoot,
-          ...validationGateEvidenceSourceMetadata(report, {
+          ...validationGateEvidenceSourceMetadata(outputReport, {
             ossRoot: options.ossRoot,
             cloudRoot: options.cloudRoot,
           }),
