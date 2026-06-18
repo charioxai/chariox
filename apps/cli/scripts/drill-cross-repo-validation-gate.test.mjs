@@ -9,6 +9,7 @@ import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
+import { drillRuntimeSignalsManifest } from "./lib/drill-runtime-signals.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-cross-repo-validation-gate.mjs", import.meta.url))
@@ -484,6 +485,63 @@ test("cross repo validation gate rejects generated matrix registry drift", async
   }
 })
 
+test("cross repo validation gate checks runtime signal registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeCloudRuntimeSignalsRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--require-runtime-signal-registry-parity",
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("cross repo validation gate rejects runtime signal registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillRuntimeSignalsManifest()
+    await writeCloudRuntimeSignalsRegistry(cloudRoot, {
+      signals: manifest.signals.map((signal) => signal.id === "workspace-live-sync-state"
+        ? { ...signal, owner: "kernel-authority" }
+        : signal),
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--no-default-roots",
+        "--require-runtime-signal-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /runtime signal registry parity failed/)
+        assert.match(error.stderr, /workspace-live-sync-state/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate requires artifact generated matrix limitation metadata", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
   try {
@@ -718,6 +776,20 @@ async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
   await writeFile(registryPath, [
     "export function cloudDrillGeneratedMatrixNamesManifest() {",
     `  return { schema: "arroba.cloud.drill.generated_matrix_names.v1", matrices: ${JSON.stringify(matrices)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
+}
+
+async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
+  signals = drillRuntimeSignalsManifest().signals,
+} = {}) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-signals.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudRuntimeSignalsManifest() {",
+    `  return { schema: "arroba.drill.runtime_signals.v1", signals: ${JSON.stringify(signals)} }`,
     "}",
     "",
   ].join("\n"), "utf8")

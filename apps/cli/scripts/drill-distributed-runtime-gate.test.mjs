@@ -840,6 +840,65 @@ test("distributed runtime gate rejects generated matrix registry drift", async (
   }
 })
 
+test("distributed runtime gate can require runtime signal registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
+      evidenceRepo: "oss",
+    })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+    await writeCloudRuntimeSignalsRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--include-default-artifacts",
+      "--require-runtime-signal-registry-parity",
+      "--json",
+    ])
+
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate rejects runtime signal registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillRuntimeSignalsManifest()
+    await writeCloudRuntimeSignalsRegistry(cloudRoot, {
+      signals: manifest.signals.filter((signal) => signal.id !== "home-extension-manifest-sync"),
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--require-runtime-signal-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /runtime signal registry parity failed/)
+        assert.match(error.stderr, /home-extension-manifest-sync/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("distributed runtime gate rejects unsupported provider account aliases", async () => {
   for (const args of [
     ["--provider-account", "dev-stub=stub"],
@@ -1112,6 +1171,20 @@ async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
   await writeFile(registryPath, [
     "export function cloudDrillGeneratedMatrixNamesManifest() {",
     `  return { schema: "arroba.cloud.drill.generated_matrix_names.v1", matrices: ${JSON.stringify(matrices)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
+}
+
+async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
+  signals = drillRuntimeSignalsManifest().signals,
+} = {}) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-signals.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudRuntimeSignalsManifest() {",
+    `  return { schema: "arroba.drill.runtime_signals.v1", signals: ${JSON.stringify(signals)} }`,
     "}",
     "",
   ].join("\n"), "utf8")

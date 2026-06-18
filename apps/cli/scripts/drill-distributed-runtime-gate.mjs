@@ -16,6 +16,7 @@ import {
   runDistributedRuntimeValidationSuitesFor,
 } from "./lib/drill-distributed-runtime-evidence.mjs"
 import { verifyDrillGeneratedMatrixRegistryParity } from "./lib/drill-generated-matrix-registry-parity.mjs"
+import { verifyDrillRuntimeSignalRegistryParity } from "./lib/drill-runtime-signal-registry-parity.mjs"
 import {
   parseValidationGateRequirementArg,
   validationGateRequirementOptionDefaults,
@@ -59,6 +60,8 @@ function printHelp() {
     "                         Discover failure manifests under each repo's .artifacts root",
     "  --require-generated-matrix-registry-parity",
     "                         Fail when OSS and Cloud generated matrix registries drift",
+    "  --require-runtime-signal-registry-parity",
+    "                         Fail when OSS and Cloud runtime signal registries drift",
     "  --failure-manifest PATH",
     "                         Read a specific failure manifest or preserved root; repeatable",
     "  --failure-root ROOT     Discover failure manifests below ROOT; repeatable",
@@ -123,6 +126,9 @@ async function main() {
   }
   if (options.requireGeneratedMatrixRegistryParity) {
     await verifyDrillGeneratedMatrixRegistryParity(options)
+  }
+  if (options.requireRuntimeSignalRegistryParity) {
+    await verifyDrillRuntimeSignalRegistryParity(options)
   }
   const generatedBundleDir = options.platformBundleDir ? null : await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-platform-"))
   try {
@@ -240,6 +246,7 @@ function parseArgs(argv) {
     providerAccounts: {},
     requireComplete: false,
     requireGeneratedMatrixRegistryParity: false,
+    requireRuntimeSignalRegistryParity: false,
     requiredArtifactMaxAgeMs: null,
     requiredFailureMaxAgeMs: null,
     requiredMatrixMaxAgeMs: null,
@@ -258,6 +265,7 @@ function parseArgs(argv) {
     else if (arg === "--matrix-continue-on-failure") options.matrixContinueOnFailure = true
     else if (arg === "--matrix-dry-run") options.matrixDryRun = true
     else if (arg === "--require-generated-matrix-registry-parity") options.requireGeneratedMatrixRegistryParity = true
+    else if (arg === "--require-runtime-signal-registry-parity") options.requireRuntimeSignalRegistryParity = true
     else if (arg === "--require-complete") options.requireComplete = true
     else if (arg === "--run-matrix-reports") options.runMatrixReports = true
     else if (arg === "--run-validation-suites") options.runValidationSuites = true
