@@ -79,6 +79,8 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
 
 Generated JSON reports include `generatedEvidence` with the validation-suite artifact indexes, validation-suite failure roots, matrix roots, command arguments, report paths, and artifact-index paths used by the gate. The distributed-runtime preset also derives required runtime-signal owner coverage from its required runtime signals, so generated evidence must prove subsystem owners such as `kernel-authority`, `runtime-network`, and `worker-kernel` rather than only raw signal ids. Use this when staging jobs need one preserved bundle that proves what was generated versus what was discovered from previous runs.
 
+When a distributed gate spans OSS and Cloud, keep the registry parity flags enabled: `--require-generated-matrix-registry-parity`, `--require-runtime-signal-registry-parity`, and `--require-failure-taxonomy-registry-parity`. These checks validate registry schemas, reject duplicate generated matrix names/runtime signal ids/failure classifications, and fail on matrix repo, signal owner/description, or taxonomy owner drift before live drills consume provider or remote-host time.
+
 To reject stale or discovered-only bundles, summarize the generated gate report and require both generated evidence kinds:
 
 ```bash
