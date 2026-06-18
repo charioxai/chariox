@@ -21,6 +21,26 @@ import {
 } from "./drill-runtime-signals.mjs"
 import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 
+const EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS = [
+  "cloud-runtime",
+  "docker-runtime",
+  "kernel-authority",
+  "projection-staleness",
+  "provider-auth",
+  "provider-error",
+  "relay-runtime",
+  "relay-target-freshness",
+  "remote-extension-sync",
+  "remote-host-capacity",
+  "remote-worker-version",
+  "runtime-projection-health",
+  "slice-auth",
+  "slice-runtime",
+  "ui-client-projection",
+  "worker-execution",
+  "workspace-live-sync-conflict",
+].join(",")
+
 test("shared drill validation suite lists stable test paths", () => {
   assert(SHARED_DRILL_TEST_PATHS.includes("apps/cli/scripts/lib/drill-matrix-runner.test.mjs"))
   assert(SHARED_DRILL_TEST_PATHS.includes("apps/cli/scripts/drill-matrix-report-summary.test.mjs"))
@@ -169,6 +189,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
   assert.deepEqual(drillValidationSuiteArtifactMetadata({
     schema: "arroba.drill.validation_suite_run.v1",
@@ -189,6 +210,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     runtimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
     requiredRuntimeSignals: DRILL_RUNTIME_SIGNAL_IDS.join(","),
     requiredRuntimeSignalOwners: "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel",
+    requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
   assert.throws(() => drillValidationSuiteArtifactMetadata({
     ...manifest,

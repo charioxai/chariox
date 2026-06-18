@@ -250,6 +250,13 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
     ]),
     "runtimeSignals",
   )
+  const requiredFailureClassifications = sortedFailureClassificationArray(
+    (manifest.validationPresets ?? []).flatMap((preset) => [
+      ...(preset?.requiredFailureClassifications ?? []),
+      ...(preset?.requiredMatrixClassifications ?? []),
+    ]),
+    "requiredFailureClassifications",
+  )
   if (runtimeSignals.length > 0) {
     validateDrillFailureTaxonomyManifest(manifest.failureTaxonomyManifest, "validation suite failureTaxonomyManifest")
     validateDrillRuntimeSignalsManifest(manifest.runtimeSignalsManifest, "validation suite runtimeSignalsManifest")
@@ -277,6 +284,9 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
         requiredRuntimeSignals: runtimeSignals.join(","),
         requiredRuntimeSignalOwners: runtimeSignalOwners.join(","),
       }
+      : {}),
+    ...(requiredFailureClassifications.length > 0
+      ? { requiredFailureClassifications: requiredFailureClassifications.join(",") }
       : {}),
   }
 }

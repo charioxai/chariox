@@ -17,6 +17,25 @@ import { SHARED_DRILL_TEST_PATHS } from "./lib/drill-validation-suite.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-validation-suite.mjs", import.meta.url))
+const EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS = [
+  "cloud-runtime",
+  "docker-runtime",
+  "kernel-authority",
+  "projection-staleness",
+  "provider-auth",
+  "provider-error",
+  "relay-runtime",
+  "relay-target-freshness",
+  "remote-extension-sync",
+  "remote-host-capacity",
+  "remote-worker-version",
+  "runtime-projection-health",
+  "slice-auth",
+  "slice-runtime",
+  "ui-client-projection",
+  "worker-execution",
+  "workspace-live-sync-conflict",
+].join(",")
 
 test("drill validation suite lists selected tests", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath, "--list"])
@@ -138,6 +157,7 @@ test("drill validation suite writes coverage manifest", async () => {
     assert.equal(artifactIndex.metadata.runtimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
     assert.equal(artifactIndex.metadata.requiredRuntimeSignals, DRILL_RUNTIME_SIGNAL_IDS.join(","))
     assert.equal(artifactIndex.metadata.requiredRuntimeSignalOwners, "kernel-authority,provider-account,provider-runtime,runtime-network,runtime-state,ui-client,worker-kernel")
+    assert.equal(artifactIndex.metadata.requiredFailureClassifications, EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS)
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => ({
       path: artifact.path,
       schema: artifact.schema,
