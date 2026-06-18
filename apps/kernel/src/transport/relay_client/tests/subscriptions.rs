@@ -331,7 +331,8 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
         .await
         .expect("second event should append");
 
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel(RELAY_OUTGOING_QUEUE_LIMIT);
+    let (outgoing_tx, _priority_rx, mut event_rx) =
+        RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
     let subscription_private_key = relay_crypto::generate_private_key_base64();
     let subscription_public_key =
         relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
@@ -350,7 +351,7 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
     .await
     .expect("stale replay should emit recovery events");
 
-    let gap = decrypt_relay_event_from_channel(&mut outgoing_rx, &subscription_private_key).await;
+    let gap = decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
     assert_eq!(gap.0, second.event_id + 1);
     assert_eq!(gap.1["event"], serde_json::json!("replay_gap"));
     assert_eq!(
@@ -363,8 +364,7 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
     );
     assert_eq!(gap.1["latest_event_id"], serde_json::json!(second.event_id));
 
-    let snapshot =
-        decrypt_relay_event_from_channel(&mut outgoing_rx, &subscription_private_key).await;
+    let snapshot = decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
     assert_eq!(snapshot.0, second.event_id + 2);
     assert_eq!(snapshot.1["event"], serde_json::json!("session_snapshot"));
     assert_eq!(

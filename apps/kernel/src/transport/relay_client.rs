@@ -85,7 +85,57 @@ const RELAY_HEARTBEAT_APP_WORK_TIMEOUT: Duration = Duration::from_millis(500);
 const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 
-type RelayOutgoingSender = mpsc::Sender<RelayEnvelope>;
+#[derive(Debug, Clone)]
+pub(crate) struct RelayOutgoingSender {
+    priority_tx: mpsc::Sender<RelayEnvelope>,
+    event_tx: mpsc::Sender<RelayEnvelope>,
+}
+
+impl RelayOutgoingSender {
+    fn new(
+        priority_tx: mpsc::Sender<RelayEnvelope>,
+        event_tx: mpsc::Sender<RelayEnvelope>,
+    ) -> Self {
+        Self {
+            priority_tx,
+            event_tx,
+        }
+    }
+
+    pub(crate) fn channel(
+        capacity: usize,
+    ) -> (
+        Self,
+        mpsc::Receiver<RelayEnvelope>,
+        mpsc::Receiver<RelayEnvelope>,
+    ) {
+        let (priority_tx, priority_rx) = mpsc::channel(capacity);
+        let (event_tx, event_rx) = mpsc::channel(capacity);
+        (Self::new(priority_tx, event_tx), priority_rx, event_rx)
+    }
+
+    pub(crate) fn try_send(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::TrySendError<RelayEnvelope>> {
+        if relay_envelope_uses_event_lane(&envelope) {
+            self.event_tx.try_send(envelope)
+        } else {
+            self.priority_tx.try_send(envelope)
+        }
+    }
+}
+
+fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
+    matches!(
+        envelope,
+        RelayEnvelope::DaemonEvent { .. }
+            | RelayEnvelope::DaemonPeerEvent { .. }
+            | RelayEnvelope::DaemonDisplayTunnelChunk { .. }
+            | RelayEnvelope::DaemonDisplayTunnelClientChunk { .. }
+    )
+}
+
 type RelayCommandResultCache = Arc<CommandResultCache>;
 
 #[cfg(test)]

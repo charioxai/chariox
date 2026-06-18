@@ -736,11 +736,11 @@ fn slice_backup_instructions(backup: &crate::slice::SliceBackupRecord) -> String
 #[cfg(test)]
 mod display_endpoint_tests {
     use super::*;
-    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn display_endpoint_returns_tunnel_when_wss_relay_is_connected() {
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let (outgoing_tx, mut priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
         let mut state = RelayClientState::default();
         state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
         let relay_state = Arc::new(RwLock::new(state));
@@ -762,7 +762,7 @@ mod display_endpoint_tests {
         assert!(endpoint.url.contains("path=display%2Fdisplay-"));
         assert_eq!(endpoint.expires_at_ms.is_some(), true);
 
-        let registration = outgoing_rx
+        let registration = priority_rx
             .recv()
             .await
             .expect("display tunnel registration should be queued");
@@ -777,7 +777,8 @@ mod display_endpoint_tests {
 
     #[tokio::test]
     async fn display_endpoint_does_not_tunnel_without_hosted_wss_relay() {
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel(4);
+        let (outgoing_tx, _priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
         let mut state = RelayClientState::default();
         state.test_set_connected_sender(outgoing_tx, "ws://127.0.0.1:43130");
         let relay_state = Arc::new(RwLock::new(state));
@@ -793,7 +794,8 @@ mod display_endpoint_tests {
 
     #[tokio::test]
     async fn revoking_slice_display_tunnels_keeps_other_slices_registered() {
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let (outgoing_tx, mut priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
         let mut state = RelayClientState::default();
         state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
         state.upsert_display_tunnel(test_tunnel("display-a", "slice-1"));
@@ -805,7 +807,7 @@ mod display_endpoint_tests {
 
         let mut revoked = Vec::new();
         for _ in 0..2 {
-            match outgoing_rx
+            match priority_rx
                 .recv()
                 .await
                 .expect("slice tunnel revoke should be queued")

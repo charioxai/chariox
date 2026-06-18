@@ -556,7 +556,7 @@ mod tests {
             expires_at_ms: u64::MAX,
         });
         let state = Arc::new(RwLock::new(state));
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(16);
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);
         let request = RelayDisplayTunnelOpenRequest {
             stream_id: "stream-1".to_string(),
             tunnel_id: "display-1".to_string(),
@@ -580,7 +580,7 @@ mod tests {
             request,
         ));
 
-        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+        match timeout(Duration::from_secs(2), priority_rx.recv())
             .await
             .expect("response start should arrive")
         {
@@ -607,7 +607,7 @@ mod tests {
             .await
             .expect("client chunk should send");
 
-        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+        match timeout(Duration::from_secs(2), event_rx.recv())
             .await
             .expect("daemon chunk should arrive")
         {
@@ -676,7 +676,7 @@ mod tests {
             expires_at_ms: u64::MAX,
         });
         let state = Arc::new(RwLock::new(state));
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(16);
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);
         let request = RelayDisplayTunnelOpenRequest {
             stream_id: "stream-1".to_string(),
             tunnel_id: "display-1".to_string(),
@@ -694,7 +694,7 @@ mod tests {
             request,
         ));
 
-        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+        match timeout(Duration::from_secs(2), priority_rx.recv())
             .await
             .expect("response start should arrive")
         {
@@ -709,9 +709,9 @@ mod tests {
 
         let mut decoded_chunks = Vec::new();
         loop {
-            match timeout(Duration::from_secs(2), outgoing_rx.recv())
+            match timeout(Duration::from_secs(2), event_rx.recv())
                 .await
-                .expect("display chunk or close should arrive")
+                .expect("display chunk should arrive")
             {
                 Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk }) => {
                     decoded_chunks.extend(
@@ -719,13 +719,24 @@ mod tests {
                             .decode(chunk.data)
                             .expect("display chunk should decode"),
                     );
+                    if String::from_utf8_lossy(&decoded_chunks).contains("event: final") {
+                        break;
+                    }
                 }
-                Some(RelayEnvelope::DaemonDisplayTunnelClose { error, .. }) => {
-                    assert_eq!(error, None);
-                    break;
-                }
-                other => panic!("unexpected display stream envelope: {other:?}"),
+                other => match other {
+                    None => panic!("display event lane closed before final chunk"),
+                    Some(other) => panic!("unexpected display stream envelope: {other:?}"),
+                },
             }
+        }
+        match timeout(Duration::from_secs(2), priority_rx.recv())
+            .await
+            .expect("display close should arrive")
+        {
+            Some(RelayEnvelope::DaemonDisplayTunnelClose { error, .. }) => {
+                assert_eq!(error, None);
+            }
+            other => panic!("unexpected display close envelope: {other:?}"),
         }
         let body = String::from_utf8(decoded_chunks).expect("response chunks should be utf8");
         assert!(body.contains("event: queued"), "{body}");
@@ -743,7 +754,7 @@ mod tests {
             expires_at_ms: u64::MAX,
         });
         let state = Arc::new(RwLock::new(state));
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(16);
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);
         let request = RelayDisplayTunnelOpenRequest {
             stream_id: "stream-1".to_string(),
             tunnel_id: "display-1".to_string(),
@@ -758,7 +769,7 @@ mod tests {
             request,
         ));
 
-        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+        match timeout(Duration::from_secs(2), priority_rx.recv())
             .await
             .expect("response start should arrive")
         {
@@ -771,7 +782,7 @@ mod tests {
             other => panic!("unexpected display response start: {other:?}"),
         }
 
-        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+        match timeout(Duration::from_secs(2), event_rx.recv())
             .await
             .expect("display body should arrive")
         {
@@ -786,7 +797,7 @@ mod tests {
             other => panic!("unexpected display body: {other:?}"),
         }
 
-        match timeout(Duration::from_secs(2), outgoing_rx.recv())
+        match timeout(Duration::from_secs(2), priority_rx.recv())
             .await
             .expect("display close should arrive")
         {

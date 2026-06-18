@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn send_outgoing_envelope_fails_when_relay_queue_is_full() {
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         send_outgoing_envelope(
             &outgoing_tx,
             RelayEnvelope::Close {
@@ -73,5 +73,55 @@ mod tests {
         assert!(error
             .to_string()
             .contains("relay outgoing queue overloaded"));
+    }
+
+    #[test]
+    fn send_outgoing_envelope_routes_responses_to_priority_lane() {
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
+
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: "request-1".to_string(),
+                encrypted_response: None,
+                error: None,
+            },
+        )
+        .expect("response should send");
+
+        assert!(matches!(
+            priority_rx.try_recv(),
+            Ok(RelayEnvelope::DaemonResponse { .. })
+        ));
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn send_outgoing_envelope_routes_subscription_events_to_event_lane() {
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
+
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonEvent {
+                subscription_id: "subscription-1".to_string(),
+                event_id: 7,
+                encrypted_event: encrypted_payload_for_test(),
+            },
+        )
+        .expect("event should send");
+
+        assert!(priority_rx.try_recv().is_err());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(RelayEnvelope::DaemonEvent { event_id: 7, .. })
+        ));
+    }
+
+    fn encrypted_payload_for_test() -> EncryptedRelayPayload {
+        EncryptedRelayPayload {
+            sender_public_key: "sender".to_string(),
+            nonce: "nonce".to_string(),
+            ciphertext: "ciphertext".to_string(),
+        }
     }
 }

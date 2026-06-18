@@ -409,17 +409,43 @@ async fn run_daemon_relay_connector_inner(
                 );
                 let registration_started = Instant::now();
                 let (mut writer, mut reader) = socket.split();
-                let (outgoing_tx, mut outgoing_rx) =
-                    mpsc::channel::<RelayEnvelope>(RELAY_OUTGOING_QUEUE_LIMIT);
+                let (outgoing_tx, mut priority_outgoing_rx, mut event_outgoing_rx) =
+                    RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_task = tokio::spawn(async move {
-                    while let Some(envelope) = outgoing_rx.recv().await {
-                        let payload = match serde_json::to_string(&envelope) {
-                            Ok(payload) => payload,
-                            Err(_) => break,
-                        };
-                        if writer.send(Message::Text(payload.into())).await.is_err() {
-                            break;
+                    let mut priority_open = true;
+                    let mut event_open = true;
+                    while priority_open || event_open {
+                        tokio::select! {
+                            biased;
+                            envelope = priority_outgoing_rx.recv(), if priority_open => {
+                                match envelope {
+                                    Some(envelope) => {
+                                        let payload = match serde_json::to_string(&envelope) {
+                                            Ok(payload) => payload,
+                                            Err(_) => break,
+                                        };
+                                        if writer.send(Message::Text(payload.into())).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    None => priority_open = false,
+                                }
+                            }
+                            envelope = event_outgoing_rx.recv(), if event_open => {
+                                match envelope {
+                                    Some(envelope) => {
+                                        let payload = match serde_json::to_string(&envelope) {
+                                            Ok(payload) => payload,
+                                            Err(_) => break,
+                                        };
+                                        if writer.send(Message::Text(payload.into())).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    None => event_open = false,
+                                }
+                            }
                         }
                     }
                     let _ = writer_done_tx.send(());
