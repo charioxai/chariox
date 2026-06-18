@@ -144,6 +144,7 @@ test("builds shared drill validation suite manifest", () => {
       requiredArtifactGeneratedMatrixLimitations: [],
       requiredArtifactGeneratedMatrixNames: [],
       requiredArtifactGeneratedMatrixRepos: [],
+      requiredArtifactGeneratedValidationSuiteArtifactIndexes: [],
       requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: [],
       requiredArtifactProviderAccountAliases: [],
@@ -252,6 +253,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage", "dry-run-classification-coverage"],
     requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix", "workspace-live-sync-matrix"],
     requiredArtifactGeneratedMatrixRepos: ["oss", "cloud", "oss"],
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json", "/tmp/generated-suite/arroba-drill-artifacts.json"],
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run", "/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["oss", "cloud", "oss"],
     requiredArtifactProviderAccountAliases: ["codex=work", "codex=work", "opencode=zen"],
@@ -283,6 +285,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
     requiredArtifactGeneratedMatrixRepos: ["cloud", "oss"],
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["cloud", "oss"],
     requiredArtifactProviderAccountAliases: ["codex=work", "opencode=zen"],
@@ -369,6 +372,11 @@ test("normalizes validation suite preset contracts", () => {
     description: "bad artifact generated path",
     requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
   }]), /requiredArtifactGeneratedMatrixArtifactIndexes\[0\] includes secret-looking generated evidence path/)
+  assert.throws(() => normalizeValidationSuitePresetContracts([{
+    name: "bad-artifact-generated-suite-artifact-index",
+    description: "bad artifact generated suite artifact index",
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/Bearer abcdefghijklmnop.json"],
+  }]), /requiredArtifactGeneratedValidationSuiteArtifactIndexes\[0\] includes secret-looking generated evidence path/)
   assert.throws(() => normalizeValidationSuitePresetContracts([{
     name: "bad-artifact-generated-failure-root",
     description: "bad artifact generated failure root",

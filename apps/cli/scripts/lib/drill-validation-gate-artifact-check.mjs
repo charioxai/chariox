@@ -15,6 +15,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactGeneratedMatrixNames = [],
   requiredArtifactGeneratedMatrixRepos = [],
+  requiredArtifactGeneratedValidationSuiteArtifactIndexes = [],
   requiredArtifactGeneratedValidationSuiteFailureRoots = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
@@ -40,6 +41,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       || requiredArtifactGeneratedMatrixLimitations.length > 0
       || requiredArtifactGeneratedMatrixNames.length > 0
       || requiredArtifactGeneratedMatrixRepos.length > 0
+      || requiredArtifactGeneratedValidationSuiteArtifactIndexes.length > 0
       || requiredArtifactGeneratedValidationSuiteFailureRoots.length > 0
       || requiredArtifactEvidenceRepos.length > 0
       || requiredArtifactProviderAccountAliases.length > 0
@@ -77,6 +79,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactGeneratedMatrixNames: [...requiredArtifactGeneratedMatrixNames],
         requiredArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
         missingArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
+        requiredArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
+        missingArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
         requiredArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
         missingArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -112,6 +116,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
           missingArtifactGeneratedMatrixLimitations: requiredArtifactGeneratedMatrixLimitations,
           missingArtifactGeneratedMatrixNames: requiredArtifactGeneratedMatrixNames,
           missingArtifactGeneratedMatrixRepos: requiredArtifactGeneratedMatrixRepos,
+          missingArtifactGeneratedValidationSuiteArtifactIndexes: requiredArtifactGeneratedValidationSuiteArtifactIndexes,
           missingArtifactGeneratedValidationSuiteFailureRoots: requiredArtifactGeneratedValidationSuiteFailureRoots,
           missingArtifactEvidenceRepos: requiredArtifactEvidenceRepos,
           missingArtifactProviderAccountAliases: requiredArtifactProviderAccountAliases,
@@ -152,6 +157,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactGeneratedMatrixNames: [],
       requiredArtifactGeneratedMatrixRepos: [],
       missingArtifactGeneratedMatrixRepos: [],
+      requiredArtifactGeneratedValidationSuiteArtifactIndexes: [],
+      missingArtifactGeneratedValidationSuiteArtifactIndexes: [],
       requiredArtifactGeneratedValidationSuiteFailureRoots: [],
       missingArtifactGeneratedValidationSuiteFailureRoots: [],
       requiredArtifactEvidenceRepos: [],
@@ -209,6 +216,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
         missingArtifactGeneratedMatrixNames: [...requiredArtifactGeneratedMatrixNames],
         requiredArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
         missingArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
+        requiredArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
+        missingArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
         requiredArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
         missingArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
         requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -252,6 +261,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
     const missingArtifactGeneratedMatrixLimitations = requiredArtifactGeneratedMatrixLimitations.filter((limitation) => !Object.prototype.hasOwnProperty.call(aggregate.generatedMatrixLimitations ?? {}, limitation))
     const missingArtifactGeneratedMatrixNames = requiredArtifactGeneratedMatrixNames.filter((matrixName) => !Object.prototype.hasOwnProperty.call(aggregate.generatedMatrixNames ?? {}, matrixName))
     const missingArtifactGeneratedMatrixRepos = requiredArtifactGeneratedMatrixRepos.filter((repo) => !Object.prototype.hasOwnProperty.call(aggregate.generatedMatrixRepos ?? {}, repo))
+    const missingArtifactGeneratedValidationSuiteArtifactIndexes = requiredArtifactGeneratedValidationSuiteArtifactIndexes.filter((indexPath) => !Object.prototype.hasOwnProperty.call(aggregate.generatedValidationSuiteArtifactIndexes ?? {}, indexPath))
     const missingArtifactGeneratedValidationSuiteFailureRoots = requiredArtifactGeneratedValidationSuiteFailureRoots.filter((root) => !Object.prototype.hasOwnProperty.call(aggregate.generatedValidationSuiteFailureRoots ?? {}, root))
     const missingArtifactEvidenceRepos = requiredArtifactEvidenceRepos.filter((repo) => !Object.prototype.hasOwnProperty.call(aggregate.evidenceRepos ?? {}, repo))
     const missingArtifactProviderAccountAliases = requiredArtifactProviderAccountAliases.filter((alias) => !Object.prototype.hasOwnProperty.call(aggregate.providerAccountAliases ?? {}, alias))
@@ -273,6 +283,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       + missingArtifactGeneratedMatrixLimitations.length
       + missingArtifactGeneratedMatrixNames.length
       + missingArtifactGeneratedMatrixRepos.length
+      + missingArtifactGeneratedValidationSuiteArtifactIndexes.length
       + missingArtifactGeneratedValidationSuiteFailureRoots.length
       + missingArtifactEvidenceRepos.length
       + missingArtifactProviderAccountAliases.length
@@ -310,6 +321,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactGeneratedMatrixNames,
       requiredArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
       missingArtifactGeneratedMatrixRepos,
+      requiredArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
+      missingArtifactGeneratedValidationSuiteArtifactIndexes,
       requiredArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
       missingArtifactGeneratedValidationSuiteFailureRoots,
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -348,6 +361,7 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
             missingArtifactGeneratedMatrixLimitations,
             missingArtifactGeneratedMatrixNames,
             missingArtifactGeneratedMatrixRepos,
+            missingArtifactGeneratedValidationSuiteArtifactIndexes,
             missingArtifactGeneratedValidationSuiteFailureRoots,
             missingArtifactEvidenceRepos,
             missingArtifactProviderAccountAliases,
@@ -390,6 +404,8 @@ export async function artifactValidationGateCheck({ artifactIndexes, artifactRoo
       missingArtifactGeneratedMatrixNames: [...requiredArtifactGeneratedMatrixNames],
       requiredArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
       missingArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
+      requiredArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
+      missingArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
       requiredArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
       missingArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
       requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
@@ -430,6 +446,7 @@ function artifactRequirementError({
   missingArtifactGeneratedMatrixLimitations,
   missingArtifactGeneratedMatrixNames,
   missingArtifactGeneratedMatrixRepos,
+  missingArtifactGeneratedValidationSuiteArtifactIndexes,
   missingArtifactGeneratedValidationSuiteFailureRoots,
   missingArtifactEvidenceRepos,
   missingArtifactProviderAccountAliases,
@@ -469,6 +486,9 @@ function artifactRequirementError({
   }
   if (missingArtifactGeneratedMatrixRepos.length > 0) {
     messages.push(`missing required artifact generated matrix repos: ${missingArtifactGeneratedMatrixRepos.join(", ")}`)
+  }
+  if (missingArtifactGeneratedValidationSuiteArtifactIndexes.length > 0) {
+    messages.push(`missing required artifact generated validation-suite artifact indexes: ${missingArtifactGeneratedValidationSuiteArtifactIndexes.join(", ")}`)
   }
   if (missingArtifactGeneratedValidationSuiteFailureRoots.length > 0) {
     messages.push(`missing required artifact generated validation-suite failure roots: ${missingArtifactGeneratedValidationSuiteFailureRoots.join(", ")}`)

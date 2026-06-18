@@ -775,6 +775,65 @@ test("cross repo validation gate requires artifact generated validation-suite fa
   }
 })
 
+test("cross repo validation gate requires artifact generated validation-suite artifact-index metadata", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const generatedArtifactIndex = path.join(rootDir, "generated-suite", "arroba-drill-artifacts.json")
+    const artifactIndexPath = await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
+      metadata: { generatedValidationSuiteArtifactIndexes: generatedArtifactIndex },
+    })
+
+    const missingGeneratedArtifactIndex = path.join(rootDir, "generated-suite", "missing-artifacts.json")
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--no-default-roots",
+        "--oss-root",
+        ossRoot,
+        "--cloud-root",
+        cloudRoot,
+        "--artifact-index",
+        artifactIndexPath,
+        "--require-artifact-generated-validation-suite-artifact-index",
+        missingGeneratedArtifactIndex,
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        const failed = JSON.parse(error.stdout)
+        assert.equal(failed.status, "failed")
+        assert.deepEqual(failed.checks.artifacts.missingArtifactGeneratedValidationSuiteArtifactIndexes, [
+          missingGeneratedArtifactIndex,
+        ])
+        return true
+      },
+    )
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--no-default-roots",
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--artifact-index",
+      artifactIndexPath,
+      "--require-artifact-generated-validation-suite-artifact-index",
+      generatedArtifactIndex,
+      "--json",
+    ])
+    const report = JSON.parse(stdout)
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.checks.artifacts.requiredArtifactGeneratedValidationSuiteArtifactIndexes, [generatedArtifactIndex])
+    assert.deepEqual(report.checks.artifacts.missingArtifactGeneratedValidationSuiteArtifactIndexes, [])
+    assert.equal(report.checks.artifacts.aggregate.generatedValidationSuiteArtifactIndexes[generatedArtifactIndex], 1)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
 test("cross repo validation gate rejects aggregate-only generated evidence requirements", async () => {
   await assert.rejects(
     execFile(process.execPath, [scriptPath, "--require-failure-max-age-ms", "--json"]),

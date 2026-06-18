@@ -28,6 +28,8 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-repo", "oss"], 0, options)
   assert.equal(index, 1)
+  index = parseValidationGateRequirementArg(["--require-artifact-generated-validation-suite-artifact-index", "/tmp/generated-suite/arroba-drill-artifacts.json"], 0, options)
+  assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-evidence-repo", "oss"], 0, options)
@@ -86,6 +88,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
     requiredArtifactGeneratedMatrixRepos: ["oss"],
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["oss"],
     requiredArtifactProviderAccountAliases: ["codex=work"],
@@ -136,6 +139,7 @@ test("parses aggregate preset requirements with custom key", () => {
 test("rejects secret-looking generated path requirements", () => {
   for (const flag of [
     "--require-artifact-generated-matrix-artifact-index",
+    "--require-artifact-generated-validation-suite-artifact-index",
     "--require-artifact-planned-owner",
     "--require-artifact-planned-classification",
     "--require-generated-matrix-artifact-index",

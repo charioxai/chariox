@@ -90,6 +90,11 @@ export function formatDrillValidationGateSummary(report) {
   }
   const requiredArtifactGeneratedValidationSuiteFailureRoots = artifacts.requiredArtifactGeneratedValidationSuiteFailureRoots ?? []
   const missingArtifactGeneratedValidationSuiteFailureRoots = artifacts.missingArtifactGeneratedValidationSuiteFailureRoots ?? []
+  const requiredArtifactGeneratedValidationSuiteArtifactIndexes = artifacts.requiredArtifactGeneratedValidationSuiteArtifactIndexes ?? []
+  const missingArtifactGeneratedValidationSuiteArtifactIndexes = artifacts.missingArtifactGeneratedValidationSuiteArtifactIndexes ?? []
+  if (requiredArtifactGeneratedValidationSuiteArtifactIndexes.length > 0) {
+    lines.push(`artifact_required_generated_validation_suite_artifact_indexes=${requiredArtifactGeneratedValidationSuiteArtifactIndexes.join(",")} missing=${missingArtifactGeneratedValidationSuiteArtifactIndexes.join(",") || "none"}`)
+  }
   if (requiredArtifactGeneratedValidationSuiteFailureRoots.length > 0) {
     lines.push(`artifact_required_generated_validation_suite_failure_roots=${requiredArtifactGeneratedValidationSuiteFailureRoots.join(",")} missing=${missingArtifactGeneratedValidationSuiteFailureRoots.join(",") || "none"}`)
   }

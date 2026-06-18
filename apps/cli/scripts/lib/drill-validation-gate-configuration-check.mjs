@@ -15,6 +15,7 @@ export function configurationValidationGateCheck({
   requiredArtifactGeneratedMatrixLimitations = [],
   requiredArtifactGeneratedMatrixNames = [],
   requiredArtifactGeneratedMatrixRepos = [],
+  requiredArtifactGeneratedValidationSuiteArtifactIndexes = [],
   requiredArtifactGeneratedValidationSuiteFailureRoots = [],
   requiredArtifactEvidenceRepos = [],
   requiredArtifactProviderAccountAliases = [],
@@ -53,6 +54,7 @@ export function configurationValidationGateCheck({
     || requiredArtifactGeneratedMatrixLimitations.length > 0
     || requiredArtifactGeneratedMatrixNames.length > 0
     || requiredArtifactGeneratedMatrixRepos.length > 0
+    || requiredArtifactGeneratedValidationSuiteArtifactIndexes.length > 0
     || requiredArtifactGeneratedValidationSuiteFailureRoots.length > 0
     || requiredArtifactEvidenceRepos.length > 0
     || requiredArtifactProviderAccountAliases.length > 0

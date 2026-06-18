@@ -382,6 +382,7 @@ function normalizeValidationSuitePresetContract(preset, index) {
     requiredArtifactGeneratedMatrixLimitations: sortedGeneratedMatrixLimitationArray(preset.requiredArtifactGeneratedMatrixLimitations, `${preset.name}.requiredArtifactGeneratedMatrixLimitations`),
     requiredArtifactGeneratedMatrixNames: sortedGeneratedMatrixNameArray(preset.requiredArtifactGeneratedMatrixNames, `${preset.name}.requiredArtifactGeneratedMatrixNames`),
     requiredArtifactGeneratedMatrixRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactGeneratedMatrixRepos, `${preset.name}.requiredArtifactGeneratedMatrixRepos`),
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: sortedGeneratedEvidencePathArray(preset.requiredArtifactGeneratedValidationSuiteArtifactIndexes, `${preset.name}.requiredArtifactGeneratedValidationSuiteArtifactIndexes`),
     requiredArtifactGeneratedValidationSuiteFailureRoots: sortedGeneratedEvidencePathArray(preset.requiredArtifactGeneratedValidationSuiteFailureRoots, `${preset.name}.requiredArtifactGeneratedValidationSuiteFailureRoots`),
     requiredArtifactEvidenceRepos: sortedArtifactEvidenceRepoArray(preset.requiredArtifactEvidenceRepos, `${preset.name}.requiredArtifactEvidenceRepos`),
     requiredArtifactProviderAccountAliases: sortedProviderAccountAliasArray(preset.requiredArtifactProviderAccountAliases, `${preset.name}.requiredArtifactProviderAccountAliases`),

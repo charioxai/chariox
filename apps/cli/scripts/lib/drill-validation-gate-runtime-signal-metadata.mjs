@@ -295,11 +295,15 @@ export function diagnosticMetadataForValidationGateAggregate(aggregate) {
     ...(aggregate.missingGeneratedMatrixArtifactIndexes ?? []).filter(nonEmptyString),
   ])
   const requiredGeneratedValidationSuiteArtifactIndexes = new Set([
+    ...Object.keys(aggregate.coverage?.requiredArtifactGeneratedValidationSuiteArtifactIndexes ?? {}),
     ...Object.keys(aggregate.coverage?.requiredGeneratedValidationSuiteArtifactIndexes ?? {}),
+    ...(aggregate.requiredArtifactGeneratedValidationSuiteArtifactIndexes ?? []).filter(nonEmptyString),
     ...(aggregate.requiredGeneratedValidationSuiteArtifactIndexes ?? []).filter(nonEmptyString),
   ])
   const missingGeneratedValidationSuiteArtifactIndexes = new Set([
+    ...Object.keys(aggregate.coverage?.missingArtifactGeneratedValidationSuiteArtifactIndexes ?? {}),
     ...Object.keys(aggregate.coverage?.missingGeneratedValidationSuiteArtifactIndexes ?? {}),
+    ...(aggregate.missingArtifactGeneratedValidationSuiteArtifactIndexes ?? []).filter(nonEmptyString),
     ...(aggregate.missingGeneratedValidationSuiteArtifactIndexes ?? []).filter(nonEmptyString),
   ])
   const requiredGeneratedValidationSuiteFailureRoots = new Set([

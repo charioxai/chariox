@@ -51,6 +51,8 @@ function printHelp() {
     "                         Fail when artifact index metadata lacks each generated matrix artifact index; repeatable",
     "  --require-artifact-generated-matrix-limitation KIND[,KIND]",
     "                         Fail when artifact index metadata lacks each generated matrix limitation; repeatable",
+    "  --require-artifact-generated-validation-suite-artifact-index PATH[,PATH]",
+    "                         Fail when artifact index metadata lacks each generated validation-suite artifact index; repeatable",
     "  --require-artifact-generated-validation-suite-failure-root ROOT[,ROOT]",
     "                         Fail when artifact index metadata lacks each generated validation-suite failure root; repeatable",
     "  --require-artifact-evidence-repo REPO[,REPO]",
