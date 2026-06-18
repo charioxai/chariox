@@ -28,6 +28,13 @@ test("distributed runtime gate help lists artifact evidence requirements", async
   assert.match(stdout, /--require-artifact-planned-classification KIND\[,KIND\]/)
 })
 
+test("distributed runtime gate accepts a pnpm argument separator", async () => {
+  const { stdout } = await execFile(process.execPath, [scriptPath, "--", "--help"])
+
+  assert.match(stdout, /Runs the release-level distributed-runtime validation gate/)
+  assert.match(stdout, /--require-generated-matrix-registry-parity/)
+})
+
 test("distributed runtime gate passes with complete OSS and Cloud matrix evidence", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
   try {

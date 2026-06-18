@@ -80,6 +80,8 @@ The distributed-runtime preset requires artifact coverage area `distributed-obse
 For one-command distributed-runtime evidence generation, use:
 
 ```bash
+pnpm run validation:distributed-runtime-gate
+
 node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
   --run-validation-suites \
   --run-matrix-reports \

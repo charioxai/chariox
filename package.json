@@ -15,6 +15,7 @@
     "perf:drills": "node scripts/performance-drills.mjs",
     "validation:suite": "node apps/cli/scripts/drill-validation-suite.mjs",
     "validation:focused-runtime-gate": "pnpm --filter @arroba/cli run validation:focused-runtime-gate",
+    "validation:distributed-runtime-gate": "pnpm --filter @arroba/cli run validation:distributed-runtime-gate",
     "protocol:conformance": "cargo test --manifest-path apps/kernel/Cargo.toml client_protocol_conformance -- --nocapture",
     "smoke:daemon": "cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel-harness",
     "start:shell": "pnpm --filter @arroba/shell run start"

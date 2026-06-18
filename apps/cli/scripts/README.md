@@ -70,6 +70,8 @@ The gate discovers matrix reports under `./.artifacts/drill-matrices` and `../ar
 The gate can also generate its own release evidence:
 
 ```bash
+pnpm run validation:distributed-runtime-gate
+
 node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
   --run-validation-suites \
   --run-matrix-reports \
