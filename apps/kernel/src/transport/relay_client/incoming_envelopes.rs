@@ -9,6 +9,7 @@ pub(super) async fn handle_incoming_envelope(
     outgoing_tx: &RelayOutgoingSender,
     subscription_tasks: &RelaySubscriptionTasks,
     event_runtime: &Arc<RelayEventRuntime>,
+    command_result_cache: &RelayCommandResultCache,
     payload: &str,
 ) -> Result<(), DaemonError> {
     let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
@@ -26,12 +27,14 @@ pub(super) async fn handle_incoming_envelope(
             let router = Arc::clone(router);
             let command_sequence = Arc::clone(command_sequence);
             let outgoing_tx = outgoing_tx.clone();
+            let command_result_cache = Arc::clone(command_result_cache);
             tokio::spawn(async move {
                 let relay_response = handle_daemon_request(
                     &router,
                     &command_sequence,
                     caller_identity,
                     encrypted_request,
+                    &command_result_cache,
                 )
                 .await;
                 if let Err(error) = send_outgoing_envelope(

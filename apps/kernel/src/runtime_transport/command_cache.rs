@@ -14,9 +14,9 @@ use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportErro
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct CachedCommandResult {
-    pub(super) response: Box<Option<Value>>,
-    pub(super) error: Option<KernelTransportError>,
+pub(crate) struct CachedCommandResult {
+    pub(crate) response: Box<Option<Value>>,
+    pub(crate) error: Option<KernelTransportError>,
     fingerprint: CommandFingerprint,
 }
 
@@ -30,7 +30,7 @@ enum CommandResultEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct CommandFingerprint {
+pub(crate) struct CommandFingerprint {
     command_type: String,
     source: String,
     session_id: Option<String>,
@@ -39,7 +39,7 @@ pub(super) struct CommandFingerprint {
 }
 
 impl CommandFingerprint {
-    pub(super) fn from_command_and_request(
+    pub(crate) fn from_command_and_request(
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Self {
@@ -55,7 +55,7 @@ impl CommandFingerprint {
     }
 }
 
-pub(super) enum CommandReservation {
+pub(crate) enum CommandReservation {
     Dispatch,
     Wait(oneshot::Receiver<CachedCommandResult>),
     Conflict,
@@ -74,14 +74,14 @@ struct CommandResultPersistence {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct CommandResultCache {
+pub(crate) struct CommandResultCache {
     results: Mutex<BTreeMap<String, CommandResultEntry>>,
     order: Mutex<VecDeque<String>>,
     persistence: Option<CommandResultPersistence>,
 }
 
 impl CommandResultCache {
-    pub(super) fn new_with_persistent_path(path: impl Into<PathBuf>) -> io::Result<Self> {
+    pub(crate) fn new_with_persistent_path(path: impl Into<PathBuf>) -> io::Result<Self> {
         let path = path.into();
         let mut cache = Self {
             results: Mutex::new(BTreeMap::new()),
@@ -107,7 +107,7 @@ impl CommandResultCache {
         Ok(cache)
     }
 
-    pub(super) async fn reserve(
+    pub(crate) async fn reserve(
         &self,
         command_id: &str,
         fingerprint: &CommandFingerprint,
@@ -148,7 +148,7 @@ impl CommandResultCache {
         }
     }
 
-    pub(super) async fn complete(
+    pub(crate) async fn complete(
         &self,
         command_id: String,
         fingerprint: CommandFingerprint,
@@ -316,7 +316,7 @@ impl CommandResultCache {
         fingerprint.request_hash
     }
 
-    pub(super) async fn forget_pending(&self, command_id: &str) {
+    pub(crate) async fn forget_pending(&self, command_id: &str) {
         let mut results = self.results.lock().await;
         if matches!(
             results.get(command_id),

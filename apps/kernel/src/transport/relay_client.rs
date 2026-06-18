@@ -18,6 +18,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::runtime::event_log::{EventLog, ReplayOutcome};
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
+use crate::runtime_transport::command_cache::CommandResultCache;
 use crate::runtime_transport::{WatchResult, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS};
 use crate::transport::kernel_protocol::{
     event_is_relevant_to_attachment, subscription_event_stream_id, KernelEvent,
@@ -85,6 +86,7 @@ const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 
 type RelayOutgoingSender = mpsc::Sender<RelayEnvelope>;
+type RelayCommandResultCache = Arc<CommandResultCache>;
 
 #[cfg(test)]
 mod tests;

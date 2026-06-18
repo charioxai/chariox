@@ -27,7 +27,7 @@ use crate::transport::kernel_protocol::{
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
-mod command_cache;
+pub(crate) mod command_cache;
 mod outgoing;
 mod subscriptions;
 

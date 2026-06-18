@@ -171,6 +171,116 @@ async fn proxied_session_requests_are_handled_through_relay() {
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_client_command_ids_reject_conflicting_retries() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    }));
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config.relay_token = Some("secret".to_string());
+    config.relay_heartbeat_ms = 50;
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+    ));
+    let created_session_id = {
+        let mut app = app.lock().await;
+        create_test_session(&mut app, "workspace-relay-test", "worktree-relay-test")
+    };
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let connector_task = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app),
+        Arc::clone(&state),
+        shutdown_rx,
+    ));
+
+    wait_for_daemon_registration(registry.clone(), &config.daemon_id).await;
+
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut client_socket, _) = connect_async(&url)
+        .await
+        .expect("client should connect to relay");
+    send_client_envelope(
+        &mut client_socket,
+        &RelayEnvelope::ClientConnect {
+            auth_token: "secret".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+        },
+    )
+    .await;
+    let daemon_public_key = expect_client_connected(&mut client_socket).await;
+    let command_id = format!("stable-relay-command-{}", std::process::id());
+
+    let list_request_private_key = send_client_command_request(
+        &mut client_socket,
+        "list-1",
+        &command_id,
+        &config.daemon_id,
+        &daemon_public_key,
+        LocalDaemonRequest::ListSessions(ListSessionsRequest),
+    )
+    .await;
+    let list_response =
+        expect_client_response(&mut client_socket, "list-1", &list_request_private_key).await;
+    assert!(matches!(
+        list_response,
+        LocalDaemonResponse::SessionsListed { sessions } if sessions.iter().any(|session| session.id() == created_session_id)
+    ));
+
+    let _state_private_key = send_client_command_request(
+        &mut client_socket,
+        "state-1",
+        &command_id,
+        &config.daemon_id,
+        &daemon_public_key,
+        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: created_session_id.clone(),
+        }),
+    )
+    .await;
+    let error = expect_client_response_error(&mut client_socket, "state-1").await;
+    assert_eq!(error.code, "duplicate_command_conflict");
+    assert!(!error.retryable);
+
+    let _ = shutdown_tx.send(true);
+    connector_task.await.expect("connector task should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn interactive_session_requests_are_handled_through_relay() {
     let _relay_test_guard = relay_client_test_guard().await;

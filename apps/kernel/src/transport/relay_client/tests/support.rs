@@ -1,7 +1,10 @@
 #![allow(unused_imports)]
 pub(super) use super::super::*;
 
-pub(super) use arroba_relay::{protocol::ClientTarget, RelayConfig, RelayServer};
+pub(super) use arroba_relay::{
+    protocol::{ClientTarget, RelayError},
+    RelayConfig, RelayServer,
+};
 pub(super) use tokio::sync::oneshot;
 pub(super) use tokio::time::{sleep, Duration};
 
@@ -153,6 +156,41 @@ where
     client_private_key
 }
 
+pub(super) async fn send_client_command_request<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    request_id: &str,
+    command_id: &str,
+    daemon_id: &str,
+    daemon_public_key: &str,
+    request: LocalDaemonRequest,
+) -> String
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let client_private_key = relay_crypto::generate_private_key_base64();
+    let plaintext = serde_json::to_vec(&serde_json::json!({
+        "command_id": command_id,
+        "request": request,
+    }))
+    .expect("request envelope should serialize");
+    let encrypted_request =
+        relay_crypto::encrypt_payload_for_peer(&client_private_key, daemon_public_key, &plaintext)
+            .expect("request should encrypt");
+    send_client_envelope(
+        socket,
+        &RelayEnvelope::ClientRequest {
+            request_id: request_id.to_string(),
+            target: ClientTarget {
+                daemon_id: Some(daemon_id.to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request,
+        },
+    )
+    .await;
+    client_private_key
+}
+
 pub(super) async fn expect_client_connected<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
 ) -> String
@@ -244,6 +282,40 @@ where
                         .expect("response should decrypt");
                         return serde_json::from_slice(&decrypted.plaintext)
                             .expect("json response should deserialize");
+                    }
+                    RelayEnvelope::ClientEvent { .. } => {}
+                    other => panic!("unexpected envelope: {other:?}"),
+                }
+            }
+            other => panic!("unexpected relay message: {other:?}"),
+        }
+    }
+}
+
+pub(super) async fn expect_client_response_error<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    request_id: &str,
+) -> RelayError
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        match socket.next().await {
+            Some(Ok(Message::Text(payload))) => {
+                match serde_json::from_str::<RelayEnvelope>(&payload)
+                    .expect("relay envelope should parse")
+                {
+                    RelayEnvelope::ClientResponse {
+                        request_id: response_request_id,
+                        encrypted_response,
+                        error,
+                    } => {
+                        assert_eq!(response_request_id, request_id);
+                        assert!(
+                            encrypted_response.is_none(),
+                            "error response should not include encrypted payload"
+                        );
+                        return error.expect("relay error should exist");
                     }
                     RelayEnvelope::ClientEvent { .. } => {}
                     other => panic!("unexpected envelope: {other:?}"),

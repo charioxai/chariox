@@ -97,6 +97,23 @@ async fn run_daemon_relay_connector_inner(
             return;
         }
     };
+    let command_result_cache_path = router
+        .relay_event_counter_path()
+        .with_file_name("relay-command-results.jsonl");
+    let command_result_cache =
+        match CommandResultCache::new_with_persistent_path(command_result_cache_path) {
+            Ok(cache) => Arc::new(cache),
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "failed to initialize relay command result cache",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
     let command_sequence = Arc::new(AtomicU64::new(1));
     let mut missing_relay_config_reported = false;
 
@@ -337,6 +354,7 @@ async fn run_daemon_relay_connector_inner(
                                         &outgoing_tx,
                                         &subscription_tasks,
                                         &event_runtime,
+                                        &command_result_cache,
                                         &payload,
                                     )
                                     .await
