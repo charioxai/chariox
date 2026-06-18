@@ -961,22 +961,22 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   } catch {
     return
   }
-  const requiresRuntimeSignalManifest = [
+  const requiresRuntimeSignalManifest = metadataHasAnyList(metadata, [
     "runtimeSignals",
     "requiredRuntimeSignals",
     "missingRuntimeSignals",
-  ].some((key) => metadataListFromMetadata(metadata, key).length > 0)
+  ])
   const requiresFailureTaxonomyManifest = requiresRuntimeSignalManifest
-    || [
+    || metadataHasAnyList(metadata, [
       "classifications",
       "requiredFailureClassifications",
       "missingFailureClassifications",
-    ].some((key) => metadataListFromMetadata(metadata, key).length > 0)
-  const requiresRuntimeAuthorityManifest = [
+    ])
+  const requiresRuntimeAuthorityManifest = metadataHasAnyList(metadata, [
     "runtimeAuthorityInvariants",
     "requiredRuntimeAuthorityInvariants",
     "missingRuntimeAuthorityInvariants",
-  ].some((key) => metadataListFromMetadata(metadata, key).length > 0)
+  ])
   if (parsed?.schema === "arroba.drill.validation_suite.v1") {
     validateValidationSuiteManifestArtifact(parsed, artifactPath)
     validateValidationSuiteArtifactMetadata({
@@ -1200,6 +1200,10 @@ function sortedCountObject(counts) {
 
 function runtimeSignalsFromMetadata(metadata) {
   return metadataListFromMetadata(metadata, "runtimeSignals")
+}
+
+function metadataHasAnyList(metadata, keys) {
+  return keys.some((key) => metadataListFromMetadata(metadata, key).length > 0)
 }
 
 function runtimeSignalOwnersFromRuntimeSignals(runtimeSignals) {
