@@ -1019,8 +1019,9 @@ test("distributed runtime gate rejects failure taxonomy registry drift", async (
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: manifest.classifications
-        .filter((classification) => classification.kind === "kernel-authority")
-        .map((classification) => ({ ...classification, owner: "runtime-state" })),
+        .map((classification) => classification.kind === "kernel-authority"
+          ? { ...classification, owner: "runtime-state" }
+          : classification),
     })
 
     await assert.rejects(
@@ -1420,12 +1421,6 @@ async function writeCloudRuntimeAuthorityRegistry(cloudRoot, {
 
 async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
   classifications = drillFailureTaxonomyManifest().classifications
-    .filter((classification) => [
-      "docker-runtime",
-      "kernel-authority",
-      "runtime-projection-health",
-      "workspace-live-sync-conflict",
-    ].includes(classification.kind))
     .map((classification) => classification.kind === "docker-runtime"
       ? { ...classification, owner: "worker-kernel" }
       : classification),

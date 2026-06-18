@@ -14,18 +14,30 @@ test("accepts Cloud failure taxonomy classifications known by OSS", async () => 
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: manifest.classifications
-        .filter((classification) => [
-          "docker-runtime",
-          "kernel-authority",
-          "runtime-projection-health",
-          "workspace-live-sync-conflict",
-        ].includes(classification.kind))
         .map((classification) => classification.kind === "docker-runtime"
           ? { ...classification, owner: "worker-kernel" }
           : classification),
     })
 
     await assert.doesNotReject(verifyDrillFailureTaxonomyRegistryParity({ cloudRoot }))
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("rejects missing Cloud failure classifications required by OSS diagnostics", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillFailureTaxonomyManifest()
+    await writeCloudFailureTaxonomyRegistry(cloudRoot, {
+      classifications: manifest.classifications.filter((classification) => classification.kind !== "remote-extension-sync"),
+    })
+
+    await assert.rejects(
+      verifyDrillFailureTaxonomyRegistryParity({ cloudRoot }),
+      /failure taxonomy registry parity failed: remote-extension-sync: missing Cloud failure taxonomy manifest entry/,
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -38,7 +50,7 @@ test("rejects Cloud failure classifications unknown to OSS", async () => {
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: [
-        manifest.classifications.find((classification) => classification.kind === "kernel-authority"),
+        ...manifest.classifications,
         {
           kind: "future-cloud-only-classification",
           owner: "kernel-authority",
@@ -63,8 +75,9 @@ test("rejects Cloud failure classification owner drift", async () => {
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: manifest.classifications
-        .filter((classification) => classification.kind === "kernel-authority")
-        .map((classification) => ({ ...classification, owner: "runtime-state" })),
+        .map((classification) => classification.kind === "kernel-authority"
+          ? { ...classification, owner: "runtime-state" }
+          : classification),
     })
 
     await assert.rejects(

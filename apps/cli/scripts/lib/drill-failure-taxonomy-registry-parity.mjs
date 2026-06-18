@@ -31,6 +31,11 @@ export async function verifyDrillFailureTaxonomyRegistryParity({ cloudRoot }) {
     "Cloud failure taxonomy registry",
   )
   const failures = []
+  for (const [kind] of Object.entries(ossClassifications)) {
+    if (!cloudClassifications[kind]) {
+      failures.push(`${kind}: missing Cloud failure taxonomy manifest entry`)
+    }
+  }
   for (const [kind, classification] of Object.entries(cloudClassifications)) {
     if (!isKnownDrillFailureClassification(kind)) {
       failures.push(`${kind}: unknown in OSS failure taxonomy`)

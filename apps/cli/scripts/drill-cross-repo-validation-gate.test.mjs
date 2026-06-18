@@ -989,12 +989,6 @@ async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
 
 async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
   classifications = drillFailureTaxonomyManifest().classifications
-    .filter((classification) => [
-      "docker-runtime",
-      "kernel-authority",
-      "runtime-projection-health",
-      "workspace-live-sync-conflict",
-    ].includes(classification.kind))
     .map((classification) => classification.kind === "docker-runtime"
       ? { ...classification, owner: "worker-kernel" }
       : classification),
