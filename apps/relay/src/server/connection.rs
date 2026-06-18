@@ -487,14 +487,22 @@ pub(crate) async fn handle_connection(
                                 resolve_daemon_sender_locked(&guard, &target_daemon_key)
                             };
                             if let Some(daemon_sender) = daemon_sender {
-                                send_envelope(
+                                if send_envelope(
                                     &daemon_sender,
                                     &RelayEnvelope::DaemonIncomingPeerEvent {
                                         from_daemon_id: requester_daemon_key.daemon_id,
                                         caller_identity: peer_identity(&registry, peer_addr).await,
                                         encrypted_event,
                                     },
-                                )?;
+                                )
+                                .is_err()
+                                {
+                                    log_daemon_sender_backpressure(
+                                        "daemon_peer_event",
+                                        peer_addr,
+                                        &target_daemon_key,
+                                    );
+                                }
                             }
                         }
                         RelayEnvelope::ClientRequest {
@@ -1434,6 +1442,18 @@ async fn log_daemon_sender_missing(
     );
 }
 
+fn log_daemon_sender_backpressure(operation: &str, peer_addr: SocketAddr, daemon_key: &DaemonKey) {
+    relay_log(
+        "warn",
+        "relay_daemon_sender_backpressure",
+        json!({
+            "operation": operation,
+            "peer_addr": peer_addr.to_string(),
+            "daemon_key": daemon_key_log_value(daemon_key),
+        }),
+    );
+}
+
 async fn connected_client_binding(
     registry: &Arc<RwLock<RelayRegistry>>,
     peer_addr: SocketAddr,
@@ -2109,5 +2129,53 @@ mod tests {
             }
             other => panic!("unexpected peer rejection envelope: {other:?}"),
         }
+    }
+
+    #[test]
+    fn peer_event_target_backpressure_is_nonfatal() {
+        let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
+        let target_registration = daemon_registration("daemon-b");
+        let target_addr = peer_addr(10_007);
+        let (target_sender, mut target_receiver) = mpsc::channel::<Message>(1);
+        target_sender
+            .try_send(Message::Text("occupied".to_string().into()))
+            .expect("test queue should accept first message");
+        let mut registry = RelayRegistry::default();
+        registry
+            .daemons
+            .insert(target_key.clone(), target_registration.clone());
+        registry.peers.insert(
+            target_addr,
+            daemon_peer(target_sender.clone(), target_registration),
+        );
+        registry
+            .daemon_peers
+            .insert(target_key.clone(), target_addr);
+        let target_sender = resolve_daemon_sender_locked(&registry, &target_key)
+            .expect("target daemon sender should resolve");
+
+        let result = send_envelope(
+            &target_sender,
+            &RelayEnvelope::DaemonIncomingPeerEvent {
+                from_daemon_id: "daemon-a".to_string(),
+                caller_identity: None,
+                encrypted_event: EncryptedRelayPayload {
+                    sender_public_key: "daemon-a-public".to_string(),
+                    nonce: "nonce".to_string(),
+                    ciphertext: "ciphertext".to_string(),
+                },
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "full target daemon queue should reject event"
+        );
+        log_daemon_sender_backpressure("daemon_peer_event", peer_addr(10_008), &target_key);
+        assert_eq!(registry.pending_request_count(), 0);
+        assert!(matches!(
+            target_receiver.try_recv(),
+            Ok(Message::Text(text)) if text == "occupied"
+        ));
     }
 }
