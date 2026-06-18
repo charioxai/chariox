@@ -28,10 +28,10 @@ import { validateDrillGeneratedMatrixName } from "./lib/drill-generated-matrix-m
 import { validateDrillGeneratedMatrixLimitation } from "./lib/drill-generated-matrix-limitations.mjs"
 import { drillFailureOwnerForClassification } from "./lib/drill-failure-taxonomy.mjs"
 import {
-  DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
   drillRuntimeSignalNextAction,
   validateDrillRuntimeSignal,
+  validateDrillRuntimeSignalOwner,
 } from "./lib/drill-runtime-signals.mjs"
 import { validateDrillArtifactValidationPreset } from "./lib/drill-validation-gate-presets.mjs"
 
@@ -451,9 +451,9 @@ function parseRuntimeSignalOwnerRequirement(value, flag) {
     throw new Error(`${flag} requires a value`)
   }
   for (const owner of owners) {
-    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
-      throw new Error(`${flag} has unknown runtime signal owner: ${owner}`)
-    }
+    validateDrillRuntimeSignalOwner(owner, flag, {
+      message: () => `${flag} has unknown runtime signal owner: ${owner}`,
+    })
   }
   return owners
 }

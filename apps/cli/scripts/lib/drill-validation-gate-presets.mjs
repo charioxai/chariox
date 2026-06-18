@@ -18,9 +18,9 @@ import {
   validateDrillProvider,
 } from "./drill-provider-profiles.mjs"
 import {
-  DRILL_RUNTIME_SIGNAL_OWNERS,
   drillRuntimeSignalOwnersFor,
   validateDrillRuntimeSignal,
+  validateDrillRuntimeSignalOwner,
 } from "./drill-runtime-signals.mjs"
 import { redactDrillSecretText } from "./drill-secrets.mjs"
 import { WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS } from "./workspace-live-sync-fixtures.mjs"
@@ -619,9 +619,9 @@ export function normalizeRequiredArtifactRuntimeSignalOwners(requiredArtifactRun
     itemName: "owner",
   })
   for (const owner of owners) {
-    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
-      throw new Error(`unknown required artifact runtime signal owner: ${owner}`)
-    }
+    validateDrillRuntimeSignalOwner(owner, "requiredArtifactRuntimeSignalOwners", {
+      message: () => `unknown required artifact runtime signal owner: ${owner}`,
+    })
   }
   return owners
 }
@@ -632,9 +632,9 @@ export function normalizeRequiredRuntimeSignalOwners(requiredRuntimeSignalOwners
     itemName: "owner",
   })
   for (const owner of owners) {
-    if (!DRILL_RUNTIME_SIGNAL_OWNERS.includes(owner)) {
-      throw new Error(`unknown required runtime signal owner: ${owner}`)
-    }
+    validateDrillRuntimeSignalOwner(owner, "requiredRuntimeSignalOwners", {
+      message: () => `unknown required runtime signal owner: ${owner}`,
+    })
   }
   return owners
 }
