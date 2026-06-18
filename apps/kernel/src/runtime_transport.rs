@@ -83,6 +83,8 @@ impl KernelTransportRuntime {
         transport_health: TransportHealthStore,
         event_counter_path: impl Into<std::path::PathBuf>,
     ) -> Result<Self, DaemonError> {
+        let event_counter_path = event_counter_path.into();
+        let command_result_cache_path = event_counter_path.with_file_name("command-results.jsonl");
         Ok(Self {
             event_log: EventLog::new_with_persistent_event_ids(
                 RECENT_EVENT_LIMIT,
@@ -92,7 +94,13 @@ impl KernelTransportRuntime {
                 operation: "reserve kernel event ids",
                 message: error.to_string(),
             })?,
-            command_result_cache: CommandResultCache::default(),
+            command_result_cache: CommandResultCache::new_with_persistent_path(
+                command_result_cache_path,
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "load kernel command result cache",
+                message: error.to_string(),
+            })?,
             transport_health,
         })
     }
