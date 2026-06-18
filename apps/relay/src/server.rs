@@ -2,7 +2,8 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::net::TcpListener;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
 use crate::auth::RelayAuthVerifier;
@@ -89,6 +90,8 @@ impl RelayServer {
                     tokio::spawn(async move {
                         if is_health_http_request(&stream).await {
                             let _ = handle_health_connection(stream, registry, draining).await;
+                        } else if draining.load(Ordering::Relaxed) {
+                            let _ = reject_draining_connection(stream).await;
                         } else if is_display_http_request(&stream).await {
                             let _ = handle_display_connection(stream, peer_addr, registry, relay_request_counter).await;
                         } else {
@@ -107,6 +110,17 @@ impl RelayServer {
         })
         .await
     }
+}
+
+async fn reject_draining_connection(mut stream: TcpStream) -> Result<(), std::io::Error> {
+    let body = r#"{"status":"draining","error":"relay is draining"}"#;
+    let response = format!(
+        "HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    let _ = stream.shutdown().await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1067,6 +1081,14 @@ mod tests {
         assert!(draining.starts_with("HTTP/1.1 503 Service Unavailable"));
         assert!(draining.contains("\"status\":\"draining\""));
         assert!(draining.contains("\"draining\":true"));
+
+        let websocket_error = connect_async(format!("ws://{addr}"))
+            .await
+            .expect_err("draining relay should reject new websocket admissions");
+        assert!(
+            websocket_error.to_string().contains("503"),
+            "unexpected websocket error: {websocket_error}"
+        );
 
         let _ = shutdown_tx.send(());
         server_task.await.expect("draining server task should join");
