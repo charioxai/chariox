@@ -428,15 +428,26 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             };
-                            send_envelope(
+                            if send_envelope(
                                 &daemon_sender,
                                 &RelayEnvelope::DaemonIncomingPeerRequest {
-                                    relay_request_id,
+                                    relay_request_id: relay_request_id.clone(),
                                     from_daemon_id: requester_daemon_key.daemon_id,
                                     caller_identity: peer_identity(&registry, peer_addr).await,
                                     encrypted_request,
                                 },
-                            )?;
+                            )
+                            .is_err()
+                            {
+                                reject_peer_pending_on_target_backpressure(
+                                    &registry,
+                                    &outgoing_tx,
+                                    &relay_request_id,
+                                    request_id,
+                                    target_daemon_key.daemon_id,
+                                )
+                                .await?;
+                            }
                         }
                         RelayEnvelope::DaemonPeerEvent {
                             target,
@@ -602,14 +613,24 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             };
-                            send_envelope(
+                            if send_envelope(
                                 &daemon_sender,
                                 &RelayEnvelope::DaemonRequest {
-                                    relay_request_id,
+                                    relay_request_id: relay_request_id.clone(),
                                     caller_identity: peer_identity(&registry, peer_addr).await,
                                     encrypted_request,
                                 },
-                            )?;
+                            )
+                            .is_err()
+                            {
+                                reject_client_pending_on_target_backpressure(
+                                    &registry,
+                                    &outgoing_tx,
+                                    &relay_request_id,
+                                    request_id,
+                                )
+                                .await?;
+                            }
                         }
                         RelayEnvelope::ClientSubscribe {
                             request_id,
@@ -801,11 +822,11 @@ pub(crate) async fn handle_connection(
                                     "resume_from_event_id": resume_from_event_id,
                                 }),
                             );
-                            send_envelope(
+                            if send_envelope(
                                 &daemon_sender,
                                 &RelayEnvelope::DaemonSubscribe {
-                                    relay_request_id,
-                                    relay_subscription_id: subscription_id,
+                                    relay_request_id: relay_request_id.clone(),
+                                    relay_subscription_id: subscription_id.clone(),
                                     caller_identity: peer_identity(&registry, peer_addr).await,
                                     session_id,
                                     attachment_id,
@@ -813,7 +834,17 @@ pub(crate) async fn handle_connection(
                                     subscription_scope,
                                     resume_from_event_id,
                                 },
-                            )?;
+                            )
+                            .is_err()
+                            {
+                                reject_client_pending_on_target_backpressure(
+                                    &registry,
+                                    &outgoing_tx,
+                                    &relay_request_id,
+                                    request_id,
+                                )
+                                .await?;
+                            }
                         }
                         RelayEnvelope::ClientUnsubscribe {
                             request_id,
@@ -914,15 +945,25 @@ pub(crate) async fn handle_connection(
                                 )?;
                                 continue;
                             };
-                            send_envelope(
+                            if send_envelope(
                                 &daemon_sender,
                                 &RelayEnvelope::DaemonUnsubscribe {
-                                    relay_request_id,
+                                    relay_request_id: relay_request_id.clone(),
                                     relay_subscription_id: subscription_id,
                                     caller_identity: peer_identity(&registry, peer_addr).await,
                                     client_public_key,
                                 },
-                            )?;
+                            )
+                            .is_err()
+                            {
+                                reject_client_pending_on_target_backpressure(
+                                    &registry,
+                                    &outgoing_tx,
+                                    &relay_request_id,
+                                    request_id,
+                                )
+                                .await?;
+                            }
                         }
                         RelayEnvelope::DaemonResponse {
                             relay_request_id,
@@ -1483,6 +1524,50 @@ async fn peer_allows_action(
     !scoped_token || peer.allowed_actions.contains(&action)
 }
 
+async fn reject_client_pending_on_target_backpressure(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    client_sender: &RelaySender,
+    relay_request_id: &str,
+    client_request_id: String,
+) -> Result<(), std::io::Error> {
+    registry
+        .write()
+        .await
+        .pending_requests
+        .remove(relay_request_id);
+    send_envelope(
+        client_sender,
+        &RelayEnvelope::ClientResponse {
+            request_id: client_request_id,
+            encrypted_response: None,
+            error: Some(target_backpressure_error()),
+        },
+    )
+}
+
+async fn reject_peer_pending_on_target_backpressure(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    requester_sender: &RelaySender,
+    relay_request_id: &str,
+    requester_request_id: String,
+    target_daemon_id: String,
+) -> Result<(), std::io::Error> {
+    registry
+        .write()
+        .await
+        .pending_daemon_peer_requests
+        .remove(relay_request_id);
+    send_envelope(
+        requester_sender,
+        &RelayEnvelope::DaemonPeerResponse {
+            request_id: requester_request_id,
+            from_daemon_id: target_daemon_id,
+            encrypted_response: None,
+            error: Some(target_backpressure_error()),
+        },
+    )
+}
+
 fn resolve_daemon_sender_locked(
     registry: &RelayRegistry,
     daemon_key: &DaemonKey,
@@ -1686,6 +1771,14 @@ fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
         message: message.to_string(),
         retryable,
     }
+}
+
+fn target_backpressure_error() -> RelayError {
+    relay_error(
+        "target_backpressure",
+        "target daemon relay queue is full",
+        true,
+    )
 }
 
 fn current_unix_ms() -> u64 {
@@ -1921,5 +2014,100 @@ mod tests {
             receiver.try_recv(),
             Ok(Message::Text(text)) if text == "occupied"
         ));
+    }
+
+    #[tokio::test]
+    async fn target_backpressure_rejects_client_pending_request_without_client_close() {
+        let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+        let client_addr = peer_addr(10_006);
+        let (client_sender, mut client_receiver) = mpsc::channel::<Message>(4);
+        let mut registry = RelayRegistry::default();
+        registry.pending_requests.insert(
+            "relay-request-1".to_string(),
+            PendingClientRequest {
+                client_addr,
+                client_request_id: "client-request-1".to_string(),
+                daemon_key,
+                kind: PendingRequestKind::Request,
+            },
+        );
+        let registry = Arc::new(RwLock::new(registry));
+
+        reject_client_pending_on_target_backpressure(
+            &registry,
+            &client_sender,
+            "relay-request-1",
+            "client-request-1".to_string(),
+        )
+        .await
+        .expect("client rejection should enqueue");
+
+        assert_eq!(registry.read().await.pending_request_count(), 0);
+        let payload = match client_receiver.try_recv() {
+            Ok(Message::Text(text)) => text,
+            other => panic!("unexpected client rejection frame: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&payload)
+            .expect("client rejection should decode")
+        {
+            RelayEnvelope::ClientResponse {
+                request_id,
+                encrypted_response: None,
+                error: Some(error),
+            } => {
+                assert_eq!(request_id, "client-request-1");
+                assert_eq!(error.code, "target_backpressure");
+                assert!(error.retryable);
+            }
+            other => panic!("unexpected client rejection envelope: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn target_backpressure_rejects_peer_pending_request_without_requester_close() {
+        let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
+        let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
+        let (requester_sender, mut requester_receiver) = mpsc::channel::<Message>(4);
+        let mut registry = RelayRegistry::default();
+        registry.pending_daemon_peer_requests.insert(
+            "relay-peer-request-1".to_string(),
+            PendingDaemonPeerRequest {
+                requester_daemon_key: requester_key,
+                requester_request_id: "peer-request-1".to_string(),
+                target_daemon_key: target_key.clone(),
+            },
+        );
+        let registry = Arc::new(RwLock::new(registry));
+
+        reject_peer_pending_on_target_backpressure(
+            &registry,
+            &requester_sender,
+            "relay-peer-request-1",
+            "peer-request-1".to_string(),
+            target_key.daemon_id,
+        )
+        .await
+        .expect("peer rejection should enqueue");
+
+        assert_eq!(registry.read().await.pending_request_count(), 0);
+        let payload = match requester_receiver.try_recv() {
+            Ok(Message::Text(text)) => text,
+            other => panic!("unexpected peer rejection frame: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&payload).expect("peer rejection should decode")
+        {
+            RelayEnvelope::DaemonPeerResponse {
+                request_id,
+                from_daemon_id,
+                encrypted_response: None,
+                error: Some(error),
+            } => {
+                assert_eq!(request_id, "peer-request-1");
+                assert_eq!(from_daemon_id, "daemon-b");
+                assert_eq!(error.code, "target_backpressure");
+                assert!(error.retryable);
+            }
+            other => panic!("unexpected peer rejection envelope: {other:?}"),
+        }
     }
 }
