@@ -121,6 +121,7 @@ export function validationGateNextActions(checks) {
         owner: "validation-harness",
         classification: "generated-evidence",
         nextAction: `provide artifact metadata with generated matrix artifact indexes: ${missingArtifactGeneratedMatrixArtifactIndexes.join(", ")}`,
+        sourceDetails: missingArtifactGeneratedMatrixArtifactIndexes.map(missingPathSourceDetail),
       })
     }
     const missingArtifactGeneratedMatrixLimitations = checks.artifacts.missingArtifactGeneratedMatrixLimitations ?? []
@@ -137,6 +138,7 @@ export function validationGateNextActions(checks) {
         owner: "validation-harness",
         classification: "generated-evidence",
         nextAction: `provide artifact metadata with generated validation-suite artifact indexes: ${missingArtifactGeneratedValidationSuiteArtifactIndexes.join(", ")}`,
+        sourceDetails: missingArtifactGeneratedValidationSuiteArtifactIndexes.map(missingPathSourceDetail),
       })
     }
     const missingArtifactGeneratedValidationSuiteFailureRoots = checks.artifacts.missingArtifactGeneratedValidationSuiteFailureRoots ?? []
@@ -145,6 +147,7 @@ export function validationGateNextActions(checks) {
         owner: "validation-harness",
         classification: "generated-evidence",
         nextAction: `provide artifact metadata with generated validation-suite failure roots: ${missingArtifactGeneratedValidationSuiteFailureRoots.join(", ")}`,
+        sourceDetails: missingArtifactGeneratedValidationSuiteFailureRoots.map(missingPathSourceDetail),
       })
     }
     const missingArtifactEvidenceRepos = checks.artifacts.missingArtifactEvidenceRepos ?? []
@@ -412,6 +415,10 @@ function staleFailureManifestSourceDetail(staleFailure) {
     source: staleFailure.drill ?? staleFailure.rootDir,
     ...(staleFailure.source ? { reportPath: staleFailure.source } : {}),
   }
+}
+
+function missingPathSourceDetail(pathValue) {
+  return { source: pathValue }
 }
 
 function countIncompleteExitCriterionNextActions(counts, criteria) {

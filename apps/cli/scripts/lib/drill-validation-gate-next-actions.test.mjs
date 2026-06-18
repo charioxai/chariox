@@ -106,7 +106,10 @@ test("routes missing artifact diagnostic coverage to owning subsystems", () => {
     artifacts: {
       status: "failed",
       missingArtifactGeneratedEvidenceKinds: ["matrix-report"],
+      missingArtifactGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/missing-artifacts.json"],
       missingArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+      missingArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/missing-artifacts.json"],
+      missingArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/missing-run"],
       missingArtifactProviderAccountAliases: ["codex=work"],
       missingArtifactRuntimeSignals: ["workspace-live-sync-state"],
       missingArtifactRuntimeSignalOwners: ["runtime-state"],
@@ -119,7 +122,7 @@ test("routes missing artifact diagnostic coverage to owning subsystems", () => {
     },
   }))
 
-  assert.equal(actions.length, 14)
+  assert.equal(actions.length, 17)
   assertAction(actions, {
     owner: "provider-account",
     classification: "provider-account",
@@ -159,6 +162,33 @@ test("routes missing artifact diagnostic coverage to owning subsystems", () => {
     owner: "validation-harness",
     classification: "generated-evidence",
     nextAction: "provide generated drill evidence with kinds: matrix-report",
+  })
+  assertAction(actions, {
+    owner: "validation-harness",
+    classification: "generated-evidence",
+    nextAction: "provide artifact metadata with generated matrix artifact indexes: /tmp/generated-matrix/missing-artifacts.json",
+  })
+  assertActionSourceDetails(actions, {
+    nextAction: "provide artifact metadata with generated matrix artifact indexes: /tmp/generated-matrix/missing-artifacts.json",
+    sourceDetails: [{ source: "/tmp/generated-matrix/missing-artifacts.json" }],
+  })
+  assertAction(actions, {
+    owner: "validation-harness",
+    classification: "generated-evidence",
+    nextAction: "provide artifact metadata with generated validation-suite artifact indexes: /tmp/generated-suite/missing-artifacts.json",
+  })
+  assertActionSourceDetails(actions, {
+    nextAction: "provide artifact metadata with generated validation-suite artifact indexes: /tmp/generated-suite/missing-artifacts.json",
+    sourceDetails: [{ source: "/tmp/generated-suite/missing-artifacts.json" }],
+  })
+  assertAction(actions, {
+    owner: "validation-harness",
+    classification: "generated-evidence",
+    nextAction: "provide artifact metadata with generated validation-suite failure roots: /tmp/generated-suite/missing-run",
+  })
+  assertActionSourceDetails(actions, {
+    nextAction: "provide artifact metadata with generated validation-suite failure roots: /tmp/generated-suite/missing-run",
+    sourceDetails: [{ source: "/tmp/generated-suite/missing-run" }],
   })
 })
 
@@ -355,4 +385,10 @@ function assertAction(actions, expected) {
     && action.nextAction === expected.nextAction
     && action.count === (expected.count ?? 1)
   )), `missing action ${JSON.stringify(expected)}`)
+}
+
+function assertActionSourceDetails(actions, expected) {
+  const action = actions.find((candidate) => candidate.nextAction === expected.nextAction)
+  assert(action, `missing action source details ${JSON.stringify(expected)}`)
+  assert.deepEqual(action.sourceDetails, expected.sourceDetails)
 }
