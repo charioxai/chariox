@@ -437,6 +437,36 @@ test("rejects validation artifacts that advertise required runtime authority inv
   }
 })
 
+test("rejects validation artifacts that advertise required failure classifications without a taxonomy manifest", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-failure-taxonomy-"))
+  try {
+    await mkdir(path.join(root, "reports"), { recursive: true })
+    await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
+      manifest: {
+        schema: "arroba.drill.validation_suite.v1",
+        command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
+        testCount: 1,
+        testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
+      },
+    }), null, 2)}\n`, "utf8")
+
+    await writeDrillArtifactIndex({
+      rootDir: root,
+      artifacts: ["reports/suite-run.json"],
+      metadata: {
+        requiredFailureClassifications: "kernel-authority",
+      },
+    })
+
+    await assert.rejects(
+      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      /suite-run\.json is missing manifest\.failureTaxonomyManifest/,
+    )
+  } finally {
+    await finalizeDrillArtifacts({ rootDir: root, passed: true })
+  }
+})
+
 test("rejects validation artifacts with malformed runtime signal manifests", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
   try {

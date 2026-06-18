@@ -966,6 +966,12 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     "requiredRuntimeSignals",
     "missingRuntimeSignals",
   ].some((key) => metadataListFromMetadata(metadata, key).length > 0)
+  const requiresFailureTaxonomyManifest = requiresRuntimeSignalManifest
+    || [
+      "classifications",
+      "requiredFailureClassifications",
+      "missingFailureClassifications",
+    ].some((key) => metadataListFromMetadata(metadata, key).length > 0)
   const requiresRuntimeAuthorityManifest = [
     "runtimeAuthorityInvariants",
     "requiredRuntimeAuthorityInvariants",
@@ -982,7 +988,7 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     if (requiresRuntimeSignalManifest && parsed.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing runtimeSignalsManifest`)
     }
-    if (requiresRuntimeSignalManifest && parsed.failureTaxonomyManifest === undefined) {
+    if (requiresFailureTaxonomyManifest && parsed.failureTaxonomyManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing failureTaxonomyManifest`)
     }
     if (requiresRuntimeAuthorityManifest && parsed.runtimeAuthorityManifest === undefined) {
@@ -1010,7 +1016,7 @@ function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
     if (requiresRuntimeSignalManifest && parsed.manifest?.runtimeSignalsManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing manifest.runtimeSignalsManifest`)
     }
-    if (requiresRuntimeSignalManifest && parsed.manifest?.failureTaxonomyManifest === undefined) {
+    if (requiresFailureTaxonomyManifest && parsed.manifest?.failureTaxonomyManifest === undefined) {
       throw new Error(`drill artifact ${artifactPath} is missing manifest.failureTaxonomyManifest`)
     }
     if (requiresRuntimeAuthorityManifest && parsed.manifest?.runtimeAuthorityManifest === undefined) {
