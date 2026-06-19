@@ -379,6 +379,24 @@ Current implementation notes:
 - current replay is bounded by the daemon's retained recent-event window; if a resume cursor falls outside that window, the M4.5 contract requires an explicit replay-gap response plus a fresh projection snapshot
 - event ids should not be treated as daemon-restart durable until a persisted event log or equivalent projection checkpoint/tail-event store lands
 
+Current pushed event contract:
+
+- all pushed events use the `KernelOutgoingFrame::Event` envelope with monotonic `event_id` plus an `event` payload tagged by its `event` string
+- `terminal_output` carries terminal records and should be used for terminal append/update rendering without forcing `session.state.get`
+- `runtime_notices` carries runtime notices for the subscribed attachment/session
+- `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
+- `session_snapshot` is the full subscribed-session projection and remains the fallback after attach, replay gaps, explicit recovery, and structural changes
+- `agent_activity_changed` carries `session_id` and the complete agent activity map for activity-only projection updates
+- `provider_run_changed` carries `session_id` and the current provider run, or `null` when no provider run is active
+- `session_metadata_changed` carries `session_id` and a `metadata` patch with alias, last-used timestamps, hidden state, focused agent, and workspace live-sync mode
+- `runtime_interactions_changed` carries `session_id` and the current active runtime interactions for permission/choice prompts
+- `waiting_room_inventory_changed` carries only `inventory_version` and is retained as a lightweight compatibility/fallback signal
+- `waiting_room_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full waiting-room snapshot
+- `provider_catalog_changed` carries `generated_at_ms` and the current provider catalog
+- `slices_changed` carries `generated_at_ms` and the current slice list
+- `workflow_run_updated` carries `session_id` and the updated workflow run for workflow-run-only updates
+- `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, waiting-room, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
+
 Minimum request set:
 
 - `session.create`

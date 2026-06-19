@@ -23,6 +23,10 @@ pub use session_log::{
     SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
 };
 
+pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
+pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
+    (OPERATIONAL_HISTORY_HARD_MAX_BYTES / 1024 / 1024) as u32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryEventKind {
@@ -419,6 +423,7 @@ pub struct OperationalHistoryStore {
     connection: Arc<Mutex<Connection>>,
     next_sequence: Arc<AtomicU64>,
     read_delay_ms: u64,
+    max_size_bytes: u64,
 }
 
 impl OperationalHistoryStore {
@@ -427,6 +432,18 @@ impl OperationalHistoryStore {
     }
 
     pub fn open_with_read_delay(path: PathBuf, read_delay_ms: u64) -> Result<Self, DaemonError> {
+        Self::open_with_read_delay_and_max_size(
+            path,
+            read_delay_ms,
+            OPERATIONAL_HISTORY_HARD_MAX_BYTES,
+        )
+    }
+
+    pub fn open_with_read_delay_and_max_size(
+        path: PathBuf,
+        read_delay_ms: u64,
+        max_size_bytes: u64,
+    ) -> Result<Self, DaemonError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: None,
@@ -450,12 +467,15 @@ impl OperationalHistoryStore {
             )
             .map(|value| value.max(0) as u64)
             .map_err(|error| operational_history_error("load max sequence", error))?;
-        Ok(Self {
+        let store = Self {
             path,
             connection: Arc::new(Mutex::new(connection)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
             read_delay_ms,
-        })
+            max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
+        };
+        store.enforce_size_budget()?;
+        Ok(store)
     }
 
     pub(crate) fn delay_read_if_configured(&self) {
@@ -565,11 +585,17 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 }
             })?;
+        drop(connection);
+        self.enforce_size_budget()?;
         Ok(())
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn max_size_bytes(&self) -> u64 {
+        self.max_size_bytes
     }
 }
 
@@ -918,6 +944,62 @@ mod tests {
                 .legacy_fallback_disabled("session-1")
                 .expect("legacy fallback marker should load"),
             "pruned sessions should not fall back to legacy JSONL"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn operational_history_enforces_size_budget_for_temp_stores() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-cap-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let max_size_bytes = 1024 * 1024;
+        let store = OperationalHistoryStore::open_with_read_delay_and_max_size(
+            path.clone(),
+            0,
+            max_size_bytes,
+        )
+        .expect("operational history store should open");
+        for index in 0..80 {
+            let entry = SessionHistoryEntry::provider_output(
+                "session-cap",
+                "provider-run-cap",
+                Some("agent-cap"),
+                TerminalOutputKind::ProviderOutput,
+                Some(format!("chunk-{index}")),
+                &"x".repeat(64 * 1024),
+            );
+            let event =
+                HistoryEvent::transcript(index + 1, &entry, HistoryEventTurnContext::default());
+            store.append(&event).expect("event should append");
+        }
+
+        let size = std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+            + std::fs::metadata(path.with_extension("db-wal"))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+        assert!(
+            size <= max_size_bytes,
+            "operational history should stay under the configured hard cap: {size}"
+        );
+        assert!(
+            store
+                .load_session_events("session-cap", None)
+                .expect("events should load")
+                .len()
+                < 80,
+            "oldest events should be pruned once the size cap is exceeded"
         );
 
         let _ = std::fs::remove_file(&path);

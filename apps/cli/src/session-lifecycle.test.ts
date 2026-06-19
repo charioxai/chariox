@@ -9,6 +9,7 @@ import type {
 import { createSessionLifecycleController } from "./session-lifecycle.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { ProviderPreferences } from "./preferences.js"
+import type { SessionListEntry } from "./sessions.js"
 
 const cliOptions: CliOptions = {
   clientId: "cli-1",
@@ -386,6 +387,60 @@ test("attachBinding reattaches and hydrates the attached session before restorin
     "setAvailableSessions",
     "scheduleShortViewportHistoryCheck",
   ])
+})
+
+test("attachBinding patches the waiting-room session row without listing every session", async () => {
+  const appliedSessions: SessionListEntry[][] = []
+  const attachedSession: RuntimeSession = {
+    id: "session-2",
+    alias: "updated",
+    workspace_id: "/tmp/workspace",
+    worktree_id: "/tmp/workspace",
+    created_at_ms: 10,
+    status: "Active",
+    active_provider_run_id: "run-2",
+    attachment_ids: ["att-2"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-a",
+    max_agents: 6,
+    agents: [],
+    config_state: { version: 1, values: {} },
+  }
+  const { deps } = createBaseDeps({
+    attachmentState: () => null,
+    attachToSession: async () => ({ id: "att-2", session_id: "session-2" }),
+    getSessionState: async () => attachedSession,
+    tryGetProviderRun: async () => null,
+    hydrateAttachedSessionBinding: async () => attachedSession,
+    getAvailableSessions: () => [
+      { id: "session-1", alias: "old", worktree_id: "/tmp/workspace", status: "Created" },
+      {
+        id: "session-2",
+        alias: "stale",
+        workspace_label: "Cached workspace",
+        worktree_id: "/tmp/workspace",
+        status: "Created",
+      },
+    ],
+    setAvailableSessions: (sessions: SessionListEntry[]) => {
+      appliedSessions.push(sessions)
+    },
+    listSessions: async () => {
+      throw new Error("should not list sessions after attach when cached sessions are available")
+    },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  await controller.attachBinding({ id: "session-2" }, false)
+
+  assert.deepEqual(appliedSessions.map((sessions) => sessions.map((session) => [session.id, session.alias ?? null, session.status])), [
+    [
+      ["session-1", "old", "Created"],
+      ["session-2", "updated", "Active"],
+    ],
+  ])
+  assert.equal(appliedSessions[0]?.[1]?.workspace_label, "Cached workspace")
 })
 
 test("attachBinding launches a provider run with provider and effort in the correct positions", async () => {

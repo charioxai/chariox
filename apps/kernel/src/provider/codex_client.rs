@@ -302,6 +302,25 @@ mod tests {
         );
         assert_eq!(params.get("developerInstructions"), None);
         assert_eq!(params.get("collaborationMode"), None);
+        assert_eq!(params.get("summary"), Some(&json!("detailed")));
+    }
+
+    #[test]
+    fn codex_turn_start_omits_reasoning_summary_for_spark_models() {
+        let params = CodexClient::turn_start_params(
+            "thread-1",
+            vec![json!({"type": "text", "text": "visible"})],
+            Some("/tmp/worktree"),
+            Some("gpt-5.3-codex-spark"),
+            Some("low"),
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+            None,
+        );
+
+        assert_eq!(params.get("model"), Some(&json!("gpt-5.3-codex-spark")));
+        assert_eq!(params.get("summary"), None);
     }
 
     #[test]

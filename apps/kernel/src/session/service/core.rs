@@ -29,8 +29,9 @@ impl SessionService {
         request: CreateSessionRequest,
     ) -> Result<RuntimeSession, DaemonError> {
         let alias = match request.alias {
-            Some(alias) if alias.trim().is_empty() => None,
-            alias => normalize_session_alias(alias)?,
+            Some(alias) if !alias.trim().is_empty() => normalize_session_alias(Some(alias))?,
+            _ if !request.hidden => Some(self.default_session_alias(&request.workspace_id)),
+            _ => None,
         };
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
@@ -53,6 +54,26 @@ impl SessionService {
         }
 
         Ok(self.store.insert(session))
+    }
+
+    fn default_session_alias(&self, workspace_id: &str) -> String {
+        let base = default_session_alias_base(workspace_id);
+        let mut number = self
+            .store
+            .list()
+            .iter()
+            .filter(|session| !session.is_hidden() && session.workspace_id() == workspace_id)
+            .count()
+            + 1;
+        loop {
+            let alias = format!("{base}-{number}");
+            if self.store.visible_non_ended_sessions().all(|session| {
+                session.workspace_id() != workspace_id || session.alias() != Some(alias.as_str())
+            }) {
+                return alias;
+            }
+            number += 1;
+        }
     }
 
     pub(crate) fn restore_session(&mut self, session: RuntimeSession) -> RuntimeSession {
@@ -940,6 +961,37 @@ impl SessionService {
             reference: queue_item_ref.to_string(),
             message: "queued workflow prompt was not found",
         })
+    }
+}
+
+fn default_session_alias_base(workspace_id: &str) -> String {
+    let repo_name = Path::new(workspace_id)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(workspace_id);
+    let mut base = String::new();
+    let mut previous_separator = false;
+    for char in repo_name.trim().to_lowercase().chars() {
+        if char.is_ascii_lowercase() || char.is_ascii_digit() || char == '_' {
+            base.push(char);
+            previous_separator = false;
+        } else if char == '-' || char.is_ascii_whitespace() {
+            if !previous_separator && !base.is_empty() {
+                base.push('-');
+                previous_separator = true;
+            }
+        } else if !previous_separator && !base.is_empty() {
+            base.push('-');
+            previous_separator = true;
+        }
+    }
+    while base.ends_with('-') {
+        base.pop();
+    }
+    if base.is_empty() {
+        "workspace".to_string()
+    } else {
+        base
     }
 }
 

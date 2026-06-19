@@ -192,6 +192,9 @@ export type CliCommandActionCompositionDeps = {
   applyModelSelection: AnyFn
   applyVariantSelection: AnyFn
   refreshWaitingRoomData: AnyFn
+  remoteMachinesState: AnyFn
+  setRemoteMachinesState: AnyFn
+  reconcileWaitingRoom: AnyFn
   setSlicesState: AnyFn
   appLogger: { info: AnyFn } | null | undefined
   setMultiAgentResponseLayout: AnyFn
@@ -281,6 +284,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     applyModelSelection,
     applyVariantSelection,
     refreshWaitingRoomData,
+    remoteMachinesState,
+    setRemoteMachinesState,
+    reconcileWaitingRoom,
     setSlicesState,
     appLogger,
     setMultiAgentResponseLayout,
@@ -430,6 +436,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
     unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
     refreshWaitingRoomData,
+    getRemoteMachines: remoteMachinesState,
+    setRemoteMachines: setRemoteMachinesState,
+    reconcileWaitingRoom: () => reconcileWaitingRoom(),
     listRemoteMachines: () => listRemoteMachines(client),
     listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),

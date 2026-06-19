@@ -65,6 +65,7 @@ impl DaemonApp {
         let outcome =
             self.prompt_state_owner
                 .submit_prepared_prompt(&session, prompt, force_queue)?;
+        self.sessions.note_prompt_sent(session_id)?;
         self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
         Ok(outcome)
     }

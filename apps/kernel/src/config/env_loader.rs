@@ -8,7 +8,7 @@ use super::{
     persisted_daemon::{
         load_cli_cloud_relay_profile, load_persisted_relay_config, PersistedCloudRelayProfile,
     },
-    DaemonConfig,
+    DaemonConfig, DEFAULT_RELAY_HEARTBEAT_MS,
 };
 
 impl DaemonConfig {
@@ -81,7 +81,7 @@ impl DaemonConfig {
             kernel_websocket_write_delay_ms: env::var("ARROBA_KERNEL_WRITE_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0),
+                .unwrap_or(super::DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS),
             runtime_mcp_host: env::var("ARROBA_MCP_HOST")
                 .unwrap_or_else(|_| "127.0.0.1".to_string()),
             runtime_mcp_port: env::var("ARROBA_MCP_PORT")
@@ -143,7 +143,7 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
-                .unwrap_or(5_000),
+                .unwrap_or(DEFAULT_RELAY_HEARTBEAT_MS),
             relay_request_timeout_ms: env::var("ARROBA_RELAY_REQUEST_TIMEOUT_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())

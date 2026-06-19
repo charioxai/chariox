@@ -42,6 +42,7 @@ async fn create_session_uses_owned_runtime_state_without_app_lock() {
         panic!("unexpected response");
     };
     assert_eq!(session.workspace_id(), "owned-workspace");
+    assert_eq!(session.alias(), Some("owned-workspace-1"));
     assert_eq!(agent.session_id(), session.id());
     assert_eq!(session.focused_agent_id(), Some(agent.id()));
     drop(locked_app);

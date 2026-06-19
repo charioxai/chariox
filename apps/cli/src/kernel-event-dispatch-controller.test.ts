@@ -7,6 +7,8 @@ import type {
   TerminalOutputRecord,
 } from "./cli-types.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
+import type { SliceRecord } from "@arroba/kernel-client/kernel-types"
+import type { ProviderCatalog } from "./provider-catalog.js"
 
 test("kernel event dispatch applies normalized session snapshots with agent activity", async () => {
   const run = providerRun("run-1")
@@ -42,7 +44,97 @@ test("kernel event dispatch refreshes waiting-room inventory asynchronously", as
   assert.deepEqual(harness.calls, ["refresh-waiting-room"])
 })
 
-test("kernel event dispatch resyncs after workflow design events", async () => {
+test("kernel event dispatch applies waiting-room row patches without refreshing inventory", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "waiting_room_rows_changed",
+    inventory_version: "v2",
+    schema_version: 1,
+    generated_at_ms: 2,
+    sessions: [{
+      id: "session-1",
+      workspace_id: "/workspace",
+      worktree_id: "/workspace/tree",
+      status: "Created",
+      created_at_ms: 1,
+      connected_cli_count: 0,
+    }],
+    removed_session_ids: ["session-2"],
+  })
+
+  assert.deepEqual(harness.calls, [
+    "apply-waiting-room-rows:v2:session-1:session-2",
+  ])
+})
+
+test("kernel event dispatch applies provider catalog and slice-list cache patches", async () => {
+  const harness = createHarness()
+  const catalog: ProviderCatalog = {
+    all: [],
+    default: {},
+    connected: ["opencode"],
+    source: "daemon",
+  }
+  const slice = sliceRecord("slice-1")
+
+  await harness.controller.handleKernelEvent({
+    event: "provider_catalog_changed",
+    generated_at_ms: 2,
+    catalog,
+  })
+  await harness.controller.handleKernelEvent({
+    event: "slices_changed",
+    generated_at_ms: 3,
+    slices: [slice],
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_provider_catalog_changed",
+    "apply-provider-catalog:daemon:opencode",
+    "activity:kernel_slices_changed",
+    "apply-slices:slice-1",
+  ])
+})
+
+test("kernel event dispatch applies relay and remote-machine patches without refreshing inventory", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "relay_status_changed",
+    status: {
+      configured: true,
+      connected: true,
+      relay_token_configured: true,
+      daemon_id: "kernel-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    },
+  })
+  await harness.controller.handleKernelEvent({
+    event: "remote_machines_changed",
+    machines: [{
+      machine_id: "machine-2",
+      machine_alias: "worker",
+      registry_alias: null,
+      display_name: "worker",
+      trust_status: "approved",
+      online: true,
+      pending: false,
+      kernel_count: 1,
+      available_providers: ["opencode"],
+    }],
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_relay_status_changed",
+    "apply-relay-status:kernel-1:connected",
+    "activity:kernel_remote_machines_changed",
+    "apply-remote-machines:machine-2",
+  ])
+})
+
+test("kernel event dispatch applies workflow design ops without resyncing", async () => {
   const harness = createHarness()
 
   await harness.controller.handleKernelEvent({
@@ -64,11 +156,11 @@ test("kernel event dispatch resyncs after workflow design events", async () => {
 
   assert.deepEqual(harness.calls, [
     "activity:kernel_workflow_design_op",
-    "resync:workflow_design_op",
+    "apply-workflow-design-op:session-1:workflow_create",
   ])
 })
 
-test("kernel event dispatch resyncs after workflow run updates", async () => {
+test("kernel event dispatch applies workflow run updates without resyncing", async () => {
   const harness = createHarness()
 
   await harness.controller.handleKernelEvent({
@@ -92,7 +184,74 @@ test("kernel event dispatch resyncs after workflow run updates", async () => {
 
   assert.deepEqual(harness.calls, [
     "activity:kernel_workflow_run_updated",
-    "resync:workflow_run_updated",
+    "apply-workflow-run:session-1:run-1",
+  ])
+})
+
+test("kernel event dispatch applies agent activity deltas without resyncing", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "agent_activity_changed",
+    session_id: "session-1",
+    agent_activity: { "agent-1": { status: "working", busy: true } },
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_agent_activity_changed",
+    "apply-agent-activity:session-1:agent-1",
+  ])
+})
+
+test("kernel event dispatch applies provider run deltas without resyncing", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "provider_run_changed",
+    session_id: "session-1",
+    provider_run: { id: "run-2", session_id: "session-1", agent_instance_id: "agent-1" },
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_provider_run_changed",
+    "apply-provider-run:session-1:run-2",
+  ])
+})
+
+test("kernel event dispatch applies session metadata deltas without resyncing", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "session_metadata_changed",
+    session_id: "session-1",
+    metadata: { alias: "ops", focused_agent_id: "agent-1" },
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_session_metadata_changed",
+    "apply-session-metadata:session-1:alias,focused_agent_id",
+  ])
+})
+
+test("kernel event dispatch applies runtime interaction deltas without resyncing", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "runtime_interactions_changed",
+    session_id: "session-1",
+    active_interactions: [{
+      id: "interaction-1",
+      agent_id: "agent-1",
+      kind: "permission",
+      level: "warning",
+      message: "Approve?",
+      choices: [{ id: "approve", label: "Approve", reply: "approve" }],
+    }],
+  })
+
+  assert.deepEqual(harness.calls, [
+    "activity:kernel_runtime_interactions_changed",
+    "apply-runtime-interactions:session-1:1",
   ])
 })
 
@@ -152,7 +311,20 @@ test("kernel event dispatch routes terminal output records and heartbeats", asyn
     "activity:kernel_terminal_output",
     "queue-terminal-records:1",
     "activity:kernel_heartbeat",
-    "refresh-prompt-input-history",
+  ])
+})
+
+test("kernel event dispatch treats successful transport resume as local liveness state", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "transport_resumed",
+    session_id: "session-1",
+    resumed_from_event_id: 42,
+  })
+
+  assert.deepEqual(harness.calls, [
+    "transport-resumed",
   ])
 })
 
@@ -181,6 +353,24 @@ function createHarness() {
       snapshots.push({ session: nextSession, providerRun: nextProviderRun })
       calls.push(`apply-session-snapshot:${nextSession.id}:${nextProviderRun?.id ?? "null"}`)
     },
+    applyAgentActivityChanged: (sessionId, agentActivity) => {
+      calls.push(`apply-agent-activity:${sessionId}:${Object.keys(agentActivity).sort().join(",")}`)
+    },
+    applyProviderRunChanged: (sessionId, providerRun) => {
+      calls.push(`apply-provider-run:${sessionId}:${providerRun?.id ?? "null"}`)
+    },
+    applySessionMetadataChanged: (sessionId, metadata) => {
+      calls.push(`apply-session-metadata:${sessionId}:${Object.keys(metadata).sort().join(",")}`)
+    },
+    applyRuntimeInteractionsChanged: (sessionId, activeInteractions) => {
+      calls.push(`apply-runtime-interactions:${sessionId}:${activeInteractions.length}`)
+    },
+    applyWorkflowRunUpdated: (sessionId, workflowRun) => {
+      calls.push(`apply-workflow-run:${sessionId}:${workflowRun.id}`)
+    },
+    applyWorkflowDesignOp: (event) => {
+      calls.push(`apply-workflow-design-op:${event.session_id}:${event.op.kind}`)
+    },
     scheduleSharedPromptInputHistoryRefresh: () => {
       calls.push("refresh-prompt-input-history")
     },
@@ -189,6 +379,21 @@ function createHarness() {
     },
     refreshWaitingRoomData: () => {
       calls.push("refresh-waiting-room")
+    },
+    applyWaitingRoomRowsChanged: (patch) => {
+      calls.push(`apply-waiting-room-rows:${patch.inventoryVersion}:${patch.sessions.map((session) => session.id).join(",")}:${patch.removedSessionIds.join(",")}`)
+    },
+    applyRelayStatusChanged: (status) => {
+      calls.push(`apply-relay-status:${status.daemon_id}:${status.connected ? "connected" : "disconnected"}`)
+    },
+    applyRemoteMachinesChanged: (machines) => {
+      calls.push(`apply-remote-machines:${machines.map((machine) => machine.machine_id).join(",")}`)
+    },
+    applyProviderCatalogChanged: (catalog) => {
+      calls.push(`apply-provider-catalog:${catalog.source ?? "daemon"}:${catalog.connected.join(",")}`)
+    },
+    applySlicesChanged: (slices) => {
+      calls.push(`apply-slices:${slices.map((slice) => slice.id).join(",")}`)
     },
     applyTransportResumed: () => {
       calls.push("transport-resumed")
@@ -249,5 +454,20 @@ function providerRun(id: string): RuntimeProviderRun {
     variant: null,
     usage_tokens_total: null,
     state: "running",
+  }
+}
+
+function sliceRecord(id: string): SliceRecord {
+  return {
+    id,
+    name: id,
+    owner_kernel_id: "kernel-1",
+    owner_machine_id: "machine-1",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    worker_kernel_ref: "kernel-1",
+    created_at_ms: 1,
+    updated_at_ms: 1,
   }
 }

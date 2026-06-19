@@ -1,7 +1,9 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
 const DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT: usize = 16 * 1024;
@@ -95,13 +97,36 @@ impl TerminalStreamHealthStore {
 #[derive(Debug, Clone, Default)]
 pub struct TerminalStreamStore {
     inner: Arc<StdMutex<TerminalStreamService>>,
+    changes: Arc<TerminalStreamChangeSignal>,
+}
+
+#[derive(Debug, Default)]
+struct TerminalStreamChangeSignal {
+    sequence: AtomicU64,
+    notify: Notify,
 }
 
 impl TerminalStreamStore {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(StdMutex::new(TerminalStreamService::new())),
+            changes: Arc::new(TerminalStreamChangeSignal::default()),
         }
+    }
+
+    pub fn change_sequence(&self) -> u64 {
+        self.changes.sequence.load(Ordering::Acquire)
+    }
+
+    pub async fn wait_for_change_after(&self, sequence: u64) {
+        if self.change_sequence() != sequence {
+            return;
+        }
+        let notified = self.changes.notify.notified();
+        if self.change_sequence() != sequence {
+            return;
+        }
+        notified.await;
     }
 
     pub fn health_store(&self) -> TerminalStreamHealthStore {
@@ -135,7 +160,8 @@ impl TerminalStreamStore {
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
-        self.inner
+        let record = self
+            .inner
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .fan_out_output(
@@ -146,7 +172,9 @@ impl TerminalStreamStore {
                 merge_key,
                 recipient_attachment_ids,
                 bytes,
-            )
+            );
+        self.record_change();
+        record
     }
 
     pub fn record_notice(
@@ -157,7 +185,8 @@ impl TerminalStreamStore {
         recipient_attachment_ids: Vec<String>,
         message: impl Into<String>,
     ) -> RuntimeNoticeRecord {
-        self.inner
+        let record = self
+            .inner
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .record_notice(
@@ -166,7 +195,9 @@ impl TerminalStreamStore {
                 agent_id,
                 recipient_attachment_ids,
                 message,
-            )
+            );
+        self.record_change();
+        record
     }
 
     pub fn input_records(&self) -> Vec<TerminalInputRecord> {
@@ -217,7 +248,8 @@ impl TerminalStreamStore {
         message_id: &str,
         completed_at_ms: u64,
     ) -> AssistantMessageCompletionRecord {
-        self.inner
+        let record = self
+            .inner
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .record_assistant_message_completion(
@@ -227,7 +259,9 @@ impl TerminalStreamStore {
                 recipient_attachment_ids,
                 message_id,
                 completed_at_ms,
-            )
+            );
+        self.record_change();
+        record
     }
 
     pub fn drain_completion_records(
@@ -257,6 +291,16 @@ impl TerminalStreamStore {
             .lock()
             .expect("terminal stream lock should not be poisoned")
             .remove_session(session_id);
+        self.record_change();
+    }
+
+    pub fn notify_terminal_projection_change(&self) {
+        self.record_change();
+    }
+
+    fn record_change(&self) {
+        self.changes.sequence.fetch_add(1, Ordering::AcqRel);
+        self.changes.notify.notify_waiters();
     }
 }
 
@@ -600,7 +644,7 @@ fn is_coalescible_output_kind(kind: &TerminalOutputKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalOutputKind, TerminalStreamService};
+    use super::{TerminalOutputKind, TerminalStreamService, TerminalStreamStore};
 
     #[test]
     fn records_terminal_input_and_fans_out_output() {
@@ -952,5 +996,47 @@ mod tests {
         assert_eq!(terminal.health_snapshot().pending_output_records, 0);
         assert_eq!(terminal.health_snapshot().pending_notice_records, 0);
         assert_eq!(terminal.health_snapshot().pending_completion_records, 0);
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_store_notifies_waiters_on_output() {
+        let terminal = TerminalStreamStore::new();
+        let sequence = terminal.change_sequence();
+        let waiter = {
+            let terminal = terminal.clone();
+            tokio::spawn(async move {
+                terminal.wait_for_change_after(sequence).await;
+            })
+        };
+
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            None,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string()],
+            b"output",
+        );
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+            .await
+            .expect("terminal stream waiter should wake")
+            .expect("terminal stream waiter task should complete");
+        assert!(terminal.change_sequence() > sequence);
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_store_wait_returns_when_sequence_already_changed() {
+        let terminal = TerminalStreamStore::new();
+        let sequence = terminal.change_sequence();
+        terminal.record_notice("session-1", None, None, Vec::new(), "notice");
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            terminal.wait_for_change_after(sequence),
+        )
+        .await
+        .expect("changed terminal sequence should not block");
     }
 }

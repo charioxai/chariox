@@ -458,4 +458,57 @@ mod tests {
             .unread_idle_output
         );
     }
+
+    #[test]
+    fn focused_provider_output_does_not_project_unread() {
+        let mut session = session_with_agents(vec![agent("agent-1", AgentState::Idle, false)]);
+        session.set_focused_agent(Some("agent-1".to_string()));
+
+        assert!(session.note_agent_output_sequence("agent-1", 41));
+
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == "agent-1")
+            .expect("agent exists");
+        assert!(
+            !waiting_room_agent_activity_summary(
+                &session,
+                agent,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .unread_idle_output
+        );
+        assert_eq!(
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+                .unread_idle_agent_count,
+            0
+        );
+    }
+
+    #[test]
+    fn unfocused_finished_output_projects_unread_until_agent_is_seen() {
+        let mut session = session_with_agents(vec![
+            agent("agent-1", AgentState::Idle, false),
+            agent("agent-2", AgentState::Idle, false),
+        ]);
+        session.set_focused_agent(Some("agent-1".to_string()));
+
+        assert!(session.note_agent_output_sequence("agent-2", 41));
+
+        assert_eq!(
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+                .unread_idle_agent_count,
+            1
+        );
+        assert!(session.acknowledge_agent_output_seen(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "agent-2"
+        ));
+        assert_eq!(
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+                .unread_idle_agent_count,
+            0
+        );
+    }
 }

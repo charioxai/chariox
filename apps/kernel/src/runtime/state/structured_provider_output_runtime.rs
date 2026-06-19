@@ -182,12 +182,30 @@ impl KernelRuntimeState {
             }
         }
         owned.provider_run_projection.update(provider_run);
-        for notice in &poll_result.notices {
+        let terminal_failure = poll_result
+            .terminal_failure
+            .as_deref()
+            .map(provider_prompt_dispatch_failure_notice);
+        let mut recorded_notice_messages = std::collections::HashSet::new();
+        if let Some(message) = terminal_failure.as_ref() {
+            recorded_notice_messages.insert(message.clone());
             owned.record_notice(
                 session_id,
                 Some(provider_run_id),
                 recipient_attachment_ids.clone(),
-                notice.to_string(),
+                message.clone(),
+            );
+        }
+        for notice in &poll_result.notices {
+            let message = provider_notice_message(notice);
+            if !recorded_notice_messages.insert(message.clone()) {
+                continue;
+            }
+            owned.record_notice(
+                session_id,
+                Some(provider_run_id),
+                recipient_attachment_ids.clone(),
+                message,
             );
         }
         let saw_response_content = poll_result.chunks.iter().any(|chunk| {
@@ -232,7 +250,6 @@ impl KernelRuntimeState {
             owned.mark_prompt_completion_recorded(provider_run_id);
         }
         let prompt_completed = poll_result.prompt_completed;
-        let terminal_failure = poll_result.terminal_failure.clone();
         if let Some(message) = terminal_failure.as_deref() {
             let run = owned
                 .provider_store
@@ -278,4 +295,39 @@ impl KernelRuntimeState {
         }
         Ok(records)
     }
+}
+
+fn provider_prompt_dispatch_failure_notice(message: &str) -> String {
+    format!(
+        "Provider prompt dispatch failed: {}",
+        provider_error_message(message).unwrap_or_else(|| compact_provider_notice_message(message))
+    )
+}
+
+fn provider_notice_message(message: &str) -> String {
+    provider_error_message(message)
+        .map(|message| format!("Provider prompt dispatch failed: {message}"))
+        .unwrap_or_else(|| message.to_string())
+}
+
+fn provider_error_message(message: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(message).ok()?;
+    value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("message").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn compact_provider_notice_message(message: &str) -> String {
+    let mut compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX_CHARS: usize = 500;
+    if compact.chars().count() > MAX_CHARS {
+        compact = compact.chars().take(MAX_CHARS).collect::<String>();
+        compact.push_str("...");
+    }
+    compact
 }

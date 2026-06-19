@@ -1,0 +1,1432 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kernel and Web Terminal Performance Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f5;
+      --panel: #ffffff;
+      --ink: #151714;
+      --muted: #586057;
+      --line: #d9ded2;
+      --strong-line: #aab4a1;
+      --accent: #0d6b57;
+      --accent-soft: #e5f1ec;
+      --warn: #9a6517;
+      --warn-soft: #fff3d8;
+      --bad: #a23a28;
+      --bad-soft: #fae6e1;
+      --code: #eef1ea;
+      --shadow: 0 16px 42px rgba(26, 35, 22, 0.08);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 44px 0 72px;
+    }
+
+    header {
+      border-top: 6px solid var(--ink);
+      padding-top: 22px;
+      margin-bottom: 34px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      max-width: 760px;
+      font-size: clamp(2.2rem, 5vw, 4.8rem);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 42px 0 14px;
+      font-size: clamp(1.45rem, 2vw, 2rem);
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 0.92rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul, ol {
+      margin: 0;
+      padding-left: 1.25rem;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    code {
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      padding: 1px 5px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef2e9;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .summary {
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    }
+
+    .panel,
+    .callout {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .callout {
+      border-left: 7px solid var(--accent);
+    }
+
+    .warning {
+      background: var(--warn-soft);
+      border-color: #ebd09d;
+      border-left-color: var(--warn);
+    }
+
+    .bad {
+      background: var(--bad-soft);
+      border-color: #e7b8ae;
+      border-left-color: var(--bad);
+    }
+
+    .metric {
+      border-top: 4px solid var(--accent);
+    }
+
+    .metric strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 1.55rem;
+      line-height: 1.05;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .tag {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 2px 8px;
+      border: 1px solid var(--strong-line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Kernel and Web Terminal Performance Plan</h1>
+      <p class="summary">
+        Simplify Arroba runtime updates so the web terminal feels immediate while idle kernels use
+        almost no CPU. The system should send the minimum useful information at the minimum useful
+        cadence. Humans do not need millisecond-level updates for values that change at human-scale
+        speed.
+      </p>
+    </header>
+
+    <section>
+      <h2>Goal</h2>
+      <div class="callout">
+        <p>
+          The primary KPI is user experience per unit of work: prompt submissions, terminal output,
+          permission prompts, and visible state changes should feel smooth, while idle kernels,
+          waiting-room screens, and background sessions should consume minimal CPU, disk, and relay
+          bandwidth.
+        </p>
+        <p>
+          Optimize for responsiveness where the user is looking, and for calm resource use everywhere
+          else. A stale activity count for a second is acceptable. A delayed first token, a frozen
+          terminal, or an 80% idle kernel is not.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Observed Problems</h2>
+      <div class="grid">
+        <div class="panel bad">
+          <span class="tag">Kernel</span>
+          <h3>Fixed 50ms Sweeps</h3>
+          <p>
+            <code>run_kernel_websocket_server_with_bound_listener</code> starts a background task
+            that calls <code>pump_transport_runtime</code> every 50ms even when no provider process
+            is running.
+          </p>
+        </div>
+        <div class="panel bad">
+          <span class="tag">Subscriptions</span>
+          <h3>Polling Instead of Waiting</h3>
+          <p>
+            Session subscriptions wake every 50ms, build terminal output, notices, workflow events,
+            and sometimes full session snapshots. Most ticks do not produce user-visible changes.
+          </p>
+        </div>
+        <div class="panel bad">
+          <span class="tag">Snapshots</span>
+          <h3>Whole Objects for Small Changes</h3>
+          <p>
+            Regular updates clone and compare full <code>RuntimeSession</code> projections, including
+            agents, workflows, prompt state, provider run state, and activity maps.
+          </p>
+        </div>
+        <div class="panel bad">
+          <span class="tag">Web</span>
+          <h3>Push Plus Refresh Loops</h3>
+          <p>
+            The browser receives pushed events, then also schedules <code>GetSessionState</code>,
+            waiting-room refreshes, provider catalog reads, and slice-list reads after common actions.
+          </p>
+        </div>
+        <div class="panel bad">
+          <span class="tag">Persistence</span>
+          <h3>Large Command Result Writes</h3>
+          <p>
+            Read commands such as waiting-room snapshots, provider catalog, and slice list are
+            serialized into persistent command-result JSONL. Redundant polling becomes disk and JSON
+            work.
+          </p>
+        </div>
+        <div class="panel bad">
+          <span class="tag">Waiting Room</span>
+          <h3>Version Events Trigger Full Fetches</h3>
+          <p>
+            <code>waiting_room_inventory_changed</code> carries a version, so the browser often does
+            another full public snapshot fetch to learn what actually changed.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Target Update Cadence</h2>
+      <p class="muted">
+        These cadences are defaults, not correctness boundaries. Direct user actions and provider
+        output should still wake immediately through events.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Surface</th>
+            <th>Current Pattern</th>
+            <th>Target Pattern</th>
+            <th>Reasoning</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Provider terminal output for visible session</td>
+            <td>50ms subscription polling</td>
+            <td>Event-driven wakeup, coalesce writes to 33-100ms while streaming</td>
+            <td>Feels live without repainting or serializing more often than the display and reader need.</td>
+          </tr>
+          <tr>
+            <td>Prompt lifecycle and focused agent activity</td>
+            <td>Snapshot refreshes and heartbeat-triggered reads</td>
+            <td>Immediate narrow events for accepted, running, settling, completed, failed</td>
+            <td>These states drive UX and controls, so they should be fast but small.</td>
+          </tr>
+          <tr>
+            <td>Visible session metadata</td>
+            <td>Full snapshot every fourth 50ms tick when changed</td>
+            <td>Patch events immediately; full snapshot only on attach, replay gap, manual refresh, or 30s reconciliation</td>
+            <td>Most metadata changes are small and do not need full session transfer.</td>
+          </tr>
+          <tr>
+            <td>Background session activity</td>
+            <td>Events plus background state refreshes</td>
+            <td>Activity summary events, at most 1s coalescing while active and 10-30s fallback</td>
+            <td>Sidebar badges can be slightly coarse; visible terminal output cannot.</td>
+          </tr>
+          <tr>
+            <td>Waiting-room inventory</td>
+            <td>Version event followed by full snapshot fetch</td>
+            <td>Changed rows in event, coalesced to 250-1000ms; full snapshot on first load or explicit refresh</td>
+            <td>Session rows do not need millisecond precision, but the list should not feel stuck.</td>
+          </tr>
+          <tr>
+            <td>Provider catalog</td>
+            <td>Repeated reads during waiting-room refresh</td>
+            <td>Cache by version, refresh on provider auth/config change, startup, manual refresh, or 5 minute TTL</td>
+            <td>Catalogs rarely change during normal interaction and are relatively expensive.</td>
+          </tr>
+          <tr>
+            <td>Slice list</td>
+            <td>Repeated reads during waiting-room refresh</td>
+            <td>Event-driven changes, manual refresh, or 15-30s fallback while slice panel is open</td>
+            <td>Slice lifecycle is important but does not require continuous polling outside the slice UI.</td>
+          </tr>
+          <tr>
+            <td>Relay and kernel discovery</td>
+            <td>Periodic refresh mixed with waiting-room refresh</td>
+            <td>Heartbeat freshness events and 10-30s discovery fallback</td>
+            <td>Freshness matters, but not at terminal-output cadence.</td>
+          </tr>
+          <tr>
+            <td>Idle kernel maintenance</td>
+            <td>50ms pump</td>
+            <td>No pump when no dirty work exists; 5-10s safety sweep</td>
+            <td>An idle kernel should sleep.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Design Principles</h2>
+      <div class="grid">
+        <div class="panel metric">
+          <strong>Push facts, not guesses</strong>
+          <p>
+            Runtime mutations should emit typed events from the kernel authority. Clients should not
+            poll to discover facts the kernel already knows.
+          </p>
+        </div>
+        <div class="panel metric">
+          <strong>Patch first, snapshot rarely</strong>
+          <p>
+            Full snapshots are for bootstrap and recovery. Normal operation should send narrow,
+            typed changes.
+          </p>
+        </div>
+        <div class="panel metric">
+          <strong>Visible work gets priority</strong>
+          <p>
+            The focused terminal can update quickly. Background sessions, waiting-room counters, and
+            catalogs should be coalesced and cached.
+          </p>
+        </div>
+        <div class="panel metric">
+          <strong>Idleness should be real</strong>
+          <p>
+            No active provider, no due watchdog, and no dirty projection should mean no hot loop.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Implementation Plan</h2>
+      <ol>
+        <li>
+          Replace the unconditional 50ms kernel pump with dirty queues. Provider output, prompt
+          lifecycle, workflow watchdogs, relay inventory, runtime notices, and slice/provider changes
+          should wake the relevant task directly.
+        </li>
+        <li>
+          Change session subscriptions from polling loops to wait-on-change loops. Use per-session
+          and waiting-room notification channels. Keep a slow safety sweep only to recover missed
+          signals.
+        </li>
+        <li>
+          Introduce narrow kernel events for the normal path:
+          <code>PromptAccepted</code>, <code>PromptActivityChanged</code>,
+          <code>AgentActivityChanged</code>, <code>ProviderRunChanged</code>,
+          <code>SessionMetadataChanged</code>, existing <code>workflow_run_updated</code>,
+          <code>WaitingRoomRowsChanged</code>, <code>ProviderCatalogChanged</code>, and
+          <code>SlicesChanged</code>.
+        </li>
+        <li>
+          Keep full <code>SessionSnapshot</code> for attach, replay gap recovery, explicit refresh,
+          and a slow reconciliation interval. Do not use it as the main live update vehicle.
+        </li>
+        <li>
+          Simplify browser prompt submission. After <code>SubmitPrompt</code>, apply the response
+          session or acknowledgement, update local optimistic UI, and rely on pushed events. Remove
+          immediate waiting-room and session refreshes except for timeout recovery.
+        </li>
+        <li>
+          Make waiting-room inventory events carry changed rows or compact row patches. A version-only
+          invalidation can remain as a fallback, but it should not be the default path after every
+          user action.
+        </li>
+        <li>
+          Split provider catalog and slice state from the generic waiting-room refresh. Cache them by
+          version and refresh only on their own change events, manual refresh, startup, or coarse TTL.
+        </li>
+        <li>
+          Reduce command-result persistence. Persist idempotency metadata for large read commands,
+          but avoid writing full waiting-room snapshots, provider catalogs, slice lists, and session
+          snapshots into JSONL on every request.
+        </li>
+        <li>
+          Add coalescing at the transport writer. Terminal output can flush quickly while streaming;
+          inventory and background state should be batched to human-scale intervals.
+        </li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Current Slice</h2>
+      <div class="callout">
+        <p>
+          First implementation slice: remove the prompt-submit hot-path refresh amplification, tune
+          waiting-room fallback polling to human-scale defaults, push waiting-room row updates from
+          the kernel instead of forcing browser refetches, and stop persisting noisy read responses
+          in the kernel command-result JSONL cache. Session subscription loops now also wake on
+          runtime projection changes instead of waiting for terminal output or a periodic timeout,
+          transport writers coalesce event-lane bursts without delaying response/control frames, and
+          terminal-output-only loops skip full session snapshot rebuilds. The current follow-on
+          change keeps reducing work per wake-up: activity-only projection changes are now sent as
+          compact <code>agent_activity_changed</code> events instead of full session snapshots, and
+          browser heartbeats and assistant-completion notifications no longer trigger broad
+          session-state refreshes. The remaining browser working-session full-state reconciliation
+          loop now runs at <code>30s</code> instead of <code>2s</code>. Waiting-room row patches are
+          now owned by the dedicated waiting-room inventory subscription instead of being rebuilt by
+          every active session subscription. Relay status and remote-machine discovery updates are
+          also emitted from that global waiting-room subscription rather than from every local
+          terminal session subscription. The websocket transport pump now waits on runtime
+          projection changes or the next real pump deadline instead of relying only on its fallback
+          timer, so prompt/run/watchdog mutations can wake the pump while idle kernels keep the
+          coarse safety sweep. Workflow-run-only session projection changes now reuse the existing
+          <code>workflow_run_updated</code> event on local and relay subscription paths and skip the
+          otherwise redundant full <code>session_snapshot</code>. The current provider/slice cache
+          slice adds <code>provider_catalog_changed</code> and <code>slices_changed</code> events to
+          the global waiting-room inventory stream, so normal waiting-room updates can keep those
+          browser caches fresh without immediately issuing <code>provider.catalog.get</code> or
+          <code>slice.list</code>. Provider-run-only session projection changes now emit a compact
+          <code>provider_run_changed</code> event instead of forcing a full
+          <code>session_snapshot</code>, and the web terminal applies that patch directly to the
+          context meter and prompt controls. Metadata-only session projection changes now emit
+          <code>session_metadata_changed</code> for label/context fields such as alias,
+          focused-agent hint, and workspace live-sync mode, avoiding a full snapshot when no
+          structural session data changed. Runtime-interaction-only session projection changes now
+          emit <code>runtime_interactions_changed</code> for permission and choice prompts, so the
+          browser can update the prompt surface without a full session snapshot or a hot
+          <code>GetSessionState</code> read. Live local and relay subscription snapshots now use
+          the same attachment-aware owned-state projection as <code>GetSessionState</code>, while
+          preserving the app path for terminal output, notices, completions, and workflow event
+          drains; this prevents runtime-interaction deltas from being visible to reads but missing
+          from the browser event stream. Prompt-runtime-only session projection changes now
+          reuse <code>agent_activity_changed</code>, because that compact projection already carries
+          <code>prompt_status</code> and active-turn identity for browser controls and badges.
+          Runtime failure notices now settle visible error state, active turns, prompt controls, and
+          agent layout from the pushed notice itself instead of scheduling an immediate broad
+          <code>GetSessionState</code> refresh. Empty Enter on a working prompt is now a local
+          no-op instead of a hidden session-state refresh; explicit Stop remains on the send button
+          and recovery stays on replay/transport paths. Extension sync retry commands now apply the
+          returned agent projection directly, matching the Extensions panel path, rather than
+          scheduling a broad session-state refresh after the command response. The Extensions panel
+          grant/revoke path now also patches the workflow route session store with the returned
+          agent projection instead of forcing a workflow <code>GetSessionState</code> refresh just
+          to update grant badges. The stale workflow refresh dependency has been removed from the
+          Extensions panel wiring, and waiting-room session control no longer carries an unused
+          <code>refreshWaitingRoom</code> callback, keeping broad reads isolated to explicit
+          refresh/recovery coordinators. Provider/config changes now apply the returned provider-run
+          profile directly to local agents, context meter, and layout instead of issuing an
+          immediate <code>GetSessionState</code>; pushed
+          projection events and the coarse reconciliation loop remain the authority for missed or
+          structural changes. Waiting-room session alias edits and sidebar agent alias/config/workspace
+          edits now render their confirmed local patches without calling the broad waiting-room
+          refresh path; freeform session alias edits now use the same local confirmed-patch path.
+          Row patches and coarse reconciliation fill in slower background state. Session
+          archive/delete lifecycle actions also remove changed rows locally after the validated
+          command response and no longer fetch the whole waiting-room inventory just to repaint the
+          list. Slice panel start/stop/delete actions now validate their command responses and patch
+          the affected slice row locally instead of issuing an immediate <code>slice.list</code>.
+          The slice panel Doctor action now also renders from the adopted pushed row when the
+          requested slice is already cached, falling back to <code>slice.list</code> only when the
+          panel cannot prove the target. Terminal <code>/slice list</code> now also formats the
+          cached pushed slice rows when available instead of issuing <code>ListSlices</code> just to
+          print the same visible inventory.
+          Slice provider-auth import/remove/alias controls now do the same with the returned
+          <code>SliceRecord</code>, so auth UI changes render from the validated command response
+          rather than fetching the full slice list again. Slice saved-state actions now also patch
+          locally from the returned slice record: restore appends the created slice, while save,
+          backup, and reset update the existing row without a follow-up <code>slice.list</code>.
+          Freeform slice start/save controls now also trust the validated command response and set
+          visible status directly, leaving waiting-room and slice-list freshness to pushed
+          <code>slices_changed</code>, manual refresh, or coarse reconciliation. Freeform agent
+          spawn into a reused slice now also uses cached waiting-room slice rows when they identify
+          the selected slice and pass the existing scope/provider-auth checks, falling back to
+          <code>ListSlices</code> only when the cache cannot prove the selection. Opening the
+          <code>/slice status</code> and <code>/slice doctor</code> terminal slash commands now use
+          those same pushed slice rows when the cache can identify the requested slice, falling back
+          to <code>ListSlices</code> only when the cache is empty or cannot prove the target. Opening the
+          create-session sidebar dialog now stays local too: it focuses the first field and renders
+          immediately without forcing a full waiting-room refresh. Terminal background hydration is
+          now decoupled from waiting-room refresh as well: it hydrates provider catalog, prompt
+          history, and optional joined history, while waiting-room inventory remains owned by its
+          pushed stream, explicit refresh, and coarse reconciliation. New-slice launch now also
+          avoids the post-create <code>slice.list</code>: the browser validates the returned
+          <code>SliceCreated</code> scope when present, sends <code>StartSlice</code> directly, and
+          patches local state from the validated <code>SliceStarted</code> response. Reused slices
+          now use cached waiting-room slice rows for the same authority preflight when those rows
+          prove scope and provider auth; stale or missing cache data still falls back to
+          <code>ListSlices</code>. Freeform output-seen acknowledgements now also stay local on
+          the valid path: after <code>AcknowledgeAgentOutputSeen</code> the sidebar renders from
+          current state and waits for pushed row/session deltas, while real authorization/session
+          failures still schedule a broad refresh for recovery. Successful browser transport reattach now
+          also stays local: after <code>AttachToSession</code> and resubscribe it updates controls
+          and status without scheduling prompt-history refresh work. The kernel transport pump now
+          also treats a running Arroba provider with no active prompt as idle work instead of
+          keeping the fast pump cadence alive forever; prompt work, provider startup, native
+          provider streams, and due watchdogs still wake the pump. Repeated route-visible
+          waiting-room refresh scheduling now also uses the successful-refresh freshness guard:
+          the first visible hydration can revalidate, but subsequent render/navigation triggers
+          inside the <code>10s</code> freshness window do not issue another broad waiting-room
+          refresh set. Workflow route user actions now also stay on the command-response path when
+          the kernel already returned a session projection: endpoint invoke/cancel, node prompt
+          submit, runtime interaction response, extension grant changes, and workflow queue
+          mutations apply the validated response and repaint locally instead of forcing an immediate
+          <code>GetSessionState</code>. The workflow route controller now imports tab-state helpers
+          from the lightweight route-state module rather than pulling in the full React workflow
+          canvas dependency graph. This slice also removes the stale app-side output-seen
+          acknowledgement membership check from the hot browser path:
+          <code>AcknowledgeAgentOutputSeen</code> now validates against the runtime agent store,
+          restores the session, and publishes a session snapshot so projected agents no longer
+          create repeated failed control-plane requests. The browser freeform pane now also suppresses
+          repeated output-seen acknowledgements for the same stale <code>session:agent</code> key
+          after a membership failure, so a stale DOM pane can signal one recovery refresh without
+          hammering the relay/kernel until reconciliation catches up. CLI clients now also apply
+          <code>workflow_run_updated</code> events by upserting the pushed run into the attached
+          session state instead of scheduling a broad attached-state resync. CLI waiting-room
+          subscriptions now also apply <code>waiting_room_rows_changed</code> patches directly to
+          the cached session list, leaving the older version-only inventory event as the broad
+          refresh fallback. CLI waiting-room cache handling now also applies pushed
+          <code>provider_catalog_changed</code> and <code>slices_changed</code> events directly to
+          provider catalog and slice state, then reconciles the waiting-room view without fetching
+          catalog or slice lists. The browser waiting-room runtime refresh coordinator now treats
+          those pushed catalog and slice events as local runtime-view patches too: it applies the
+          cached data, rerenders, and syncs the terminal target without scheduling a broad refresh.
+          Relay status and remote-machine updates now follow the same pushed placement path in the
+          browser: the runtime view updates target and machine metadata locally, then reapplies the
+          waiting-room projection without fetching a public snapshot. CLI waiting-room event
+          handling now applies the same pushed relay status and remote-machine payloads directly to
+          cached waiting-room state, leaving the older version-only inventory event as the broad
+          refresh fallback. CLI workflow design events now also stay on the pushed path: the
+          dispatcher applies <code>workflow_design_op</code> to the attached session's workflow
+          definitions instead of scheduling an attached-state resync. CLI attach now patches the
+          attached session's cached waiting-room row from the hydrated session snapshot instead of
+          calling <code>ListSessions</code>; callers without a cached session list keep the old
+          fallback for compatibility. CLI <code>/machine approve</code>,
+          <code>/machine rename</code>, and <code>/machine forget</code> now patch the cached
+          remote-machine list from the validated command response instead of fetching the full
+          waiting-room inventory; pushed remote-machine events and coarse reconciliation remain the
+          recovery path.
+        </p>
+      </div>
+      <ul>
+        <li>
+          Web prompt submit should reconcile the <code>SubmitPrompt</code> acknowledgement and update
+          local sidebar recency without immediately forcing <code>GetSessionState</code> or a full
+          waiting-room refresh.
+        </li>
+        <li>
+          Empty prompt key handling should not be a hidden refresh affordance. Pressing Enter with
+          no prompt text while an agent is working now stays local and does not issue
+          <code>GetSessionState</code>; the visible send/stop control remains the explicit way to
+          stop a running turn.
+        </li>
+        <li>
+          Extension sync retry should use the command response as the source of truth. The web slash
+          runtime now reconciles the returned agent projection from
+          <code>RemoteExtensionManifestSynced</code>, updates visible status text, and does not
+          schedule <code>GetSessionState</code> for the whole session.
+        </li>
+        <li>
+          Extensions panel grant/revoke actions should not refresh the workflow route session after
+          they already validated the returned agent. The browser now reconciles the terminal agent
+          snapshot and applies the same returned agent projection to the workflow session store,
+          keeping workflow grant badges current without a broad <code>GetSessionState</code> read.
+          The old workflow-refresh callback has been deleted from the panel dependency surface.
+        </li>
+        <li>
+          Normal waiting-room session controls should not be wired to a broad inventory refresh
+          callback they do not use. The unused <code>refreshWaitingRoom</code> dependency was
+          removed from the session-control composition, leaving startup, pushed row patches,
+          explicit refresh, and coarse reconciliation as the only waiting-room inventory paths.
+        </li>
+        <li>
+          Provider/config changes should use the already-returned provider-run profile as the
+          immediate UI source of truth. The terminal composition now applies that profile locally,
+          syncs the context meter and focused layout, and does not call <code>GetSessionState</code>
+          just to repaint controls after a config action.
+        </li>
+        <li>
+          Waiting-room mutation controllers should not repaint by fetching the whole inventory after
+          every successful edit. Session alias edits and sidebar agent alias/config/workspace edits
+          now apply the committed patch locally and no longer receive a
+          <code>refreshWaitingRoom</code> callback. Freeform session alias edits also update the
+          active label and waiting-room sidebar projection locally after the validated
+          <code>SessionAliased</code> response.
+        </li>
+        <li>
+          Session lifecycle actions should treat the command response plus local row removal as the
+          immediate UI update. Archive/delete now dispose affected terminal records, update route
+          state, render the current route, and wait for pushed row patches or coarse reconciliation
+          instead of forcing a full waiting-room refresh.
+        </li>
+        <li>
+          Slice panel lifecycle controls should patch the affected row immediately after a validated
+          command response. Start/stop/delete now update the panel list locally and leave
+          <code>slice.list</code> for manual refresh, pushed <code>slices_changed</code>, or coarse
+          reconciliation. Opening the panel with cached runtime-view slice rows now adopts those rows
+          locally instead of scheduling a hidden bootstrap <code>ListSlices</code> request.
+        </li>
+        <li>
+          Slice panel diagnostic controls should not list every slice when the panel already has the
+          target row. The Doctor action now formats the cached row immediately and falls back to
+          <code>ListSlices</code> only when the row is missing from panel state.
+        </li>
+        <li>
+          Slice provider-auth controls should patch the affected row from the returned
+          <code>SliceRecord</code>. Import, remove, and alias edits now validate the
+          <code>SliceProviderAuth*</code> response, render the updated auth state immediately, and
+          leave <code>slice.list</code> for manual refresh, pushed <code>slices_changed</code>, or
+          coarse reconciliation.
+        </li>
+        <li>
+          Slice saved-state controls should use the returned <code>SliceRecord</code> as the
+          immediate UI source of truth. Restore, save-state, backup, and reset-state now update the
+          slice panel locally after validating their command responses, leaving
+          <code>slice.list</code> for manual refresh, pushed <code>slices_changed</code>, or coarse
+          reconciliation.
+        </li>
+        <li>
+          Freeform slice controls should not force a full waiting-room refresh after a successful
+          command. Start and save-state now validate the returned slice response, update visible
+          status immediately, and wait for pushed <code>slices_changed</code> or coarse
+          reconciliation to update background lists.
+        </li>
+        <li>
+          Slice slash-command status surfaces should reuse already-pushed slice rows. The browser
+          terminal now answers <code>/slice list</code>, <code>/slice status &lt;ref&gt;</code>, and
+          <code>/slice doctor &lt;ref&gt;</code> from cached waiting-room slice state when the
+          requested data is present, and only issues <code>ListSlices</code> when the cache is empty
+          or cannot prove the requested slice.
+        </li>
+        <li>
+          Opening the create-session dialog should not be a hidden refresh action. The sidebar now
+          opens and focuses locally from cached runtime state, leaving refreshes to startup, pushed
+          events, explicit refresh, and coarse reconciliation.
+        </li>
+        <li>
+          Terminal background hydration should not recombine provider catalog, prompt history, and
+          waiting-room inventory into one broad refresh. It now hydrates catalog/history only, while
+          waiting-room state continues through its dedicated pushed and coarse reconciliation paths.
+        </li>
+        <li>
+          Prompt-history refreshes should remain event-scoped, not periodic idle work. Current web
+          code only schedules prompt-history hydration from assistant completion and full session
+          snapshot application, with an in-flight request guard and a <code>10s</code> idle
+          debounce. The browser E2E gate should therefore prove idle terminals do not issue repeated
+          <code>prompt_input_history.get</code> requests; if that request appears at a steady
+          cadence, treat it as evidence that full session snapshots or stale tabs are still being
+          produced too often.
+        </li>
+        <li>
+          Session projection wakes must be shared across local websocket and relay routers. The
+          session projection store now owns the subscription change sequence, so local IPC mutations
+          such as native provider interactions wake browser relay subscriptions immediately instead
+          of waiting for the slow reconciliation sweep.
+        </li>
+        <li>
+          New slice launch should not create a slice and then immediately list every slice just to
+          start the one the kernel already returned. The create-start path now sends
+          <code>CreateSlice</code> then <code>StartSlice</code>; the reuse path uses cached
+          waiting-room slice rows for stale-reference, scope, and provider-auth validation when
+          possible and falls back to <code>ListSlices</code> only when the cache cannot prove the
+          selected slice.
+        </li>
+        <li>
+          Freeform output-seen acknowledgements should not be another hidden waiting-room refresh
+          trigger. Valid <code>AcknowledgeAgentOutputSeen</code> requests now validate against the
+          runtime agent store, repaint the visible sidebar locally, and rely on pushed row/session
+          deltas or coarse reconciliation; only real authorization/session errors should schedule a
+          recovery refresh.
+        </li>
+        <li>
+          Waiting-room event refreshes should debounce at <code>500ms</code>; poll freshness should
+          be <code>10s</code>; route-visible refresh scheduling should use the same freshness guard
+          after a successful refresh; fallback polling should run every <code>15s</code>, not every
+          few seconds.
+        </li>
+        <li>
+          Workflow route command actions should use the command response as the immediate UI source
+          of truth. Actions that already return a session projection now call
+          <code>applyKernelSessionResponse</code> and <code>refreshRoute</code> only; full
+          <code>GetSessionState</code> remains for deploy/recovery paths that do not provide a
+          validated session response.
+        </li>
+        <li>
+          The command cache should keep in-memory duplicate handling but skip disk persistence for
+          <code>session.state.get</code>, <code>waiting_room.public_snapshot.get</code>,
+          <code>waiting_room.inventory.get</code>, <code>provider.catalog.get</code>,
+          <code>slice.list</code>, and <code>external_provider_session.list</code>. The focused
+          kernel regression now inserts every one of those command types into the persistent cache,
+          verifies same-process duplicate replay still works from memory, verifies the JSONL stays
+          empty, and verifies a restarted cache cannot replay those high-frequency reads from disk.
+        </li>
+        <li>
+          Kernel transport cadence should stop treating idle bookkeeping as terminal streaming:
+          subscription watches run at <code>100ms</code>, full snapshot comparison at roughly
+          <code>500ms</code>, the background transport pump at <code>500ms</code>, heartbeat at
+          <code>5s</code>, relay discovery at <code>15s</code>, and waiting-room inventory checks at
+          roughly <code>10s</code>.
+        </li>
+        <li>
+          Hosted relay daemon heartbeats should use the same human-scale default cadence. The base
+          daemon config and environment loader now share a <code>5s</code>
+          <code>DEFAULT_RELAY_HEARTBEAT_MS</code>; explicit tests and drills can still override
+          <code>ARROBA_RELAY_HEARTBEAT_MS</code> when they need faster simulated failure detection.
+        </li>
+        <li>
+          The background transport pump should be adaptive: keep <code>500ms</code> while prompt work,
+          provider startup, native/background provider streams, or due workflow watchdogs exist;
+          otherwise use a <code>5s</code> safety sweep so an idle kernel does not wake continuously.
+          A running Arroba provider with no active prompt is idle for pump purposes. The pump task
+          also waits on the shared runtime projection change signal, so a new prompt/run/watchdog
+          mutation can wake it immediately instead of waiting for the idle sweep.
+        </li>
+        <li>
+          Session subscriptions should wait on terminal stream changes instead of blindly sleeping.
+          Local and relay subscriptions use a terminal stream change sequence plus notification:
+          visible output, runtime notices, completions, or session removal wake waiters immediately;
+          active runtime work keeps a <code>100ms</code> timeout and idle sessions fall back to a
+          <code>5s</code> reconciliation timeout.
+        </li>
+        <li>
+          Session subscriptions should also wait on the runtime projection change sequence. Session
+          snapshots, creation, config updates, end, and delete operations publish the shared signal,
+          so metadata/provider/session projection changes wake local and relay browser subscribers
+          without increasing idle polling.
+        </li>
+        <li>
+          Runtime interactions must be proved at the browser event boundary, not only by
+          <code>GetSessionState</code>. A direct state read seeing
+          <code>active_interactions</code> is insufficient if the live Chromium terminal does not
+          receive a pushed <code>runtime_interactions_changed</code> or snapshot delta and render the
+          controls inside the UX budget. The implementation should coalesce less work in the
+          subscription loop, publish the interaction mutation through the same owned-state projection
+          as prompt/activity changes, and avoid any fallback that polls full session state on the
+          hot path.
+        </li>
+        <li>
+          Waiting-room runtime views should refresh the public session inventory independently from
+          rarely-changing data. Provider catalog refreshes use a <code>5 minute</code> TTL; slice-list
+          refreshes use a <code>30s</code> TTL. Explicit reconciliation can therefore fetch only
+          <code>GetWaitingRoomPublicSnapshot</code> while those caches are fresh, while normal pushed
+          updates use row patches.
+        </li>
+        <li>
+          Provider catalog and slice-list freshness should also be pushed when the kernel already has
+          the data. Local and relay waiting-room inventory subscriptions now emit
+          <code>provider_catalog_changed</code> when the cached provider catalog changes and
+          <code>slices_changed</code> when the slice list changes. Slice mutations publish the shared
+          runtime projection change signal, so the waiting-room stream wakes immediately for slice
+          lifecycle/auth changes. The browser and CLI apply both events to cached runtime views, mark
+          those caches fresh, rerender without scheduling a broad refresh, and the next explicit
+          waiting-room refresh only fetches <code>GetWaitingRoomPublicSnapshot</code> while catalog
+          and slice data remain fresh.
+        </li>
+        <li>
+          Kernel and relay waiting-room subscriptions should emit <code>waiting_room_rows_changed</code>
+          with the inventory version, schema metadata, changed session rows, and removed session IDs.
+          The first event on a subscription contains the current row set; later events carry only row
+          deltas. The browser and CLI merge the patch into the cached runtime view, render once,
+          preserve slower-changing terminal and external-provider lists from the last full snapshot,
+          and do not schedule a full waiting-room refresh. The older
+          <code>waiting_room_inventory_changed</code> event remains a version-only fallback for
+          compatibility and older kernels.
+        </li>
+        <li>
+          Session subscriptions should not also rebuild waiting-room inventory. Local and relay
+          session loops no longer call <code>waiting_room_public_snapshot</code> on their own
+          <code>10s</code> cadence. The single <code>waiting_room_inventory</code> subscription owns
+          row-patch delivery, so multiple open terminals do not multiply public-snapshot work.
+        </li>
+        <li>
+          Relay status and remote-machine discovery are global waiting-room concerns, not
+          per-terminal session concerns. The local and hosted relay waiting-room inventory
+          subscriptions now own <code>relay_status_changed</code> and
+          <code>remote_machines_changed</code> emission with <code>5s</code> and <code>15s</code>
+          fallback cadences. Browser runtime views apply both events as local placement patches and
+          do not schedule a broad waiting-room refresh. CLI clients apply the same pushed payloads
+          directly to relay and remote-machine state without fetching the full waiting-room
+          inventory. CLI remote-machine slash mutations also patch the cached machine list directly
+          from the command response instead of forcing a full waiting-room refresh. Session
+          subscriptions keep only
+          session-scoped heartbeats, output, notices, completions, workflow events, and
+          session/activity projections.
+        </li>
+        <li>
+          Waiting-room subscriptions should no longer wait for the <code>10s</code> safety sweep to
+          notice normal row changes. Runtime session projection and lifecycle mutations publish a
+          shared runtime projection change signal; local and relay waiting-room subscriptions wake on that signal,
+          coalesce for <code>500ms</code>, then emit the compact row patch if the inventory version
+          changed. The <code>10s</code> timer remains only as missed-signal reconciliation.
+        </li>
+        <li>
+          Local websocket and hosted relay writers should coalesce event-lane bursts with a
+          <code>33ms</code> window. Response, registration, close, ping/pong, and other priority
+          frames bypass the event window, while terminal output and other subscription events flush
+          in order after one short burst delay instead of one send per immediate event.
+        </li>
+        <li>
+          Session subscriptions should no longer rebuild and compare a full
+          <code>SessionSnapshot</code> every few terminal-output ticks. Local and relay session
+          loops now request a full snapshot only on first attach, when the runtime projection change
+          sequence changes, or after a <code>30s</code> reconciliation interval. Terminal output,
+          notices, completions, and workflow design events can flow without paying the full session
+          projection cost.
+        </li>
+        <li>
+          Activity-only projection changes should no longer send full session snapshots. If
+          <code>RuntimeSession</code> and <code>provider_run</code> are unchanged, or if only
+          prompt runtime inside <code>RuntimeSession</code> changed, and <code>agent_activity</code>
+          changed, local and relay subscription loops emit <code>agent_activity_changed</code>. The
+          web terminal applies that patch to visible agent state and prompt controls without
+          scheduling broad session refreshes, provider-run reconciliation, history hydration, or
+          context-meter updates. The CLI applies the same pushed activity patch directly to the
+          attached session state and reserves broad resync for replay gaps and other recovery paths.
+        </li>
+        <li>
+          Prompt lifecycle does not need another event shape while its browser-visible state is
+          already represented by <code>agent_activity.prompt_status</code> and
+          <code>agent_activity.active_turn</code>. Prompt accepted/running/cancelling/settling
+          transitions that only mutate prompt runtime now use <code>agent_activity_changed</code>
+          and skip <code>session_snapshot</code>. This keeps the protocol lean while moving prompt
+          controls and badges on the pushed hot path.
+        </li>
+        <li>
+          Heartbeats should be treated as liveness signals, not data-refresh triggers. The visible
+          web terminal, background terminal records, and CLI event dispatcher no longer schedule
+          <code>GetSessionState</code> or prompt-history refreshes from heartbeat events while an
+          agent is working; pushed <code>agent_activity_changed</code>, terminal output, completion,
+          replay, and explicit refresh paths carry the actual state changes.
+        </li>
+        <li>
+          Assistant-completion events should not be used as broad session invalidations. The visible
+          web terminal now treats <code>assistant_message_completed</code> as a prompt-history refresh
+          signal only, and background terminal records do not issue <code>GetSessionState</code> for
+          pushed completion events. Any session, provider-run, or activity changes should arrive as
+          typed pushed events or through the coarse reconciliation/recovery paths.
+        </li>
+        <li>
+          Successful transport resume should also stay out of the broad session-refresh path.
+          <code>transport_resumed</code> now updates liveness/status state without scheduling
+          <code>GetSessionState</code>, prompt-history refresh, or a broad waiting-room
+          public-snapshot/provider-catalog/slice-list refresh. Successful browser
+          <code>AttachToSession</code> reattach follows the same rule and does not schedule a
+          prompt-history refresh; CLI resume handling updates local connection state without
+          attached-session resync; <code>replay_gap</code> remains the recovery signal that
+          justifies a fresh projection.
+        </li>
+        <li>
+          Browser session-state refresh should not become the live activity loop after any full
+          refresh succeeds. While a terminal agent is working, the automatic follow-up
+          <code>GetSessionState</code> reconciliation now waits <code>30s</code> instead of
+          <code>2s</code>. This keeps a coarse missed-event safety net while moving normal UX to
+          pushed events.
+        </li>
+        <li>
+          Workflow-run-only projection changes should keep using the existing
+          <code>workflow_run_updated</code> event instead of adding a parallel protocol shape. Local
+          and relay session subscriptions now emit changed workflow runs first and skip
+          <code>session_snapshot</code> when no other session/provider/activity fields changed. The
+          workflow browser bridge already applies this event directly to its session store and
+          refreshes workflow surfaces without a hot-path <code>GetSessionState</code> request. CLI
+          clients now patch attached <code>workflow_runs</code> from the pushed run instead of
+          scheduling broad attached-state resync.
+        </li>
+        <li>
+          Workflow design operations should also avoid broad attached-session resyncs. Browser
+          workflow routes already apply forwarded <code>workflow_design_op</code> events locally;
+          CLI clients now apply the pushed design op to the attached session workflow list as well,
+          keeping replay gaps and explicit refresh as the recovery paths.
+        </li>
+        <li>
+          Provider-run-only projection changes should also be narrow pushed events. If
+          <code>RuntimeSession</code> and <code>agent_activity</code> are unchanged but
+          <code>provider_run</code> changed, local and relay subscription loops emit
+          <code>provider_run_changed</code> and skip <code>session_snapshot</code>. The web terminal
+          updates provider-run state, context meter, and prompt controls without session
+          reconciliation, activity/layout sync, history hydration, or broad refresh. CLI clients
+          now consume the same pushed provider-run event by applying the returned run to attached
+          state directly instead of calling broad attached-state resync.
+        </li>
+        <li>
+          Metadata-only projection changes should use <code>session_metadata_changed</code>. If
+          provider run, activity, prompt, agent, workflow, and structural session data are unchanged,
+          local and relay session subscriptions emit a compact metadata patch for alias, hidden
+          state, focused-agent hint, last-used timestamps, and workspace live-sync mode. The web
+          terminal applies this to labels, sidebar alias state, context meter, and prompt controls
+          without full session reconciliation or history work. CLI clients apply those metadata
+          fields to the attached session state locally.
+        </li>
+        <li>
+          Runtime-interaction-only projection changes should use
+          <code>runtime_interactions_changed</code>. If provider run, activity, metadata, prompt,
+          agent, workflow, and structural session data are unchanged, local and relay session
+          subscriptions emit the active interaction list only. The web terminal reconciles
+          permission/choice prompts through its existing interaction state, marks affected agents
+          dirty, syncs prompt controls, and avoids full session reconciliation, history hydration,
+          or broad refreshes. CLI clients now apply active-interaction patches directly to attached
+          session state and keep replay gaps as broad recovery.
+        </li>
+        <li>
+          Runtime failure notices should not force broad session reconciliation after already
+          updating the visible terminal state. The browser notice controller now renders the failure,
+          completes the active local turn, updates the agent error state, syncs prompt controls, and
+          leaves full <code>GetSessionState</code> recovery to replay gaps, explicit refresh, or the
+          coarse reconciliation path.
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Protocol Work</h2>
+      <div class="callout warning">
+        <p>
+          This changes serialized runtime event shapes and browser/kernel semantics. Any implementation
+          must increment the shared local daemon protocol version, update protocol snapshot/hash tests,
+          and add focused drills for the changed behavior.
+        </p>
+      </div>
+      <ul>
+        <li>For the waiting-room row/activity slice, bump the shared local daemon protocol version to <code>152</code>.</li>
+        <li>For pushed provider catalog and slice-list cache events, bump the shared local daemon protocol version to <code>153</code>.</li>
+        <li>For pushed provider-run deltas, bump the shared local daemon protocol version to <code>154</code>.</li>
+        <li>For pushed session metadata deltas, bump the shared local daemon protocol version to <code>155</code>.</li>
+        <li>For pushed runtime interaction deltas, bump the shared local daemon protocol version to <code>156</code>.</li>
+        <li>Protocol shape and conformance tests now agree on <code>LOCAL_DAEMON_PROTOCOL_VERSION = 156</code>, including the relay-peer workspace live-sync shape guards that had stale older assertions.</li>
+        <li><code>docs/PROTOCOL.md</code> now documents the pushed event contract for terminal output, session deltas, waiting-room row patches, provider catalog, slice list, workflow updates, and recovery signals.</li>
+        <li>Add typed waiting-room row-patch events alongside existing snapshot and version events first.</li>
+        <li>Add typed <code>agent_activity_changed</code> events for activity-only session projection updates.</li>
+        <li>Add typed <code>provider_run_changed</code> events for provider-run-only session projection updates.</li>
+        <li>Add typed <code>session_metadata_changed</code> events for top-level session metadata-only updates.</li>
+        <li>Add typed <code>runtime_interactions_changed</code> events for permission/choice prompt interaction-only updates.</li>
+        <li>Add typed <code>provider_catalog_changed</code> and <code>slices_changed</code> events on the waiting-room inventory stream.</li>
+        <li>Reuse existing <code>workflow_run_updated</code> for workflow-run-only deltas; no additional protocol version bump is needed for this event name.</li>
+        <li>Update OSS and web clients to consume pushed waiting-room updates, provider catalog changes, and slice-list changes while keeping version-only fallback.</li>
+        <li>Update OSS and web clients to recognize activity deltas; keep full <code>SessionSnapshot</code> as the fallback for attach, recovery, and structural changes.</li>
+        <li>Keep full public snapshots for initial manual refresh, recovery, and slower reconciliation paths.</li>
+        <li>Use compact row diffs in <code>waiting_room_rows_changed</code> for normal browser and CLI waiting-room updates.</li>
+        <li>Only raise web/native minimum supported protocol version when the client requires the new events.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Performance Drills</h2>
+      <div class="callout">
+        <p>
+          Drills must be end-to-end browser drills. Kernel counters, logs, and process samples are
+          supporting evidence, but the pass/fail signal must come from what a user would observe in
+          the browser: input action timestamp, DOM update timestamp, visible terminal output, network
+          request count, frame count, and rendered waiting-room state. A drill that only inspects
+          kernel logs or command output is not sufficient for this performance work.
+        </p>
+        <p>
+          Use Playwright or an equivalent browser harness against the local web terminal and hosted
+          relay path. Record browser performance marks around clicks, prompt submission, first visible
+          output, activity badge changes, waiting-room row updates, and reconnect recovery.
+        </p>
+        <p>
+          Concrete entry points should include <code>scripts/staging-waiting-room-prompt-live-drill.mjs</code>
+          for hosted relay/browser prompt latency, <code>scripts/staging-slice-browser-e2e-drill.mjs</code>
+          for full provider interaction latency, and <code>pnpm run perf:drills</code> as the local
+          aggregation command. The local aggregate includes
+          <code>scripts/local-idle-browser-kernel-drill.mjs</code>, which launches a real local
+          relay, kernel, web server, and Chromium waiting-room page. That live drill now also
+          closes the browser event subscription socket, creates a kernel session while the browser
+          is disconnected, verifies the browser resubscribes with the last event id, and measures
+          how long the replayed waiting-room row takes to become visible. It also creates a real
+          local session, joins it through the product waiting-room picker in Chromium, captures the
+          browser's terminal subscription attachment id, launches a <code>dev-stub</code>
+          native-TUI provider run, submits a real prompt through the browser terminal composer,
+          completes that prompt through the kernel, requests a live provider-native runtime
+          interaction, resolves that interaction from the browser terminal UI, appends
+          provider-native output through the kernel, and measures prompt-to-visible-terminal,
+          interaction-to-visible-terminal, interaction-choice-to-resolved, and
+          chunk-to-visible-terminal latency in the browser before the idle window starts. These
+          drills should print the browser-measured
+          timings and request counts they use for pass/fail.
+        </p>
+        <p>
+          Current local validation runs <code>pnpm run perf:drills</code>, which builds Cloud, executes
+          browser/reconnect/render-budget tests, runs a real Chromium hot-path UX contract drill
+          against the built web modules, runs the live local idle browser/kernel drill, and runs the
+          stale relay target drill. The live idle drill uses a <code>12s</code> default idle window
+          for the local gate and can be promoted to the full acceptance window with
+          <code>ARROBA_IDLE_BROWSER_DRILL_DURATION_MS=300000</code>. The hosted staging prompt drill
+          is instrumented with a second browser page observing the waiting room, so it records
+          keypress-to-terminal-route, keypress-to-visible prompt, keypress-to-first-provider-output,
+          keypress-to-provider marker, keypress-to-waiting-room-row, and classified hot-path
+          network request counts against the deployed relay path. It fails by default if the prompt
+          hot path issues any <code>session.state.get</code> browser request, with an explicit
+          override only for emergency investigation. It also fails when browser-owned prompt
+          keypress handling, visible prompt echo, or waiting-room row update exceed their configured
+          UX budgets; provider first-output latency is reported separately because provider runtime
+          latency is not a browser transport budget. The hosted slice browser E2E drill records
+          per-provider prompt keypress-to-marker timings, fails if browser-owned prompt keypress
+          handling exceeds its configured budget, and fails by default if provider prompt phases
+          issue any broad <code>session.state.get</code> browser request. Running those hosted drills still requires real auth/provider
+          credentials. The local Chromium contract now runs the same hot-path browser sequence at
+          desktop size and at a <code>390x844</code> narrow viewport; both viewports must meet the
+          same DOM-delay and network-request budgets.
+        </p>
+        <p>
+          Add a dedicated browser assertion for activity deltas: after a prompt/activity transition,
+          the page should observe <code>agent_activity_changed</code>, update the visible badge and
+          prompt controls, and record zero hot-path <code>GetSessionState</code> requests unless
+          replay recovery or an explicit manual refresh is active.
+        </p>
+        <p>
+          The local <code>perf:drills</code> gate now includes the visible terminal event
+          controller, background terminal record refresh admission, and session-state refresh
+          controller tests, so heartbeat- and assistant-completion-triggered broad session reads and
+          the working-session reconciliation cadence are covered for active and background browser
+          records. The Chromium contract drill verifies the same hot events in an actual browser,
+          measuring event-to-DOM latency for activity, completion, successful transport resume,
+          replay-gap recovery status, replay recovery clearing back to ready,
+          transport-closed reconnecting status, transport reconnect clearing back to ready,
+          successful browser reattach, terminal output, and waiting-room row patches while asserting
+          zero hot-path session-state network requests. It also dispatches a provider-output burst
+          in Chromium and verifies the last chunk reaches the DOM inside the same latency budget
+          without a hidden session-state read or duplicate output after recovery events. It also asserts heartbeat and successful
+          reattach do not schedule prompt-history refresh work. It also measures
+          <code>provider_run_changed</code> event-to-DOM latency through the real
+          terminal event controller, proving provider-run state reaches the browser without a full
+          session snapshot or <code>GetSessionState</code> request. It also measures
+          <code>session_metadata_changed</code> event-to-DOM latency for visible label/context
+          updates without full session reconciliation. It
+          also imports the real workflow browser bridge and store, emits
+          <code>workflow_run_updated</code>, and measures workflow-run event-to-DOM latency without
+          a session refresh. It also instantiates the real workflow route controller in Chromium,
+          invokes a workflow endpoint, applies the returned session projection, and verifies the
+          visible workflow DOM updates without calling the forced session refresh hook. It now also
+          applies pushed <code>provider_catalog_changed</code> and
+          <code>slices_changed</code> events, measures their DOM latency, and verifies that the next
+          runtime-view refresh suppresses <code>provider.catalog.get</code> and
+          <code>slice.list</code> while still allowing the public session snapshot refresh. It now
+          also measures pushed <code>relay_status_changed</code> and
+          <code>remote_machines_changed</code> placement updates in Chromium and verifies they do not
+          request a broad waiting-room refresh. The
+          drill performs a real browser textarea fill and Send click, then measures
+          click-to-appended user prompt DOM latency. The same Chromium drill now includes an idle
+          waiting-room refresh contract: after one broad
+          public-snapshot/provider-catalog/slice-list refresh, a fresh fallback poll inside the
+          <code>10s</code> freshness window must not issue another broad refresh set. It also
+          verifies a fresh route-visible refresh schedule after a successful refresh does not issue
+          another broad refresh set, preserving first visible hydration while avoiding repeated
+          render/navigation refresh amplification. It also instantiates the real waiting-room
+          session alias and sidebar agent config mutation
+          controllers in Chromium and verifies their local confirmed patches update the DOM without
+          increasing broad refresh request counts. It also instantiates the real freeform session
+          alias controller and verifies the active label/sidebar projection path updates locally.
+          It also runs a confirmed session archive through the real lifecycle controller and verifies
+          the row disappears locally without increasing broad refresh request counts. It also clicks
+          the real slice panel start control and verifies the row patches locally after
+          <code>StartSlice</code> without a follow-up <code>ListSlices</code>. It also clicks the
+          real slice provider-auth alias save control and verifies the auth row patches locally
+          after <code>SetSliceProviderAuthAlias</code> without a follow-up
+          <code>ListSlices</code>. It also clicks the real slice backup control and verifies the
+          state row patches locally after <code>CreateSliceBackup</code> without a follow-up
+          <code>ListSlices</code>. It also clicks a real DOM control wired to the freeform slice
+          start action and verifies the visible status updates after <code>StartSlice</code> without
+          a broad waiting-room refresh. It also runs the real freeform agent spawn dialog controller
+          against a cached stopped slice and verifies the browser-visible spawn path sends
+          <code>StartSlice</code>, <code>SpawnAgent</code>, <code>FocusAgent</code>,
+          <code>LaunchProviderRun</code>, and <code>FocusAgent</code> without
+          <code>ListSlices</code>. It also focuses a live freeform pane through the real
+          interaction controller and verifies <code>AcknowledgeAgentOutputSeen</code> updates the
+          sidebar without scheduling a broad waiting-room refresh. It also repeats the real
+          freeform pane focus path after a stale acknowledgement membership error and verifies the
+          browser suppresses further acknowledgements for that stale <code>session:agent</code>
+          key while still emitting one recovery refresh signal. It also clicks the create-session control through the real
+          waiting-room DOM controller and verifies the dialog opens locally without a broad refresh.
+          It also runs terminal background hydration in Chromium and verifies the DOM updates while
+          the only kernel-shaped request is <code>GetProviderCatalog</code>. It also applies pushed
+          background session row activity changes, renders the real session picker DOM, and verifies
+          the background session moves from working to settled without a broad refresh. It also clicks a DOM
+          control wired to the real <code>createAndStartSlice</code> helper and verifies the new
+          slice launch reaches the DOM after <code>CreateSlice</code> then <code>StartSlice</code>,
+          with no <code>ListSlices</code> request in that path. The drill repeats the full sequence
+          at <code>390x844</code>, asserts there is no horizontal overflow, and verifies the slice
+          launch control remains a visible tappable target.
+          Recent local browser contract runs measured activity-to-badge at about <code>0.1ms</code>,
+          prompt-lifecycle-to-DOM at about <code>0.1ms</code>, provider-run-to-DOM at about
+          <code>0.0ms</code>, session-metadata-to-DOM at about <code>0.1ms</code>,
+          runtime-interactions-to-DOM at about <code>0.0ms</code>, runtime-notice-failure-to-DOM
+          at about <code>0.2ms</code>, empty-working-prompt-Enter-to-DOM at about
+          <code>0.1ms</code>, extension-sync-retry-to-DOM at about <code>0.3ms</code>,
+          session-alias-mutation-to-DOM at about <code>0.1ms</code>,
+          sidebar-agent-config-mutation-to-DOM at about <code>0.1ms</code>,
+          freeform-session-alias-mutation-to-DOM at about <code>0.1ms</code>,
+          create-session-open-to-DOM at about <code>0.2ms</code>,
+          background-hydration-to-DOM at about <code>0.1ms</code>,
+          freeform-slice-start-to-DOM at about <code>1.0ms</code>,
+          freeform-cached-slice-spawn-to-DOM at about <code>0.4ms</code>,
+          freeform-output-seen-ack-to-DOM at about <code>6.5ms</code>,
+          freeform-stale-output-ack-suppression-to-DOM at about <code>19.1ms</code>,
+          slice-panel-cached-open-to-DOM at about <code>0.2ms</code>,
+          slice-panel-start-to-DOM at about <code>8.0ms</code>,
+          slice-panel-auth-alias-to-DOM at about <code>8.3ms</code>,
+          slice-panel-backup-to-DOM at about <code>8.2ms</code>,
+          session-lifecycle-archive-to-DOM at about <code>0.2ms</code>,
+          heartbeat-no-history-refresh at about <code>0.0ms</code>,
+          successful-transport-resume-to-status at about <code>0.0ms</code>,
+          replay-gap-to-recovery-status at about <code>0.0ms</code>,
+          replay-recovered-to-ready-status at about <code>0.0ms</code>,
+          transport-closed-to-reconnecting-status at about <code>0.0ms</code>,
+          transport-reconnected-to-ready-status at about <code>0.0ms</code>,
+          reattach-session-no-history-refresh at about <code>0.2ms</code>,
+          waiting-room-transport-resume-no-refresh at about <code>0.0ms</code>,
+          terminal-output-to-DOM at about <code>0.0ms</code>, terminal-output-burst-to-DOM at
+          about <code>0.1ms</code>,
+          background-session-activity-to-picker at about <code>4.8ms</code>,
+          background-session-settled-to-picker at about <code>0.2ms</code>,
+          relay-status-to-DOM at about <code>0.0ms</code>,
+          remote-machines-to-DOM at about <code>0.0ms</code>,
+          workflow-run-to-DOM at about <code>0.3ms</code>,
+          workflow-endpoint-invoke-no-session-refresh at about <code>0.2ms</code>,
+          fresh-idle-poll-suppression at about <code>1.4ms</code>,
+          fresh-visible-refresh-suppression at about <code>0.0ms</code>,
+          new-slice-launch-click-to-DOM at about <code>4.8ms</code>, prompt
+          click-to-user-prompt DOM at about <code>0.1ms</code>, with zero
+          <code>session.state.get</code> network requests, three broad refresh requests for the
+          initial public-snapshot/provider-catalog/slice-list set, and only one broad idle refresh
+          set.
+          The same run measured the mobile/narrow viewport path at about <code>0.2ms</code> for
+          activity-to-badge, <code>0.1ms</code> for waiting-room-row-to-DOM,
+          <code>0.4ms</code> for freeform-cached-slice-spawn-to-DOM,
+          <code>5.1ms</code> for freeform-output-seen-ack-to-DOM,
+          <code>23.1ms</code> for freeform-stale-output-ack-suppression-to-DOM,
+          <code>0.3ms</code> for slice-panel-cached-open-to-DOM,
+          <code>4.7ms</code> for new-slice-launch-click-to-DOM, <code>0.1ms</code> for
+          terminal-output-burst-to-DOM, <code>2.1ms</code> for fresh-idle-poll-suppression,
+          <code>0.0ms</code> for fresh-visible-refresh-suppression, <code>0.2ms</code> for
+          workflow-endpoint-invoke-no-session-refresh, and <code>0.1ms</code> for prompt
+          click-to-user-prompt DOM. The pushed background session activity row rendered into the
+          real picker in about <code>4.9ms</code> and the settled row in about
+          <code>0.0ms</code>. Heartbeat scheduled no prompt-history refresh work, successful
+          transport resume measured about <code>0.0ms</code> to status on mobile, successful
+          replay recovery and transport reconnect both cleared back to ready status within
+          <code>0.0ms</code> on mobile, successful
+          reattach measured about <code>0.2ms</code> without scheduling prompt-history refresh work,
+          and waiting-room transport resume measured about <code>0.1ms</code> without scheduling a broad refresh,
+          again with zero <code>session.state.get</code> requests, three broad refresh requests for
+          the initial public-snapshot/provider-catalog/slice-list set, and one broad idle refresh
+          set.
+          The mobile layout assertion recorded <code>390px</code> viewport
+          width, <code>390px</code> scroll width, and a <code>36px</code>-tall visible launch
+          control. Supporting disk evidence comes from
+          <code>persistent_command_cache_skips_noisy_read_commands_on_disk</code>, which covers
+          <code>external_provider_session.list</code>, <code>provider.catalog.get</code>,
+          <code>session.state.get</code>, <code>slice.list</code>,
+          <code>waiting_room.inventory.get</code>, and
+          <code>waiting_room.public_snapshot.get</code> and proves those repeated reads do not grow
+          <code>command-results.jsonl</code>. The latest kernel-side focused tests additionally
+          verify that projected remote provider runs are not local pump targets, idle running
+          Arroba provider runs do not keep the background output pump active, and idle running
+          Arroba provider runs do not count as transport active work; starting provider runs still
+          use the active cadence. Focused <code>event_writer</code> Rust tests now also verify local
+          websocket and hosted relay event-lane coalescing: event bursts keep a stable
+          <code>33ms</code> deadline, preserve every queued event, and can be disabled for test
+          configurations; the existing websocket integration confirms ping/pong priority frames are
+          not blocked while the event writer is delayed. The latest CLI test run passed <code>1268</code> tests, including
+          focused dispatch coverage that verifies <code>agent_activity_changed</code>,
+          <code>provider_run_changed</code>, <code>session_metadata_changed</code>, and
+          <code>runtime_interactions_changed</code> update attached state locally without invoking
+          <code>resyncAttachedKernelState</code>.
+          The 2026-06-18 aggregate <code>pnpm run perf:drills</code> run also executed the live
+          local idle browser/kernel drill. Chromium opened the real waiting room against a local
+          relay/kernel/web stack, measured create-dialog click-to-visible UI at <code>46ms</code>,
+          closed the browser event subscription socket, created session
+          <code>replay-drill-49397</code> while disconnected, resubscribed with
+          <code>resume_from_event_id=5</code>, and rendered the replayed waiting-room row in
+          <code>791ms</code>. The same aggregate run joined a real terminal session, captured
+          browser attachment <code>attachment-1</code>, launched provider run
+          <code>provider-run-1</code>, submitted a real prompt through the browser composer and saw
+          it in terminal output in <code>92ms</code>, then measured browser-visible provider
+          streaming chunks at <code>262ms</code>, <code>260ms</code>, <code>257ms</code>, and
+          <code>258ms</code> with p95 <code>262ms</code>. It measured idle browser frame p95 at
+          <code>8.4ms</code>, and observed zero idle <code>/kernel/*</code> HTTP requests, zero
+          idle relay client frames, and zero <code>command-results.jsonl</code> byte growth during
+          the <code>12s</code> idle window. Supporting process samples for the drill kernel had a
+          few transient samples above <code>2%</code> but no sustained elevation above the
+          <code>2%</code> idle CPU budget during that same browser-observed idle window.
+          A focused live local run after adding provider streaming coverage measured create-dialog
+          click-to-visible UI at <code>66ms</code>, reconnect replay row visibility at
+          <code>796ms</code>, browser-visible provider streaming chunks at
+          <code>257ms</code>, <code>254ms</code>, <code>259ms</code>, and
+          <code>257ms</code> with p95 <code>259ms</code>, idle browser frame p95 at
+          <code>7.9ms</code>, zero idle <code>/kernel/*</code> HTTP requests, zero idle relay
+          client frames, zero <code>command-results.jsonl</code> byte growth, and kernel CPU
+          samples below <code>1%</code> throughout the post-stream idle window.
+          A follow-up focused run added a credential-free real prompt submission in that same
+          terminal path: the browser-submitted prompt became visible in <code>22ms</code>, provider
+          streaming p95 was <code>263ms</code>, reconnect replay row visibility was
+          <code>789ms</code>, idle browser frame p95 was <code>8.5ms</code>, idle
+          <code>/kernel/*</code> HTTP requests and relay client frames were both zero,
+          <code>command-results.jsonl</code> did not grow, and post-prompt/post-stream kernel CPU
+          stayed below <code>2%</code>.
+          A subsequent browser drill extension exposed an important provider-native permission
+          prompt gap: in one live run the kernel had the active runtime interaction for the focused
+          agent, but the Freeform terminal DOM did not render the interaction controls within either
+          the <code>750ms</code> UX budget or a diagnostic <code>7s</code> window. A related
+          subscription fix changed live relay snapshots to use a read-only, attachment-aware
+          owned-state projection instead of calling the mutating session-snapshot helper from the
+          subscription comparison path; this avoids turning a read-side comparison into another
+          runtime projection change. The drill also now measures prompt echo from the actual
+          <code>Enter</code> action rather than including the browser textarea fill/actionability
+          time, and its local wait sampler uses <code>50ms</code> steps so browser UX delays are not
+          hidden behind coarse measurement sleeps. Failure diagnostics now keep a bounded browser
+          transport-log buffer, so the drill can report decoded pushed event names without retaining
+          unbounded console history. With those measurement fixes, the real browser prompt echo path
+          is fast: focused runs put the user prompt in the terminal DOM in roughly
+          <code>20-30ms</code>. A transient normal-budget run also showed the send button settling
+          late after a completed <code>dev-stub</code> prompt even though the prompt text and
+          completion marker were visible; a focused kernel test now verifies prompt completion wakes
+          session projection subscribers, so the remaining guard is the browser E2E drill rather
+          than a hotter polling loop.
+        </p>
+        <p>
+          A normal-budget live browser run on 2026-06-18 passed the
+          relay/kernel/web/Chromium contract with the native runtime interaction gate still set to
+          <code>750ms</code>. Browser-measured dialog latency was <code>65ms</code>, reconnect replay
+          row visibility was <code>800ms</code>, prompt submit-to-visible terminal output was
+          <code>13ms</code>, native runtime interaction visibility was <code>64ms</code>, and the
+          selected interaction choice resolved visibly in <code>21ms</code>. Provider chunk
+          latencies were <code>55ms</code>, <code>56ms</code>, <code>59ms</code>, and
+          <code>62ms</code> for a p95 of <code>62ms</code>. During the idle window, browser frame
+          p95 was <code>10.1ms</code>, idle <code>/kernel/*</code> HTTP requests were
+          <code>0</code>, idle relay client frames were <code>0</code>, and
+          <code>command-results.jsonl</code> grew by <code>0</code> bytes. The drill log contained
+          <code>0</code> acknowledgement failures and <code>0</code>
+          <code>does not belong to session</code> occurrences; kernel CPU samples stayed below about
+          <code>1.6%</code> after one short startup/post-run transient sample at <code>9.2%</code>.
+          The later full <code>perf:drills</code> suite also passed, with prompt visibility at
+          <code>18ms</code>, runtime interaction visibility at <code>67ms</code>, provider chunk p95
+          at <code>78ms</code>, idle browser frame p95 at <code>9.1ms</code>, idle
+          <code>/kernel/*</code> HTTP requests at <code>0</code>, one idle relay client frame, and
+          zero command-result cache growth.
+          A focused 2026-06-19 live browser/kernel run after broadening noisy-read persistence to
+          <code>external_provider_session.list</code> measured create-dialog latency at
+          <code>51ms</code>, reconnect replay row visibility at <code>797ms</code>, prompt
+          submit-to-visible terminal output at <code>13ms</code>, native runtime interaction
+          visibility at <code>76ms</code>, interaction choice resolution at <code>28ms</code>,
+          provider chunk p95 at <code>72ms</code>, and idle browser frame p95 at
+          <code>8.9ms</code>. During the <code>12s</code> idle window, idle
+          <code>/kernel/*</code> HTTP requests were <code>0</code>, idle relay client frames were
+          <code>0</code>, <code>command-results.jsonl</code> grew by <code>0</code> bytes, and
+          post-startup kernel CPU samples stayed below <code>1%</code>.
+          A later 2026-06-19 cross-router wake and prompt-history cadence pass measured create-dialog
+          latency at <code>58ms</code>, reconnect replay row visibility at <code>792ms</code>, prompt
+          submit-to-visible terminal output at <code>12ms</code>, native runtime interaction
+          visibility at <code>71ms</code>, interaction choice resolution at <code>34ms</code>,
+          provider chunk p95 at <code>73ms</code>, and idle browser frame p95 at
+          <code>8.1ms</code>. The prompt-history idle window saw <code>0</code>
+          <code>GetPromptInputHistory</code> requests; idle <code>/kernel/*</code> HTTP requests,
+          idle relay client frames, and command-result cache growth were all <code>0</code>. Kernel
+          CPU samples after startup were <code>0.6%</code> and <code>0.6%</code>.
+          The next pass should keep this browser-observed contract as the gate while broadening
+          coverage, not restore broad post-action refreshes or millisecond-level polling.
+          Any drill that launches a kernel, relay, web server, browser, or provider stub must clean
+          up those processes and temporary artifact directories before returning so validation does
+          not leave memory pressure behind.
+        </p>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Drill</th>
+            <th>Pass Criteria</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Idle kernel with web waiting room open</td>
+            <td>
+              Browser remains responsive for 5 minutes with the waiting room open; no visual spinner
+              churn; no repeated catalog/slice/public-snapshot network loop. Local pass/fail uses
+              <code>scripts/local-idle-browser-kernel-drill.mjs</code> with browser-measured dialog
+              latency, frame latency, and idle request/frame counts; kernel CPU below 2% sustained is
+              supporting evidence.
+            </td>
+          </tr>
+          <tr>
+            <td>Prompt submit to visible update</td>
+            <td>
+              Browser measures keypress/click to appended user prompt under 100ms, activity badge
+              under 250ms local and under 750ms relay, and first provider output as soon as the
+              provider emits it without waiting for a full session refresh. The live local browser
+              gate must also submit a real prompt through the terminal composer and see that prompt
+              in terminal output under <code>750ms</code> without breaking the following idle window.
+            </td>
+          </tr>
+          <tr>
+            <td>Provider streaming output</td>
+            <td>
+              Browser observes continuous visible output with no long gaps introduced by the Arroba
+              transport; frames are coalesced; no full session snapshot is sent per output burst;
+              scrolling and input remain responsive while output streams. The live local browser
+              gate must join a real terminal session, capture its browser subscription attachment,
+              append provider-native chunks through the kernel, and keep chunk-to-visible-terminal
+              latency below <code>750ms</code> with no broad hot-path session refresh.
+            </td>
+          </tr>
+          <tr>
+            <td>Runtime interaction prompt</td>
+            <td>
+              Browser receives a kernel-owned permission/choice interaction, renders the
+              pane-local interaction controls in the terminal under <code>750ms</code>, resolves an
+              <code>allow_once</code> choice from the browser UI, and removes the controls after
+              resolution without broad session refresh. The live local browser drill must prove the
+              kernel active interaction, inbound browser event delivery, DOM render latency, and
+              choice-to-resolution latency end to end.
+            </td>
+          </tr>
+          <tr>
+            <td>Waiting-room sidebar after action</td>
+            <td>
+              Browser click or prompt action updates the relevant waiting-room row within 1s through
+              a patch event; no mandatory full public snapshot fetch appears on the hot path; row
+              focus and local edits are preserved.
+            </td>
+          </tr>
+          <tr>
+            <td>Background sessions</td>
+            <td>
+              Browser shows background activity indicators within 1s while active, then settles to
+              coarse reconciliation without polling loops; switching to the background session shows
+              current state without a visible catch-up pause.
+            </td>
+          </tr>
+          <tr>
+            <td>Command result cache growth</td>
+            <td>
+              Browser idle and interaction runs do not trigger repeated large read responses; JSONL
+              growth remains small during idle web use; command-result writes are verified as
+              supporting evidence after the browser run.
+            </td>
+          </tr>
+          <tr>
+            <td>Prompt-history idle budget</td>
+            <td>
+              Browser submits a prompt, observes completion, then idles on the terminal. It may see
+              one debounced incremental <code>prompt_input_history.get</code> caused by completion,
+              but it must not see a repeating prompt-history request cadence during the idle window.
+              Any repeated request loop must be correlated with browser-visible session snapshot
+              events, stale tabs, or recovery state before changing cadence values.
+            </td>
+          </tr>
+          <tr>
+            <td>Reconnect and replay recovery</td>
+            <td>
+              Browser simulates event-socket close, reconnects, replays missed visible events, and
+              restores the terminal without duplicate output or a full UI freeze. Recovery status
+              appears within 250ms and clears after replay completes. The live local gate also
+              closes the actual browser subscription socket and requires a kernel change made while
+              disconnected to render from replay within 1s in the focused drill, with the aggregate
+              full-suite gate allowing <code>1.5s</code> to account for browser scheduling noise
+              after build/test load.
+            </td>
+          </tr>
+          <tr>
+            <td>Mobile and narrow viewport waiting room</td>
+            <td>
+              Browser runs the same waiting-room update drill at a narrow viewport. Text does not
+              overlap, rows remain tappable, and reduced polling does not leave stale controls after
+              visible user actions.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Expected Outcome</h2>
+      <div class="grid">
+        <div class="panel metric">
+          <strong>&lt;2% idle CPU</strong>
+          <p>Open waiting room and connected relay should not keep the kernel hot.</p>
+        </div>
+        <div class="panel metric">
+          <strong>Fast visible feedback</strong>
+          <p>Prompt send, stop, permissions, and visible output should update from direct events.</p>
+        </div>
+        <div class="panel metric">
+          <strong>Less relay traffic</strong>
+          <p>Changed rows and small state patches replace repeated broad snapshots.</p>
+        </div>
+        <div class="panel metric">
+          <strong>Less code complexity</strong>
+          <p>One live update path replaces polling plus push plus post-action refreshes.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

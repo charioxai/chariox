@@ -420,10 +420,12 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
     session: &crate::session::RuntimeSession,
 ) -> BTreeSet<String> {
     let mut provider_run_ids = BTreeSet::new();
-    if let Some(provider_run_id) = session
-        .active_provider_run_id()
-        .filter(|run_id| owned.provider_store.get_run(run_id).is_ok())
-    {
+    if let Some(provider_run_id) = session.active_provider_run_id().filter(|run_id| {
+        owned
+            .provider_store
+            .get_run(run_id)
+            .is_ok_and(|run| provider_run_requires_owned_output_pump(owned, session, &run))
+    }) {
         provider_run_ids.insert(provider_run_id.to_string());
     }
     let mut agent_ids = session
@@ -472,4 +474,29 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             .provider_run_ids_for_session(session.id()),
     );
     provider_run_ids
+}
+
+fn provider_run_requires_owned_output_pump(
+    owned: &KernelRuntimeOwnedState,
+    session: &crate::session::RuntimeSession,
+    run: &crate::provider::RuntimeProviderRun,
+) -> bool {
+    if run.state() == crate::provider::ProviderRunState::Starting {
+        return true;
+    }
+    if !run.client_interface().is_arroba()
+        && matches!(
+            run.state(),
+            crate::provider::ProviderRunState::Starting
+                | crate::provider::ProviderRunState::Running
+        )
+    {
+        return true;
+    }
+    run.agent_instance_id().is_some_and(|agent_id| {
+        owned
+            .prompt_state_owner
+            .active_prompt_for_agent(session, agent_id)
+            .is_some()
+    })
 }

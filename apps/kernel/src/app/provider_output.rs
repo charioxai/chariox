@@ -261,10 +261,11 @@ fn pump_session_active_prompt_outputs(app: &mut DaemonApp, session_id: &str) -> 
     };
     let recipient_attachment_ids = app.attachments.list_session_attachment_ids(session.id());
     let mut provider_run_ids = BTreeSet::new();
-    if let Some(provider_run_id) = session
-        .active_provider_run_id()
-        .filter(|run_id| app.providers.get_run(run_id).is_ok())
-    {
+    if let Some(provider_run_id) = session.active_provider_run_id().filter(|run_id| {
+        app.providers
+            .get_run(run_id)
+            .is_ok_and(|run| provider_run_requires_background_pump(app, &session, &run))
+    }) {
         provider_run_ids.insert(provider_run_id.to_string());
     }
     let mut agent_ids = session
@@ -356,6 +357,53 @@ mod tests {
         assert!(
             pumped.is_empty(),
             "projected remote provider runs are not local PTY pump targets"
+        );
+    }
+
+    #[test]
+    fn pump_active_prompt_outputs_skips_idle_running_arroba_provider_run() {
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "opencode",
+            "opencode",
+            "default",
+            "zen",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-idle",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-opencode-idle".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-opencode-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+
+        let pumped = pump_active_prompt_outputs(&mut app);
+
+        assert!(
+            pumped.is_empty(),
+            "idle running Arroba provider runs should not keep the background pump active"
         );
     }
 
@@ -453,6 +501,21 @@ fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
             run.state(),
             ProviderRunState::Starting | ProviderRunState::Running
         )
+}
+
+fn provider_run_requires_background_pump(
+    app: &DaemonApp,
+    session: &crate::session::RuntimeSession,
+    run: &RuntimeProviderRun,
+) -> bool {
+    if run.state() == ProviderRunState::Starting || should_pump_background_provider_run(run) {
+        return true;
+    }
+    run.agent_instance_id().is_some_and(|agent_id| {
+        app.prompt_state_owner
+            .active_prompt_for_agent_snapshot(session, agent_id)
+            .is_some()
+    })
 }
 
 pub(crate) struct ProviderOutputPump<'a> {
@@ -974,26 +1037,32 @@ impl<'a> ProviderOutputPumpContext<'a> {
             );
             return Ok(records);
         }
-        self.trace_prompt_state(
-            session_id,
-            provider_run_id,
-            "structured_poll_before_settlement",
-        );
+        let should_trace_settlement =
+            prompt_completed || saw_settlement_blocking_activity || !records.is_empty();
+        if should_trace_settlement {
+            self.trace_prompt_state(
+                session_id,
+                provider_run_id,
+                "structured_poll_before_settlement",
+            );
+        }
         let settlement = self.settle_structured_prompt_completion(
             session_id,
             provider_run_id,
             prompt_completed,
             saw_settlement_blocking_activity,
         );
-        self.trace_prompt_state(
-            session_id,
-            provider_run_id,
-            if settlement.is_ok() {
-                "structured_poll_after_settlement"
-            } else {
-                "structured_poll_settlement_error"
-            },
-        );
+        if should_trace_settlement || settlement.is_err() {
+            self.trace_prompt_state(
+                session_id,
+                provider_run_id,
+                if settlement.is_ok() {
+                    "structured_poll_after_settlement"
+                } else {
+                    "structured_poll_settlement_error"
+                },
+            );
+        }
         settlement?;
         Ok(records)
     }

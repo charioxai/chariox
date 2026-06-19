@@ -19,10 +19,17 @@ use crate::error::DaemonError;
 use crate::runtime::event_log::{EventLog, ReplayOutcome};
 use crate::runtime::router::{CommandRouter, INTERACTIVE_COMMAND_QUEUE_LIMIT};
 use crate::runtime_transport::command_cache::CommandResultCache;
-use crate::runtime_transport::{WatchResult, RECENT_EVENT_LIMIT, WATCH_INTERVAL_MS};
+use crate::runtime_transport::{
+    WatchResult, IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS, RECENT_EVENT_LIMIT,
+    SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS, WAITING_ROOM_ROW_COALESCE_MS,
+    WATCH_INTERVAL_MS,
+};
 use crate::transport::kernel_protocol::{
-    event_is_relevant_to_attachment, subscription_event_stream_id, KernelEvent,
-    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,
+    runtime_interactions_changed_event, session_metadata_changed_event,
+    subscription_event_stream_id, waiting_room_rows_changed_event, workflow_run_only_changed,
+    workflow_run_updated_events, KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
@@ -75,8 +82,9 @@ pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 pub(crate) use connection_state::RelayDisplayTunnelTarget;
 pub use connector::{run_daemon_relay_connector, run_daemon_relay_connector_with_static_relay};
 
-const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 20;
-const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
+const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 50;
+const RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS: u64 = 150;
+const RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
 const RELAY_OUTGOING_QUEUE_LIMIT: usize = 1024;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);

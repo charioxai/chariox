@@ -64,6 +64,8 @@ pub struct WaitingRoomPublicSessionSummary {
     pub created_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt_sent_at_ms: Option<u64>,
     pub status: crate::session::SessionStatus,
     pub connected_cli_count: usize,
     #[serde(default)]

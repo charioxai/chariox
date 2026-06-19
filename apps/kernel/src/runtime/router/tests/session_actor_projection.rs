@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::RequestNativeProviderInteractionRequest;
 
 #[tokio::test]
 async fn prompt_submit_rejects_cross_session_agent_before_admission() {
@@ -678,6 +679,449 @@ async fn get_session_state_keeps_activity_after_runtime_interaction_projection_r
 }
 
 #[tokio::test]
+async fn runtime_interaction_registration_and_resolution_wake_terminal_subscribers() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let interaction = RuntimeInteraction::new(
+        "interaction-terminal-wake",
+        &agent_id,
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Info,
+        Some("Approve file changes?".to_string()),
+        "Approve file changes?",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Allow once",
+            "allow",
+            Some(RuntimeInteractionChoiceStyle::Primary),
+        )],
+        None,
+        None,
+        None,
+    );
+
+    let before_projection_sequence = router.session_projection_change_sequence();
+    let before_terminal_sequence = router.terminal_stream_change_sequence();
+    let receiver = router
+        .runtime_state
+        .create_runtime_interaction(&session_id, interaction)
+        .await
+        .expect("interaction should register");
+
+    assert!(
+        router.session_projection_change_sequence() > before_projection_sequence,
+        "runtime interaction registration should publish a projection change"
+    );
+    assert!(
+        router.terminal_stream_change_sequence() > before_terminal_sequence,
+        "runtime interaction registration should wake terminal subscription waiters"
+    );
+
+    let before_resolve_terminal_sequence = router.terminal_stream_change_sequence();
+    router
+        .runtime_state
+        .resolve_runtime_interaction(&session_id, "interaction-terminal-wake", "allow_once", None)
+        .await
+        .expect("interaction should resolve");
+    assert!(
+        router.terminal_stream_change_sequence() > before_resolve_terminal_sequence,
+        "runtime interaction resolution should wake terminal subscription waiters"
+    );
+    let resolution = receiver.await.expect("resolution should be delivered");
+    assert_eq!(resolution.choice_id.as_deref(), Some("allow_once"));
+    assert_eq!(resolution.reply.as_deref(), Some("allow"));
+}
+
+#[tokio::test]
+async fn runtime_interaction_rejects_agent_outside_session() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (first_session, _first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("first session should be created");
+    let (second_session, second_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2"))
+        .expect("second session should be created");
+    let first_session_id = first_session.id().to_string();
+    let second_agent_id = second_agent.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let interaction = RuntimeInteraction::new(
+        "interaction-cross-session",
+        &second_agent_id,
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Info,
+        Some("Approve file changes?".to_string()),
+        "Approve file changes?",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Allow once",
+            "allow",
+            Some(RuntimeInteractionChoiceStyle::Primary),
+        )],
+        None,
+        None,
+        None,
+    );
+
+    let error = router
+        .runtime_state
+        .create_runtime_interaction(&first_session_id, interaction)
+        .await
+        .expect_err("cross-session runtime interactions should be rejected");
+
+    assert!(matches!(
+        error,
+        DaemonError::AgentNotInSession {
+            session_id,
+            agent_id,
+        } if session_id == first_session_id && agent_id == second_agent_id
+    ));
+    let first_snapshot = router
+        .runtime_state
+        .session_snapshot_projection(first_session.id(), 0)
+        .expect("first session projection should resolve");
+    let second_snapshot = router
+        .runtime_state
+        .session_snapshot_projection(second_session.id(), 0)
+        .expect("second session projection should resolve");
+    assert!(first_snapshot.session.active_interactions().is_empty());
+    assert!(second_snapshot.session.active_interactions().is_empty());
+}
+
+#[tokio::test]
+async fn subscription_snapshot_includes_runtime_interaction_projection() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "interaction-subscription",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+
+    let initial = router
+        .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)
+        .await;
+    let initial_snapshot = match initial {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => snapshot
+            .as_ref()
+            .clone()
+            .expect("initial subscription should include a snapshot"),
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    };
+    let interaction = RuntimeInteraction::new(
+        "interaction-subscription-1",
+        &agent_id,
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Info,
+        Some("Approve file changes?".to_string()),
+        "Approve file changes?",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Allow once",
+            "allow",
+            Some(RuntimeInteractionChoiceStyle::Primary),
+        )],
+        None,
+        None,
+        None,
+    );
+    let _resolution = router
+        .runtime_state
+        .create_runtime_interaction(&session_id, interaction)
+        .await
+        .expect("interaction should register");
+
+    let update = router
+        .relay_watch_subscription_state(
+            &session_id,
+            &attachment_id,
+            true,
+            Some(initial_snapshot),
+            0,
+        )
+        .await;
+    match update {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => {
+            let snapshot = snapshot
+                .as_ref()
+                .as_ref()
+                .expect("runtime interaction should change subscription snapshot");
+            assert_eq!(snapshot.session.active_interactions().len(), 1);
+            assert_eq!(
+                snapshot.session.active_interactions()[0].id(),
+                "interaction-subscription-1"
+            );
+        }
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    }
+}
+
+#[tokio::test]
+async fn dispatched_native_provider_interaction_updates_subscription_projection() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "native-interaction-subscription",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+
+    let initial = router
+        .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)
+        .await;
+    let initial_snapshot = match initial {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => snapshot
+            .as_ref()
+            .clone()
+            .expect("initial subscription should include a snapshot"),
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    };
+
+    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
+        RequestNativeProviderInteractionRequest::allow_deny(
+            &session_id,
+            &agent_id,
+            "native-interaction-dispatch",
+            Some("Approve file changes?".to_string()),
+            "Approve file changes?".to_string(),
+            Some(30),
+        ),
+    );
+    let command = KernelCommand::from_local_request(
+        "cmd-native-interaction-subscription",
+        None,
+        None,
+        &request,
+    );
+    let dispatch_router = router.clone();
+    let dispatch_task =
+        tokio::spawn(async move { dispatch_router.dispatch(command, request).await });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let state = router
+                .runtime_state
+                .session_snapshot_projection(&session_id, 0)
+                .expect("session projection should resolve")
+                .session;
+            if state
+                .active_interactions()
+                .iter()
+                .any(|interaction| interaction.id() == "native-interaction-dispatch")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("native interaction should become active");
+
+    let update = router
+        .relay_watch_subscription_state(
+            &session_id,
+            &attachment_id,
+            true,
+            Some(initial_snapshot),
+            0,
+        )
+        .await;
+    match update {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => {
+            let snapshot = snapshot
+                .as_ref()
+                .as_ref()
+                .expect("runtime interaction should change subscription snapshot");
+            assert_eq!(snapshot.session.active_interactions().len(), 1);
+            assert_eq!(
+                snapshot.session.active_interactions()[0].id(),
+                "native-interaction-dispatch"
+            );
+        }
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    }
+
+    router
+        .runtime_state
+        .resolve_runtime_interaction(
+            &session_id,
+            "native-interaction-dispatch",
+            "allow_once",
+            None,
+        )
+        .await
+        .expect("interaction should resolve");
+    dispatch_task
+        .await
+        .expect("dispatch task should join")
+        .expect("request should resolve");
+}
+
+#[tokio::test]
+async fn native_provider_interaction_wakes_subscription_projection_across_routers() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "cross-router-native-interaction-subscription",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let relay_router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let local_router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+
+    let initial = relay_router
+        .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)
+        .await;
+    let initial_snapshot = match initial {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => snapshot
+            .as_ref()
+            .clone()
+            .expect("initial subscription should include a snapshot"),
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    };
+
+    let before_relay_sequence = relay_router.session_projection_change_sequence();
+    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
+        RequestNativeProviderInteractionRequest::allow_deny(
+            &session_id,
+            &agent_id,
+            "cross-router-native-interaction",
+            Some("Approve file changes?".to_string()),
+            "Approve file changes?".to_string(),
+            Some(30),
+        ),
+    );
+    let command = KernelCommand::from_local_request(
+        "cmd-cross-router-native-interaction",
+        None,
+        None,
+        &request,
+    );
+    let dispatch_task = tokio::spawn(async move { local_router.dispatch(command, request).await });
+
+    timeout(
+        Duration::from_secs(1),
+        relay_router.wait_for_session_projection_change_after(before_relay_sequence),
+    )
+    .await
+    .expect("subscription router should wake for cross-router projection changes");
+    assert!(
+        relay_router.session_projection_change_sequence() > before_relay_sequence,
+        "subscription router should observe projection changes published by the request router"
+    );
+
+    let update = relay_router
+        .relay_watch_subscription_state(
+            &session_id,
+            &attachment_id,
+            true,
+            Some(initial_snapshot),
+            0,
+        )
+        .await;
+    match update {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => {
+            let snapshot = snapshot
+                .as_ref()
+                .as_ref()
+                .expect("runtime interaction should change subscription snapshot");
+            assert_eq!(snapshot.session.active_interactions().len(), 1);
+            assert_eq!(
+                snapshot.session.active_interactions()[0].id(),
+                "cross-router-native-interaction"
+            );
+        }
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    }
+
+    relay_router
+        .runtime_state
+        .resolve_runtime_interaction(
+            &session_id,
+            "cross-router-native-interaction",
+            "allow_once",
+            None,
+        )
+        .await
+        .expect("interaction should resolve");
+    dispatch_task
+        .await
+        .expect("dispatch task should join")
+        .expect("request should resolve");
+}
+
+#[tokio::test]
+async fn acknowledge_output_seen_uses_agent_store_membership_projection() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let stored_session = router
+        .runtime_state
+        .session_snapshot_projection(&session_id, 0)
+        .expect("projection should resolve")
+        .session;
+    assert!(
+        stored_session
+            .agents()
+            .iter()
+            .any(|candidate| candidate.id() == agent_id),
+        "projection should include the created agent"
+    );
+
+    let acknowledged = router
+        .runtime_state
+        .acknowledge_agent_output_seen(&session_id, &agent_id, DEFAULT_LOCAL_USER_ID)
+        .await
+        .expect("output acknowledgement should use agent-store membership");
+
+    assert_eq!(acknowledged.id(), session_id);
+}
+
+#[tokio::test]
 async fn update_session_config_uses_session_runtime_projection_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
@@ -982,6 +1426,7 @@ async fn get_session_state_projection_tracks_prompt_completion_without_app_lock(
     assert!(prompt_projection.active_prompt.is_some());
     assert_eq!(prompt_projection.queued_prompt_count, 0);
 
+    let before_complete_projection_sequence = router.session_projection_change_sequence();
     let complete_request = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
         session_id: session_id.clone(),
     });
@@ -995,6 +1440,10 @@ async fn get_session_state_projection_tracks_prompt_completion_without_app_lock(
         .dispatch(complete_command, complete_request)
         .await
         .expect("prompt completion should publish session projection through agent runtime");
+    assert!(
+        router.session_projection_change_sequence() > before_complete_projection_sequence,
+        "prompt completion should wake session projection subscribers"
+    );
     let prompt_projection = router
         .agent_runtime_projection
         .get(&agent_id)

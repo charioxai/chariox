@@ -6,11 +6,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::agent::AgentServiceStore;
 use crate::app::{
@@ -69,6 +70,7 @@ struct KernelRuntimeOwnedState {
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
     terminal_stream: crate::terminal::TerminalStreamStore,
+    runtime_projection_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -332,6 +334,7 @@ impl KernelRuntimeState {
                 prompt_workspace_claims,
                 structured_output_records,
                 terminal_stream,
+                runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(
@@ -416,6 +419,34 @@ impl KernelRuntimeState {
     }
 }
 
+#[derive(Debug, Default)]
+struct RuntimeChangeSignal {
+    sequence: AtomicU64,
+    notify: Notify,
+}
+
+impl RuntimeChangeSignal {
+    fn sequence(&self) -> u64 {
+        self.sequence.load(Ordering::Acquire)
+    }
+
+    fn record_change(&self) {
+        self.sequence.fetch_add(1, Ordering::AcqRel);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait_for_change_after(&self, sequence: u64) {
+        if self.sequence() != sequence {
+            return;
+        }
+        let notified = self.notify.notified();
+        if self.sequence() != sequence {
+            return;
+        }
+        notified.await;
+    }
+}
+
 pub(crate) struct CapabilityRuntimeSnapshot {
     pub(crate) workspace_id: String,
     pub(crate) worktree_root: std::path::PathBuf,
@@ -424,6 +455,45 @@ pub(crate) struct CapabilityRuntimeSnapshot {
     pub(crate) operational_artifact_root: std::path::PathBuf,
     pub(crate) operational_artifact_index_path: std::path::PathBuf,
     pub(crate) history_archive_enabled: bool,
+}
+
+#[cfg(test)]
+mod runtime_change_signal_tests {
+    use super::RuntimeChangeSignal;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn runtime_change_signal_wakes_waiters() {
+        let signal = std::sync::Arc::new(RuntimeChangeSignal::default());
+        let sequence = signal.sequence();
+        let waiter = {
+            let signal = std::sync::Arc::clone(&signal);
+            tokio::spawn(async move {
+                signal.wait_for_change_after(sequence).await;
+            })
+        };
+
+        signal.record_change();
+
+        tokio::time::timeout(Duration::from_millis(100), waiter)
+            .await
+            .expect("change waiter should wake")
+            .expect("wait task should complete");
+    }
+
+    #[tokio::test]
+    async fn runtime_change_signal_returns_when_sequence_already_changed() {
+        let signal = RuntimeChangeSignal::default();
+        let sequence = signal.sequence();
+        signal.record_change();
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            signal.wait_for_change_after(sequence),
+        )
+        .await
+        .expect("changed sequence should not wait");
+    }
 }
 
 #[cfg(test)]

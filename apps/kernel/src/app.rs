@@ -179,9 +179,10 @@ impl DaemonApp {
         );
 
         let operational_history_started = Instant::now();
-        let operational_history = OperationalHistoryStore::open_with_read_delay(
+        let operational_history = OperationalHistoryStore::open_with_read_delay_and_max_size(
             config.operational_history_path(),
             config.operational_history_read_delay_ms,
+            config.operational_history_max_size_bytes(),
         )?;
         crate::logging::info_with_fields(
             "daemon.startup",

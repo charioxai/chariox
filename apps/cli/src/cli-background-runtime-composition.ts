@@ -36,9 +36,18 @@ import {
 import {
   trimSingleTrailingNewline,
 } from "./transcript-text.js"
+import type { WorkflowDesignOpForwarded } from "@arroba/kernel-client/kernel-types"
+import type {
+  AgentRuntimeActivity,
+  RuntimeInteraction,
+  RuntimeProviderRun,
+  RuntimeSession,
+  WorkflowRun,
+} from "./cli-types.js"
 import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-animation-controller.js"
 import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
+import { workflowsWithDesignOp } from "./workflow-design-op-state.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -111,6 +120,11 @@ export type CliBackgroundRuntimeCompositionDeps = {
   queueTerminalOutputRecords: AnyFn
   scheduleSharedPromptInputHistoryRefresh: AnyFn
   handleWaitingRoomRefresh: AnyFn
+  applyWaitingRoomRowsChanged: AnyFn
+  applyRelayStatusChanged: AnyFn
+  applyRemoteMachinesChanged: AnyFn
+  applyProviderCatalogChanged: AnyFn
+  applySlicesChanged: AnyFn
   flashFooter: AnyFn
   recoverAttachedSessionAfterKernelRestart: AnyFn
   setFatalError: AnyFn
@@ -321,6 +335,99 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   })
 
   const resyncAttachedKernelState = (reason: string) => kernelResyncController.resync(reason)
+  const applyDeltaSessionState = (sessionId: string, apply: (session: RuntimeSession) => RuntimeSession) => {
+    if (!deps.isAttached() || deps.sessionState().id !== sessionId) {
+      return
+    }
+    const nextSession = apply(deps.sessionState())
+    deps.applySessionState(nextSession)
+    if (!sessionHasPromptWork(nextSession)) {
+      deps.clearLocalBusyStateForAuthoritativeIdle(nextSession)
+    }
+    deps.updateSessionChrome()
+  }
+  const applyAgentActivityChanged = (
+    sessionId: string,
+    agentActivity: Record<string, unknown>,
+  ) => {
+    applyDeltaSessionState(sessionId, (session) => ({
+      ...session,
+      agent_activity: agentActivity as Record<string, AgentRuntimeActivity>,
+    }))
+  }
+  const applyProviderRunChanged = (
+    sessionId: string,
+    providerRun: RuntimeProviderRun | null,
+  ) => {
+    if (!deps.isAttached() || deps.sessionState().id !== sessionId) {
+      return
+    }
+    if (providerRun && providerRun.session_id !== sessionId) {
+      deps.appendNotice(`Kernel sent provider run ${providerRun.id} for session ${providerRun.session_id}, expected ${sessionId}.`, "warning")
+      return
+    }
+    deps.setProviderRunState(providerRun)
+    deps.applySessionState(applyProviderRunProfileToSession(deps.sessionState(), providerRun))
+    deps.updateSessionChrome()
+  }
+  const applySessionMetadataChanged = (
+    sessionId: string,
+    metadata: Record<string, unknown>,
+  ) => {
+    applyDeltaSessionState(sessionId, (session) => {
+      const patch: Partial<RuntimeSession> = {}
+      if (Object.prototype.hasOwnProperty.call(metadata, "alias")) {
+        patch.alias = nullableString(metadata.alias)
+      }
+      if (Object.prototype.hasOwnProperty.call(metadata, "last_used_at_ms")) {
+        patch.last_used_at_ms = nullableNumber(metadata.last_used_at_ms)
+      }
+      if (Object.prototype.hasOwnProperty.call(metadata, "last_prompt_sent_at_ms")) {
+        patch.last_prompt_sent_at_ms = nullableNumber(metadata.last_prompt_sent_at_ms)
+      }
+      if (Object.prototype.hasOwnProperty.call(metadata, "hidden")) {
+        patch.hidden = metadata.hidden === true
+      }
+      if (Object.prototype.hasOwnProperty.call(metadata, "focused_agent_id")) {
+        patch.focused_agent_id = nullableString(metadata.focused_agent_id)
+      }
+      if (Object.prototype.hasOwnProperty.call(metadata, "workspace_live_sync_mode")) {
+        patch.workspace_live_sync_mode = workspaceLiveSyncMode(metadata.workspace_live_sync_mode)
+      }
+      return { ...session, ...patch }
+    })
+  }
+  const applyRuntimeInteractionsChanged = (
+    sessionId: string,
+    activeInteractions: Record<string, unknown>[],
+  ) => {
+    applyDeltaSessionState(sessionId, (session) => ({
+      ...session,
+      active_interactions: activeInteractions as RuntimeInteraction[],
+    }))
+  }
+  const applyWorkflowRunUpdated = (
+    sessionId: string,
+    workflowRun: WorkflowRun,
+  ) => {
+    applyDeltaSessionState(sessionId, (session) => {
+      const existingRuns = session.workflow_runs ?? []
+      const index = existingRuns.findIndex((run) => run.id === workflowRun.id)
+      const workflowRuns = index === -1
+        ? [...existingRuns, workflowRun]
+        : existingRuns.map((run, runIndex) => runIndex === index ? workflowRun : run)
+      return {
+        ...session,
+        workflow_runs: workflowRuns,
+      }
+    })
+  }
+  const applyWorkflowDesignOp = (event: WorkflowDesignOpForwarded) => {
+    applyDeltaSessionState(event.session_id, (session) => ({
+      ...session,
+      workflows: workflowsWithDesignOp(session.workflows ?? [], event.op),
+    }))
+  }
 
   const kernelSessionUnavailableController = createKernelSessionUnavailableController({
     isAttached: deps.isAttached,
@@ -358,9 +465,20 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
     applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
     applyKernelSessionSnapshot,
+    applyAgentActivityChanged,
+    applyProviderRunChanged,
+    applySessionMetadataChanged,
+    applyRuntimeInteractionsChanged,
+    applyWorkflowRunUpdated,
+    applyWorkflowDesignOp,
     scheduleSharedPromptInputHistoryRefresh: deps.scheduleSharedPromptInputHistoryRefresh,
     handleKernelSessionUnavailable,
     refreshWaitingRoomData: deps.handleWaitingRoomRefresh,
+    applyWaitingRoomRowsChanged: deps.applyWaitingRoomRowsChanged,
+    applyRelayStatusChanged: deps.applyRelayStatusChanged,
+    applyRemoteMachinesChanged: deps.applyRemoteMachinesChanged,
+    applyProviderCatalogChanged: deps.applyProviderCatalogChanged,
+    applySlicesChanged: deps.applySlicesChanged,
     applyTransportResumed: kernelEventController.applyTransportResumed,
     resyncAttachedKernelState,
     appendNotice: deps.appendNotice,
@@ -560,4 +678,18 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     processKernelTerminalOutputRecord: kernelEventController.processTerminalOutputRecord,
     recordDaemonActivity,
   }
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function workspaceLiveSyncMode(value: unknown): Exclude<RuntimeSession["workspace_live_sync_mode"], undefined> {
+  return value === "managed" || value === "tracked" || value === "unrestricted"
+    ? value
+    : null
 }

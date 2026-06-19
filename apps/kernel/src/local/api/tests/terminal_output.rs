@@ -184,6 +184,59 @@ fn terminal_output_drain_survives_missing_focused_provider_run() {
 }
 
 #[test]
+fn subscription_watch_can_skip_snapshot_while_draining_terminal_output() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-subscription-output",
+            "worktree-subscription-output",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-subscription-output",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    app.terminal_mut().fan_out_output(
+        session.id(),
+        "provider-run-output-only",
+        Some(default_agent.id()),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        vec![attachment.id().to_string()],
+        b"output-only update\n",
+    );
+
+    let result = crate::runtime_transport::watch_subscription_state(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        false,
+        None,
+        0,
+    );
+
+    match result {
+        crate::runtime_transport::WatchResult::Ok {
+            records, snapshot, ..
+        } => {
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].bytes, b"output-only update\n");
+            assert!(
+                snapshot.is_none(),
+                "terminal-output-only watch should not build a session snapshot"
+            );
+        }
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription watch should stay available: {message}");
+        }
+    }
+}
+
+#[test]
 fn compatibility_output_pump_reaps_first_output_timeout() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -423,7 +476,7 @@ fn terminal_output_and_subscription_snapshots_are_scoped_to_attachment_owner() {
         &mut app,
         session.id(),
         owner_attachment.id(),
-        0,
+        true,
         None,
         0,
     );
@@ -431,7 +484,7 @@ fn terminal_output_and_subscription_snapshots_are_scoped_to_attachment_owner() {
         &mut app,
         session.id(),
         user_two_attachment.id(),
-        0,
+        true,
         None,
         0,
     );

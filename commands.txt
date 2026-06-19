@@ -50,3 +50,8 @@ ARROBA_KERNEL_PORT=44121 \
 ARROBA_RELAY_URL=ws://127.0.0.1:47000 \
 ARROBA_RELAY_TOKEN=local-browser-terminal-relay-token \
 cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel
+
+# Kill process web server, kernel and relay
+kill $(lsof -tiTCP:4321 -sTCP:LISTEN)
+kill $(lsof -tiTCP:44120 -sTCP:LISTEN)  # local kernel
+kill $(lsof -tiTCP:47000 -sTCP:LISTEN)  # local relay

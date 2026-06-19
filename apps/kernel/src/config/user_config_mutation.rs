@@ -78,11 +78,10 @@ impl ArrobaUserConfig {
                 )?)
             }
             "history.operational.max_size_mb" => {
-                self.history.operational.max_size_mb = Some(parse_config_u32(
-                    "history.operational.max_size_mb",
-                    &value,
-                    true,
-                )?)
+                self.history.operational.max_size_mb = Some(
+                    parse_config_u32("history.operational.max_size_mb", &value, true)?
+                        .min(crate::history::OPERATIONAL_HISTORY_HARD_MAX_MB),
+                )
             }
             "history.operational.keep_pinned_sessions" => {
                 self.history.operational.keep_pinned_sessions = Some(parse_config_bool(

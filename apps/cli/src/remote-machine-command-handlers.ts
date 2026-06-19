@@ -3,7 +3,7 @@ import { remoteKernelReadiness } from "./remote-kernel-readiness.js"
 
 type FooterTone = "info" | "error"
 
-type RemoteMachineSummary = {
+export type RemoteMachineSummary = {
   machine_id: string
   machine_alias?: string | null
   registry_alias?: string | null
@@ -39,6 +39,9 @@ export type RemoteMachineCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   refreshWaitingRoomData?: () => Promise<void>
+  getRemoteMachines?: () => RemoteMachineSummary[]
+  setRemoteMachines?: (machines: RemoteMachineSummary[]) => void
+  reconcileWaitingRoom?: () => void
   listRemoteMachines?: () => Promise<RemoteMachineSummary[]>
   approveRemoteMachine?: (machineRef: string) => Promise<RemoteMachineRegistration>
   forgetRemoteMachine?: (machineRef: string) => Promise<RemoteMachineRegistration>
@@ -184,7 +187,7 @@ async function approveRemoteMachine(
     return
   }
   const machine = await deps.approveRemoteMachine(machineRef)
-  await deps.refreshWaitingRoomData?.()
+  await applyRemoteMachineCommandPatch(deps, machine, "upsert")
   deps.flashFooter(`approved remote machine ${machine.display_name ?? machine.machine_id}`, "info")
 }
 
@@ -201,7 +204,7 @@ async function forgetRemoteMachine(
     return
   }
   const machine = await deps.forgetRemoteMachine(machineRef)
-  await deps.refreshWaitingRoomData?.()
+  await applyRemoteMachineCommandPatch(deps, machine, "remove")
   deps.flashFooter(`forgot remote machine ${machine.display_name ?? machine.machine_id}`, "info")
 }
 
@@ -219,6 +222,40 @@ async function renameRemoteMachine(
     return
   }
   const machine = await deps.renameRemoteMachine(machineRef, alias)
-  await deps.refreshWaitingRoomData?.()
+  await applyRemoteMachineCommandPatch(deps, machine, "upsert")
   deps.flashFooter(`renamed remote machine ${machine.machine_id} to ${machine.display_name ?? alias}`, "info")
+}
+
+async function applyRemoteMachineCommandPatch(
+  deps: RemoteMachineCommandHandlerDeps,
+  machine: RemoteMachineRegistration,
+  mode: "upsert" | "remove",
+): Promise<void> {
+  if (!deps.getRemoteMachines || !deps.setRemoteMachines) {
+    await deps.refreshWaitingRoomData?.()
+    return
+  }
+
+  const current = deps.getRemoteMachines()
+  const next = mode === "remove"
+    ? current.filter((candidate) => candidate.machine_id !== machine.machine_id)
+    : upsertRemoteMachine(current, machine)
+  deps.setRemoteMachines(next)
+  deps.reconcileWaitingRoom?.()
+}
+
+function upsertRemoteMachine(
+  current: RemoteMachineSummary[],
+  machine: RemoteMachineRegistration,
+): RemoteMachineSummary[] {
+  const index = current.findIndex((candidate) => candidate.machine_id === machine.machine_id)
+  if (index === -1) {
+    return [{
+      ...machine,
+      kernel_count: 0,
+    }]
+  }
+  return current.map((candidate, candidateIndex) =>
+    candidateIndex === index ? { ...candidate, ...machine } : candidate
+  )
 }

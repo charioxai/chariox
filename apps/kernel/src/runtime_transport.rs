@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::AtomicBool;
@@ -39,11 +40,15 @@ use subscriptions::{
 };
 pub(crate) use subscriptions::{watch_subscription_state, WatchResult};
 
-pub(crate) const WATCH_INTERVAL_MS: u64 = 50;
-const STATE_INTERVAL_TICKS: u64 = 4;
-const HEARTBEAT_INTERVAL_TICKS: u64 = 20;
-const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 100;
-const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 50;
+pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
+pub(crate) const IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS: u64 = 5_000;
+pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
+const PUMP_INTERVAL_MS: u64 = 500;
+const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;
+pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 300;
+const HEARTBEAT_INTERVAL_TICKS: u64 = 50;
+const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 150;
+const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
 const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
@@ -217,7 +222,16 @@ where
     let pump_task = tokio::spawn(async move {
         loop {
             pump_router.pump_transport_runtime().await;
-            sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
+            let change_sequence = pump_router.transport_runtime_pump_change_sequence();
+            let delay_ms = pump_router.transport_runtime_pump_interval_ms(
+                PUMP_INTERVAL_MS,
+                IDLE_PUMP_INTERVAL_MS,
+                crate::session::unix_epoch_ms(),
+            );
+            tokio::select! {
+                _ = sleep(Duration::from_millis(delay_ms)) => {}
+                _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => {}
+            }
         }
     });
     let mut durable_snapshot_task = durable_snapshot_scheduler.map(|scheduler| {
@@ -260,8 +274,34 @@ mod tests {
     use super::*;
 
     use tokio::sync::oneshot;
-    use tokio::time::timeout;
+    use tokio::time::{timeout, Instant as TokioInstant};
     use tokio_tungstenite::connect_async;
+
+    #[test]
+    fn kernel_event_writer_coalesces_event_lane_with_stable_deadline() {
+        let now = TokioInstant::now();
+        let mut coalescer = EventWriteCoalescer::new(33);
+
+        assert!(coalescer.push_event("event-1", now).is_none());
+        assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
+        assert!(coalescer
+            .push_event("event-2", now + Duration::from_millis(10))
+            .is_none());
+        assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
+
+        assert_eq!(coalescer.drain_ready(), vec!["event-1", "event-2"]);
+        assert_eq!(coalescer.ready_at(), None);
+    }
+
+    #[test]
+    fn kernel_event_writer_can_disable_event_coalescing_for_tests() {
+        let now = TokioInstant::now();
+        let mut coalescer = EventWriteCoalescer::new(0);
+
+        assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
+        assert_eq!(coalescer.ready_at(), None);
+        assert!(coalescer.drain_ready().is_empty());
+    }
 
     #[tokio::test]
     async fn kernel_websocket_replies_to_ping_frames() {
@@ -312,6 +352,43 @@ mod tests {
     }
 }
 
+#[derive(Debug)]
+struct EventWriteCoalescer<T> {
+    delay_ms: u64,
+    frames: VecDeque<T>,
+    ready_at: Option<tokio::time::Instant>,
+}
+
+impl<T> EventWriteCoalescer<T> {
+    fn new(delay_ms: u64) -> Self {
+        Self {
+            delay_ms,
+            frames: VecDeque::new(),
+            ready_at: None,
+        }
+    }
+
+    fn ready_at(&self) -> Option<tokio::time::Instant> {
+        self.ready_at
+    }
+
+    fn push_event(&mut self, frame: T, now: tokio::time::Instant) -> Option<T> {
+        if self.delay_ms == 0 {
+            return Some(frame);
+        }
+        self.frames.push_back(frame);
+        if self.ready_at.is_none() {
+            self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
+        }
+        None
+    }
+
+    fn drain_ready(&mut self) -> Vec<T> {
+        self.ready_at = None;
+        self.frames.drain(..).collect()
+    }
+}
+
 async fn handle_kernel_connection(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
@@ -346,10 +423,9 @@ async fn handle_kernel_connection(
         let mut transport_ping =
             tokio::time::interval(Duration::from_millis(WEBSOCKET_PING_INTERVAL_MS));
         transport_ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut delayed_event_frame: Option<KernelOutgoingFrame> = None;
-        let mut delayed_event_ready_at: Option<tokio::time::Instant> = None;
-        loop {
-            if let Some(ready_at) = delayed_event_ready_at {
+        let mut event_write_coalescer = EventWriteCoalescer::new(write_delay_ms);
+        'writer_loop: loop {
+            if let Some(ready_at) = event_write_coalescer.ready_at() {
                 tokio::select! {
                     biased;
                     Some(command) = close_rx.recv() => {
@@ -374,14 +450,18 @@ async fn handle_kernel_connection(
                             break;
                         }
                     }
+                    Some(frame) = event_rx.recv() => {
+                        if let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) {
+                            if !send_kernel_frame(&mut writer, frame).await {
+                                break;
+                            }
+                        }
+                    }
                     _ = tokio::time::sleep_until(ready_at) => {
-                        let Some(frame) = delayed_event_frame.take() else {
-                            delayed_event_ready_at = None;
-                            continue;
-                        };
-                        delayed_event_ready_at = None;
-                        if !send_kernel_frame(&mut writer, frame).await {
-                            break;
+                        for frame in event_write_coalescer.drain_ready() {
+                            if !send_kernel_frame(&mut writer, frame).await {
+                                break 'writer_loop;
+                            }
                         }
                     }
                     else => break,
@@ -414,13 +494,9 @@ async fn handle_kernel_connection(
                     }
                 }
                 Some(frame) = event_rx.recv() => {
-                    if write_delay_ms > 0 {
-                        delayed_event_frame = Some(frame);
-                        delayed_event_ready_at = Some(
-                            tokio::time::Instant::now() + Duration::from_millis(write_delay_ms),
-                        );
+                    let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) else {
                         continue;
-                    }
+                    };
                     if !send_kernel_frame(&mut writer, frame).await {
                         break;
                     }

@@ -791,6 +791,7 @@ impl KernelRuntimeState {
             Some(slice.id.clone()),
             serde_json::json!({ "slice": slice }),
         )?;
+        self.owned.runtime_projection_changes.record_change();
         Ok(())
     }
 }

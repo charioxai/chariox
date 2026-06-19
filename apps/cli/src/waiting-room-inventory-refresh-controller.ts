@@ -11,6 +11,12 @@ import type {
 
 type WaitingRoomInventoryStatus = "loading" | "ready" | "error"
 
+type WaitingRoomRowsChangedPatch = {
+  inventoryVersion: string
+  sessions: SessionListEntry[]
+  removedSessionIds: string[]
+}
+
 type WaitingRoomInventoryRefreshControllerOptions = {
   isKernelConnected: () => boolean
   getInventoryStatus: () => WaitingRoomInventoryStatus
@@ -18,6 +24,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   getWaitingRoomState: () => WaitingRoomState
   getInventory: () => Promise<WaitingRoomInventory>
   isKernelHidden: (kernelId: string) => boolean
+  getAvailableSessions: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
   setRelayStatus: (status: RelayStatusView) => void
   setRemoteMachines: (machines: RemoteMachineView[]) => void
@@ -32,6 +39,9 @@ type WaitingRoomInventoryRefreshControllerOptions = {
 }
 
 export type WaitingRoomInventoryRefreshController = {
+  applyRowsChanged(patch: WaitingRoomRowsChangedPatch): void
+  applyRelayStatusChanged(status: RelayStatusView): void
+  applyRemoteMachinesChanged(machines: RemoteMachineView[]): void
   refreshNow(): Promise<void>
   refresh(): Promise<void>
   invalidate(): void
@@ -84,6 +94,42 @@ export function createWaitingRoomInventoryRefreshController(
   }
 
   return {
+    applyRowsChanged(patch) {
+      if (!options.isKernelConnected()) {
+        return
+      }
+      if (patch.inventoryVersion === inventoryVersion) {
+        options.reconcileWaitingRoom(options.getWaitingRoomState())
+        return
+      }
+      const currentInventoryVersion = inventoryVersion
+      inventoryVersion = patch.inventoryVersion
+      options.setInventoryStatus("ready")
+      options.setAvailableSessions(
+        mergeWaitingRoomSessionRows(
+          currentInventoryVersion === null ? [] : options.getAvailableSessions(),
+          patch.sessions,
+          patch.removedSessionIds,
+        ),
+      )
+      options.reconcileWaitingRoom(options.getWaitingRoomState())
+    },
+    applyRelayStatusChanged(status) {
+      if (!options.isKernelConnected()) {
+        return
+      }
+      options.setInventoryStatus("ready")
+      options.setRelayStatus(status)
+      options.reconcileWaitingRoom(options.getWaitingRoomState())
+    },
+    applyRemoteMachinesChanged(machines) {
+      if (!options.isKernelConnected()) {
+        return
+      }
+      options.setInventoryStatus("ready")
+      options.setRemoteMachines(machines)
+      options.reconcileWaitingRoom(options.getWaitingRoomState())
+    },
     refreshNow,
     refresh() {
       if (pendingRefresh) {
@@ -98,4 +144,23 @@ export function createWaitingRoomInventoryRefreshController(
       inventoryVersion = null
     },
   }
+}
+
+function mergeWaitingRoomSessionRows(
+  current: SessionListEntry[],
+  changed: SessionListEntry[],
+  removedIds: string[],
+): SessionListEntry[] {
+  const removed = new Set(removedIds)
+  const changedById = new Map(changed.map((session) => [session.id, session]))
+  const merged = current
+    .filter((session) => !removed.has(session.id))
+    .map((session) => changedById.get(session.id) ?? session)
+  const existing = new Set(merged.map((session) => session.id))
+  for (const session of changed) {
+    if (!removed.has(session.id) && !existing.has(session.id)) {
+      merged.push(session)
+    }
+  }
+  return merged
 }

@@ -67,6 +67,8 @@ pub struct RuntimeSession {
     host_daemon_id: String,
     created_at_ms: u64,
     last_used_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_prompt_sent_at_ms: Option<u64>,
     execution_mode: SessionExecutionMode,
     status: SessionStatus,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
@@ -135,6 +137,7 @@ impl RuntimeSession {
             host_daemon_id: host_daemon_id.into(),
             created_at_ms: now,
             last_used_at_ms: Some(now),
+            last_prompt_sent_at_ms: None,
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             hidden: false,
@@ -294,6 +297,10 @@ impl RuntimeSession {
         self.last_used_at_ms
     }
 
+    pub fn last_prompt_sent_at_ms(&self) -> Option<u64> {
+        self.last_prompt_sent_at_ms
+    }
+
     pub fn status(&self) -> SessionStatus {
         self.status
     }
@@ -351,6 +358,17 @@ impl RuntimeSession {
         if sequence == 0 {
             return false;
         }
+        let focused_seen_user_ids = if self.focused_agent_id.as_deref() == Some(agent_id) {
+            let mut user_ids = self
+                .members
+                .iter()
+                .map(|member| member.user_id().to_string())
+                .collect::<BTreeSet<_>>();
+            user_ids.insert(self.owner_user_id.clone());
+            Some(user_ids)
+        } else {
+            None
+        };
         let state = self
             .agent_output_read_state
             .entry(agent_id.to_string())
@@ -359,6 +377,13 @@ impl RuntimeSession {
             return false;
         }
         state.latest_output_sequence = sequence;
+        if let Some(user_ids) = focused_seen_user_ids {
+            for user_id in user_ids {
+                state
+                    .seen_sequences_by_user
+                    .insert(user_id, state.latest_output_sequence);
+            }
+        }
         true
     }
 
@@ -646,6 +671,14 @@ impl RuntimeSession {
         &self.workflow_runs
     }
 
+    pub(crate) fn equivalent_except_workflow_runs(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.workflow_runs.clear();
+        right.workflow_runs.clear();
+        left == right
+    }
+
     pub fn workflow_prompt_queues(&self) -> &[WorkflowPromptQueueDefinition] {
         &self.workflow_prompt_queues
     }
@@ -698,6 +731,32 @@ impl RuntimeSession {
 
     pub fn workspace_live_sync_mode(&self) -> Option<crate::config::WorkspaceLiveSyncMode> {
         self.workspace_live_sync_mode
+    }
+
+    pub fn equivalent_except_session_metadata(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let right = other.clone();
+        left.alias = right.alias.clone();
+        left.last_used_at_ms = right.last_used_at_ms;
+        left.last_prompt_sent_at_ms = right.last_prompt_sent_at_ms;
+        left.hidden = right.hidden;
+        left.focused_agent_id = right.focused_agent_id.clone();
+        left.workspace_live_sync_mode = right.workspace_live_sync_mode;
+        left == right
+    }
+
+    pub fn equivalent_except_prompt_runtime(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let right = other.clone();
+        left.prompt_runtime = right.prompt_runtime.clone();
+        left == right
+    }
+
+    pub fn equivalent_except_runtime_interactions(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let right = other.clone();
+        left.active_interactions = right.active_interactions.clone();
+        left == right
     }
 
     pub fn set_workspace_live_sync_mode(
@@ -760,6 +819,10 @@ impl RuntimeSession {
 
     pub fn touch(&mut self) {
         self.last_used_at_ms = Some(unix_epoch_ms());
+    }
+
+    pub fn note_prompt_sent(&mut self) {
+        self.last_prompt_sent_at_ms = Some(unix_epoch_ms());
     }
 
     pub fn create_workflow(&mut self, workflow: WorkflowDefinition) -> WorkflowDefinition {

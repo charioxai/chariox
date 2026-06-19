@@ -1,6 +1,9 @@
 //! Relay socket connection lifecycle and heartbeat loop.
 
+use std::collections::VecDeque;
 use std::future::Future;
+
+use futures_util::{Sink, SinkExt};
 
 use super::*;
 
@@ -41,6 +44,7 @@ const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 5_000;
 const RELAY_RECONNECT_JITTER_SPREAD_MS: u64 = 500;
+const RELAY_EVENT_WRITE_COALESCE_MS: u64 = 33;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRelayConfigDisposition {
@@ -131,6 +135,58 @@ fn stable_jitter_ms(value: &str, spread_ms: u64) -> u64 {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         })
         % spread_ms
+}
+
+async fn send_relay_envelope_frame<S>(writer: &mut S, envelope: RelayEnvelope) -> bool
+where
+    S: Sink<Message> + Unpin,
+{
+    let payload = match serde_json::to_string(&envelope) {
+        Ok(payload) => payload,
+        Err(_) => return false,
+    };
+    writer.send(Message::Text(payload.into())).await.is_ok()
+}
+
+#[derive(Debug)]
+struct RelayEventWriteCoalescer<T> {
+    delay_ms: u64,
+    envelopes: VecDeque<T>,
+    ready_at: Option<tokio::time::Instant>,
+}
+
+impl<T> RelayEventWriteCoalescer<T> {
+    fn new(delay_ms: u64) -> Self {
+        Self {
+            delay_ms,
+            envelopes: VecDeque::new(),
+            ready_at: None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.envelopes.is_empty()
+    }
+
+    fn ready_at(&self) -> Option<tokio::time::Instant> {
+        self.ready_at
+    }
+
+    fn push_event(&mut self, envelope: T, now: tokio::time::Instant) -> Option<T> {
+        if self.delay_ms == 0 {
+            return Some(envelope);
+        }
+        self.envelopes.push_back(envelope);
+        if self.ready_at.is_none() {
+            self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
+        }
+        None
+    }
+
+    fn drain_ready(&mut self) -> Vec<T> {
+        self.ready_at = None;
+        self.envelopes.drain(..).collect()
+    }
 }
 
 fn relay_reconnect_delay(daemon_id: &str, attempt: u32) -> Duration {
@@ -476,21 +532,69 @@ async fn run_daemon_relay_connector_inner(
                 let (mut writer, mut reader) = socket.split();
                 let (outgoing_tx, mut priority_outgoing_rx, mut event_outgoing_rx) =
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
+                let (pong_tx, mut pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_task = tokio::spawn(async move {
                     let mut priority_open = true;
                     let mut event_open = true;
-                    while priority_open || event_open {
+                    let mut event_write_coalescer =
+                        RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
+                    'writer_loop: while priority_open
+                        || event_open
+                        || !event_write_coalescer.is_empty()
+                    {
+                        if let Some(ready_at) = event_write_coalescer.ready_at() {
+                            tokio::select! {
+                                biased;
+                                Some(payload) = pong_rx.recv() => {
+                                    if writer.send(Message::Pong(payload.into())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                envelope = priority_outgoing_rx.recv(), if priority_open => {
+                                    match envelope {
+                                        Some(envelope) => {
+                                            if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                                break;
+                                            }
+                                        }
+                                        None => priority_open = false,
+                                    }
+                                }
+                                envelope = event_outgoing_rx.recv(), if event_open => {
+                                    match envelope {
+                                        Some(envelope) => {
+                                            if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
+                                                if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        None => event_open = false,
+                                    }
+                                }
+                                _ = tokio::time::sleep_until(ready_at) => {
+                                    for envelope in event_write_coalescer.drain_ready() {
+                                        if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                            break 'writer_loop;
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         tokio::select! {
                             biased;
+                            Some(payload) = pong_rx.recv() => {
+                                if writer.send(Message::Pong(payload.into())).await.is_err() {
+                                    break;
+                                }
+                            }
                             envelope = priority_outgoing_rx.recv(), if priority_open => {
                                 match envelope {
                                     Some(envelope) => {
-                                        let payload = match serde_json::to_string(&envelope) {
-                                            Ok(payload) => payload,
-                                            Err(_) => break,
-                                        };
-                                        if writer.send(Message::Text(payload.into())).await.is_err() {
+                                        if !send_relay_envelope_frame(&mut writer, envelope).await {
                                             break;
                                         }
                                     }
@@ -500,12 +604,10 @@ async fn run_daemon_relay_connector_inner(
                             envelope = event_outgoing_rx.recv(), if event_open => {
                                 match envelope {
                                     Some(envelope) => {
-                                        let payload = match serde_json::to_string(&envelope) {
-                                            Ok(payload) => payload,
-                                            Err(_) => break,
-                                        };
-                                        if writer.send(Message::Text(payload.into())).await.is_err() {
-                                            break;
+                                        if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
+                                            if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                                break;
+                                            }
                                         }
                                     }
                                     None => event_open = false,
@@ -610,7 +712,7 @@ async fn run_daemon_relay_connector_inner(
                         incoming = reader.next() => {
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
-                                    if handle_incoming_envelope(
+                                    if let Err(error) = handle_incoming_envelope(
                                         &router,
                                         &command_sequence,
                                         &state,
@@ -621,8 +723,9 @@ async fn run_daemon_relay_connector_inner(
                                         &payload,
                                     )
                                     .await
-                                    .is_err()
                                     {
+                                        let disconnect_reason =
+                                            format!("relay payload handling failed: {error}");
                                         abort_leased_projection_pump_task(
                                             &mut leased_projection_pump_task,
                                         );
@@ -630,7 +733,13 @@ async fn run_daemon_relay_connector_inner(
                                         abort_subscription_tasks(&subscription_tasks).await;
                                         writer_task.abort();
                                         clear_remote_inventory_projection(&router);
-                                        disconnect_relay(&router, &state, "relay payload handling failed", static_relay.is_none()).await;
+                                        disconnect_relay(
+                                            &router,
+                                            &state,
+                                            &disconnect_reason,
+                                            static_relay.is_none(),
+                                        )
+                                        .await;
                                         break "relay payload handling failed";
                                     }
                                 }
@@ -645,6 +754,10 @@ async fn run_daemon_relay_connector_inner(
                                     disconnect_relay(&router, &state, "relay close frame received", static_relay.is_none()).await;
                                     break "relay close frame received";
                                 }
+                                Some(Ok(Message::Ping(payload))) => {
+                                    let _ = pong_tx.try_send(payload.to_vec());
+                                }
+                                Some(Ok(Message::Pong(_))) => {}
                                 Some(Ok(_)) => {}
                                 Some(Err(_)) | None => {
                                     abort_leased_projection_pump_task(
@@ -852,6 +965,40 @@ async fn run_daemon_relay_connector_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::Instant as TokioInstant;
+
+    #[test]
+    fn relay_event_writer_coalesces_event_lane_with_stable_deadline() {
+        let now = TokioInstant::now();
+        let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
+
+        assert!(coalescer.push_event("event-1", now).is_none());
+        assert_eq!(
+            coalescer.ready_at(),
+            Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
+        );
+        assert!(coalescer
+            .push_event("event-2", now + Duration::from_millis(10))
+            .is_none());
+        assert_eq!(
+            coalescer.ready_at(),
+            Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
+        );
+
+        assert_eq!(coalescer.drain_ready(), vec!["event-1", "event-2"]);
+        assert_eq!(coalescer.ready_at(), None);
+        assert!(coalescer.is_empty());
+    }
+
+    #[test]
+    fn relay_event_writer_can_disable_event_coalescing_for_tests() {
+        let now = TokioInstant::now();
+        let mut coalescer = RelayEventWriteCoalescer::new(0);
+
+        assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
+        assert_eq!(coalescer.ready_at(), None);
+        assert!(coalescer.drain_ready().is_empty());
+    }
 
     #[test]
     fn missing_relay_config_without_cloud_profile_is_local_idle() {

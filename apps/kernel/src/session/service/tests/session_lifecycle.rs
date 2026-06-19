@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::RuntimeSession;
 
 #[test]
 fn creates_gets_and_lists_sessions() {
@@ -9,7 +10,7 @@ fn creates_gets_and_lists_sessions() {
 
     assert_eq!(created.id().len(), 16);
     assert!(created.id().chars().all(|char| char.is_ascii_hexdigit()));
-    assert_eq!(created.alias(), None);
+    assert_eq!(created.alias(), Some("workspace-1-1"));
     assert_eq!(created.workspace_id(), "workspace-1");
     assert_eq!(created.worktree_id(), "worktree-1");
     assert_eq!(created.host_machine_id(), "machine-test");
@@ -33,6 +34,88 @@ fn creates_gets_and_lists_sessions() {
         .expect("lookup should succeed");
     assert_eq!(fetched, created);
     assert_eq!(service.list_sessions(), vec![created]);
+}
+
+#[test]
+fn create_session_generates_default_aliases_from_workspace_name() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(CreateSessionRequest::new(
+            "/Users/miguel/arroba-cloud",
+            "worktree-1",
+        ))
+        .expect("first session should be created");
+    let second = service
+        .create_session(CreateSessionRequest::new(
+            "/Users/miguel/arroba-cloud",
+            "worktree-2",
+        ))
+        .expect("second session should be created");
+
+    assert_eq!(first.alias(), Some("arroba-cloud-1"));
+    assert_eq!(second.alias(), Some("arroba-cloud-2"));
+}
+
+#[test]
+fn create_session_sanitizes_default_alias_base() {
+    let mut service = SessionService::new(&test_config());
+    let created = service
+        .create_session(CreateSessionRequest::new(
+            "/tmp/Arroba Cloud!!",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+
+    assert_eq!(created.alias(), Some("arroba-cloud-1"));
+}
+
+#[test]
+fn create_session_generates_default_alias_for_blank_alias() {
+    let mut service = SessionService::new(&test_config());
+    let created = service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_alias("  "))
+        .expect("session should be created");
+
+    assert_eq!(created.alias(), Some("repo-1"));
+}
+
+#[test]
+fn hidden_sessions_do_not_get_default_aliases() {
+    let mut service = SessionService::new(&test_config());
+    let hidden = service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true))
+        .expect("hidden session should be created");
+    let visible = service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-2"))
+        .expect("visible session should be created");
+
+    assert_eq!(hidden.alias(), None);
+    assert_eq!(visible.alias(), Some("repo-1"));
+}
+
+#[test]
+fn default_alias_counts_existing_unaliased_sessions_and_skips_conflicts() {
+    let mut service = SessionService::new(&test_config());
+    service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true))
+        .expect("hidden session should not count");
+    service.restore_session(RuntimeSession::new(
+        "legacy-session",
+        None,
+        "/repo".to_string(),
+        "worktree-legacy".to_string(),
+        "machine-test".to_string(),
+        "daemon-test".to_string(),
+    ));
+    service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-2").with_alias("repo-3"))
+        .expect("explicit alias should be created");
+
+    let created = service
+        .create_session(CreateSessionRequest::new("/repo", "worktree-3"))
+        .expect("session should be created");
+
+    assert_eq!(created.alias(), Some("repo-4"));
 }
 
 #[test]

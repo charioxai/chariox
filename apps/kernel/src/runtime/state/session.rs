@@ -15,6 +15,7 @@ impl KernelRuntimeOwnedState {
         session.set_agents(agents);
         self.project_session_runtime_view(&mut session);
         self.session_projection.update(session.clone());
+        self.runtime_projection_changes.record_change();
         Ok(session)
     }
 
@@ -124,6 +125,7 @@ impl KernelRuntimeOwnedState {
         session.set_agents(agents);
         self.project_session_runtime_view(&mut session);
         self.session_projection.update(session.clone());
+        self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(
             "daemon.kernel_session",
             "create session completed",
@@ -149,6 +151,7 @@ impl KernelRuntimeOwnedState {
             values,
             requires_idle,
         )?;
+        self.runtime_projection_changes.record_change();
         let recipient_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(session_id)
@@ -286,6 +289,7 @@ impl KernelRuntimeOwnedState {
         self.prompt_state_owner.remove_session(session_id);
         let mut ended = self.session_store.end_session(session_id)?;
         ended.set_agents(removed_agents);
+        self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(
             "daemon.session",
             "session ended",
@@ -328,6 +332,7 @@ impl KernelRuntimeOwnedState {
         deleted.set_agents(ended.agents().to_vec());
         self.history_projection.remove(deleted.id());
         self.session_projection.remove(deleted.id());
+        self.runtime_projection_changes.record_change();
         crate::logging::info_with_fields(
             "daemon.session",
             "session deleted",

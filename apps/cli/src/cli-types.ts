@@ -118,6 +118,8 @@ export type RuntimeSession = {
   worktree_label?: string | null
   created_at_ms: number
   last_used_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
+  hidden?: boolean
   status: string
   agent_defaults?: SessionAgentDefaults
   active_provider_run_id: string | null
@@ -1060,6 +1062,8 @@ export type WorkflowEdgeDefinition = {
   id: string
   from_node_id: string
   to_node_id: string
+  source_side?: "top" | "right" | "bottom" | "left" | null
+  target_side?: "top" | "right" | "bottom" | "left" | null
   handoff_schema_ref?: string | null
   validation_policy?: "warn" | "halt" | null
 }

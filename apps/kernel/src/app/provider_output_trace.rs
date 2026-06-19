@@ -76,6 +76,9 @@ impl ProviderOutputTrace {
         source: &str,
         records: &[TerminalOutputRecord],
     ) {
+        if records.is_empty() {
+            return;
+        }
         crate::debug_trace::record_terminal_turn(
             session_id,
             source,

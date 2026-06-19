@@ -49,23 +49,64 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         attachment_id: &str,
-        tick: u64,
+        should_check_snapshot: bool,
         previous_snapshot: Option<SessionSnapshotProjection>,
         last_workflow_design_sequence: u64,
     ) -> WatchResult {
         let session_id = session_id.to_string();
         let attachment_id = attachment_id.to_string();
-        self.with_app_side_effect(move |app| {
-            crate::runtime_transport::watch_subscription_state(
-                app,
-                &session_id,
-                &attachment_id,
-                tick,
-                previous_snapshot,
-                last_workflow_design_sequence,
-            )
-        })
-        .await
+        let previous_snapshot_for_compare = previous_snapshot.clone();
+        let mut result = self
+            .with_app_side_effect({
+                let session_id = session_id.clone();
+                let attachment_id = attachment_id.clone();
+                move |app| {
+                    crate::runtime_transport::watch_subscription_state(
+                        app,
+                        &session_id,
+                        &attachment_id,
+                        false,
+                        None,
+                        last_workflow_design_sequence,
+                    )
+                }
+            })
+            .await;
+        if !should_check_snapshot {
+            return result;
+        }
+        let projected_snapshot = match self.read_only_session_snapshot_projection_for_attachment(
+            &session_id,
+            &attachment_id,
+            0,
+        ) {
+            Ok(snapshot) => Box::new(
+                (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
+            ),
+            Err(DaemonError::SessionNotFound { .. })
+            | Err(DaemonError::AttachmentNotFound { .. })
+            | Err(DaemonError::AttachmentNotInSession { .. }) => {
+                return WatchResult::Unavailable(
+                    "Current session is no longer available.".to_string(),
+                );
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "kernel event loop failed to build owned session snapshot",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                Box::new(None)
+            }
+        };
+        if let WatchResult::Ok { snapshot, .. } = &mut result {
+            *snapshot = projected_snapshot;
+        }
+        result
     }
 
     pub(crate) async fn create_relay_execution_lease(

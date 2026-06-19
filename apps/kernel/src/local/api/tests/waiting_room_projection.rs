@@ -86,7 +86,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         other => panic!("unexpected response: {other:?}"),
     };
 
-    assert_eq!(snapshot.schema_version, 7);
+    assert_eq!(snapshot.schema_version, 8);
     assert!(snapshot.generated_at_ms > 0);
     let session = snapshot
         .sessions
@@ -103,6 +103,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         Some(crate::config::WorkspaceLiveSyncMode::Tracked)
     );
     assert_eq!(session.connected_cli_count, 0);
+    assert_eq!(session.last_prompt_sent_at_ms, None);
     assert_eq!(session.activity.agent_count, 1);
     assert_eq!(session.activity.working_agent_count, 0);
     assert_eq!(session.activity.active_prompt_count, 0);
@@ -396,16 +397,16 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
             attachments: Vec::new(),
         }))
         .expect("prompt should submit");
-    assert!(
-        matches!(
-            submitted,
-            LocalDaemonResponse::PromptSubmitted {
-                outcome: PromptSubmissionOutcome::Started { .. },
-                ..
-            }
-        ),
-        "prompt should start immediately"
-    );
+    let response_prompt_sent_at_ms = match submitted {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { .. },
+            session,
+            ..
+        } => session
+            .last_prompt_sent_at_ms()
+            .expect("prompt submission should stamp session prompt time"),
+        other => panic!("prompt should start immediately: {other:?}"),
+    };
 
     let snapshot = match harness
         .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
@@ -428,6 +429,10 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
     assert_eq!(summary.activity.error_agent_count, 0);
     assert_eq!(summary.activity.remote_agent_count, 0);
     assert_eq!(summary.activity.missing_worker_provider_run_count, 0);
+    assert_eq!(
+        summary.last_prompt_sent_at_ms,
+        Some(response_prompt_sent_at_ms)
+    );
 
     let serialized =
         serde_json::to_value(summary).expect("public session summary should serialize");
@@ -440,6 +445,31 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
     assert!(
         serialized.get("active_prompt").is_none(),
         "public summary must not expose active prompt internals"
+    );
+
+    harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("prompt completion should succeed");
+    let completed_snapshot = match harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            GetWaitingRoomPublicSnapshotRequest,
+        ))
+        .expect("waiting room public snapshot should succeed")
+    {
+        LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let completed_summary = completed_snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session.id())
+        .expect("created session should remain in public snapshot");
+    assert_eq!(completed_summary.activity.active_prompt_count, 0);
+    assert_eq!(
+        completed_summary.last_prompt_sent_at_ms,
+        Some(response_prompt_sent_at_ms)
     );
 }
 

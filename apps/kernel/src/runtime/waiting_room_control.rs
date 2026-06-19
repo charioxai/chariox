@@ -93,31 +93,7 @@ pub(crate) async fn execute_waiting_room_public_snapshot_request(
     })
 }
 
-pub(crate) async fn waiting_room_inventory_version(
-    app: Arc<Mutex<DaemonApp>>,
-    runtime_state: &KernelRuntimeState,
-    relay_state: Arc<RwLock<RelayClientState>>,
-    config_projection: DaemonConfigProjectionStore,
-    caller_user_id: &str,
-) -> Result<String, DaemonError> {
-    match execute_waiting_room_inventory_request(
-        app,
-        runtime_state,
-        relay_state,
-        config_projection,
-        caller_user_id,
-    )
-    .await?
-    {
-        LocalDaemonResponse::WaitingRoomInventory { snapshot } => Ok(snapshot.inventory_version),
-        _response => Err(DaemonError::LocalTransport {
-            operation: "build waiting room inventory version",
-            message: "waiting room inventory request produced unexpected response".to_string(),
-        }),
-    }
-}
-
-async fn projected_waiting_room_public_snapshot(
+pub(crate) async fn projected_waiting_room_public_snapshot(
     app: Arc<Mutex<DaemonApp>>,
     runtime_state: &KernelRuntimeState,
     relay_state: Arc<RwLock<RelayClientState>>,

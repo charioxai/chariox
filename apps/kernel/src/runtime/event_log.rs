@@ -13,6 +13,8 @@ use tokio::sync::Mutex;
 pub const DEFAULT_EVENT_ID_RESERVATION_BLOCK: u64 = 100_000;
 pub const DEFAULT_PERSISTENT_EVENT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 pub const DEFAULT_PERSISTENT_EVENT_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
+const PERSISTENT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
+const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedEvent<E> {
@@ -67,6 +69,7 @@ impl EventRetentionPolicy {
 struct EventStream<E> {
     next_stream_seq: u64,
     retained: VecDeque<LoggedEvent<E>>,
+    retained_jsonl_bytes: u64,
     latest_event_id: Option<u64>,
 }
 
@@ -75,6 +78,7 @@ impl<E> Default for EventStream<E> {
         Self {
             next_stream_seq: 1,
             retained: VecDeque::new(),
+            retained_jsonl_bytes: 0,
             latest_event_id: None,
         }
     }
@@ -130,11 +134,15 @@ impl<E: Clone + Serialize> EventLog<E> {
                 recorded_at_ms: unix_epoch_ms(),
                 event,
             };
+            let logged_jsonl_bytes = logged_event_jsonl_bytes(&logged)?;
             stream.next_stream_seq += 1;
             stream.latest_event_id = Some(event_id);
             stream.retained.push_back(logged.clone());
+            stream.retained_jsonl_bytes = stream
+                .retained_jsonl_bytes
+                .saturating_add(logged_jsonl_bytes);
             let compact_after_append =
-                apply_retention(&mut streams, self.retention, unix_epoch_ms())?;
+                apply_retention(&mut streams, self.retention, unix_epoch_ms());
             let compact_snapshot = compact_after_append.then(|| retained_events_snapshot(&streams));
             (logged, compact_snapshot)
         };
@@ -230,6 +238,10 @@ where
             persistence: Some(PersistentEventStore {
                 path: event_store_path,
                 io_lock: Mutex::new(()),
+                skipped_compactions: AtomicU64::new(0),
+                max_file_bytes_before_compaction: retention.max_total_bytes.map(|bytes| {
+                    bytes.saturating_mul(PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER)
+                }),
             }),
         })
     }
@@ -239,6 +251,8 @@ where
 struct PersistentEventStore {
     path: PathBuf,
     io_lock: Mutex<()>,
+    skipped_compactions: AtomicU64,
+    max_file_bytes_before_compaction: Option<u64>,
 }
 
 impl PersistentEventStore {
@@ -256,9 +270,28 @@ impl PersistentEventStore {
         }
         append_logged_event(&self.path, logged)?;
         if let Some(snapshot) = compact_snapshot {
-            rewrite_logged_events(&self.path, snapshot)?;
+            if self.should_compact_now()? {
+                rewrite_logged_events(&self.path, snapshot)?;
+                self.skipped_compactions.store(0, Ordering::Release);
+            }
         }
         Ok(())
+    }
+
+    fn should_compact_now(&self) -> io::Result<bool> {
+        let skipped = self.skipped_compactions.fetch_add(1, Ordering::AcqRel) + 1;
+        if skipped >= PERSISTENT_COMPACTION_SKIP_LIMIT {
+            return Ok(true);
+        }
+        if let Some(max_file_bytes) = self.max_file_bytes_before_compaction {
+            let file_bytes = match fs::metadata(&self.path) {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+                Err(error) => return Err(error),
+            };
+            return Ok(file_bytes > max_file_bytes);
+        }
+        Ok(false)
     }
 }
 
@@ -286,9 +319,13 @@ where
             .next_stream_seq
             .max(logged.stream_seq.saturating_add(1));
         stream.latest_event_id = Some(stream.latest_event_id.unwrap_or(0).max(logged.event_id));
+        let logged_jsonl_bytes = logged_event_jsonl_bytes(&logged)?;
+        stream.retained_jsonl_bytes = stream
+            .retained_jsonl_bytes
+            .saturating_add(logged_jsonl_bytes);
         stream.retained.push_back(logged);
     }
-    let compacted = apply_retention(&mut streams, retention, unix_epoch_ms())?;
+    let compacted = apply_retention(&mut streams, retention, unix_epoch_ms());
     Ok((streams, compacted))
 }
 
@@ -296,29 +333,27 @@ fn apply_retention<E>(
     streams: &mut BTreeMap<String, EventStream<E>>,
     retention: EventRetentionPolicy,
     now_ms: u64,
-) -> io::Result<bool>
+) -> bool
 where
-    E: Clone + Serialize,
+    E: Serialize,
 {
     let mut compacted = false;
     for stream in streams.values_mut() {
         while stream.retained.len() > retention.max_stream_events {
-            stream.retained.pop_front();
-            compacted = true;
+            compacted |= pop_front_retained_event(stream);
         }
         if let Some(max_age_ms) = retention.max_age_ms {
             while stream.retained.front().is_some_and(|event| {
                 event.recorded_at_ms != 0
                     && now_ms.saturating_sub(event.recorded_at_ms) > max_age_ms
             }) {
-                stream.retained.pop_front();
-                compacted = true;
+                compacted |= pop_front_retained_event(stream);
             }
         }
     }
 
     if let Some(max_total_bytes) = retention.max_total_bytes {
-        while retained_events_jsonl_bytes(streams)? > max_total_bytes {
+        while retained_events_jsonl_bytes(streams) > max_total_bytes {
             if !remove_oldest_retained_event(streams) {
                 break;
             }
@@ -326,10 +361,13 @@ where
         }
     }
 
-    Ok(compacted)
+    compacted
 }
 
-fn remove_oldest_retained_event<E>(streams: &mut BTreeMap<String, EventStream<E>>) -> bool {
+fn remove_oldest_retained_event<E>(streams: &mut BTreeMap<String, EventStream<E>>) -> bool
+where
+    E: Serialize,
+{
     let oldest_stream_id = streams
         .iter()
         .filter_map(|(stream_id, stream)| {
@@ -345,8 +383,19 @@ fn remove_oldest_retained_event<E>(streams: &mut BTreeMap<String, EventStream<E>
     };
     streams
         .get_mut(&stream_id)
-        .and_then(|stream| stream.retained.pop_front())
-        .is_some()
+        .is_some_and(pop_front_retained_event)
+}
+
+fn pop_front_retained_event<E>(stream: &mut EventStream<E>) -> bool
+where
+    E: Serialize,
+{
+    let Some(event) = stream.retained.pop_front() else {
+        return false;
+    };
+    let event_bytes = logged_event_jsonl_bytes(&event).unwrap_or(0);
+    stream.retained_jsonl_bytes = stream.retained_jsonl_bytes.saturating_sub(event_bytes);
+    true
 }
 
 fn retained_events_snapshot<E: Clone>(
@@ -360,16 +409,11 @@ fn retained_events_snapshot<E: Clone>(
     events
 }
 
-fn retained_events_jsonl_bytes<E>(streams: &BTreeMap<String, EventStream<E>>) -> io::Result<u64>
-where
-    E: Clone + Serialize,
-{
-    retained_events_snapshot(streams)
-        .iter()
-        .map(logged_event_jsonl_bytes)
-        .try_fold(0_u64, |total, bytes| {
-            bytes.map(|bytes| total.saturating_add(bytes))
-        })
+fn retained_events_jsonl_bytes<E>(streams: &BTreeMap<String, EventStream<E>>) -> u64 {
+    streams
+        .values()
+        .map(|stream| stream.retained_jsonl_bytes)
+        .fold(0_u64, u64::saturating_add)
 }
 
 fn logged_event_jsonl_bytes<E>(event: &LoggedEvent<E>) -> io::Result<u64>
@@ -746,12 +790,9 @@ mod tests {
 
         let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
         assert!(
-            stored.len() as u64 <= retention.max_total_bytes.unwrap(),
-            "event store should compact below the byte budget: {stored}"
+            stored.contains("\"first\""),
+            "disk compaction should be deferred instead of rewriting on every append: {stored}"
         );
-        assert!(!stored.contains("\"first\""));
-        assert!(stored.contains("\"second\""));
-
         let replay = log.replay_after("session:a", first.event_id).await;
         match replay {
             ReplayOutcome::Gap(gap) => {
@@ -760,7 +801,23 @@ mod tests {
             }
             ReplayOutcome::Replayed(events) => panic!("expected replay gap, got {events:?}"),
         }
-        let _ = std::fs::remove_dir_all(root);
+        for index in 0..8 {
+            log.append("session:a", format!("extra-{index}"))
+                .await
+                .expect("extra event should append");
+            let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
+            if !stored.contains("\"first\"") {
+                assert!(
+                    stored.len() as u64
+                        <= retention.max_total_bytes.unwrap()
+                            * super::PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER,
+                    "event store should compact after bounded file growth: {stored}"
+                );
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        }
+        panic!("event store should compact after bounded file growth");
     }
 
     #[tokio::test]

@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{RelayStatus, RemoteMachineRecord};
+use crate::provider::OpenCodeProviderCatalog;
 use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore};
+use crate::slice::SliceRecord;
 
 impl CommandRouter {
     pub(crate) fn kernel_websocket_bind_address(&self) -> (String, u16) {
@@ -45,6 +47,59 @@ impl CommandRouter {
         self.runtime_state.pump_transport_runtime().await;
     }
 
+    pub(crate) fn terminal_stream_change_sequence(&self) -> u64 {
+        self.runtime_state.terminal_stream_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_terminal_stream_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_terminal_stream_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
+        self.runtime_state.waiting_room_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_waiting_room_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn session_projection_change_sequence(&self) -> u64 {
+        self.runtime_state.session_projection_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_session_projection_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn transport_runtime_pump_change_sequence(&self) -> u64 {
+        self.runtime_state.transport_runtime_pump_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_transport_runtime_pump_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_transport_runtime_pump_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn transport_runtime_pump_interval_ms(
+        &self,
+        active_interval_ms: u64,
+        idle_interval_ms: u64,
+        now_ms: u64,
+    ) -> u64 {
+        self.runtime_state.transport_runtime_pump_interval_ms(
+            active_interval_ms,
+            idle_interval_ms,
+            now_ms,
+        )
+    }
+
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
         self.runtime_state.shutdown_cleanup().await
     }
@@ -60,6 +115,15 @@ impl CommandRouter {
     pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
         let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         machines
+    }
+
+    pub(crate) fn transport_provider_catalog_snapshot(&self) -> Option<OpenCodeProviderCatalog> {
+        self.provider_catalog_projection
+            .get(crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL)
+    }
+
+    pub(crate) fn transport_slices_snapshot(&self) -> Vec<SliceRecord> {
+        self.runtime_state.list_slices()
     }
 
     pub(crate) fn clear_remote_relay_inventory_projection(&self) {

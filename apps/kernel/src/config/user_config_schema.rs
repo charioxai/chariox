@@ -63,7 +63,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("history.operational.backend", "enum", &["sqlite"], true, false, "restart_required", "boot", "Operational history storage backend."),
         entry("history.operational.path", "string", &[], true, true, "restart_required", "boot", "Operational history SQLite database path."),
         entry("history.operational.retention_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Retention-days setting; no pruning job currently consumes it."),
-        entry("history.operational.max_size_mb", "u32", &[], true, true, "no_runtime_effect", "unwired", "Max-size setting; no pruning job currently consumes it."),
+        entry("history.operational.max_size_mb", "u32", &[], true, true, "restart_required", "boot", "Operational history max size; values above the hard 500 MB cap are clamped."),
         entry("history.operational.keep_pinned_sessions", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Pinned-session retention setting; no pruning job currently consumes it."),
         entry("history.operational.archive_inactive_after_days", "u32", &[], true, true, "no_runtime_effect", "unwired", "Inactive-session archival threshold; no archival scheduler currently consumes it."),
         entry("history.operational.archive_deleted_agents", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Deleted-agent archival flag; deletion flow does not currently consume it."),

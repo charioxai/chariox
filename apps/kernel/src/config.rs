@@ -48,6 +48,9 @@ pub use storage::{
 };
 pub use user_config_schema::UserConfigSchemaEntry;
 
+pub const DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS: u64 = 33;
+pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
     pub user_config_path: PathBuf,
@@ -134,7 +137,7 @@ impl DaemonConfig {
             kernel_websocket_host: "127.0.0.1".to_string(),
             kernel_websocket_port: 43118,
             kernel_websocket_queue_capacity: 128,
-            kernel_websocket_write_delay_ms: 0,
+            kernel_websocket_write_delay_ms: DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS,
             runtime_mcp_host: "127.0.0.1".to_string(),
             runtime_mcp_port: 43120,
             session_history_root: Self::default_session_history_root(),
@@ -153,7 +156,7 @@ impl DaemonConfig {
             cloud_relay: None,
             relay_public_key,
             relay_private_key,
-            relay_heartbeat_ms: 500,
+            relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: false,
             os_user: os_user.into(),
@@ -165,6 +168,7 @@ impl DaemonConfig {
 
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let mut config = Self::new("daemon-test", "machine-test", "tester");
+        config.kernel_websocket_write_delay_ms = 0;
         config.local_socket_path = std::env::temp_dir().join("arroba-tests").join(format!(
             "daemon-test-{}-{}.sock",
             std::process::id(),
@@ -278,6 +282,16 @@ impl DaemonConfig {
             .workflow
             .max_queues_per_workflow
             .map(|value| value as usize)
+    }
+
+    pub fn operational_history_max_size_bytes(&self) -> u64 {
+        self.user_config
+            .history
+            .operational
+            .max_size_mb
+            .map(|value| value as u64 * 1024 * 1024)
+            .unwrap_or(crate::history::OPERATIONAL_HISTORY_HARD_MAX_BYTES)
+            .clamp(1, crate::history::OPERATIONAL_HISTORY_HARD_MAX_BYTES)
     }
 
     pub fn set_user_config_value(
@@ -399,10 +413,14 @@ fn load_user_config_from_path(path: &PathBuf) -> ArrobaUserConfig {
     let Some(payload) = fs::read_to_string(path).ok() else {
         return ArrobaUserConfig::default();
     };
-    toml::from_str::<ArrobaUserConfig>(&payload).unwrap_or_default()
+    let mut config = toml::from_str::<ArrobaUserConfig>(&payload).unwrap_or_default();
+    clamp_operational_history_config(&mut config);
+    reject_test_persistence_paths_in_default_user_config(path, &config);
+    config
 }
 
 fn persist_user_config(path: &PathBuf, config: &ArrobaUserConfig) -> Result<(), DaemonError> {
+    reject_test_persistence_paths_for_persist(path, config)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
             operation: "persist user config",
@@ -417,6 +435,55 @@ fn persist_user_config(path: &PathBuf, config: &ArrobaUserConfig) -> Result<(), 
         operation: "persist user config",
         message: error.to_string(),
     })
+}
+
+fn clamp_operational_history_config(config: &mut ArrobaUserConfig) {
+    if let Some(max_size_mb) = config.history.operational.max_size_mb.as_mut() {
+        *max_size_mb = (*max_size_mb).min(crate::history::OPERATIONAL_HISTORY_HARD_MAX_MB);
+    }
+}
+
+fn reject_test_persistence_paths_in_default_user_config(path: &PathBuf, config: &ArrobaUserConfig) {
+    if path != &DaemonConfig::default_user_config_path() {
+        return;
+    }
+    if user_config_has_test_persistence_path(config) {
+        panic!(
+            "default Arroba user config contains test persistence paths under arroba-tests; remove history/state test paths from {}",
+            path.display()
+        );
+    }
+}
+
+fn reject_test_persistence_paths_for_persist(
+    path: &PathBuf,
+    config: &ArrobaUserConfig,
+) -> Result<(), DaemonError> {
+    if path == &DaemonConfig::default_user_config_path()
+        && user_config_has_test_persistence_path(config)
+    {
+        return Err(DaemonError::InvalidConfig {
+            field: "user_config",
+            message: "default user config must not persist test paths under arroba-tests",
+        });
+    }
+    Ok(())
+}
+
+fn user_config_has_test_persistence_path(config: &ArrobaUserConfig) -> bool {
+    [
+        config.history.operational.path.as_deref(),
+        config.artifacts.operational.root.as_deref(),
+        config.artifacts.operational.index_path.as_deref(),
+        config.state.path.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(is_test_persistence_path)
+}
+
+fn is_test_persistence_path(path: &str) -> bool {
+    path.contains("/arroba-tests/") || path.contains("\\arroba-tests\\")
 }
 
 fn normalized_optional(value: Option<String>) -> Option<String> {
@@ -486,6 +553,25 @@ mod tests {
         assert_eq!(config.host_machine_id, "machine-test");
         assert_eq!(config.host_machine_alias, None);
         assert_eq!(config.daemon_alias, None);
+    }
+
+    #[test]
+    fn kernel_websocket_write_delay_coalesces_events_outside_test_configs() {
+        let config = DaemonConfig::new("daemon", "machine", "tester");
+        assert_eq!(
+            config.kernel_websocket_write_delay_ms,
+            DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS
+        );
+
+        let test_config = DaemonConfig::for_tests();
+        assert_eq!(test_config.kernel_websocket_write_delay_ms, 0);
+    }
+
+    #[test]
+    fn relay_heartbeat_defaults_to_human_scale_cadence() {
+        let config = DaemonConfig::new("daemon", "machine", "tester");
+        assert_eq!(config.relay_heartbeat_ms, DEFAULT_RELAY_HEARTBEAT_MS);
+        assert_eq!(config.relay_heartbeat_ms, 5_000);
     }
 
     #[test]
@@ -1198,6 +1284,14 @@ unlock_policy = "{unlock_policy}"
             Some(30)
         );
         assert_eq!(
+            config.user_config.history.operational.max_size_mb,
+            Some(crate::history::OPERATIONAL_HISTORY_HARD_MAX_MB)
+        );
+        assert_eq!(
+            config.operational_history_max_size_bytes(),
+            crate::history::OPERATIONAL_HISTORY_HARD_MAX_BYTES
+        );
+        assert_eq!(
             config.user_config.history.archive.mode,
             HistoryArchiveMode::Disabled
         );
@@ -1264,6 +1358,55 @@ unlock_policy = "{unlock_policy}"
         assert_eq!(loaded.state.snapshot_interval_events, Some(250));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn operational_history_size_config_is_clamped_to_hard_cap() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-history-size-config-test-{}-{}.toml",
+            std::process::id(),
+            generate_identity_suffix()
+        ));
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config_path = path.clone();
+
+        config
+            .set_user_config_value("history.operational.max_size_mb", "5000")
+            .expect("oversized history cap should clamp");
+
+        let loaded = load_user_config_from_path(&path);
+        assert_eq!(
+            loaded.history.operational.max_size_mb,
+            Some(crate::history::OPERATIONAL_HISTORY_HARD_MAX_MB)
+        );
+        config.user_config = loaded;
+        assert_eq!(
+            config.operational_history_max_size_bytes(),
+            crate::history::OPERATIONAL_HISTORY_HARD_MAX_BYTES
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn default_user_config_rejects_test_persistence_paths() {
+        let mut config = ArrobaUserConfig::default();
+        config.history.operational.path =
+            Some("/tmp/arroba-tests/operational-history.db".to_string());
+
+        let error = reject_test_persistence_paths_for_persist(
+            &DaemonConfig::default_user_config_path(),
+            &config,
+        )
+        .expect_err("default config should reject leaked test paths");
+
+        assert!(matches!(
+            error,
+            DaemonError::InvalidConfig {
+                field: "user_config",
+                ..
+            }
+        ));
     }
 
     #[test]

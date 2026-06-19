@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+
+use tokio::sync::Notify;
 
 use crate::error::DaemonError;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
@@ -18,6 +21,7 @@ mod workspace_coordination;
 #[derive(Clone, Default)]
 pub(crate) struct SessionStateProjectionStore {
     state: Arc<StdMutex<SessionProjectionState>>,
+    changes: Arc<SessionProjectionChangeSignal>,
 }
 
 #[derive(Default)]
@@ -53,43 +57,60 @@ impl SessionStateProjectionStore {
     }
 
     pub(crate) fn update(&self, session: RuntimeSession) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("session projection lock should not be poisoned");
-        upsert_session(&mut state.session_list, session.clone());
-        state
-            .session_states
-            .insert(session.id().to_string(), session);
+        {
+            let mut state = self
+                .state
+                .lock()
+                .expect("session projection lock should not be poisoned");
+            upsert_session(&mut state.session_list, session.clone());
+            state
+                .session_states
+                .insert(session.id().to_string(), session);
+        }
+        self.changes.record_change();
     }
 
     pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("session projection lock should not be poisoned");
-        for session in &sessions {
-            state
-                .session_states
-                .insert(session.id().to_string(), session.clone());
+        {
+            let mut state = self
+                .state
+                .lock()
+                .expect("session projection lock should not be poisoned");
+            for session in &sessions {
+                state
+                    .session_states
+                    .insert(session.id().to_string(), session.clone());
+            }
+            state.session_list = Some(
+                sessions
+                    .into_iter()
+                    .filter(|session| !session.is_hidden())
+                    .collect(),
+            );
         }
-        state.session_list = Some(
-            sessions
-                .into_iter()
-                .filter(|session| !session.is_hidden())
-                .collect(),
-        );
+        self.changes.record_change();
     }
 
     pub(crate) fn remove(&self, session_id: &str) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("session projection lock should not be poisoned");
-        state.session_states.remove(session_id);
-        if let Some(session_list) = state.session_list.as_mut() {
-            session_list.retain(|session| session.id() != session_id);
+        {
+            let mut state = self
+                .state
+                .lock()
+                .expect("session projection lock should not be poisoned");
+            state.session_states.remove(session_id);
+            if let Some(session_list) = state.session_list.as_mut() {
+                session_list.retain(|session| session.id() != session_id);
+            }
         }
+        self.changes.record_change();
+    }
+
+    pub(crate) fn change_sequence(&self) -> u64 {
+        self.changes.sequence()
+    }
+
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
+        self.changes.wait_for_change_after(sequence).await;
     }
 
     pub(crate) fn health_snapshot(&self) -> SessionProjectionHealthSnapshot {
@@ -169,6 +190,34 @@ impl SessionStateProjectionStore {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| state.session_states.values().cloned().collect())
+    }
+}
+
+#[derive(Debug, Default)]
+struct SessionProjectionChangeSignal {
+    sequence: AtomicU64,
+    notify: Notify,
+}
+
+impl SessionProjectionChangeSignal {
+    fn sequence(&self) -> u64 {
+        self.sequence.load(Ordering::Acquire)
+    }
+
+    fn record_change(&self) {
+        self.sequence.fetch_add(1, Ordering::AcqRel);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait_for_change_after(&self, sequence: u64) {
+        if self.sequence() != sequence {
+            return;
+        }
+        let notified = self.notify.notified();
+        if self.sequence() != sequence {
+            return;
+        }
+        notified.await;
     }
 }
 

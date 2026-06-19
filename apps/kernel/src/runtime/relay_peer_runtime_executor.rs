@@ -40,7 +40,7 @@ pub(crate) async fn watch_relay_subscription_state(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
     attachment_id: &str,
-    tick: u64,
+    should_check_snapshot: bool,
     previous_snapshot: Option<SessionSnapshotProjection>,
     last_workflow_design_sequence: u64,
 ) -> WatchResult {
@@ -48,7 +48,7 @@ pub(crate) async fn watch_relay_subscription_state(
         .watch_relay_subscription_state(
             session_id,
             attachment_id,
-            tick,
+            should_check_snapshot,
             previous_snapshot,
             last_workflow_design_sequence,
         )

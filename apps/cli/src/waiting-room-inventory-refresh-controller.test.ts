@@ -85,6 +85,125 @@ test("waiting room inventory refresh coalesces concurrent refreshes", async () =
   assert.equal(harness.inventoryCalls(), 1)
 })
 
+test("waiting room inventory row patch applies first row set without fetching", () => {
+  const harness = createHarness({ connected: true })
+
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "v1",
+    sessions: [session("session-1"), session("session-2")],
+    removedSessionIds: [],
+  })
+
+  assert.equal(harness.inventoryCalls(), 0)
+  assert.equal(harness.inventoryStatus(), "ready")
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-1", "session-2"])
+  assert.equal(harness.reconcileCount(), 1)
+})
+
+test("waiting room inventory row patch merges changes and removals", () => {
+  const harness = createHarness({
+    snapshots: [inventory("v1", {
+      sessions: [session("session-1"), session("session-2")],
+    })],
+  })
+
+  return harness.controller.refreshNow().then(() => {
+    harness.controller.applyRowsChanged({
+      inventoryVersion: "v2",
+      sessions: [session("session-3"), { ...session("session-1"), alias: "updated" }],
+      removedSessionIds: ["session-2"],
+    })
+
+    assert.deepEqual(harness.availableSessions().map((entry) => [entry.id, entry.alias ?? null]), [
+      ["session-1", "updated"],
+      ["session-3", null],
+    ])
+    assert.equal(harness.inventoryCalls(), 1)
+    assert.equal(harness.reconcileCount(), 2)
+  })
+})
+
+test("waiting room inventory row patch ignores duplicate versions and disconnected kernels", () => {
+  const harness = createHarness({ connected: true })
+
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "v1",
+    sessions: [session("session-1")],
+    removedSessionIds: [],
+  })
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "v1",
+    sessions: [session("session-2")],
+    removedSessionIds: [],
+  })
+
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-1"])
+  assert.equal(harness.reconcileCount(), 2)
+
+  const disconnected = createHarness({ connected: false })
+  disconnected.controller.applyRowsChanged({
+    inventoryVersion: "v1",
+    sessions: [session("session-1")],
+    removedSessionIds: [],
+  })
+
+  assert.deepEqual(disconnected.availableSessions(), [])
+  assert.equal(disconnected.reconcileCount(), 0)
+})
+
+test("waiting room inventory relay and machine patches apply without fetching", () => {
+  const harness = createHarness({ connected: true })
+
+  harness.controller.applyRelayStatusChanged({
+    configured: true,
+    connected: true,
+    relay_token_configured: true,
+    daemon_id: "kernel-1",
+    machine_id: "machine-1",
+    machine_alias: "laptop",
+  })
+  harness.controller.applyRemoteMachinesChanged([
+    {
+      machine_id: "machine-2",
+      machine_alias: "worker",
+      registry_alias: null,
+      display_name: "worker",
+      trust_status: "approved",
+      online: true,
+      pending: false,
+      kernel_count: 1,
+      available_providers: ["opencode"],
+    },
+  ])
+
+  assert.equal(harness.inventoryCalls(), 0)
+  assert.equal(harness.inventoryStatus(), "ready")
+  assert.equal(harness.relayStatus()?.daemon_id, "kernel-1")
+  assert.deepEqual(harness.remoteMachines().map((machine) => machine.machine_id), ["machine-2"])
+  assert.equal(harness.reconcileCount(), 2)
+
+  const disconnected = createHarness({ connected: false })
+  disconnected.controller.applyRelayStatusChanged({
+    configured: true,
+    connected: true,
+    relay_token_configured: true,
+    daemon_id: "kernel-1",
+    machine_id: "machine-1",
+  })
+  disconnected.controller.applyRemoteMachinesChanged([{
+    machine_id: "machine-2",
+    display_name: "worker",
+    trust_status: "approved",
+    online: true,
+    pending: false,
+    kernel_count: 1,
+  }])
+
+  assert.equal(disconnected.relayStatus(), null)
+  assert.deepEqual(disconnected.remoteMachines(), [])
+  assert.equal(disconnected.reconcileCount(), 0)
+})
+
 function createHarness(options: {
   connected?: boolean
   hiddenKernelIds?: Set<string>
@@ -96,6 +215,8 @@ function createHarness(options: {
   let inventoryStatus: "loading" | "ready" | "error" = "loading"
   let waitingRoomState = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "medium")
   let availableSessions: SessionListEntry[] = []
+  let relayStatus: RelayStatusView | null = null
+  let remoteMachines: RemoteMachineView[] = []
   let remoteKernels: RemoteKernelView[] = []
   let inventoryCalls = 0
   let reconcileCount = 0
@@ -117,11 +238,16 @@ function createHarness(options: {
       return snapshots.shift() ?? inventory("fallback")
     },
     isKernelHidden: (kernelId) => hiddenKernelIds.has(kernelId),
+    getAvailableSessions: () => availableSessions,
     setAvailableSessions: (sessions) => {
       availableSessions = sessions
     },
-    setRelayStatus: () => {},
-    setRemoteMachines: () => {},
+    setRelayStatus: (status) => {
+      relayStatus = status
+    },
+    setRemoteMachines: (machines) => {
+      remoteMachines = machines
+    },
     setRemoteKernels: (kernels) => {
       remoteKernels = kernels
     },
@@ -141,6 +267,8 @@ function createHarness(options: {
     inventoryCalls: () => inventoryCalls,
     inventoryStatus: () => inventoryStatus,
     availableSessions: () => availableSessions,
+    relayStatus: () => relayStatus,
+    remoteMachines: () => remoteMachines,
     remoteKernels: () => remoteKernels,
     reconcileCount: () => reconcileCount,
     warnings: () => warnings,

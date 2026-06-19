@@ -34,6 +34,13 @@ impl KernelRuntimeOwnedState {
             }),
         );
         let mut session = self.session_store.get_session(session_id)?;
+        let agent = self.agent_store.get_agent(interaction.agent_id())?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: interaction.agent_id().to_string(),
+            });
+        }
         if session
             .active_interaction_for_agent(interaction.agent_id())
             .is_some()
@@ -48,6 +55,7 @@ impl KernelRuntimeOwnedState {
         }
         session.add_active_interaction(interaction.clone());
         self.restore_session_and_publish_projection(session)?;
+        self.terminal_stream.notify_terminal_projection_change();
         self.pending_interactions.write().insert(
             interaction.id().to_string(),
             super::PendingInteraction {
@@ -166,6 +174,7 @@ impl KernelRuntimeOwnedState {
             })?;
         let _ = session.remove_active_interaction(interaction_id);
         self.restore_session_and_publish_projection(session)?;
+        self.terminal_stream.notify_terminal_projection_change();
         if let Some(sender) = pending
             .responder
             .lock()
@@ -217,6 +226,7 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         };
         self.restore_session_and_publish_projection(session)?;
+        self.terminal_stream.notify_terminal_projection_change();
         let resolution = if let Some(default_choice_id) = interaction.default_on_timeout() {
             if let Some(choice) = interaction.choice(default_choice_id) {
                 super::PendingInteractionResolution {

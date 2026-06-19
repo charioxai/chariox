@@ -1,7 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { handleRemoteMachineSlashCommand, type RemoteMachineCommandHandlerDeps } from "./remote-machine-command-handlers.js"
+import {
+  handleRemoteMachineSlashCommand,
+  type RemoteMachineCommandHandlerDeps,
+  type RemoteMachineSummary,
+} from "./remote-machine-command-handlers.js"
 
 test("remote machine command renders recovery hints", async () => {
   const harness = remoteMachineHarness()
@@ -47,6 +51,26 @@ test("remote machine command prioritizes unknown readiness over empty providers"
   assert.doesNotMatch(harness.notices.at(0) ?? "", /configure provider CLIs/)
 })
 
+test("remote machine mutation commands patch cached machines without refreshing inventory", async () => {
+  const harness = remoteMachineHarness()
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("approve", "machine-2"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("rename", "machine-2", "New", "Name"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("forget", "machine-2"))
+
+  assert.deepEqual(harness.machines.map((machine) => [
+    machine.machine_id,
+    machine.display_name,
+    machine.trust_status,
+  ]), [
+    ["machine-1", "Builder", "approved"],
+  ])
+  assert.equal(harness.reconcileCount, 3)
+  assert.equal(harness.footers.at(0)?.message, "approved remote machine cold")
+  assert.equal(harness.footers.at(1)?.message, "renamed remote machine machine-2 to New Name")
+  assert.equal(harness.footers.at(2)?.message, "forgot remote machine New Name")
+})
+
 function command(...args: string[]) {
   return { kind: "machine" as const, args, raw: `/machine ${args.join(" ")}` }
 }
@@ -54,30 +78,60 @@ function command(...args: string[]) {
 function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   const notices: string[] = []
   const footers: Array<{ message: string; tone: "info" | "error" }> = []
+  let reconcileCount = 0
+  const machines: RemoteMachineSummary[] = [{
+    machine_id: "machine-1",
+    machine_alias: "builder",
+    registry_alias: null,
+    display_name: "Builder",
+    trust_status: "approved" as const,
+    online: true,
+    pending: false,
+    kernel_count: 1,
+    available_providers: ["codex"],
+  }, {
+    machine_id: "machine-2",
+    machine_alias: "cold",
+    registry_alias: null,
+    display_name: "cold",
+    trust_status: "pending" as const,
+    online: true,
+    pending: true,
+    kernel_count: 0,
+    available_providers: [],
+  }]
   const deps: RemoteMachineCommandHandlerDeps = {
     flashFooter: (message, tone) => { footers.push({ message, tone }) },
     appendNotice: (message) => { notices.push(message) },
-    listRemoteMachines: async () => [{
-      machine_id: "machine-1",
-      machine_alias: "builder",
-      registry_alias: null,
-      display_name: "Builder",
+    refreshWaitingRoomData: async () => {
+      throw new Error("should not refresh waiting-room inventory after remote machine mutation")
+    },
+    getRemoteMachines: () => machines,
+    setRemoteMachines: (next) => {
+      machines.splice(0, machines.length, ...next)
+    },
+    reconcileWaitingRoom: () => {
+      reconcileCount += 1
+    },
+    listRemoteMachines: async () => machines,
+    approveRemoteMachine: async (machineRef) => ({
+      machine_id: machineRef,
+      display_name: "cold",
       trust_status: "approved",
       online: true,
-      pending: false,
-      kernel_count: 1,
-      available_providers: ["codex"],
-    }, {
-      machine_id: "machine-2",
-      machine_alias: "cold",
-      registry_alias: null,
-      display_name: "cold",
-      trust_status: "pending",
+    }),
+    forgetRemoteMachine: async (machineRef) => ({
+      machine_id: machineRef,
+      display_name: "New Name",
+      trust_status: "forgotten",
+      online: false,
+    }),
+    renameRemoteMachine: async (machineRef, alias) => ({
+      machine_id: machineRef,
+      display_name: alias,
+      trust_status: "approved",
       online: true,
-      pending: true,
-      kernel_count: 0,
-      available_providers: [],
-    }],
+    }),
     listRemoteMachineKernels: async () => [{
       kernel_id: "kernel-2",
       machine_id: "machine-1",
@@ -91,5 +145,13 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
       ...kernelOverrides,
     }],
   }
-  return { deps, notices, footers }
+  return {
+    deps,
+    notices,
+    footers,
+    machines,
+    get reconcileCount() {
+      return reconcileCount
+    },
+  }
 }

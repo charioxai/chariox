@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::{Mutex as StdMutex, OnceLock};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -19,7 +20,26 @@ use crate::runtime::waiting_room_activity::{
 use crate::runtime::workspace_git_common::{
     detect_git_branch, workspace_display_label, worktree_display_label,
 };
-use crate::session::RuntimeSession;
+use crate::session::{unix_epoch_ms, RuntimeSession};
+
+const WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS: u64 = 30_000;
+static LAUNCH_TARGET_CACHE: OnceLock<StdMutex<Option<CachedLaunchTarget>>> = OnceLock::new();
+static WORKTREE_LABEL_CACHE: OnceLock<StdMutex<HashMap<(String, String), CachedWorktreeLabel>>> =
+    OnceLock::new();
+static GIT_BRANCH_CACHE: OnceLock<StdMutex<HashMap<String, CachedWorktreeLabel>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct CachedLaunchTarget {
+    cwd: String,
+    expires_at_ms: u64,
+    target: Option<WaitingRoomLaunchTarget>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedWorktreeLabel {
+    expires_at_ms: u64,
+    label: Option<String>,
+}
 
 pub(crate) fn build_waiting_room_public_snapshot(
     runtime_sessions: Vec<RuntimeSession>,
@@ -45,7 +65,7 @@ pub(crate) fn build_waiting_room_public_snapshot(
         launch_target.as_ref(),
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 7,
+        schema_version: 8,
         inventory_version,
         generated_at_ms,
         sessions,
@@ -61,6 +81,10 @@ pub(crate) fn build_waiting_room_public_snapshot(
 pub(crate) fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarget> {
     let cwd = std::env::current_dir().ok()?;
     let cwd_string = cwd.display().to_string();
+    let now_ms = unix_epoch_ms();
+    if let Some(target) = cached_launch_target(&cwd_string, now_ms) {
+        return target;
+    }
     let worktree = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(&cwd)
@@ -86,14 +110,16 @@ pub(crate) fn infer_waiting_room_launch_target() -> Option<WaitingRoomLaunchTarg
             }
         })
         .unwrap_or_else(|| cwd_string.clone());
-    let branch = detect_git_branch(&worktree).ok();
-    Some(WaitingRoomLaunchTarget {
+    let branch = cached_git_branch(&worktree, now_ms);
+    let target = Some(WaitingRoomLaunchTarget {
         workspace_label: workspace_display_label(&workspace),
         directory: Some(workspace.clone()),
         worktree_label: worktree_display_label(&worktree, &workspace, branch.as_deref()),
         workspace_id: workspace,
         worktree_id: worktree,
-    })
+    });
+    store_launch_target(cwd_string, now_ms, target.clone());
+    target
 }
 
 fn waiting_room_inventory_version(
@@ -140,10 +166,7 @@ fn waiting_room_session_summaries(
                 .clone();
             let worktree_label = worktree_labels
                 .entry((workspace_id.clone(), worktree_id.clone()))
-                .or_insert_with(|| {
-                    let branch = detect_git_branch(&worktree_id).ok();
-                    worktree_display_label(&worktree_id, &workspace_id, branch.as_deref())
-                })
+                .or_insert_with(|| cached_worktree_label(&worktree_id, &workspace_id))
                 .clone();
             WaitingRoomPublicSessionSummary {
                 id: session.id().to_string(),
@@ -156,6 +179,7 @@ fn waiting_room_session_summaries(
                 workspace_live_sync_mode: session.workspace_live_sync_mode(),
                 created_at_ms: session.created_at_ms(),
                 last_used_at_ms: session.last_used_at_ms(),
+                last_prompt_sent_at_ms: session.last_prompt_sent_at_ms(),
                 status: session.status(),
                 connected_cli_count: session.attachment_ids().len(),
                 activity: waiting_room_session_activity_summary(&session, caller_user_id),
@@ -195,10 +219,7 @@ fn waiting_room_public_agent_summaries(
                 .to_string();
             let worktree_label = worktree_labels
                 .entry((workspace_id.clone(), worktree_id.clone()))
-                .or_insert_with(|| {
-                    let branch = detect_git_branch(&worktree_id).ok();
-                    worktree_display_label(&worktree_id, &workspace_id, branch.as_deref())
-                })
+                .or_insert_with(|| cached_worktree_label(&worktree_id, &workspace_id))
                 .clone();
             WaitingRoomPublicAgentSummary {
                 id: agent.id().to_string(),
@@ -229,6 +250,72 @@ fn waiting_room_public_agent_summaries(
             .then_with(|| left.id.cmp(&right.id))
     });
     agents
+}
+
+fn cached_launch_target(cwd: &str, now_ms: u64) -> Option<Option<WaitingRoomLaunchTarget>> {
+    let cache = LAUNCH_TARGET_CACHE.get_or_init(|| StdMutex::new(None));
+    let guard = cache.lock().ok()?;
+    guard
+        .as_ref()
+        .filter(|cached| cached.cwd == cwd && cached.expires_at_ms > now_ms)
+        .map(|cached| cached.target.clone())
+}
+
+fn store_launch_target(cwd: String, now_ms: u64, target: Option<WaitingRoomLaunchTarget>) {
+    let cache = LAUNCH_TARGET_CACHE.get_or_init(|| StdMutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedLaunchTarget {
+            cwd,
+            expires_at_ms: now_ms.saturating_add(WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS),
+            target,
+        });
+    }
+}
+
+fn cached_worktree_label(worktree_id: &str, workspace_id: &str) -> Option<String> {
+    let now_ms = unix_epoch_ms();
+    let key = (workspace_id.to_string(), worktree_id.to_string());
+    let cache = WORKTREE_LABEL_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        if let Some(cached) = guard.get(&key) {
+            if cached.expires_at_ms > now_ms {
+                return cached.label.clone();
+            }
+        }
+        let branch = cached_git_branch(worktree_id, now_ms);
+        let label = worktree_display_label(worktree_id, workspace_id, branch.as_deref());
+        guard.insert(
+            key,
+            CachedWorktreeLabel {
+                expires_at_ms: now_ms.saturating_add(WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS),
+                label: label.clone(),
+            },
+        );
+        return label;
+    }
+    let branch = detect_git_branch(worktree_id).ok();
+    worktree_display_label(worktree_id, workspace_id, branch.as_deref())
+}
+
+fn cached_git_branch(worktree_id: &str, now_ms: u64) -> Option<String> {
+    let cache = GIT_BRANCH_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        if let Some(cached) = guard.get(worktree_id) {
+            if cached.expires_at_ms > now_ms {
+                return cached.label.clone();
+            }
+        }
+        let branch = detect_git_branch(worktree_id).ok();
+        guard.insert(
+            worktree_id.to_string(),
+            CachedWorktreeLabel {
+                expires_at_ms: now_ms.saturating_add(WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS),
+                label: branch.clone(),
+            },
+        );
+        return branch;
+    }
+    detect_git_branch(worktree_id).ok()
 }
 
 fn waiting_room_public_workflow_summaries(
@@ -466,7 +553,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 7);
+        assert_eq!(snapshot.schema_version, 8);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());

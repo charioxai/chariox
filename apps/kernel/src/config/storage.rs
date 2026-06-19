@@ -52,7 +52,7 @@ impl Default for UserOperationalHistoryConfig {
             backend: HistoryOperationalBackend::Sqlite,
             path: Some("~/.arroba/history/operational.db".to_string()),
             retention_days: Some(30),
-            max_size_mb: Some(5_000),
+            max_size_mb: Some(crate::history::OPERATIONAL_HISTORY_HARD_MAX_MB),
             keep_pinned_sessions: Some(true),
             archive_inactive_after_days: Some(30),
             archive_deleted_agents: Some(true),

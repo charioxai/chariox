@@ -270,21 +270,37 @@ pub(super) async fn run_relay_subscription_loop(
         return;
     }
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
-    let mut previous_inventory_version = None;
     let mut last_workflow_design_sequence = 0_u64;
+    let mut last_snapshot_projection_sequence: Option<u64> = None;
+    let mut last_snapshot_check_tick = 0_u64;
     let mut tick: u64 = 0;
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
+        let terminal_change_sequence = router.terminal_stream_change_sequence();
+        let session_projection_change_sequence = router.session_projection_change_sequence();
+        let should_check_snapshot = previous_snapshot.is_none()
+            || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
+            || tick.wrapping_sub(last_snapshot_check_tick)
+                >= SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS;
+        let previous_snapshot_for_watch = if should_check_snapshot {
+            previous_snapshot.clone()
+        } else {
+            None
+        };
         let watch_result = router
             .relay_watch_subscription_state(
                 &session_id,
                 &attachment_id,
-                tick,
-                previous_snapshot.clone(),
+                should_check_snapshot,
+                previous_snapshot_for_watch,
                 last_workflow_design_sequence,
             )
             .await;
+        if should_check_snapshot {
+            last_snapshot_projection_sequence = Some(session_projection_change_sequence);
+            last_snapshot_check_tick = tick;
+        }
 
         match watch_result {
             WatchResult::Ok {
@@ -368,7 +384,64 @@ pub(super) async fn run_relay_subscription_loop(
                     }
                 }
                 if let Some(snapshot) = *snapshot {
+                    let previous_snapshot_ref = previous_snapshot.as_ref();
+                    let mut emitted_projection_delta = false;
+                    let mut emit_failed = false;
+                    for event in [
+                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
+                        provider_run_changed_event(&snapshot, previous_snapshot_ref),
+                        session_metadata_changed_event(&snapshot, previous_snapshot_ref),
+                        runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        emitted_projection_delta = true;
+                        if emit_relay_event(
+                            &router,
+                            &outgoing_tx,
+                            &subscription_id,
+                            &client_public_key,
+                            &event_runtime,
+                            &event_stream_id,
+                            event,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            emit_failed = true;
+                            break;
+                        }
+                    }
+                    if emit_failed {
+                        break;
+                    }
+                    let workflow_run_events =
+                        workflow_run_updated_events(&snapshot, previous_snapshot_ref);
+                    let workflow_run_only =
+                        workflow_run_only_changed(&snapshot, previous_snapshot_ref)
+                            && !workflow_run_events.is_empty();
+                    for event in workflow_run_events {
+                        emitted_projection_delta = true;
+                        if emit_relay_event(
+                            &router,
+                            &outgoing_tx,
+                            &subscription_id,
+                            &client_public_key,
+                            &event_runtime,
+                            &event_stream_id,
+                            event,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return;
+                        }
+                    }
                     previous_snapshot = Some(snapshot.clone());
+                    if emitted_projection_delta || workflow_run_only {
+                        continue;
+                    }
                     if emit_relay_event(
                         &router,
                         &outgoing_tx,
@@ -405,40 +478,6 @@ pub(super) async fn run_relay_subscription_loop(
                 {
                     break;
                 }
-                if tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
-                    match router.waiting_room_inventory_version().await {
-                        Ok(inventory_version) => {
-                            if previous_inventory_version.as_ref() != Some(&inventory_version) {
-                                previous_inventory_version = Some(inventory_version.clone());
-                                if emit_relay_event(
-                                    &router,
-                                    &outgoing_tx,
-                                    &subscription_id,
-                                    &client_public_key,
-                                    &event_runtime,
-                                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
-                                    KernelEvent::WaitingRoomInventoryChanged { inventory_version },
-                                )
-                                .await
-                                .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            crate::logging::warn_with_fields(
-                                "daemon.relay_client",
-                                "relay event loop failed to build waiting-room inventory version",
-                                serde_json::json!({
-                                    "session_id": session_id,
-                                    "attachment_id": attachment_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
-                        }
-                    }
-                }
             }
             WatchResult::Unavailable(message) => {
                 let _ = emit_relay_event(
@@ -458,8 +497,25 @@ pub(super) async fn run_relay_subscription_loop(
             }
         }
 
-        tick = tick.wrapping_add(1);
-        sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
+        let wait_ms = router.transport_runtime_pump_interval_ms(
+            WATCH_INTERVAL_MS,
+            IDLE_SUBSCRIPTION_WAIT_INTERVAL_MS,
+            crate::session::unix_epoch_ms(),
+        );
+        let wait_started = Instant::now();
+        let _ = timeout(
+            Duration::from_millis(wait_ms),
+            async {
+                tokio::select! {
+                    _ = router.wait_for_terminal_stream_change_after(terminal_change_sequence) => {}
+                    _ = router.wait_for_session_projection_change_after(session_projection_change_sequence) => {}
+                }
+            },
+        )
+        .await;
+        let elapsed_ticks =
+            ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
+        tick = tick.wrapping_add(elapsed_ticks);
     }
 }
 
@@ -470,40 +526,145 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     client_public_key: String,
     event_runtime: Arc<RelayEventRuntime>,
 ) {
-    let mut previous_inventory_version = None;
+    let mut previous_waiting_room_snapshot = None;
+    let mut previous_relay_status = None;
+    let mut previous_remote_machines = None;
+    let mut previous_provider_catalog = None;
+    let mut previous_slices = None;
+    let mut inventory_dirty = true;
+    let mut tick: u64 = 0;
     loop {
-        match router.waiting_room_inventory_version().await {
-            Ok(inventory_version) => {
-                if previous_inventory_version.as_ref() != Some(&inventory_version) {
-                    previous_inventory_version = Some(inventory_version.clone());
-                    if emit_relay_event(
-                        &router,
-                        &outgoing_tx,
-                        &subscription_id,
-                        &client_public_key,
-                        &event_runtime,
-                        WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
-                        KernelEvent::WaitingRoomInventoryChanged { inventory_version },
-                    )
-                    .await
-                    .is_err()
-                    {
-                        break;
+        let waiting_room_change_sequence = router.waiting_room_change_sequence();
+        if inventory_dirty || tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
+            match router.waiting_room_public_snapshot().await {
+                Ok(snapshot) => {
+                    inventory_dirty = false;
+                    if let Some(event) = waiting_room_rows_changed_event(
+                        snapshot.clone(),
+                        previous_waiting_room_snapshot.as_ref(),
+                    ) {
+                        previous_waiting_room_snapshot = Some(snapshot);
+                        if emit_relay_event(
+                            &router,
+                            &outgoing_tx,
+                            &subscription_id,
+                            &client_public_key,
+                            &event_runtime,
+                            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                            event,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "relay waiting-room inventory subscription failed to build version",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "relay waiting-room inventory subscription failed to build snapshot",
+                        serde_json::json!({ "error": error.to_string() }),
+                    );
+                }
             }
         }
-        sleep(Duration::from_millis(
-            WATCH_INTERVAL_MS * RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS,
-        ))
+        if tick.is_multiple_of(RELAY_HEARTBEAT_INTERVAL_TICKS) {
+            let status = router.transport_relay_status_snapshot().await;
+            if previous_relay_status.as_ref() != Some(&status) {
+                previous_relay_status = Some(status.clone());
+                if emit_relay_event(
+                    &router,
+                    &outgoing_tx,
+                    &subscription_id,
+                    &client_public_key,
+                    &event_runtime,
+                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    KernelEvent::RelayStatusChanged { status },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
+            let machines = router.transport_remote_machines_snapshot();
+            if previous_remote_machines.as_ref() != Some(&machines) {
+                previous_remote_machines = Some(machines.clone());
+                if emit_relay_event(
+                    &router,
+                    &outgoing_tx,
+                    &subscription_id,
+                    &client_public_key,
+                    &event_runtime,
+                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    KernelEvent::RemoteMachinesChanged { machines },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if let Some(catalog) = router.transport_provider_catalog_snapshot() {
+            if previous_provider_catalog.as_ref() != Some(&catalog) {
+                previous_provider_catalog = Some(catalog.clone());
+                if emit_relay_event(
+                    &router,
+                    &outgoing_tx,
+                    &subscription_id,
+                    &client_public_key,
+                    &event_runtime,
+                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    KernelEvent::ProviderCatalogChanged {
+                        generated_at_ms: crate::session::unix_epoch_ms(),
+                        catalog,
+                    },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        let slices = router.transport_slices_snapshot();
+        if previous_slices.as_ref() != Some(&slices) {
+            previous_slices = Some(slices.clone());
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                KernelEvent::SlicesChanged {
+                    generated_at_ms: crate::session::unix_epoch_ms(),
+                    slices,
+                },
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
+        let wait_started = Instant::now();
+        let wait_result = timeout(
+            Duration::from_millis(WATCH_INTERVAL_MS * RELAY_HEARTBEAT_INTERVAL_TICKS),
+            router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+        )
         .await;
+        if wait_result.is_ok() {
+            sleep(Duration::from_millis(WAITING_ROOM_ROW_COALESCE_MS)).await;
+            inventory_dirty = true;
+        }
+        let elapsed_ticks =
+            ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
+        tick = tick.wrapping_add(elapsed_ticks);
     }
 }
 

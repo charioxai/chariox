@@ -99,6 +99,7 @@ type SessionLifecycleDeps = {
     attachmentId: string,
     session: RuntimeSession,
   ) => Promise<RuntimeSession>
+  getAvailableSessions?: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
   listSessions: () => Promise<RuntimeSession[]>
   scheduleShortViewportHistoryCheck: () => void
@@ -345,18 +346,26 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
 
       applyAttachedState(hydratedSession, attachment, createdSession)
 
-      try {
-        deps.setAvailableSessions(await deps.listSessions())
-      } catch (error) {
-        deps.logWarning?.("failed to refresh session list after attach", {
-          session_id: session.id,
-          error: formatError(error),
-        })
-      }
+      await refreshAttachedSessionRow(hydratedSession)
 
       deps.scheduleShortViewportHistoryCheck()
     } finally {
       clearSessionHydrating()
+    }
+  }
+
+  const refreshAttachedSessionRow = async (session: RuntimeSession) => {
+    if (deps.getAvailableSessions) {
+      deps.setAvailableSessions(upsertSessionListEntry(deps.getAvailableSessions(), sessionListEntryFromSession(session)))
+      return
+    }
+    try {
+      deps.setAvailableSessions(await deps.listSessions())
+    } catch (error) {
+      deps.logWarning?.("failed to refresh session list after attach", {
+        session_id: session.id,
+        error: formatError(error),
+      })
     }
   }
 
@@ -365,6 +374,51 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     detachCurrentAttachment,
     attachBinding,
   }
+}
+
+function upsertSessionListEntry(
+  current: SessionListEntry[],
+  next: SessionListEntry,
+): SessionListEntry[] {
+  const index = current.findIndex((candidate) => candidate.id === next.id)
+  if (index === -1) {
+    return [next, ...current]
+  }
+  return current.map((candidate, candidateIndex) =>
+    candidateIndex === index ? { ...candidate, ...next } : candidate
+  )
+}
+
+function sessionListEntryFromSession(session: RuntimeSession): SessionListEntry {
+  const entry: SessionListEntry = {
+    id: session.id,
+    worktree_id: session.worktree_id,
+    status: session.status,
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "alias")) entry.alias = session.alias ?? null
+  if (Object.prototype.hasOwnProperty.call(session, "workspace_id")) {
+    entry.workspace_id = session.workspace_id
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "created_at_ms")) {
+    entry.created_at_ms = session.created_at_ms
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "attachment_ids")) {
+    entry.attachment_ids = session.attachment_ids
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "workspace_live_sync_mode")) {
+    entry.workspace_live_sync_mode = session.workspace_live_sync_mode ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "host_machine_id")) {
+    entry.host_machine_id = session.host_machine_id ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "host_daemon_id")) {
+    entry.host_daemon_id = session.host_daemon_id ?? null
+    entry.kernel_id = session.host_daemon_id ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "last_used_at_ms")) {
+    entry.last_used_at_ms = session.last_used_at_ms ?? null
+  }
+  return entry
 }
 
 function isCompleteSessionSnapshot(

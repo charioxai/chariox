@@ -1,6 +1,7 @@
 import { updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
+import type { SliceRecord } from "./cli-types.js"
 import {
   saveProviderPreferences,
   saveUiPreferences,
@@ -14,6 +15,7 @@ import {
 } from "./provider-api.js"
 import { createProviderPromptProjectionController } from "./provider-prompt-projection-controller.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
+import type { ProviderCatalog } from "./provider-catalog.js"
 import { forgetRemoteMachine } from "./remote-machine-api.js"
 import {
   archiveSessionById,
@@ -162,6 +164,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getWaitingRoomState: deps.waitingRoomState,
     getInventory: () => getWaitingRoomInventory(deps.client),
     isKernelHidden: deps.waitingRoomHiddenKernelController.isKernelHidden,
+    getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,
     setRelayStatus: deps.setRelayStatusState,
     setRemoteMachines: deps.setRemoteMachinesState,
@@ -176,6 +179,17 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
   const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
+  const applyWaitingRoomRowsChanged = waitingRoomInventoryRefreshController.applyRowsChanged
+  const applyRelayStatusChanged = waitingRoomInventoryRefreshController.applyRelayStatusChanged
+  const applyRemoteMachinesChanged = waitingRoomInventoryRefreshController.applyRemoteMachinesChanged
+  const applyProviderCatalogChanged = (catalog: ProviderCatalog) => {
+    deps.setProviderCatalogState(catalog)
+    reconcileWaitingRoom(deps.waitingRoomState())
+  }
+  const applySlicesChanged = (slices: SliceRecord[]) => {
+    deps.setSlicesState(slices)
+    reconcileWaitingRoom(deps.waitingRoomState())
+  }
 
   const detachedKernelConnectController = createDetachedKernelConnectController({
     logInfo: (message, fields) => deps.appLogger?.info(message, fields),
@@ -371,7 +385,12 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     applyModelSelection: providerSelectionController.applyModelSelection,
     applyProviderSelection: providerSelectionController.applyProviderSelection,
     applyVariantSelection: providerSelectionController.applyVariantSelection,
+    applyProviderCatalogChanged,
+    applyRelayStatusChanged,
+    applyRemoteMachinesChanged,
+    applySlicesChanged,
     applyWaitingRoomSessionLifecycleAction,
+    applyWaitingRoomRowsChanged,
     connectDetachedKernelFromWaitingRoom,
     currentModelId: providerPromptProjectionController.currentModelId,
     currentProviderSelection,

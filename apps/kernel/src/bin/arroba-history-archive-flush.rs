@@ -77,7 +77,11 @@ fn run() -> Result<(), arroba_kernel::DaemonError> {
             }
         };
 
-    let history_store = OperationalHistoryStore::open(config.operational_history_path())?;
+    let history_store = OperationalHistoryStore::open_with_read_delay_and_max_size(
+        config.operational_history_path(),
+        config.operational_history_read_delay_ms,
+        config.operational_history_max_size_bytes(),
+    )?;
     let history_client = HistoryArchiveClient::from_config(&config.user_config.history.archive)?;
     let history_exporter = HistoryArchiveExporter::new(history_store, history_client);
     let history_outcome = history_exporter.flush_pending_once(limit)?;

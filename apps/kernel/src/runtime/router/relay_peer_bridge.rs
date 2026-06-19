@@ -55,7 +55,7 @@ impl CommandRouter {
         &self,
         session_id: &str,
         attachment_id: &str,
-        tick: u64,
+        should_check_snapshot: bool,
         previous_snapshot: Option<crate::runtime::projection::SessionSnapshotProjection>,
         last_workflow_design_sequence: u64,
     ) -> crate::runtime_transport::WatchResult {
@@ -63,7 +63,7 @@ impl CommandRouter {
             &self.runtime_state,
             session_id,
             attachment_id,
-            tick,
+            should_check_snapshot,
             previous_snapshot,
             last_workflow_design_sequence,
         )

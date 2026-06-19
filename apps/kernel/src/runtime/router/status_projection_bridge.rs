@@ -6,12 +6,14 @@ use crate::runtime::daemon_health_projection::{
     build_daemon_health_projection, DaemonHealthProjectionInput,
 };
 use crate::runtime::projection::DaemonHealthProjection;
-use crate::runtime::waiting_room_control::waiting_room_inventory_version;
+use crate::runtime::waiting_room_control::projected_waiting_room_public_snapshot;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
 impl CommandRouter {
-    pub(crate) async fn waiting_room_inventory_version(&self) -> Result<String, DaemonError> {
-        waiting_room_inventory_version(
+    pub(crate) async fn waiting_room_public_snapshot(
+        &self,
+    ) -> Result<crate::local::WaitingRoomPublicSnapshot, DaemonError> {
+        projected_waiting_room_public_snapshot(
             Arc::clone(&self.app),
             &self.runtime_state,
             Arc::clone(&self.relay_state),

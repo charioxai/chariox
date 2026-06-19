@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,6 +15,8 @@ use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportErro
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
 const COMMAND_RESULT_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
+const COMMAND_RESULT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
+const COMMAND_RESULT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CommandResultRetentionPolicy {
@@ -102,12 +105,21 @@ struct PersistentCommandResult {
 struct CommandResultPersistence {
     path: PathBuf,
     io_lock: Mutex<()>,
+    skipped_compactions: AtomicU64,
+    max_file_bytes_before_compaction: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct CommandResultByteAccounting {
+    by_command_id: BTreeMap<String, u64>,
+    total_jsonl_bytes: u64,
 }
 
 #[derive(Debug)]
 pub(crate) struct CommandResultCache {
     results: Mutex<BTreeMap<String, CommandResultEntry>>,
     order: Mutex<VecDeque<String>>,
+    byte_accounting: Mutex<CommandResultByteAccounting>,
     retention: CommandResultRetentionPolicy,
     persistence: Option<CommandResultPersistence>,
 }
@@ -117,6 +129,7 @@ impl Default for CommandResultCache {
         Self {
             results: Mutex::new(BTreeMap::new()),
             order: Mutex::new(VecDeque::new()),
+            byte_accounting: Mutex::new(CommandResultByteAccounting::default()),
             retention: CommandResultRetentionPolicy::memory(),
             persistence: None,
         }
@@ -139,10 +152,15 @@ impl CommandResultCache {
         let mut cache = Self {
             results: Mutex::new(BTreeMap::new()),
             order: Mutex::new(VecDeque::new()),
+            byte_accounting: Mutex::new(CommandResultByteAccounting::default()),
             retention,
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),
+                skipped_compactions: AtomicU64::new(0),
+                max_file_bytes_before_compaction: retention.max_total_bytes.map(|bytes| {
+                    bytes.saturating_mul(COMMAND_RESULT_COMPACTION_FILE_GROWTH_MULTIPLIER)
+                }),
             }),
         };
         let mut retained = read_persistent_results(&path)?;
@@ -152,7 +170,15 @@ impl CommandResultCache {
         }
         let mut results = BTreeMap::new();
         let mut order = VecDeque::new();
+        let mut byte_accounting = CommandResultByteAccounting::default();
         for entry in retained {
+            let entry_bytes = persistent_result_jsonl_bytes(&entry)?;
+            byte_accounting.total_jsonl_bytes = byte_accounting
+                .total_jsonl_bytes
+                .saturating_add(entry_bytes);
+            byte_accounting
+                .by_command_id
+                .insert(entry.command_id.clone(), entry_bytes);
             order.push_back(entry.command_id.clone());
             results.insert(
                 entry.command_id,
@@ -161,6 +187,7 @@ impl CommandResultCache {
         }
         cache.results = Mutex::new(results);
         cache.order = Mutex::new(order);
+        cache.byte_accounting = Mutex::new(byte_accounting);
         Ok(cache)
     }
 
@@ -240,16 +267,25 @@ impl CommandResultCache {
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        {
-            let mut order = self.order.lock().await;
-            if let Some(existing_index) = order.iter().position(|entry| entry == &command_id) {
-                order.remove(existing_index);
-            }
-            order.push_back(command_id.clone());
+        let should_persist = should_persist_completed_result(&cached.fingerprint);
+        let persisted_bytes = if should_persist {
+            let persisted = PersistentCommandResult {
+                command_id: command_id.clone(),
+                completed_at_ms: cached.completed_at_ms,
+                result: cached.clone(),
+            };
+            persistent_result_jsonl_bytes(&persisted).ok()
+        } else {
+            None
+        };
+        let compact_after_append = self
+            .apply_retention_to_completed_results(&command_id, persisted_bytes)
+            .await;
+        if !should_persist {
+            return;
         }
-        let (retained, compact_after_append) = self.apply_retention_to_completed_results().await;
         if let Err(error) = self
-            .persist_completed_result(command_id, cached, retained, compact_after_append)
+            .persist_completed_result(command_id, cached, compact_after_append)
             .await
         {
             crate::logging::warn_with_fields(
@@ -266,47 +302,97 @@ impl CommandResultCache {
         &self,
         command_id: String,
         cached: CachedCommandResult,
-        retained: Vec<PersistentCommandResult>,
         compact_after_append: bool,
     ) -> io::Result<()> {
         let Some(persistence) = &self.persistence else {
             return Ok(());
         };
+        let persisted = PersistentCommandResult {
+            command_id,
+            completed_at_ms: cached.completed_at_ms,
+            result: cached,
+        };
+        let next_append_bytes = persistent_result_jsonl_bytes(&persisted).unwrap_or(0);
+        let compact_snapshot =
+            if compact_after_append && persistence.should_compact_now(next_append_bytes)? {
+                Some(self.completed_results_snapshot().await)
+            } else {
+                None
+            };
         let _guard = persistence.io_lock.lock().await;
         if let Some(parent) = persistence.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        append_persistent_result(
-            &persistence.path,
-            &PersistentCommandResult {
-                command_id,
-                completed_at_ms: cached.completed_at_ms,
-                result: cached,
-            },
-        )?;
-        if compact_after_append {
-            rewrite_persistent_results(&persistence.path, &retained)?;
+        append_persistent_result(&persistence.path, &persisted)?;
+        if let Some(snapshot) = compact_snapshot {
+            rewrite_persistent_results(&persistence.path, &snapshot)?;
+            persistence.skipped_compactions.store(0, Ordering::Release);
         }
         Ok(())
     }
 
-    async fn apply_retention_to_completed_results(&self) -> (Vec<PersistentCommandResult>, bool) {
-        let mut retained = self.completed_results_snapshot().await;
-        let compacted = apply_persistent_retention(&mut retained, self.retention).unwrap_or(false);
-        if compacted {
-            let retained_ids = retained
-                .iter()
-                .map(|entry| entry.command_id.as_str())
-                .collect::<std::collections::BTreeSet<_>>();
-            let mut order = self.order.lock().await;
-            order.retain(|command_id| retained_ids.contains(command_id.as_str()));
-            let mut results = self.results.lock().await;
-            results.retain(|command_id, entry| {
-                matches!(entry, CommandResultEntry::Pending { .. })
-                    || retained_ids.contains(command_id.as_str())
-            });
+    async fn apply_retention_to_completed_results(
+        &self,
+        completed_command_id: &str,
+        completed_jsonl_bytes: Option<u64>,
+    ) -> bool {
+        let mut order = self.order.lock().await;
+        let mut results = self.results.lock().await;
+        let mut byte_accounting = self.byte_accounting.lock().await;
+
+        if let Some(existing_index) = order.iter().position(|entry| entry == completed_command_id) {
+            order.remove(existing_index);
         }
-        (retained, compacted)
+        order.push_back(completed_command_id.to_string());
+
+        if let Some(bytes) = completed_jsonl_bytes {
+            if let Some(previous_bytes) = byte_accounting
+                .by_command_id
+                .insert(completed_command_id.to_string(), bytes)
+            {
+                byte_accounting.total_jsonl_bytes = byte_accounting
+                    .total_jsonl_bytes
+                    .saturating_sub(previous_bytes);
+            }
+            byte_accounting.total_jsonl_bytes =
+                byte_accounting.total_jsonl_bytes.saturating_add(bytes);
+        }
+
+        let mut compacted = false;
+        let now_ms = crate::session::unix_epoch_ms();
+
+        if let Some(max_age_ms) = self.retention.max_age_ms {
+            while order.front().is_some_and(|command_id| {
+                results
+                    .get(command_id)
+                    .and_then(|entry| match entry {
+                        CommandResultEntry::Completed(result) => Some(result.completed_at_ms),
+                        CommandResultEntry::Pending { .. } => None,
+                    })
+                    .is_some_and(|completed_at_ms| {
+                        completed_at_ms != 0 && now_ms.saturating_sub(completed_at_ms) > max_age_ms
+                    })
+            }) {
+                compacted |=
+                    remove_oldest_completed_result(&mut order, &mut results, &mut byte_accounting);
+            }
+        }
+
+        while order.len() > self.retention.max_entries {
+            compacted |=
+                remove_oldest_completed_result(&mut order, &mut results, &mut byte_accounting);
+        }
+
+        if let Some(max_total_bytes) = self.retention.max_total_bytes {
+            while byte_accounting.total_jsonl_bytes > max_total_bytes {
+                if !remove_oldest_completed_result(&mut order, &mut results, &mut byte_accounting) {
+                    break;
+                }
+                compacted = true;
+            }
+        }
+
+        compacted
     }
 
     async fn completed_results_snapshot(&self) -> Vec<PersistentCommandResult> {
@@ -379,6 +465,17 @@ impl CommandResultCache {
     }
 
     #[cfg(test)]
+    pub(super) fn fingerprint_for_command_type_test(command_type: &str) -> CommandFingerprint {
+        CommandFingerprint {
+            command_type: command_type.to_string(),
+            source: "test".to_string(),
+            session_id: None,
+            attachment_id: None,
+            request_hash: stable_hash64(command_type.as_bytes()),
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn request_hash_for_test(fingerprint: &CommandFingerprint) -> u64 {
         fingerprint.request_hash
     }
@@ -392,6 +489,39 @@ impl CommandResultCache {
             results.remove(command_id);
         }
     }
+}
+
+impl CommandResultPersistence {
+    fn should_compact_now(&self, next_append_bytes: u64) -> io::Result<bool> {
+        let skipped = self.skipped_compactions.fetch_add(1, Ordering::AcqRel) + 1;
+        if skipped >= COMMAND_RESULT_COMPACTION_SKIP_LIMIT {
+            return Ok(true);
+        }
+        if let Some(max_file_bytes) = self.max_file_bytes_before_compaction {
+            let file_bytes = match fs::metadata(&self.path) {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+                Err(error) => return Err(error),
+            };
+            return Ok(file_bytes.saturating_add(next_append_bytes) > max_file_bytes);
+        }
+        Ok(false)
+    }
+}
+
+fn remove_oldest_completed_result(
+    order: &mut VecDeque<String>,
+    results: &mut BTreeMap<String, CommandResultEntry>,
+    byte_accounting: &mut CommandResultByteAccounting,
+) -> bool {
+    let Some(command_id) = order.pop_front() else {
+        return false;
+    };
+    results.remove(&command_id);
+    if let Some(bytes) = byte_accounting.by_command_id.remove(&command_id) {
+        byte_accounting.total_jsonl_bytes = byte_accounting.total_jsonl_bytes.saturating_sub(bytes);
+    }
+    true
 }
 
 fn stable_hash64(bytes: &[u8]) -> u64 {
@@ -482,6 +612,18 @@ fn persistent_results_jsonl_bytes(entries: &[PersistentCommandResult]) -> io::Re
 fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<u64> {
     let bytes = serde_json::to_vec(entry).map_err(io::Error::other)?;
     Ok(bytes.len().saturating_add(1) as u64)
+}
+
+fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
+    !matches!(
+        fingerprint.command_type.as_str(),
+        "external_provider_session.list"
+            | "provider.catalog.get"
+            | "session.state.get"
+            | "slice.list"
+            | "waiting_room.inventory.get"
+            | "waiting_room.public_snapshot.get"
+    )
 }
 
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
@@ -654,8 +796,10 @@ mod tests {
         let path = temp_cache_path("compact-bytes");
         let first_fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"first");
         let second_fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"second");
+        let third_fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"third");
         let first_response = Some(serde_json::json!({ "payload": "x".repeat(120) }));
         let second_response = Some(serde_json::json!({ "payload": "y".repeat(120) }));
+        let third_response = Some(serde_json::json!({ "payload": "z".repeat(120) }));
         let second_entry = persistent_result_for_test(
             "command-second",
             second_fingerprint.clone(),
@@ -689,19 +833,98 @@ mod tests {
 
         let stored = fs::read_to_string(&path).expect("cache should exist");
         assert!(
-            stored.len() as u64 <= retention.max_total_bytes.unwrap(),
-            "cache should compact below byte budget: {stored}"
+            stored.contains("command-first"),
+            "disk compaction may be deferred until file growth is material"
+        );
+        assert!(matches!(
+            cache.reserve("command-first", &first_fingerprint).await,
+            CommandReservation::Dispatch
+        ));
+        cache.forget_pending("command-first").await;
+        assert!(matches!(
+            cache.reserve("command-second", &second_fingerprint).await,
+            CommandReservation::Wait(_)
+        ));
+
+        cache
+            .insert_completed_for_test(
+                "command-third".to_string(),
+                third_fingerprint.clone(),
+                third_response,
+            )
+            .await;
+
+        let stored = fs::read_to_string(&path).expect("cache should exist");
+        assert!(
+            stored.len() as u64
+                <= retention.max_total_bytes.unwrap()
+                    * COMMAND_RESULT_COMPACTION_FILE_GROWTH_MULTIPLIER,
+            "cache should compact once file growth crosses the byte budget multiplier: {stored}"
         );
         assert!(!stored.contains("command-first"));
-        assert!(stored.contains("command-second"));
+        assert!(!stored.contains("command-second"));
+        assert!(stored.contains("command-third"));
         assert!(matches!(
             cache.reserve("command-first", &first_fingerprint).await,
             CommandReservation::Dispatch
         ));
         assert!(matches!(
             cache.reserve("command-second", &second_fingerprint).await,
+            CommandReservation::Dispatch
+        ));
+        assert!(matches!(
+            cache.reserve("command-third", &third_fingerprint).await,
             CommandReservation::Wait(_)
         ));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
+        let noisy_command_types = [
+            "external_provider_session.list",
+            "provider.catalog.get",
+            "session.state.get",
+            "slice.list",
+            "waiting_room.inventory.get",
+            "waiting_room.public_snapshot.get",
+        ];
+        let path = temp_cache_path("skip-read-commands");
+        let cache = CommandResultCache::new_with_persistent_path(path.clone())
+            .expect("persistent cache should initialize");
+
+        for command_type in noisy_command_types {
+            let command_id = format!("command-{}", command_type.replace('.', "-"));
+            let fingerprint = CommandResultCache::fingerprint_for_command_type_test(command_type);
+            cache
+                .insert_completed_for_test(
+                    command_id.clone(),
+                    fingerprint.clone(),
+                    Some(serde_json::json!({ "command_type": command_type })),
+                )
+                .await;
+
+            assert!(matches!(
+                cache.reserve(&command_id, &fingerprint).await,
+                CommandReservation::Wait(_)
+            ));
+        }
+        assert!(
+            fs::read_to_string(&path).unwrap_or_default().is_empty(),
+            "high-frequency read command results should not be serialized to disk"
+        );
+
+        let restored = CommandResultCache::new_with_persistent_path(path.clone())
+            .expect("persistent cache should reload");
+        for command_type in noisy_command_types {
+            let command_id = format!("command-{}", command_type.replace('.', "-"));
+            let fingerprint = CommandResultCache::fingerprint_for_command_type_test(command_type);
+            assert!(matches!(
+                restored.reserve(&command_id, &fingerprint).await,
+                CommandReservation::Dispatch
+            ));
+        }
 
         let _ = fs::remove_file(path);
     }

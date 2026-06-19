@@ -262,9 +262,29 @@ impl KernelRuntimeState {
         agent_id: &str,
         caller_user_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        self.owned
-            .session_store
-            .acknowledge_agent_output_seen(session_id, agent_id, caller_user_id)
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let mut session = self.owned.session_store.get_session(session_id)?;
+        let collaboration_level = session
+            .collaboration_level_for_user(caller_user_id)
+            .unwrap_or(crate::session::CollaborationLevel::Private);
+        if agent.owner_user_id() != caller_user_id && !collaboration_level.can_view_agent_trace() {
+            return Err(DaemonError::OwnershipAccessDenied {
+                user_id: caller_user_id.to_string(),
+                owner_user_id: agent.owner_user_id().to_string(),
+                resource: agent_id.to_string(),
+                operation: "acknowledge agent output",
+            });
+        }
+        session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+        session.touch();
+        self.owned.session_store.restore_session(session);
+        self.owned.session_snapshot(session_id)
     }
 
     pub(crate) async fn cycle_agent_focus(

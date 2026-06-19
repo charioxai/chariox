@@ -212,8 +212,10 @@ impl CodexClient {
             "approvalsReviewer": "user",
             "personality": "pragmatic",
             "sandboxPolicy": policy.sandbox_policy,
-            "summary": "detailed",
         });
+        if codex_turn_supports_reasoning_summary(model) {
+            params["summary"] = json!("detailed");
+        }
         if let Some(cwd) = cwd {
             params["cwd"] = json!(cwd);
         }
@@ -303,4 +305,12 @@ impl CodexClient {
             }),
         );
     }
+}
+
+fn codex_turn_supports_reasoning_summary(model: Option<&str>) -> bool {
+    let Some(model) = model else {
+        return true;
+    };
+    let leaf = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    !leaf.contains("spark")
 }

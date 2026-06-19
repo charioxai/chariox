@@ -143,6 +143,7 @@ export type RuntimeSession = {
   invites?: SessionInvite[]
   created_at_ms: number
   last_used_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
   status: string
   agent_defaults?: SessionAgentDefaults
   active_provider_run_id: string | null
@@ -233,6 +234,7 @@ export type WaitingRoomPublicSessionSummary = {
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   created_at_ms: number
   last_used_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
   status: string
   connected_cli_count: number
   activity?: WaitingRoomSessionActivitySummary
@@ -1420,7 +1422,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 149
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 156
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

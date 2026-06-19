@@ -108,6 +108,7 @@ export type CliSessionLifecycleCompositionDeps = {
   setHistoryLoadingState: AnyFn
   setStatusLine: AnyFn
   setProviderCatalogState: AnyFn
+  availableSessions: AnyFn
   setAvailableSessions: AnyFn
   scheduleShortViewportHistoryCheck: AnyFn
   updateSessionChrome: AnyFn
@@ -290,6 +291,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     primeAttachedSessionBinding: deps.primeAttachedSessionBinding,
     hydrateAttachedSessionBinding: (sessionId, attachmentId, session) =>
       finalizeAttachedSessionBinding({ sessionId, attachmentId, session }),
+    getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,
     listSessions: () => listSessions(deps.client),
     scheduleShortViewportHistoryCheck: deps.scheduleShortViewportHistoryCheck,

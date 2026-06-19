@@ -258,40 +258,6 @@ impl SessionService {
         Ok(Some(session.clone()))
     }
 
-    pub fn acknowledge_agent_output_seen(
-        &mut self,
-        session_id: &str,
-        agent_id: &str,
-        user_id: &str,
-    ) -> Result<RuntimeSession, DaemonError> {
-        let session = self.get_session_mut_for_operation(session_id, "acknowledge agent output")?;
-        let Some(agent_owner_user_id) = session
-            .agents()
-            .iter()
-            .find(|agent| agent.id() == agent_id)
-            .map(|agent| agent.owner_user_id().to_string())
-        else {
-            return Err(DaemonError::AgentNotInSession {
-                session_id: session_id.to_string(),
-                agent_id: agent_id.to_string(),
-            });
-        };
-        let collaboration_level = session
-            .collaboration_level_for_user(user_id)
-            .unwrap_or(crate::session::CollaborationLevel::Private);
-        if agent_owner_user_id != user_id && !collaboration_level.can_view_agent_trace() {
-            return Err(DaemonError::OwnershipAccessDenied {
-                user_id: user_id.to_string(),
-                owner_user_id: agent_owner_user_id,
-                resource: agent_id.to_string(),
-                operation: "acknowledge agent output",
-            });
-        }
-        session.acknowledge_agent_output_seen(user_id, agent_id);
-        session.touch();
-        Ok(session.clone())
-    }
-
     pub fn ensure_metaagent_task(
         &mut self,
         session_id: &str,
@@ -458,6 +424,15 @@ impl SessionService {
         let session =
             self.get_session_mut_for_operation(session_id, "mirror prompt owner state")?;
         session.mirror_agent_prompt_state(agent_id, active_prompt, queued_prompts);
+        Ok(session.clone())
+    }
+
+    pub(crate) fn note_prompt_sent(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "note prompt sent")?;
+        session.note_prompt_sent();
         Ok(session.clone())
     }
 
