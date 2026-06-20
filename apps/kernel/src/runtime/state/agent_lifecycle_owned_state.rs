@@ -278,8 +278,9 @@ impl KernelRuntimeOwnedState {
             .agent_store
             .focus_agent(session_id, agent_id, &mut sessions)?;
         let mut session = sessions.get_session(session_id)?;
-        session.acknowledge_agent_output_seen(caller_user_id, agent_id);
-        sessions.restore_session(session);
+        if session.acknowledge_agent_output_seen(caller_user_id, agent_id) {
+            sessions.restore_session(session);
+        }
         drop(sessions);
         if !self.should_defer_provider_run_sync_for_focus_change(session_id, agent_id)? {
             self.sync_active_provider_run_for_agent(session_id, agent_id)?;

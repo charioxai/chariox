@@ -1,5 +1,10 @@
 use super::*;
 
+pub(crate) struct AgentOutputSeenAck {
+    pub(crate) session: crate::session::RuntimeSession,
+    pub(crate) changed: bool,
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn create_session_response(
         &self,
@@ -261,7 +266,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+    ) -> Result<AgentOutputSeenAck, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -281,10 +286,16 @@ impl KernelRuntimeState {
                 operation: "acknowledge agent output",
             });
         }
-        session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+        let changed = session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+        if !changed {
+            return Ok(AgentOutputSeenAck { session, changed });
+        }
         session.touch();
         self.owned.session_store.restore_session(session);
-        self.owned.session_snapshot(session_id)
+        Ok(AgentOutputSeenAck {
+            session: self.owned.session_snapshot(session_id)?,
+            changed,
+        })
     }
 
     pub(crate) async fn cycle_agent_focus(

@@ -72,14 +72,18 @@ pub(super) async fn handle_daemon_request(
         )
     };
     let request_kind = relay_request_kind(&request);
-    crate::logging::info_with_fields(
-        "daemon.relay_client",
-        "relay daemon request dispatching",
-        serde_json::json!({
-            "request_kind": request_kind,
-            "command_id": command_id,
-        }),
-    );
+    let quiet_success_request =
+        crate::runtime::command_latency::is_quiet_success_command_type(request_kind);
+    if !quiet_success_request {
+        crate::logging::info_with_fields(
+            "daemon.relay_client",
+            "relay daemon request dispatching",
+            serde_json::json!({
+                "request_kind": request_kind,
+                "command_id": command_id,
+            }),
+        );
+    }
     let result = dispatch_relay_client_request(
         router,
         command_sequence,
@@ -91,13 +95,15 @@ pub(super) async fn handle_daemon_request(
     .await;
     match result {
         RelayDispatchOutcome::Response(response) => {
-            crate::logging::info_with_fields(
-                "daemon.relay_client",
-                "relay daemon request dispatched",
-                serde_json::json!({
-                    "request_kind": request_kind,
-                }),
-            );
+            if !quiet_success_request {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "relay daemon request dispatched",
+                    serde_json::json!({
+                        "request_kind": request_kind,
+                    }),
+                );
+            }
             let plaintext = match serde_json::to_vec(&response) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -111,28 +117,32 @@ pub(super) async fn handle_daemon_request(
                     };
                 }
             };
-            crate::logging::info_with_fields(
-                "daemon.relay_client",
-                "relay daemon response serialized",
-                serde_json::json!({
-                    "request_kind": request_kind,
-                    "byte_len": plaintext.len(),
-                }),
-            );
+            if !quiet_success_request {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "relay daemon response serialized",
+                    serde_json::json!({
+                        "request_kind": request_kind,
+                        "byte_len": plaintext.len(),
+                    }),
+                );
+            }
             match relay_crypto::encrypt_payload_for_peer(
                 &daemon_private_key,
                 &client_public_key,
                 &plaintext,
             ) {
                 Ok(encrypted_response) => {
-                    crate::logging::info_with_fields(
-                        "daemon.relay_client",
-                        "relay daemon response encrypted",
-                        serde_json::json!({
-                            "request_kind": request_kind,
-                            "byte_len": plaintext.len(),
-                        }),
-                    );
+                    if !quiet_success_request {
+                        crate::logging::info_with_fields(
+                            "daemon.relay_client",
+                            "relay daemon response encrypted",
+                            serde_json::json!({
+                                "request_kind": request_kind,
+                                "byte_len": plaintext.len(),
+                            }),
+                        );
+                    }
                     RelayRequestOutcome {
                         encrypted_response: Some(encrypted_response),
                         error: None,

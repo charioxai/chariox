@@ -25,6 +25,19 @@ pub(crate) struct ObservedExternalProviderTurn {
     pub(crate) observed_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalProviderSessionDiscoverySignature {
+    files: Vec<ExternalProviderSessionFileSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalProviderSessionFileSignature {
+    provider: String,
+    path: PathBuf,
+    len: u64,
+    modified_at_ms: u64,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum ObservedExternalProviderTurnRole {
     User,
@@ -51,6 +64,36 @@ pub(crate) fn discover_external_provider_sessions(
         }
     }
     deduplicate_external_sessions(sessions)
+}
+
+pub(crate) fn external_provider_session_discovery_signature(
+    provider_filter: Option<&str>,
+) -> ExternalProviderSessionDiscoverySignature {
+    let mut files = provider_session_candidate_paths(provider_filter)
+        .into_iter()
+        .filter_map(|(provider, path)| {
+            let metadata = fs::metadata(&path).ok()?;
+            Some(ExternalProviderSessionFileSignature {
+                provider,
+                path,
+                len: metadata.len(),
+                modified_at_ms: metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or(0),
+            })
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| {
+        left.provider
+            .cmp(&right.provider)
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.len.cmp(&right.len))
+            .then_with(|| left.modified_at_ms.cmp(&right.modified_at_ms))
+    });
+    ExternalProviderSessionDiscoverySignature { files }
 }
 
 pub(crate) fn read_external_provider_observed_turns(
@@ -125,19 +168,14 @@ fn deduplicate_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 pub(crate) fn discover_codex_external_sessions(root: &Path) -> Vec<ExternalProviderSessionRecord> {
-    let mut candidates = jsonl_candidates(&root.join("archived_sessions"), 4);
-    candidates.extend(jsonl_candidates(&root.join("sessions"), 4));
-    candidates.truncate(MAX_PROVIDER_FILES);
-    candidates
+    codex_candidate_paths(root)
         .into_iter()
         .filter_map(|path| parse_codex_transcript(&path))
         .collect()
 }
 
 pub(crate) fn discover_claude_external_sessions(root: &Path) -> Vec<ExternalProviderSessionRecord> {
-    let mut candidates = jsonl_candidates(&root.join("projects"), 3);
-    candidates.truncate(MAX_PROVIDER_FILES);
-    candidates
+    claude_candidate_paths(root)
         .into_iter()
         .filter_map(|path| parse_claude_transcript(&path))
         .collect()
@@ -146,12 +184,61 @@ pub(crate) fn discover_claude_external_sessions(root: &Path) -> Vec<ExternalProv
 pub(crate) fn discover_opencode_external_sessions(
     root: &Path,
 ) -> Vec<ExternalProviderSessionRecord> {
-    let mut candidates = session_json_candidates(root, 5);
-    candidates.truncate(MAX_PROVIDER_FILES);
-    candidates
+    opencode_candidate_paths(root)
         .into_iter()
         .filter_map(|path| parse_opencode_session_file(&path))
         .collect()
+}
+
+fn provider_session_candidate_paths(provider_filter: Option<&str>) -> Vec<(String, PathBuf)> {
+    let mut paths = Vec::new();
+    if provider_matches(provider_filter, "codex") {
+        for root in codex_roots() {
+            paths.extend(
+                codex_candidate_paths(&root)
+                    .into_iter()
+                    .map(|path| ("codex".to_string(), path)),
+            );
+        }
+    }
+    if provider_matches(provider_filter, "claude") {
+        for root in claude_roots() {
+            paths.extend(
+                claude_candidate_paths(&root)
+                    .into_iter()
+                    .map(|path| ("claude".to_string(), path)),
+            );
+        }
+    }
+    if provider_matches(provider_filter, "opencode") {
+        for root in opencode_roots() {
+            paths.extend(
+                opencode_candidate_paths(&root)
+                    .into_iter()
+                    .map(|path| ("opencode".to_string(), path)),
+            );
+        }
+    }
+    paths
+}
+
+fn codex_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = jsonl_candidates(&root.join("archived_sessions"), 4);
+    candidates.extend(jsonl_candidates(&root.join("sessions"), 4));
+    candidates.truncate(MAX_PROVIDER_FILES);
+    candidates
+}
+
+fn claude_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = jsonl_candidates(&root.join("projects"), 3);
+    candidates.truncate(MAX_PROVIDER_FILES);
+    candidates
+}
+
+fn opencode_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = session_json_candidates(root, 5);
+    candidates.truncate(MAX_PROVIDER_FILES);
+    candidates
 }
 
 fn jsonl_candidates(root: &Path, max_depth: usize) -> Vec<PathBuf> {

@@ -143,6 +143,9 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 pub(crate) fn log_command_received(trace: &CommandTrace) {
+    if is_quiet_success_command_type(trace.command_type()) {
+        return;
+    }
     crate::logging::info_with_fields(
         "daemon.command_latency",
         "kernel command received",
@@ -154,6 +157,9 @@ pub(crate) fn log_command_completed(
     trace: &CommandTrace,
     result: &Result<LocalDaemonResponse, DaemonError>,
 ) {
+    if result.is_ok() && is_quiet_success_command_type(trace.command_type()) {
+        return;
+    }
     let now_ms = now_ms();
     let mut fields = merge_fields(
         trace.base_fields(now_ms),
@@ -167,6 +173,13 @@ pub(crate) fn log_command_completed(
         fields = merge_fields(fields, json!({ "error": error.to_string() }));
     }
     crate::logging::info_with_fields("daemon.command_latency", "kernel command completed", fields);
+}
+
+pub(crate) fn is_quiet_success_command_type(command_type: &str) -> bool {
+    matches!(
+        command_type,
+        "relay.status" | "waiting_room.public_snapshot.get" | "slice.list" | "provider.catalog.get"
+    )
 }
 
 pub(crate) fn log_lane_enqueued(

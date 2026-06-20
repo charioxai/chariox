@@ -30,23 +30,28 @@ impl ExternalProviderSessionIndexStore {
             .inner
             .write()
             .expect("external provider session index poisoned");
-        let mut merged_sessions = Vec::with_capacity(sessions.len());
+        let mut replacement = BTreeMap::new();
         for mut session in sessions {
             if let Some(existing) = index.sessions.get(&session.external_session_id) {
                 session.already_imported = existing.already_imported;
                 session.imported_session_ids = existing.imported_session_ids.clone();
                 session.imported_agent_ids = existing.imported_agent_ids.clone();
             }
-            merged_sessions.push(session);
+            replacement.insert(session.external_session_id.clone(), session);
+        }
+        let current = index
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.provider == provider)
+            .map(|(id, session)| (id.clone(), session.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if current == replacement {
+            return;
         }
         index
             .sessions
             .retain(|_, session| session.provider != provider);
-        for session in merged_sessions {
-            index
-                .sessions
-                .insert(session.external_session_id.clone(), session);
-        }
+        index.sessions.extend(replacement);
     }
 
     #[allow(dead_code)]

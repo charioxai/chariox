@@ -347,9 +347,11 @@ pub(crate) fn waiting_room_rows_changed_event(
     snapshot: WaitingRoomPublicSnapshot,
     previous_snapshot: Option<&WaitingRoomPublicSnapshot>,
 ) -> Option<KernelEvent> {
-    if previous_snapshot
-        .is_some_and(|previous| previous.inventory_version == snapshot.inventory_version)
-    {
+    if previous_snapshot.is_some_and(|previous| {
+        previous.schema_version == snapshot.schema_version
+            && previous.launch_target == snapshot.launch_target
+            && previous.sessions == snapshot.sessions
+    }) {
         return None;
     }
     let previous_sessions = previous_snapshot
@@ -719,9 +721,9 @@ mod tests {
     }
 
     #[test]
-    fn waiting_room_rows_changed_event_skips_unchanged_version() {
+    fn waiting_room_rows_changed_event_skips_unchanged_rows() {
         let previous = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
-        let current = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 2)]);
+        let current = waiting_room_snapshot("inventory-b", vec![session_summary("session-a", 1)]);
 
         assert!(waiting_room_rows_changed_event(current, Some(&previous)).is_none());
     }

@@ -143,7 +143,16 @@ impl<E: Clone + Serialize> EventLog<E> {
                 .saturating_add(logged_jsonl_bytes);
             let compact_after_append =
                 apply_retention(&mut streams, self.retention, unix_epoch_ms());
-            let compact_snapshot = compact_after_append.then(|| retained_events_snapshot(&streams));
+            let compact_snapshot = if compact_after_append {
+                match &self.persistence {
+                    Some(persistence) if persistence.should_compact_now()? => {
+                        Some(retained_events_snapshot(&streams))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             (logged, compact_snapshot)
         };
         if let Some(persistence) = &self.persistence {
@@ -270,10 +279,8 @@ impl PersistentEventStore {
         }
         append_logged_event(&self.path, logged)?;
         if let Some(snapshot) = compact_snapshot {
-            if self.should_compact_now()? {
-                rewrite_logged_events(&self.path, snapshot)?;
-                self.skipped_compactions.store(0, Ordering::Release);
-            }
+            rewrite_logged_events(&self.path, snapshot)?;
+            self.skipped_compactions.store(0, Ordering::Release);
         }
         Ok(())
     }
@@ -582,10 +589,35 @@ fn unix_epoch_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde::{Serialize, Serializer};
+
     use super::{
         EventLog, EventRetentionPolicy, LoggedEvent, ReplayOutcome,
         DEFAULT_EVENT_ID_RESERVATION_BLOCK,
     };
+
+    static CLONE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug)]
+    struct CloneCountedEvent(&'static str);
+
+    impl Clone for CloneCountedEvent {
+        fn clone(&self) -> Self {
+            CLONE_COUNT.fetch_add(1, Ordering::SeqCst);
+            Self(self.0)
+        }
+    }
+
+    impl Serialize for CloneCountedEvent {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_str(self.0)
+        }
+    }
 
     #[tokio::test]
     async fn appends_monotonic_event_and_stream_sequences() {
@@ -640,6 +672,26 @@ mod tests {
             }
             ReplayOutcome::Replayed(events) => panic!("expected replay gap, got {events:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn retention_does_not_clone_snapshot_without_persistent_compaction() {
+        CLONE_COUNT.store(0, Ordering::SeqCst);
+        let log = EventLog::new(1);
+        log.append("session:a", CloneCountedEvent("first"))
+            .await
+            .expect("first event should append");
+        CLONE_COUNT.store(0, Ordering::SeqCst);
+
+        log.append("session:a", CloneCountedEvent("second"))
+            .await
+            .expect("second event should append");
+
+        assert_eq!(
+            CLONE_COUNT.load(Ordering::SeqCst),
+            1,
+            "retention should clone only the appended event, not a retained snapshot"
+        );
     }
 
     #[tokio::test]

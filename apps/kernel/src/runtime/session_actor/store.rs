@@ -165,16 +165,25 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        let session_id = request.session_id.clone();
         let agent_id = request.agent_id.clone();
-        let result = self
+        match self
             .state
             .acknowledge_agent_output_seen(&request.session_id, &request.agent_id, &caller_user_id)
             .await
-            .map(|session| LocalDaemonResponse::AgentOutputSeenAcknowledged {
-                session_id: session.id().to_string(),
-                agent_id,
-            });
-        self.with_session_projection_action_result(result).await
+        {
+            Ok(ack) => {
+                let response = LocalDaemonResponse::AgentOutputSeenAcknowledged {
+                    session_id,
+                    agent_id,
+                };
+                let projection_action = ack
+                    .changed
+                    .then_some(SessionProjectionAction::Update(ack.session));
+                (Ok(response), projection_action)
+            }
+            Err(error) => (Err(error), None),
+        }
     }
 
     pub(super) async fn cycle_agent_focus(

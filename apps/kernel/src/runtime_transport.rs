@@ -745,20 +745,24 @@ async fn handle_incoming_payload(
                     return;
                 }
             };
-            crate::logging::info_with_fields(
-                "daemon.runtime_transport",
-                "kernel command accepted",
-                serde_json::json!({
-                    "request_id": request_id,
-                    "command_id": command.command_id,
-                    "command_type": command.command_type,
-                    "correlation_id": command.correlation_id,
-                    "priority": format!("{:?}", command.priority),
-                    "session_id": command.session_id,
-                    "attachment_id": command.attachment_id,
-                    "agent_id": command.agent_id,
-                }),
-            );
+            if !crate::runtime::command_latency::is_quiet_success_command_type(
+                &command.command_type,
+            ) {
+                crate::logging::info_with_fields(
+                    "daemon.runtime_transport",
+                    "kernel command accepted",
+                    serde_json::json!({
+                        "request_id": request_id,
+                        "command_id": command.command_id,
+                        "command_type": command.command_type,
+                        "correlation_id": command.correlation_id,
+                        "priority": format!("{:?}", command.priority),
+                        "session_id": command.session_id,
+                        "attachment_id": command.attachment_id,
+                        "agent_id": command.agent_id,
+                    }),
+                );
+            }
             let runtime = Arc::clone(runtime);
             let router = Arc::clone(router);
             let outgoing_tx = outgoing_tx.clone();

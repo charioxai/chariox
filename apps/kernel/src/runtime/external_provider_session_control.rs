@@ -22,11 +22,17 @@ const EXTERNAL_PROVIDER_IMPORTED_ACTIVE_INTERVAL: Duration = Duration::from_secs
 const EXTERNAL_PROVIDER_IMPORTED_IDLE_INTERVAL: Duration = Duration::from_secs(20);
 const EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW: Duration = Duration::from_secs(120);
 
+#[derive(Debug, Default)]
+struct ExternalProviderSessionDiscoveryCache {
+    signature: Option<crate::app::ExternalProviderSessionDiscoverySignature>,
+}
+
 pub(crate) async fn run_external_provider_session_discovery_poller(
     app: Arc<Mutex<DaemonApp>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    refresh_external_provider_session_index(&app).await;
+    let mut cache = ExternalProviderSessionDiscoveryCache::default();
+    refresh_external_provider_session_index(&app, Some(&mut cache), false).await;
     let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -37,7 +43,7 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
                 }
             }
             _ = interval.tick() => {
-                refresh_external_provider_session_index(&app).await;
+                refresh_external_provider_session_index(&app, Some(&mut cache), false).await;
             }
         }
     }
@@ -177,7 +183,31 @@ async fn poll_imported_external_provider_transcripts(
     }
 }
 
-async fn refresh_external_provider_session_index(app: &Arc<Mutex<DaemonApp>>) {
+async fn refresh_external_provider_session_index(
+    app: &Arc<Mutex<DaemonApp>>,
+    mut cache: Option<&mut ExternalProviderSessionDiscoveryCache>,
+    force: bool,
+) {
+    let signature = match tokio::task::spawn_blocking(|| {
+        crate::app::external_provider_session_discovery_signature(None)
+    })
+    .await
+    {
+        Ok(signature) => signature,
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.external_provider_sessions",
+                "external provider session signature task failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+            return;
+        }
+    };
+    if !force && cache.as_ref().and_then(|cache| cache.signature.as_ref()) == Some(&signature) {
+        return;
+    }
     let discovered =
         match tokio::task::spawn_blocking(|| crate::app::discover_external_provider_sessions(None))
             .await
@@ -194,6 +224,9 @@ async fn refresh_external_provider_session_index(app: &Arc<Mutex<DaemonApp>>) {
                 return;
             }
         };
+    if let Some(cache) = cache.as_mut() {
+        cache.signature = Some(signature);
+    }
     let store = {
         let app = app.lock().await;
         app.external_provider_session_index_store()

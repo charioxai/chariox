@@ -56,19 +56,35 @@ pub(super) async fn handle_relay_subscribe(
 ) -> Result<(), DaemonError> {
     let is_inventory_subscription =
         subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
-    crate::logging::info_with_fields(
-        "daemon.relay_client",
-        "relay subscription request received",
-        serde_json::json!({
-            "relay_request_id": relay_request_id,
-            "relay_subscription_id": relay_subscription_id,
-            "session_id": session_id,
-            "attachment_id": attachment_id,
-            "subscription_scope": subscription_scope,
-            "resume_from_event_id": resume_from_event_id,
-            "is_waiting_room_inventory_subscription": is_inventory_subscription,
-        }),
-    );
+    if resume_from_event_id.is_none() {
+        crate::logging::info_with_fields(
+            "daemon.relay_client",
+            "relay subscription request received",
+            serde_json::json!({
+                "relay_request_id": relay_request_id,
+                "relay_subscription_id": relay_subscription_id,
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+                "subscription_scope": subscription_scope,
+                "resume_from_event_id": resume_from_event_id,
+                "is_waiting_room_inventory_subscription": is_inventory_subscription,
+            }),
+        );
+    } else {
+        crate::logging::debug_with_fields(
+            "daemon.relay_client",
+            "relay subscription resume request received",
+            serde_json::json!({
+                "relay_request_id": relay_request_id,
+                "relay_subscription_id": relay_subscription_id,
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+                "subscription_scope": subscription_scope,
+                "resume_from_event_id": resume_from_event_id,
+                "is_waiting_room_inventory_subscription": is_inventory_subscription,
+            }),
+        );
+    }
     if !is_inventory_subscription
         && (session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
             || attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID)
@@ -100,18 +116,33 @@ pub(super) async fn handle_relay_subscribe(
                 .await
         };
         if let Err(error) = validation {
-            crate::logging::warn_with_fields(
-                "daemon.relay_client",
-                "relay subscription attachment validation failed",
-                serde_json::json!({
-                    "relay_request_id": relay_request_id,
-                    "relay_subscription_id": relay_subscription_id,
-                    "session_id": session_id,
-                    "attachment_id": attachment_id,
-                    "subscription_scope": subscription_scope,
-                    "error": error.to_string(),
-                }),
-            );
+            if resume_from_event_id.is_none() {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "relay subscription attachment validation failed",
+                    serde_json::json!({
+                        "relay_request_id": relay_request_id,
+                        "relay_subscription_id": relay_subscription_id,
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "subscription_scope": subscription_scope,
+                        "error": error.to_string(),
+                    }),
+                );
+            } else {
+                crate::logging::debug_with_fields(
+                    "daemon.relay_client",
+                    "relay subscription resume attachment validation failed",
+                    serde_json::json!({
+                        "relay_request_id": relay_request_id,
+                        "relay_subscription_id": relay_subscription_id,
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "subscription_scope": subscription_scope,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
             send_outgoing_envelope(
                 outgoing_tx,
                 RelayEnvelope::DaemonResponse {
@@ -125,9 +156,6 @@ pub(super) async fn handle_relay_subscribe(
     }
     let task_key =
         relay_subscription_task_key(&session_id, &attachment_id, subscription_scope.as_deref());
-    if let Some(existing) = subscription_tasks.lock().await.remove(&task_key) {
-        existing.handle.abort();
-    }
     let ack = match encrypt_json_response(
         router,
         &client_public_key,
@@ -159,6 +187,20 @@ pub(super) async fn handle_relay_subscribe(
             error: None,
         },
     )?;
+    if subscription_tasks
+        .lock()
+        .await
+        .get(&task_key)
+        .is_some_and(|existing| {
+            existing.relay_subscription_id == relay_subscription_id
+                && !existing.handle.is_finished()
+        })
+    {
+        return Ok(());
+    }
+    if let Some(existing) = subscription_tasks.lock().await.remove(&task_key) {
+        existing.handle.abort();
+    }
     if !is_inventory_subscription {
         if let Err(error) = replay_recent_relay_events(
             event_runtime,
@@ -193,6 +235,7 @@ pub(super) async fn handle_relay_subscribe(
         attachment_id,
         subscription_scope,
         Arc::clone(event_runtime),
+        resume_from_event_id.is_some(),
     ));
     subscription_tasks.lock().await.insert(
         task_key,
@@ -257,6 +300,7 @@ pub(super) async fn run_relay_subscription_loop(
     attachment_id: String,
     subscription_scope: Option<String>,
     event_runtime: Arc<RelayEventRuntime>,
+    resumed: bool,
 ) {
     if subscription_scope.as_deref() == Some("waiting_room_inventory") {
         run_relay_waiting_room_inventory_subscription_loop(
@@ -265,6 +309,7 @@ pub(super) async fn run_relay_subscription_loop(
             subscription_id,
             client_public_key,
             event_runtime,
+            resumed,
         )
         .await;
         return;
@@ -526,17 +571,26 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     subscription_id: String,
     client_public_key: String,
     event_runtime: Arc<RelayEventRuntime>,
+    resumed: bool,
 ) {
     let mut previous_waiting_room_snapshot = None;
-    let mut previous_relay_status = None;
-    let mut previous_remote_machines = None;
-    let mut previous_provider_catalog = None;
-    let mut previous_slices = None;
-    let mut inventory_dirty = true;
+    let mut previous_relay_status = if resumed {
+        Some(router.transport_relay_status_snapshot().await)
+    } else {
+        None
+    };
+    let mut previous_remote_machines = resumed.then(|| router.transport_remote_machines_snapshot());
+    let mut previous_provider_catalog = resumed
+        .then(|| router.transport_provider_catalog_snapshot())
+        .flatten();
+    let mut previous_slices = resumed.then(|| router.transport_slices_snapshot());
+    let mut inventory_dirty = !resumed;
     let mut tick: u64 = 0;
     loop {
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
-        if inventory_dirty || tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
+        if inventory_dirty
+            || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
+        {
             match router.waiting_room_public_snapshot().await {
                 Ok(snapshot) => {
                     inventory_dirty = false;

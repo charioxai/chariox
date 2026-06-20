@@ -1119,7 +1119,52 @@ async fn acknowledge_output_seen_uses_agent_store_membership_projection() {
         .await
         .expect("output acknowledgement should use agent-store membership");
 
-    assert_eq!(acknowledged.id(), session_id);
+    assert_eq!(acknowledged.session.id(), session_id);
+    assert!(
+        !acknowledged.changed,
+        "acknowledging output with no unread state should be a no-op"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_output_seen_ack_does_not_publish_session_projection() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    router
+        .runtime_state
+        .session_snapshot_projection(&session_id, 0)
+        .expect("projection should resolve");
+    let before_projection_sequence = router.session_projection_change_sequence();
+    let ack_request =
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest {
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+        });
+    let ack_command =
+        KernelCommand::from_local_request("cmd-output-seen-noop", None, None, &ack_request);
+
+    let response = router
+        .dispatch(ack_command, ack_request)
+        .await
+        .expect("duplicate output acknowledgement should still return success");
+
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::AgentOutputSeenAcknowledged {
+            session_id: ref acknowledged_session_id,
+            agent_id: ref acknowledged_agent_id,
+        } if acknowledged_session_id == &session_id && acknowledged_agent_id == &agent_id
+    ));
+    assert_eq!(
+        router.session_projection_change_sequence(),
+        before_projection_sequence,
+        "no-op output acknowledgements must not publish session projections"
+    );
 }
 
 #[tokio::test]
