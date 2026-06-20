@@ -42,7 +42,6 @@ impl KernelRuntimeOwnedState {
             prepared.prompt.clone(),
             prepared.force_queue,
         )?;
-        self.session_store.note_prompt_sent(&session_id)?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
             | crate::session::PromptSubmissionOutcome::Queued { prompt } => {
@@ -58,6 +57,11 @@ impl KernelRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         )?;
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.agent_store
+            .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
+        self.session_store
+            .note_prompt_sent(&session_id, &outcome_agent_id, prompt_sent_at_ms)?;
         let remote_dispatch =
             if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
                 Some(crate::app::KernelRemotePromptDispatch {

@@ -453,6 +453,7 @@ pub(super) async fn run_relay_subscription_loop(
                             session: Box::new(snapshot.session),
                             provider_run: Box::new(snapshot.provider_run),
                             agent_activity: Box::new(snapshot.agent_activity),
+                            agent_activity_revision: snapshot.metadata.last_event_id,
                         },
                     )
                     .await

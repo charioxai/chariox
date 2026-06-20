@@ -275,6 +275,7 @@ fn local_request_api_spawns_and_focuses_agents() {
         LocalDaemonResponse::SessionState {
             session,
             agent_activity,
+            ..
         } => (session, agent_activity),
         _ => panic!("unexpected local response"),
     };

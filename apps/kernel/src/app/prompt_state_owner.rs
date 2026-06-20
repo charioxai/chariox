@@ -52,7 +52,6 @@ impl DaemonApp {
         force_queue: bool,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let source_attachment_id = prompt.source_attachment_id().to_string();
-        let agent_id = prompt.target_agent_id().to_string();
         let session = self.sessions.get_session(session_id)?;
         if !session.has_attachment(&source_attachment_id)
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(&source_attachment_id)
@@ -65,8 +64,16 @@ impl DaemonApp {
         let outcome =
             self.prompt_state_owner
                 .submit_prepared_prompt(&session, prompt, force_queue)?;
-        self.sessions.note_prompt_sent(session_id)?;
+        let agent_id = match &outcome {
+            PromptSubmissionOutcome::Started { prompt }
+            | PromptSubmissionOutcome::Queued { prompt } => prompt.target_agent_id().to_string(),
+        };
         self.mirror_prompt_owner_agent_state(session_id, &agent_id)?;
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.agents
+            .note_prompt_sent_at(&agent_id, prompt_sent_at_ms)?;
+        self.sessions
+            .note_prompt_sent(session_id, &agent_id, prompt_sent_at_ms)?;
         Ok(outcome)
     }
 

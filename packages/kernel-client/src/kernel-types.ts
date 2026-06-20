@@ -269,6 +269,7 @@ export type WaitingRoomPublicAgentSummary = {
   agent_ref: string
   alias?: string | null
   created_at_ms: number
+  last_prompt_sent_at_ms?: number | null
   provider: string
   model?: string | null
   variant?: string | null
@@ -1422,7 +1423,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 156
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 158
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1553,6 +1554,7 @@ export type PromptSubmittedPayload = {
   outcome: Record<string, unknown>
   session: RuntimeSession
   agent_activity: Record<string, AgentRuntimeActivity>
+  agent_activity_revision: number
 }
 
 export type SessionHistoryPageEntry = {

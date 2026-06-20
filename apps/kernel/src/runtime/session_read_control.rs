@@ -50,6 +50,7 @@ pub(crate) fn projected_session_state_response(
                 .into_iter()
                 .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))
                 .collect(),
+            agent_activity_revision: session_projection.change_sequence(),
             session: redacted_session,
         }));
     }

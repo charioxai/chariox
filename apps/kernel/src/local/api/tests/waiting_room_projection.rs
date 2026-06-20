@@ -114,6 +114,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
     assert_eq!(session.agents[0].agent_ref, agent.agent_ref());
     assert_eq!(session.agents[0].provider, agent.primary_provider());
     assert_eq!(session.agents[0].worktree_id, session.worktree_id);
+    assert_eq!(session.agents[0].last_prompt_sent_at_ms, None);
     assert!(session.workflows.is_empty());
 
     let serialized =
@@ -368,6 +369,26 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         other => panic!("unexpected response: {other:?}"),
     };
+    let idle_agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("idle".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: Some("model".to_string()),
+            effort: Some("default".to_string()),
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }))
+        .expect("second agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
+        other => panic!("unexpected response: {other:?}"),
+    };
     let attachment = match harness
         .dispatch(LocalDaemonRequest::AttachToSession(
             AttachToSessionRequest {
@@ -422,7 +443,7 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
         .iter()
         .find(|candidate| candidate.id == session.id())
         .expect("created session should be in public snapshot");
-    assert_eq!(summary.activity.agent_count, 1);
+    assert_eq!(summary.activity.agent_count, 2);
     assert_eq!(summary.activity.working_agent_count, 1);
     assert_eq!(summary.activity.active_prompt_count, 1);
     assert_eq!(summary.activity.queued_prompt_count, 0);
@@ -432,6 +453,22 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
     assert_eq!(
         summary.last_prompt_sent_at_ms,
         Some(response_prompt_sent_at_ms)
+    );
+    assert_eq!(
+        summary
+            .agents
+            .iter()
+            .find(|candidate| candidate.id == agent.id())
+            .and_then(|agent| agent.last_prompt_sent_at_ms),
+        Some(response_prompt_sent_at_ms)
+    );
+    assert_eq!(
+        summary
+            .agents
+            .iter()
+            .find(|candidate| candidate.id == idle_agent.id())
+            .and_then(|agent| agent.last_prompt_sent_at_ms),
+        None
     );
 
     let serialized =

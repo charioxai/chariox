@@ -23,10 +23,12 @@ pub(crate) fn redact_response_for_user(
         LocalDaemonResponse::SessionState {
             session,
             agent_activity,
+            agent_activity_revision,
         } => {
             let session = session.redacted_for_user(caller_user_id);
             LocalDaemonResponse::SessionState {
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
+                agent_activity_revision,
                 session,
             }
         }
@@ -98,11 +100,13 @@ pub(crate) fn redact_response_for_user(
             outcome,
             session,
             agent_activity,
+            agent_activity_revision,
         } => {
             let session = session.redacted_for_user(caller_user_id);
             LocalDaemonResponse::PromptSubmitted {
                 outcome,
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
+                agent_activity_revision,
                 session,
             }
         }

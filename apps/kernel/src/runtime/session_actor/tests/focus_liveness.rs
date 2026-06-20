@@ -35,6 +35,7 @@ fn focus_does_not_disturb_multi_agent_provider_liveness() {
             .session_snapshot(session.id())
             .expect("session snapshot should load"),
         agent_activity: std::collections::BTreeMap::new(),
+        agent_activity_revision: 0,
     };
 
     match started {

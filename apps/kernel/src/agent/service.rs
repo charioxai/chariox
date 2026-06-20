@@ -357,6 +357,21 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn note_prompt_sent_at(
+        &mut self,
+        agent_id: &str,
+        timestamp_ms: u64,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.note_prompt_sent_at(timestamp_ms);
+        Ok(agent.clone())
+    }
+
     pub fn set_agent_runtime_profile(
         &mut self,
         agent_id: &str,
@@ -893,6 +908,14 @@ impl AgentServiceStore {
         is_processing: bool,
     ) -> Result<AgentInstance, DaemonError> {
         self.write().set_agent_processing(agent_id, is_processing)
+    }
+
+    pub fn note_prompt_sent_at(
+        &self,
+        agent_id: &str,
+        timestamp_ms: u64,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().note_prompt_sent_at(agent_id, timestamp_ms)
     }
 
     pub fn set_agent_runtime_profile(

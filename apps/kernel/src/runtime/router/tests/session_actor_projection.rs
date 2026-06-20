@@ -658,6 +658,7 @@ async fn get_session_state_keeps_activity_after_runtime_interaction_projection_r
         LocalDaemonResponse::SessionState {
             session,
             agent_activity,
+            ..
         } => {
             assert_eq!(session.focused_agent_id(), Some(agent_id.as_str()));
             assert_eq!(session.agents().len(), 1);

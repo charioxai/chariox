@@ -821,8 +821,11 @@ impl RuntimeSession {
         self.last_used_at_ms = Some(unix_epoch_ms());
     }
 
-    pub fn note_prompt_sent(&mut self) {
-        self.last_prompt_sent_at_ms = Some(unix_epoch_ms());
+    pub fn note_prompt_sent_at(&mut self, agent_id: &str, timestamp_ms: u64) {
+        self.last_prompt_sent_at_ms = Some(timestamp_ms);
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id() == agent_id) {
+            agent.note_prompt_sent_at(timestamp_ms);
+        }
     }
 
     pub fn create_workflow(&mut self, workflow: WorkflowDefinition) -> WorkflowDefinition {

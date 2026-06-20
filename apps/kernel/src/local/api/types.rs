@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 156;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 158;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -459,6 +459,8 @@ pub enum LocalDaemonResponse {
     SessionState {
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+        #[serde(default)]
+        agent_activity_revision: u64,
     },
     MetaagentTaskUpdated {
         session: RuntimeSession,
@@ -946,6 +948,8 @@ pub enum LocalDaemonResponse {
         outcome: PromptSubmissionOutcome,
         session: RuntimeSession,
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+        #[serde(default)]
+        agent_activity_revision: u64,
     },
     PromptCompleted {
         completion: PromptCompletion,

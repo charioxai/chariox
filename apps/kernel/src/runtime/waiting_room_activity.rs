@@ -501,10 +501,9 @@ mod tests {
                 .unread_idle_agent_count,
             1
         );
-        assert!(session.acknowledge_agent_output_seen(
-            crate::session::DEFAULT_LOCAL_USER_ID,
-            "agent-2"
-        ));
+        assert!(
+            session.acknowledge_agent_output_seen(crate::session::DEFAULT_LOCAL_USER_ID, "agent-2")
+        );
         assert_eq!(
             waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
                 .unread_idle_agent_count,

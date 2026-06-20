@@ -430,9 +430,11 @@ impl SessionService {
     pub(crate) fn note_prompt_sent(
         &mut self,
         session_id: &str,
+        agent_id: &str,
+        timestamp_ms: u64,
     ) -> Result<RuntimeSession, DaemonError> {
         let session = self.get_session_mut_for_operation(session_id, "note prompt sent")?;
-        session.note_prompt_sent();
+        session.note_prompt_sent_at(agent_id, timestamp_ms);
         Ok(session.clone())
     }
 

@@ -114,8 +114,14 @@ impl SessionStateStore {
             .mirror_agent_prompt_state(session_id, agent_id, active_prompt, queued_prompts)
     }
 
-    pub(crate) fn note_prompt_sent(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        self.write().note_prompt_sent(session_id)
+    pub(crate) fn note_prompt_sent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        timestamp_ms: u64,
+    ) -> Result<RuntimeSession, DaemonError> {
+        self.write()
+            .note_prompt_sent(session_id, agent_id, timestamp_ms)
     }
 
     pub(crate) fn note_agent_output_sequence(

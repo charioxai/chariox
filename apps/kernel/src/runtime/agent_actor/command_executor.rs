@@ -126,6 +126,7 @@ impl AgentRuntimeCommandExecutor {
             outcome: prepared.outcome,
             session: response_session,
             agent_activity,
+            agent_activity_revision: self.session_projection.change_sequence(),
         })
     }
 

@@ -30,6 +30,7 @@ fn handles_prompt_submit_through_agent_request_surface() {
             .session_snapshot(session.id())
             .expect("session snapshot should load"),
         agent_activity: std::collections::BTreeMap::new(),
+        agent_activity_revision: 0,
     };
 
     match response {

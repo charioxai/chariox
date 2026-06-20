@@ -162,6 +162,8 @@ pub struct AgentInstance {
     position: GridPosition,
     created_at_ms: u64,
     last_activity_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_prompt_sent_at_ms: Option<u64>,
 }
 
 impl AgentInstance {
@@ -210,6 +212,7 @@ impl AgentInstance {
             position,
             created_at_ms: now,
             last_activity_at_ms: now,
+            last_prompt_sent_at_ms: None,
         }
     }
 
@@ -385,6 +388,14 @@ impl AgentInstance {
         self.last_activity_at_ms
     }
 
+    pub fn last_prompt_sent_at_ms(&self) -> Option<u64> {
+        self.last_prompt_sent_at_ms
+    }
+
+    pub(crate) fn note_prompt_sent_at(&mut self, timestamp_ms: u64) {
+        self.last_prompt_sent_at_ms = Some(timestamp_ms);
+    }
+
     pub fn visible_in_freeform(&self) -> bool {
         self.visible_in_freeform
     }
@@ -502,6 +513,7 @@ impl AgentInstance {
         self.is_processing = false;
         self.created_at_ms = crate::session::unix_epoch_ms();
         self.last_activity_at_ms = self.created_at_ms;
+        self.last_prompt_sent_at_ms = None;
         self
     }
 

@@ -390,6 +390,7 @@ async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_promp
         outcome,
         session,
         agent_activity,
+        ..
     } = response
     else {
         panic!("unexpected response");
@@ -497,6 +498,7 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
         outcome,
         session,
         agent_activity,
+        ..
     } = response
     else {
         panic!("unexpected response");

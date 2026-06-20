@@ -87,10 +87,14 @@ pub(crate) enum KernelEvent {
         session: Box<RuntimeSession>,
         provider_run: Box<Option<RuntimeProviderRun>>,
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
+        #[serde(default)]
+        agent_activity_revision: u64,
     },
     AgentActivityChanged {
         session_id: String,
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
+        #[serde(default)]
+        agent_activity_revision: u64,
     },
     ProviderRunChanged {
         session_id: String,
@@ -213,6 +217,7 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             session,
             provider_run,
             agent_activity,
+            agent_activity_revision,
         } => serde_json::json!({
             "event_id": event_id,
             "event": "session_snapshot",
@@ -226,15 +231,18 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "active_provider_run_id": session.active_provider_run_id(),
             "provider_run_id": provider_run.as_ref().as_ref().map(|run| run.id()),
             "agent_activity": agent_activity,
+            "agent_activity_revision": agent_activity_revision,
         }),
         KernelEvent::AgentActivityChanged {
             session_id,
             agent_activity,
+            agent_activity_revision,
         } => serde_json::json!({
             "event_id": event_id,
             "event": "agent_activity_changed",
             "session_id": session_id,
             "agent_activity": agent_activity,
+            "agent_activity_revision": agent_activity_revision,
         }),
         KernelEvent::ProviderRunChanged {
             session_id,
@@ -402,6 +410,7 @@ pub(crate) fn agent_activity_changed_event(
     Some(KernelEvent::AgentActivityChanged {
         session_id: snapshot.session.id().to_string(),
         agent_activity: Box::new(snapshot.agent_activity.clone()),
+        agent_activity_revision: snapshot.metadata.last_event_id,
     })
 }
 
@@ -830,6 +839,7 @@ mod tests {
             KernelEvent::AgentActivityChanged {
                 session_id,
                 agent_activity,
+                ..
             } => {
                 assert_eq!(session_id, "session-a");
                 assert_eq!(

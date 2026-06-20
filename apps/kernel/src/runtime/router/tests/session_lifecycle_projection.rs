@@ -70,6 +70,7 @@ async fn session_runtime_publishes_attach_and_focus_projection_without_router_sn
         LocalDaemonResponse::SessionState {
             session,
             agent_activity,
+            ..
         } => {
             assert!(session.has_attachment(&attachment_id));
             assert_eq!(session.focused_agent_id(), Some(second_agent.id()));

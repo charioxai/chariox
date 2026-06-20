@@ -114,6 +114,8 @@ pub struct WaitingRoomPublicAgentSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt_sent_at_ms: Option<u64>,
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
