@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -422,6 +422,7 @@ pub struct OperationalHistoryStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
     next_sequence: Arc<AtomicU64>,
+    reclaim_in_progress: Arc<AtomicBool>,
     read_delay_ms: u64,
     max_size_bytes: u64,
 }
@@ -471,6 +472,7 @@ impl OperationalHistoryStore {
             path,
             connection: Arc::new(Mutex::new(connection)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
+            reclaim_in_progress: Arc::new(AtomicBool::new(false)),
             read_delay_ms,
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
         };

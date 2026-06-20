@@ -1,6 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -9,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 use crate::session::RuntimeSession;
 use crate::terminal::TerminalOutputKind;
+
+const SESSION_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
+const SESSION_HISTORY_PRUNE_TARGET_BYTES: u64 = 450 * 1024 * 1024;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -163,10 +167,11 @@ impl SessionHistoryEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SessionHistoryStore {
     root: PathBuf,
     read_delay_ms: u64,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl SessionHistoryStore {
@@ -183,6 +188,7 @@ impl SessionHistoryStore {
         Ok(Self {
             root,
             read_delay_ms,
+            write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -240,6 +246,14 @@ impl SessionHistoryStore {
         }
 
         let path = self.path_for_session(session);
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "lock session history append",
+                message: error.to_string(),
+            })?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session.id().to_string()),
@@ -268,7 +282,9 @@ impl SessionHistoryStore {
                 session_id: Some(session.id().to_string()),
                 operation: "write session history",
                 message: error.to_string(),
-            })
+            })?;
+        drop(file);
+        self.enforce_size_budget(session, &path)
     }
 
     pub fn path_for_session(&self, session: &RuntimeSession) -> PathBuf {
@@ -277,6 +293,81 @@ impl SessionHistoryStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn enforce_size_budget(
+        &self,
+        session: &RuntimeSession,
+        path: &Path,
+    ) -> Result<(), DaemonError> {
+        let Ok(metadata) = fs::metadata(path) else {
+            return Ok(());
+        };
+        if metadata.len() <= SESSION_HISTORY_HARD_MAX_BYTES {
+            return Ok(());
+        }
+        let bytes_to_skip = metadata
+            .len()
+            .saturating_sub(SESSION_HISTORY_PRUNE_TARGET_BYTES);
+        let temp_path = path.with_extension("jsonl.prune");
+        let input = fs::File::open(path).map_err(|error| DaemonError::SessionHistoryFailed {
+            session_id: Some(session.id().to_string()),
+            operation: "open session history for prune",
+            message: error.to_string(),
+        })?;
+        let mut output =
+            fs::File::create(&temp_path).map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "create pruned session history",
+                message: error.to_string(),
+            })?;
+        let mut skipped = 0_u64;
+        let mut deleted_lines = 0_u64;
+        for line in BufReader::new(input).split(b'\n') {
+            let mut line = line.map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "read session history for prune",
+                message: error.to_string(),
+            })?;
+            line.push(b'\n');
+            if skipped < bytes_to_skip {
+                skipped = skipped.saturating_add(line.len() as u64);
+                deleted_lines = deleted_lines.saturating_add(1);
+                continue;
+            }
+            output
+                .write_all(&line)
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.id().to_string()),
+                    operation: "write pruned session history",
+                    message: error.to_string(),
+                })?;
+        }
+        output
+            .flush()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "flush pruned session history",
+                message: error.to_string(),
+            })?;
+        fs::rename(&temp_path, path).map_err(|error| DaemonError::SessionHistoryFailed {
+            session_id: Some(session.id().to_string()),
+            operation: "replace pruned session history",
+            message: error.to_string(),
+        })?;
+        crate::logging::warn_with_fields(
+            "daemon.history",
+            "pruned session history to enforce hard size budget",
+            serde_json::json!({
+                "session_id": session.id(),
+                "path": path.display().to_string(),
+                "deleted_lines": deleted_lines,
+                "previous_size_bytes": metadata.len(),
+                "max_size_bytes": SESSION_HISTORY_HARD_MAX_BYTES,
+                "target_size_bytes": SESSION_HISTORY_PRUNE_TARGET_BYTES,
+            }),
+        );
+        Ok(())
     }
 }
 

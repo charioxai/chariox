@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use rusqlite::params;
 
 use crate::error::DaemonError;
@@ -9,12 +11,7 @@ const OPERATIONAL_HISTORY_WAL_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024;
 impl OperationalHistoryStore {
     pub fn enforce_size_budget(&self) -> Result<(), DaemonError> {
         let mut total_deleted = 0usize;
-        if self.disk_size_bytes() > self.max_size_bytes
-            || self.wal_size_bytes() > OPERATIONAL_HISTORY_WAL_CHECKPOINT_BYTES
-        {
-            self.reclaim_disk_space()?;
-        }
-        while self.disk_size_bytes() > self.max_size_bytes {
+        while self.estimated_live_size_bytes()? > self.max_size_bytes {
             let deleted = self.prune_oldest_events(self.next_size_prune_batch_len()?)?;
             if deleted == 0 {
                 crate::logging::warn_with_fields(
@@ -29,7 +26,6 @@ impl OperationalHistoryStore {
                 break;
             }
             total_deleted += deleted;
-            self.reclaim_disk_space()?;
         }
         if total_deleted > 0 {
             crate::logging::warn_with_fields(
@@ -42,6 +38,12 @@ impl OperationalHistoryStore {
                     "max_size_bytes": self.max_size_bytes,
                 }),
             );
+        }
+        if self.disk_size_bytes() > self.max_size_bytes
+            || self.wal_size_bytes() > OPERATIONAL_HISTORY_WAL_CHECKPOINT_BYTES
+            || total_deleted > 0
+        {
+            self.reclaim_disk_space_without_blocking_appends()?;
         }
         Ok(())
     }
@@ -211,7 +213,7 @@ impl OperationalHistoryStore {
     }
 
     fn next_size_prune_batch_len(&self) -> Result<usize, DaemonError> {
-        let current_size = self.disk_size_bytes();
+        let current_size = self.estimated_live_size_bytes()?;
         let connection =
             self.connection
                 .lock()
@@ -233,6 +235,78 @@ impl OperationalHistoryStore {
         let ratio = (excess as f64 / current_size.max(1) as f64).clamp(0.0, 1.0);
         let batch = ((count as f64 * (ratio + 0.10)).ceil() as usize).clamp(512, 25_000);
         Ok(batch.min(count))
+    }
+
+    fn estimated_live_size_bytes(&self) -> Result<u64, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let page_count = connection
+            .query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))
+            .map(|value| value.max(0) as u64)
+            .map_err(|error| {
+                history_retention_error("read operational history page count", error)
+            })?;
+        let freelist_count = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get::<_, i64>(0))
+            .map(|value| value.max(0) as u64)
+            .map_err(|error| {
+                history_retention_error("read operational history freelist count", error)
+            })?;
+        let page_size = connection
+            .query_row("PRAGMA page_size", [], |row| row.get::<_, i64>(0))
+            .map(|value| value.max(0) as u64)
+            .map_err(|error| {
+                history_retention_error("read operational history page size", error)
+            })?;
+        Ok(page_count
+            .saturating_sub(freelist_count)
+            .saturating_mul(page_size)
+            .saturating_add(self.wal_size_bytes()))
+    }
+
+    fn reclaim_disk_space_without_blocking_appends(&self) -> Result<(), DaemonError> {
+        if cfg!(test) {
+            return self.reclaim_disk_space();
+        }
+        if self
+            .reclaim_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let store = self.clone();
+        match std::thread::Builder::new()
+            .name("arroba-history-reclaim".to_string())
+            .spawn(move || {
+                if let Err(error) = store.reclaim_disk_space() {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to reclaim operational history disk space",
+                        serde_json::json!({
+                            "path": store.path().display().to_string(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                store.reclaim_in_progress.store(false, Ordering::Release);
+            }) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.reclaim_in_progress.store(false, Ordering::Release);
+                Err(DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "spawn operational history reclaim",
+                    message: error.to_string(),
+                })
+            }
+        }
     }
 
     fn reclaim_disk_space(&self) -> Result<(), DaemonError> {
