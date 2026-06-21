@@ -97,6 +97,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   syncVisibleTranscriptPreview: AnyFn
   toggleTurn: AnyFn
   toggleBlob: AnyFn
+  onQueuedPromptAction: AnyFn
   primaryTranscriptSurfaceTone: AnyFn
   requestTranscriptRender: AnyFn
   requestRootRender: AnyFn
@@ -164,6 +165,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       deps.toggleTurn,
       deps.toggleBlob,
       deps.primaryTranscriptSurfaceTone(),
+      deps.onQueuedPromptAction,
     ),
     renderMode: transcriptRenderMode,
     requestTranscriptRender: deps.requestTranscriptRender,

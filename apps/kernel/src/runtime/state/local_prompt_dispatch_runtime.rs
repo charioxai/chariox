@@ -63,7 +63,9 @@ impl KernelRuntimeState {
         {
             self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
                 .await;
-            owned.note_prompt_started(&dispatch.provider_run_id);
+            if !dispatch.steering {
+                owned.note_prompt_started(&dispatch.provider_run_id);
+            }
             let prompt_with_handoff = owned.prompt_with_pending_context_handoff(
                 &dispatch.session_id,
                 &dispatch.agent_id,
@@ -95,6 +97,7 @@ impl KernelRuntimeState {
                 &hidden_system_context,
                 &dispatch.attachments,
                 mode,
+                dispatch.steering,
             );
         }
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(&dispatch.source_attachment_id)
@@ -159,7 +162,9 @@ impl KernelRuntimeState {
             }
         }
         if !has_managed_process {
-            owned.note_prompt_started(&dispatch.provider_run_id);
+            if !dispatch.steering {
+                owned.note_prompt_started(&dispatch.provider_run_id);
+            }
             return Ok(());
         }
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
@@ -173,7 +178,9 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
-            owned.note_prompt_started(&dispatch.provider_run_id);
+            if !dispatch.steering {
+                owned.note_prompt_started(&dispatch.provider_run_id);
+            }
             return Ok(());
         }
         self.with_app_side_effect(|app| {
@@ -183,7 +190,9 @@ impl KernelRuntimeState {
             )
         })
         .await?;
-        owned.note_prompt_started(&dispatch.provider_run_id);
+        if !dispatch.steering {
+            owned.note_prompt_started(&dispatch.provider_run_id);
+        }
         Ok(())
     }
 
@@ -371,6 +380,31 @@ impl KernelRuntimeState {
                 .await;
             if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
                 let _ = state.fail_prompt_dispatch(dispatch, error).await;
+            }
+        });
+    }
+
+    pub(crate) fn spawn_queued_prompt_steer_dispatch(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+        provider_runtime_lanes: ProviderRunOperationLanes,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = provider_runtime_lanes
+                .acquire(&dispatch.provider_run_id)
+                .await;
+            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
+                let recipients = state
+                    .owned
+                    .attachment_store
+                    .list_session_attachment_ids(&dispatch.session_id);
+                state.owned.record_notice(
+                    &dispatch.session_id,
+                    Some(&dispatch.provider_run_id),
+                    recipients,
+                    format!("Queued prompt steer dispatch failed: {error}"),
+                );
             }
         });
     }

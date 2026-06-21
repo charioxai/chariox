@@ -1,13 +1,16 @@
 import {
   BoxRenderable,
   MarkdownRenderable,
+  MouseButton,
+  TextAttributes,
   TextRenderable,
   type SyntaxStyle,
 } from "@opentui/core"
+import { setTimeout as startTimeout } from "node:timers"
 
 import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"
-import { TranscriptSeparatorBorder } from "./theme.js"
+import { theme, TranscriptSeparatorBorder } from "./theme.js"
 import {
   normalizeMarkdownFenceInfoStrings,
   shouldRenderTranscriptAsMarkdown,
@@ -50,6 +53,8 @@ export type TranscriptEntryRenderable = {
   update: (entry: TranscriptEntry) => void
 }
 
+export type QueuedPromptAction = "steer" | "cancel"
+
 export function buildTranscriptEntryRenderable(
   renderer: RenderContext,
   entry: TranscriptEntry,
@@ -57,6 +62,7 @@ export function buildTranscriptEntryRenderable(
   onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void,
   onToggleBlob: (entryId: number, collapsed: boolean) => void,
   surfaceTone: TranscriptSurfaceTone = "default",
+  onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
 ) {
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,
@@ -107,6 +113,7 @@ export function buildTranscriptEntryRenderable(
         nextEntry,
         transcriptSyntax,
         surfaceTone,
+        onQueuedPromptAction,
       )
       textRenderable = expanded.textRenderable
       markdownRenderable = expanded.markdownRenderable
@@ -148,6 +155,9 @@ export function buildTranscriptEntryRenderable(
       && nextEntry.blobCollapsed === currentEntry.blobCollapsed
       && nextEntry.blobTitle === currentEntry.blobTitle
       && nextEntry.blobSummary === currentEntry.blobSummary
+      && nextEntry.queuedPrompt?.status === currentEntry.queuedPrompt?.status
+      && nextEntry.queuedPrompt?.promptId === currentEntry.queuedPrompt?.promptId
+      && nextEntry.queuedPrompt?.agentId === currentEntry.queuedPrompt?.agentId
     currentEntry = nextEntry
     if (canFastUpdate && fastUpdate(nextEntry)) {
       return
@@ -170,7 +180,13 @@ function buildExpandedTranscriptContent(
   entry: TranscriptEntry,
   transcriptSyntax: SyntaxStyle,
   surfaceTone: TranscriptSurfaceTone,
+  onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
 ) {
+  if (entry.queuedPrompt) {
+    buildQueuedPromptTranscriptContent(renderer, body, entry, onQueuedPromptAction)
+    return { textRenderable: null, markdownRenderable: null }
+  }
+
   const patch = readTranscriptApplyPatch(entry)
   if (patch) {
     buildApplyPatchTranscriptContent(renderer, body, patch, surfaceTone)
@@ -197,4 +213,64 @@ function buildExpandedTranscriptContent(
   applyTranscriptTextContent(text, entry)
   body.add(text)
   return { textRenderable: text, markdownRenderable: null }
+}
+
+function buildQueuedPromptTranscriptContent(
+  renderer: RenderContext,
+  body: BoxRenderable,
+  entry: TranscriptEntry,
+  onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
+) {
+  const row = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  })
+  const message = new TextRenderable(renderer, {
+    content: entry.text,
+    fg: transcriptTextColor(entry),
+    wrapMode: "word",
+  })
+  message.flexGrow = 1
+  row.add(message)
+
+  const actions = new BoxRenderable(renderer, {
+    flexDirection: "row",
+    flexGrow: 0,
+  })
+  actions.add(new TextRenderable(renderer, {
+    content: " queued ",
+    fg: theme.textMuted,
+    attributes: TextAttributes.BOLD,
+  }))
+  actions.add(buildQueuedPromptActionLabel(renderer, "steer", entry, "steer", onQueuedPromptAction))
+  actions.add(new TextRenderable(renderer, { content: " ", fg: theme.textMuted }))
+  actions.add(buildQueuedPromptActionLabel(renderer, "cancel", entry, "cancel", onQueuedPromptAction))
+  row.add(actions)
+  body.add(row)
+}
+
+function buildQueuedPromptActionLabel(
+  renderer: RenderContext,
+  label: string,
+  entry: TranscriptEntry,
+  action: QueuedPromptAction,
+  onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
+) {
+  const disabled = entry.queuedPrompt?.status === "steering" || entry.queuedPrompt?.status === "cancelling"
+  const text = new TextRenderable(renderer, {
+    content: disabled ? label : `[${label}]`,
+    fg: disabled ? theme.textMuted : theme.primary,
+    attributes: disabled ? TextAttributes.NONE : TextAttributes.BOLD,
+  })
+  text.onMouseUp = (event) => {
+    if (disabled || event.button !== MouseButton.LEFT) {
+      return
+    }
+    event.stopPropagation()
+    startTimeout(() => {
+      onQueuedPromptAction?.(entry, action)
+    }, 0)
+  }
+  return text
 }

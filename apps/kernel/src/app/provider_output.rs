@@ -1002,15 +1002,20 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let records: Vec<TerminalOutputRecord> = poll_result
             .chunks
             .into_iter()
-            .map(|chunk| {
-                self.fan_out_terminal_output(
+            .filter_map(|chunk| {
+                let record = self.fan_out_terminal_output(
                     session_id,
                     provider_run_id,
                     chunk.kind,
                     chunk.merge_key,
                     recipient_attachment_ids.clone(),
                     &chunk.bytes,
-                )
+                );
+                if record.pending_recipient_attachment_ids.is_empty() && record.bytes.is_empty() {
+                    None
+                } else {
+                    Some(record)
+                }
             })
             .collect();
         self.trace_terminal_records(

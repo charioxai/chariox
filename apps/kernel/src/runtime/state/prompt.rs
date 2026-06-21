@@ -191,6 +191,7 @@ impl KernelRuntimeOwnedState {
                 &hidden_system_context,
                 started_next.attachments(),
                 mode,
+                false,
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
                 let _ = self.clear_prompt_activity(&provider_run_id);
@@ -223,6 +224,7 @@ impl KernelRuntimeOwnedState {
                 prompt: started_next.prompt().to_string(),
                 hidden_system_context: started_next.hidden_system_context().to_string(),
                 attachments: started_next.attachments().to_vec(),
+                steering: false,
             }),
         }))
     }

@@ -114,6 +114,7 @@ impl KernelRuntimeOwnedState {
                     prompt: prompt.prompt().to_string(),
                     hidden_system_context: prompt.hidden_system_context().to_string(),
                     attachments: prompt.attachments().to_vec(),
+                    steering: false,
                 });
             }
             crate::session::PromptSubmissionOutcome::Queued { prompt } => {

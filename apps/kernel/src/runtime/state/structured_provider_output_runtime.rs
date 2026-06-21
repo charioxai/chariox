@@ -259,15 +259,20 @@ impl KernelRuntimeState {
         let records = poll_result
             .chunks
             .into_iter()
-            .map(|chunk| {
-                owned.fan_out_terminal_output(
+            .filter_map(|chunk| {
+                let record = owned.fan_out_terminal_output(
                     session_id,
                     provider_run_id,
                     chunk.kind,
                     chunk.merge_key,
                     recipient_attachment_ids.clone(),
                     &chunk.bytes,
-                )
+                );
+                if record.pending_recipient_attachment_ids.is_empty() && record.bytes.is_empty() {
+                    None
+                } else {
+                    Some(record)
+                }
             })
             .collect::<Vec<_>>();
         if let Some(message) = terminal_failure {

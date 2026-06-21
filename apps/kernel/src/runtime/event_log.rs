@@ -14,7 +14,7 @@ pub const DEFAULT_EVENT_ID_RESERVATION_BLOCK: u64 = 100_000;
 pub const DEFAULT_PERSISTENT_EVENT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 pub const DEFAULT_PERSISTENT_EVENT_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
 const PERSISTENT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
-const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 2;
+const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedEvent<E> {
@@ -840,11 +840,6 @@ mod tests {
             .await
             .expect("second event should append");
 
-        let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
-        assert!(
-            stored.contains("\"first\""),
-            "disk compaction should be deferred instead of rewriting on every append: {stored}"
-        );
         let replay = log.replay_after("session:a", first.event_id).await;
         match replay {
             ReplayOutcome::Gap(gap) => {
@@ -860,9 +855,7 @@ mod tests {
             let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
             if !stored.contains("\"first\"") {
                 assert!(
-                    stored.len() as u64
-                        <= retention.max_total_bytes.unwrap()
-                            * super::PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER,
+                    stored.len() as u64 <= retention.max_total_bytes.unwrap(),
                     "event store should compact after bounded file growth: {stored}"
                 );
                 let _ = std::fs::remove_dir_all(root);

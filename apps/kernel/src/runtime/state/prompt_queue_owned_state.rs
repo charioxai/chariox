@@ -116,6 +116,156 @@ impl KernelRuntimeOwnedState {
             prompt: started_next.prompt().to_string(),
             hidden_system_context: started_next.hidden_system_context().to_string(),
             attachments: started_next.attachments().to_vec(),
+            steering: false,
         }))
+    }
+
+    pub(super) fn steer_queued_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<Option<crate::app::KernelQueuedPromptSteer>, DaemonError> {
+        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent = self.agent_store.get_agent(agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        if target_agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+        let session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_none()
+        {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            });
+        }
+        let provider_run = self
+            .provider_run_projection
+            .get_for_agent(session_id, agent_id)
+            .or_else(|| self.provider_store.get_run_for_agent(session_id, agent_id))
+            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                session_id: session_id.to_string(),
+            })?;
+        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run.id())?;
+        if provider_run.state() != crate::provider::ProviderRunState::Running {
+            return Err(DaemonError::InvalidProviderRunState {
+                provider_run_id: provider_run.id().to_string(),
+                state: provider_run.state(),
+                operation: "steer queued prompt",
+            });
+        }
+        let (_, queued_prompts) = self.prompt_state_owner.state_parts(&session, agent_id);
+        if queued_prompts
+            .iter()
+            .find(|prompt| prompt.id() == prompt_id)
+            .is_some_and(|prompt| prompt.workflow_run_id().is_some())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: "workflow queued prompts cannot be steered manually".to_string(),
+            });
+        }
+        let prompt = self
+            .prompt_state_owner
+            .remove_queued_prompt(&session, agent_id, prompt_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: format!(
+                    "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
+                ),
+            })?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.record_notice(
+            session_id,
+            Some(provider_run.id()),
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{}` steered queued prompt `{}` to agent `{}`.",
+                attachment_id,
+                prompt.id(),
+                agent_id
+            ),
+        );
+        let session = self.session_snapshot(session_id)?;
+        Ok(Some(crate::app::KernelQueuedPromptSteer {
+            dispatch: crate::app::KernelPromptDispatch {
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run.id().to_string(),
+                agent_id: agent_id.to_string(),
+                prompt_id: prompt.id().to_string(),
+                source_attachment_id: prompt.source_attachment_id().to_string(),
+                prompt: prompt.prompt().to_string(),
+                hidden_system_context: prompt.hidden_system_context().to_string(),
+                attachments: prompt.attachments().to_vec(),
+                steering: true,
+            },
+            prompt,
+            session,
+        }))
+    }
+
+    pub(super) fn cancel_queued_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<crate::app::KernelQueuedPromptCancellation, DaemonError> {
+        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        let target_agent = self.agent_store.get_agent(agent_id)?;
+        if target_agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let session = self.session_store.get_session(session_id)?;
+        let mut prompt = self
+            .prompt_state_owner
+            .remove_queued_prompt(&session, agent_id, prompt_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "cancel queued prompt",
+                message: format!(
+                    "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
+                ),
+            })?;
+        prompt.set_status(crate::session::PromptStatus::Cancelled);
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store.mirror_agent_prompt_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+        self.record_notice(
+            session_id,
+            None,
+            self.other_attachment_ids(session_id, attachment_id),
+            format!(
+                "Attachment `{}` cancelled queued prompt `{}` for agent `{}`.",
+                attachment_id,
+                prompt.id(),
+                agent_id
+            ),
+        );
+        let session = self.session_snapshot(session_id)?;
+        Ok(crate::app::KernelQueuedPromptCancellation { prompt, session })
     }
 }

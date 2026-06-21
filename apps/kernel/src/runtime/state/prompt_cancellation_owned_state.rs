@@ -145,6 +145,7 @@ impl KernelRuntimeOwnedState {
                     &hidden_system_context,
                     started_next.attachments(),
                     mode,
+                    false,
                 )?;
                 self.note_prompt_started(provider_run_id);
                 None
@@ -158,6 +159,7 @@ impl KernelRuntimeOwnedState {
                     prompt: started_next.prompt().to_string(),
                     hidden_system_context: started_next.hidden_system_context().to_string(),
                     attachments: started_next.attachments().to_vec(),
+                    steering: false,
                 })
             }
         } else {

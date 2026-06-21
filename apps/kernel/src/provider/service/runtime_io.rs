@@ -175,6 +175,7 @@ impl ProviderProcessService {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
+        steering: bool,
     ) -> Result<(), DaemonError> {
         let _ = self.record_run_activity(run.id());
         if !self.run_uses_structured_prompt_io(run) {
@@ -192,13 +193,15 @@ impl ProviderProcessService {
         } else {
             PromptAssemblyMode::NativeTuiProviderTurn
         };
-        let envelope = PromptAssemblyService::from_env()?.assemble_provider_turn(
-            run,
-            prompt,
-            Some(hidden_system_context),
-            attachments.to_vec(),
-            mode,
-        )?;
+        let envelope = PromptAssemblyService::from_env()?
+            .assemble_provider_turn(
+                run,
+                prompt,
+                Some(hidden_system_context),
+                attachments.to_vec(),
+                mode,
+            )?
+            .with_steering(steering);
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,

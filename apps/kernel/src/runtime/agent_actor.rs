@@ -128,6 +128,48 @@ impl AgentRuntime {
         .await
     }
 
+    pub(crate) async fn dispatch_prompt_steer_queued(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::SteerQueuedPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_user_id = command_agent_actor_user_id(command);
+        self.store
+            .ensure_agent_prompt_access(
+                &request.target_agent_id,
+                &caller_user_id,
+                "steer queued prompt",
+            )
+            .await?;
+        self.dispatch_to_agent(
+            request.target_agent_id.clone(),
+            CommandTrace::from_command(command),
+            AgentCommand::SteerQueuedPrompt { request },
+        )
+        .await
+    }
+
+    pub(crate) async fn dispatch_prompt_cancel_queued(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::CancelQueuedPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_user_id = command_agent_actor_user_id(command);
+        self.store
+            .ensure_agent_prompt_access(
+                &request.target_agent_id,
+                &caller_user_id,
+                "cancel queued prompt",
+            )
+            .await?;
+        self.dispatch_to_agent(
+            request.target_agent_id.clone(),
+            CommandTrace::from_command(command),
+            AgentCommand::CancelQueuedPrompt { request },
+        )
+        .await
+    }
+
     pub(crate) async fn dispatch_prompt_complete(
         &self,
         command: &crate::runtime::command::KernelCommand,
@@ -240,8 +282,8 @@ mod tests {
     use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::local::{
-        CancelActivePromptRequest, CompletePromptRequest, LocalDaemonRequest, LocalDaemonResponse,
-        SubmitPromptRequest,
+        CancelActivePromptRequest, CancelQueuedPromptRequest, CompletePromptRequest,
+        LocalDaemonRequest, LocalDaemonResponse, SteerQueuedPromptRequest, SubmitPromptRequest,
     };
     use crate::provider::{LaunchProviderRequest, ProviderRunOperationLanes};
     use crate::runtime::agent_actor::prompt_attachment_materialization::{

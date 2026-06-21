@@ -49,6 +49,7 @@ export type SessionStateApplyControllerDeps = {
   turnCompletion: SessionStateApplyTurnCompletion
   cancelPendingTurnCompletion: () => void
   promptStop: SessionStateApplyPromptStop
+  syncQueuedPromptEntries: (session: RuntimeSession) => void
   syncVisibleActivityLabel: () => void
   updateSessionChrome: () => void
   refreshSplitPaneFocusRepaint: () => void
@@ -82,6 +83,7 @@ export function createSessionStateApplyController(
     })
 
     deps.setSession(nextSession)
+    deps.syncQueuedPromptEntries(nextSession)
     deps.setAgentActivityLabels(transition.nextAgentActivityLabels)
     deps.setStreamingAgentId(transition.nextStreamingAgentId)
     deps.setResponseLayout(transition.nextLayout)

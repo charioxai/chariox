@@ -2,6 +2,8 @@
 
 use super::*;
 
+const RELAY_EVENT_LOG_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
 #[derive(Debug)]
 pub(super) struct RelayEventRuntime {
     pub(super) event_log: EventLog<KernelEvent>,
@@ -13,8 +15,14 @@ impl RelayEventRuntime {
     ) -> Result<Self, DaemonError> {
         let event_counter_path = event_counter_path.into();
         Ok(Self {
-            event_log: EventLog::new_with_persistent_event_store(
-                RECENT_EVENT_LIMIT,
+            event_log: EventLog::new_with_persistent_event_store_and_retention(
+                EventRetentionPolicy {
+                    max_stream_events: RECENT_EVENT_LIMIT,
+                    max_total_bytes: Some(RELAY_EVENT_LOG_MAX_BYTES),
+                    max_age_ms: Some(
+                        crate::runtime::event_log::DEFAULT_PERSISTENT_EVENT_MAX_AGE_MS,
+                    ),
+                },
                 event_counter_path.clone(),
                 event_counter_path.with_file_name("relay-events.jsonl"),
             )

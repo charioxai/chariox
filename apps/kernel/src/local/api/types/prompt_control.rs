@@ -22,6 +22,22 @@ pub struct CancelActivePromptRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SteerQueuedPromptRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub target_agent_id: String,
+    pub prompt_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelQueuedPromptRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub target_agent_id: String,
+    pub prompt_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSessionConfigRequest {
     pub session_id: String,
     pub attachment_id: String,

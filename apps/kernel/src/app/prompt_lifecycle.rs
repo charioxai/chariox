@@ -7,7 +7,6 @@ use crate::session::{
     PromptAttachment, PromptCancellation, PromptCompletion, PromptQueueItem,
     PromptSubmissionOutcome,
 };
-use crate::transport::flow_control;
 use crate::transport::relay_peer::RelayPromptAttachment;
 use base64::Engine;
 use std::fs;
@@ -123,6 +122,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 hidden_system_context,
                 attachments,
                 mode,
+                false,
             )?;
             return Ok(());
         }
@@ -197,6 +197,7 @@ pub(crate) struct KernelPromptDispatch {
     pub(crate) prompt: String,
     pub(crate) hidden_system_context: String,
     pub(crate) attachments: Vec<PromptAttachment>,
+    pub(crate) steering: bool,
 }
 
 pub(crate) struct KernelRemotePromptDispatch {
@@ -218,6 +219,17 @@ pub(crate) struct KernelPromptCancellation {
     pub(crate) cancellation: PromptCancellation,
     pub(crate) session: crate::session::RuntimeSession,
     pub(crate) dispatch: Option<KernelPromptAbortDispatch>,
+}
+
+pub(crate) struct KernelQueuedPromptSteer {
+    pub(crate) prompt: PromptQueueItem,
+    pub(crate) session: crate::session::RuntimeSession,
+    pub(crate) dispatch: KernelPromptDispatch,
+}
+
+pub(crate) struct KernelQueuedPromptCancellation {
+    pub(crate) prompt: PromptQueueItem,
+    pub(crate) session: crate::session::RuntimeSession,
 }
 
 #[derive(Clone)]
@@ -263,25 +275,6 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn prepare_provider_prompt_dispatch(
-        &mut self,
-        session_id: &str,
-        provider_run_id: &str,
-    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-        let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self)
-            .reconcile_provider_run_exit(session_id, provider_run_id)?;
-        let provider_run = crate::app::ProviderRunReadService::new(self)
-            .ensure_provider_run_in_session(session_id, provider_run_id)?;
-        if provider_run.state() != ProviderRunState::Running {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: provider_run_id.to_string(),
-                state: provider_run.state(),
-                operation: "submit prompt",
-            });
-        }
-        Ok(provider_run)
-    }
-
     pub(crate) fn finish_kernel_prompt_dispatch(
         &mut self,
         session_id: String,
@@ -305,68 +298,6 @@ impl DaemonApp {
             return Err(error);
         }
         Ok(())
-    }
-
-    pub(crate) fn enqueue_kernel_prompt_dispatch(
-        &mut self,
-        dispatch: &KernelPromptDispatch,
-    ) -> Result<(), DaemonError> {
-        self.echo_prompt_to_other_attachments(
-            &dispatch.session_id,
-            &dispatch.provider_run_id,
-            &dispatch.source_attachment_id,
-            &dispatch.prompt,
-            &dispatch.attachments,
-        );
-        let provider_run =
-            self.prepare_provider_prompt_dispatch(&dispatch.session_id, &dispatch.provider_run_id)?;
-        if self.providers.run_uses_structured_prompt_io(&provider_run) {
-            flow_control::note_prompt_started(self, &dispatch.provider_run_id);
-            let mode = if self.agents.get_agent(&dispatch.agent_id)?.is_metaagent() {
-                crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
-            } else {
-                crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
-            };
-            return self.providers.enqueue_structured_prompt_submit(
-                dispatch.session_id.clone(),
-                dispatch.provider_run_id.clone(),
-                dispatch.agent_id.clone(),
-                &provider_run,
-                &dispatch.prompt,
-                &dispatch.hidden_system_context,
-                &dispatch.attachments,
-                mode,
-            );
-        }
-        crate::app::terminal_input::ProviderTerminalInput::new(self).send_provider_input(
-            &dispatch.session_id,
-            &dispatch.provider_run_id,
-            &dispatch.source_attachment_id,
-            dispatch.prompt.as_bytes(),
-        )?;
-        flow_control::note_prompt_started(self, &dispatch.provider_run_id);
-        Ok(())
-    }
-
-    pub(crate) fn fail_kernel_prompt_dispatch(
-        &mut self,
-        dispatch: KernelPromptDispatch,
-        error: DaemonError,
-    ) -> Result<(), DaemonError> {
-        let _ =
-            self.prompt_owner_cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
-        flow_control::clear_prompt_activity(self, &dispatch.provider_run_id);
-        flow_control::clear_active_turn(self, &dispatch.provider_run_id);
-        let _ =
-            crate::app::KernelSessionReadService::new(self).session_snapshot(&dispatch.session_id);
-        self.record_notice(
-            &dispatch.session_id,
-            Some(&dispatch.provider_run_id),
-            self.attachments
-                .list_session_attachment_ids(&dispatch.session_id),
-            format!("Prompt dispatch failed after acknowledgement: {error}"),
-        );
-        Err(error)
     }
 
     pub(crate) fn finish_kernel_remote_prompt_dispatch(

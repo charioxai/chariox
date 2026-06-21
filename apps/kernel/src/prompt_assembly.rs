@@ -39,6 +39,7 @@ pub(crate) struct PromptEnvelope {
     pub(crate) hidden_system_context: String,
     pub(crate) attachments: Vec<PromptAttachment>,
     pub(crate) manifest: PromptManifest,
+    pub(crate) steering: bool,
 }
 
 impl PromptEnvelope {
@@ -53,7 +54,13 @@ impl PromptEnvelope {
             hidden_system_context: hidden_system_context.into(),
             attachments,
             manifest,
+            steering: false,
         }
+    }
+
+    pub(crate) fn with_steering(mut self, steering: bool) -> Self {
+        self.steering = steering;
+        self
     }
 }
 

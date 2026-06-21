@@ -263,6 +263,7 @@ impl ProviderProcessServiceStore {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
+        steering: bool,
     ) -> Result<(), DaemonError> {
         self.write().enqueue_structured_prompt_submit(
             session_id,
@@ -273,6 +274,7 @@ impl ProviderProcessServiceStore {
             hidden_system_context,
             attachments,
             mode,
+            steering,
         )
     }
 

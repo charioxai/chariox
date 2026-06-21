@@ -39,7 +39,7 @@ test("normal prompt submit prepares attachments, submits, and records history", 
     prompt: "hello\n",
     attachments: [{ url: "/tmp/file.txt", mime: "text/plain", filename: "file.txt", contents_base64: "ZmlsZQ==" }],
   }])
-  assert.deepEqual(harness.appendedPrompts(), [{ text: "hello\n", agentId: "agent-1" }])
+  assert.deepEqual(harness.appendedPrompts(), [{ text: "hello\n", agentId: "agent-submitted" }])
   assert.equal(harness.appliedSessions().at(-1)?.id, "session-submitted")
   assert.deepEqual(harness.streamingAgentIds(), ["agent-submitted"])
   assert.deepEqual(harness.statusLines(), ["Prompt submitted."])
@@ -72,6 +72,7 @@ test("normal prompt submit reports queued status with active prompt id", async (
 
   assert.deepEqual(harness.statusLines(), ["Prompt queued behind prompt-active."])
   assert.equal(harness.submissions().at(-1)?.prompt, "hello\n")
+  assert.deepEqual(harness.appendedPrompts(), [])
 })
 
 test("normal prompt submit restores UI after submit failure", async () => {

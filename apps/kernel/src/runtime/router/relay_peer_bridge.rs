@@ -51,6 +51,14 @@ impl CommandRouter {
         })
     }
 
+    pub(crate) async fn detach_relay_subscription_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        relay_peer_runtime::detach_relay_subscription_attachment(&self.runtime_state, attachment_id)
+            .await
+    }
+
     pub(crate) async fn relay_watch_subscription_state(
         &self,
         session_id: &str,

@@ -45,6 +45,8 @@ const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 5_000;
 const RELAY_RECONNECT_JITTER_SPREAD_MS: u64 = 500;
 const RELAY_EVENT_WRITE_COALESCE_MS: u64 = 33;
+const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
+const RELAY_SLOW_WRITE_LOG_MS: u128 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRelayConfigDisposition {
@@ -137,15 +139,58 @@ fn stable_jitter_ms(value: &str, spread_ms: u64) -> u64 {
         % spread_ms
 }
 
-async fn send_relay_envelope_frame<S>(writer: &mut S, envelope: RelayEnvelope) -> bool
+async fn send_relay_envelope_frame<S>(
+    writer: &mut S,
+    envelope: RelayEnvelope,
+    lane: &'static str,
+) -> bool
 where
     S: Sink<Message> + Unpin,
 {
+    let kind = relay_envelope_kind(&envelope);
     let payload = match serde_json::to_string(&envelope) {
         Ok(payload) => payload,
         Err(_) => return false,
     };
-    writer.send(Message::Text(payload.into())).await.is_ok()
+    let payload_len = payload.len();
+    let started = Instant::now();
+    let sent = writer.send(Message::Text(payload.into())).await.is_ok();
+    let elapsed_ms = started.elapsed().as_millis();
+    if payload_len >= RELAY_LARGE_FRAME_LOG_BYTES || elapsed_ms >= RELAY_SLOW_WRITE_LOG_MS {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "relay envelope write exceeded diagnostic threshold",
+            serde_json::json!({
+                "lane": lane,
+                "kind": kind,
+                "payload_bytes": payload_len,
+                "write_ms": elapsed_ms,
+                "sent": sent,
+            }),
+        );
+    }
+    sent
+}
+
+fn relay_envelope_kind(envelope: &RelayEnvelope) -> &'static str {
+    match envelope {
+        RelayEnvelope::DaemonRegister { .. } => "daemon_register",
+        RelayEnvelope::DaemonHeartbeat { .. } => "daemon_heartbeat",
+        RelayEnvelope::DaemonResponse { .. } => "daemon_response",
+        RelayEnvelope::DaemonEvent { .. } => "daemon_event",
+        RelayEnvelope::DaemonPeerRequest { .. } => "daemon_peer_request",
+        RelayEnvelope::DaemonPeerResponse { .. } => "daemon_peer_response",
+        RelayEnvelope::DaemonPeerEvent { .. } => "daemon_peer_event",
+        RelayEnvelope::DaemonDisplayTunnelResponseStart { .. } => {
+            "daemon_display_tunnel_response_start"
+        }
+        RelayEnvelope::DaemonDisplayTunnelChunk { .. } => "daemon_display_tunnel_chunk",
+        RelayEnvelope::DaemonDisplayTunnelClientChunk { .. } => {
+            "daemon_display_tunnel_client_chunk"
+        }
+        RelayEnvelope::Close { .. } => "close",
+        _ => "other",
+    }
 }
 
 #[derive(Debug)]
@@ -183,9 +228,13 @@ impl<T> RelayEventWriteCoalescer<T> {
         None
     }
 
-    fn drain_ready(&mut self) -> Vec<T> {
+    fn pop_ready(&mut self, now: tokio::time::Instant) -> Option<T> {
         self.ready_at = None;
-        self.envelopes.drain(..).collect()
+        let envelope = self.envelopes.pop_front();
+        if !self.envelopes.is_empty() {
+            self.ready_at = Some(now);
+        }
+        envelope
     }
 }
 
@@ -554,7 +603,7 @@ async fn run_daemon_relay_connector_inner(
                                 envelope = priority_outgoing_rx.recv(), if priority_open => {
                                     match envelope {
                                         Some(envelope) => {
-                                            if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority").await {
                                                 break;
                                             }
                                         }
@@ -565,7 +614,7 @@ async fn run_daemon_relay_connector_inner(
                                     match envelope {
                                         Some(envelope) => {
                                             if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                                if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                                if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
                                                     break;
                                                 }
                                             }
@@ -574,8 +623,8 @@ async fn run_daemon_relay_connector_inner(
                                     }
                                 }
                                 _ = tokio::time::sleep_until(ready_at) => {
-                                    for envelope in event_write_coalescer.drain_ready() {
-                                        if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                    if let Some(envelope) = event_write_coalescer.pop_ready(tokio::time::Instant::now()) {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
                                             break 'writer_loop;
                                         }
                                     }
@@ -594,7 +643,7 @@ async fn run_daemon_relay_connector_inner(
                             envelope = priority_outgoing_rx.recv(), if priority_open => {
                                 match envelope {
                                     Some(envelope) => {
-                                        if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "priority").await {
                                             break;
                                         }
                                     }
@@ -605,7 +654,7 @@ async fn run_daemon_relay_connector_inner(
                                 match envelope {
                                     Some(envelope) => {
                                         if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                            if !send_relay_envelope_frame(&mut writer, envelope).await {
+                                            if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
                                                 break;
                                             }
                                         }
@@ -702,7 +751,7 @@ async fn run_daemon_relay_connector_inner(
                                 sleep(Duration::from_millis(25)).await;
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                abort_subscription_tasks(&subscription_tasks).await;
+                                abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "daemon shutting down", static_relay.is_none()).await;
@@ -730,7 +779,7 @@ async fn run_daemon_relay_connector_inner(
                                             &mut leased_projection_pump_task,
                                         );
                                         abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                        abort_subscription_tasks(&subscription_tasks).await;
+                                        abort_subscription_tasks(&router, &subscription_tasks).await;
                                         writer_task.abort();
                                         clear_remote_inventory_projection(&router);
                                         disconnect_relay(
@@ -748,7 +797,7 @@ async fn run_daemon_relay_connector_inner(
                                         &mut leased_projection_pump_task,
                                     );
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    abort_subscription_tasks(&subscription_tasks).await;
+                                    abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay close frame received", static_relay.is_none()).await;
@@ -764,7 +813,7 @@ async fn run_daemon_relay_connector_inner(
                                         &mut leased_projection_pump_task,
                                     );
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    abort_subscription_tasks(&subscription_tasks).await;
+                                    abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay read failed or ended", static_relay.is_none()).await;
@@ -776,7 +825,7 @@ async fn run_daemon_relay_connector_inner(
                             let _ = writer_done;
                             abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
-                            abort_subscription_tasks(&subscription_tasks).await;
+                            abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
                             clear_remote_inventory_projection(&router);
                             disconnect_relay(&router, &state, "relay writer ended", static_relay.is_none()).await;
@@ -825,7 +874,7 @@ async fn run_daemon_relay_connector_inner(
                                     });
                                     abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                     abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    abort_subscription_tasks(&subscription_tasks).await;
+                                    abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay configuration changed", true).await;
@@ -869,7 +918,7 @@ async fn run_daemon_relay_connector_inner(
                                             &mut leased_projection_pump_task,
                                         );
                                         abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                        abort_subscription_tasks(&subscription_tasks).await;
+                                        abort_subscription_tasks(&router, &subscription_tasks).await;
                                         writer_task.abort();
                                         clear_remote_inventory_projection(&router);
                                         disconnect_relay(&router, &state, "relay configuration changed", true).await;
@@ -896,7 +945,7 @@ async fn run_daemon_relay_connector_inner(
                             if send_outgoing_envelope(&outgoing_tx, heartbeat_frame).is_err() {
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                                 abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                abort_subscription_tasks(&subscription_tasks).await;
+                                abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
@@ -985,7 +1034,18 @@ mod tests {
             Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
         );
 
-        assert_eq!(coalescer.drain_ready(), vec!["event-1", "event-2"]);
+        assert_eq!(
+            coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
+            Some("event-1")
+        );
+        assert_eq!(
+            coalescer.ready_at(),
+            Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
+        );
+        assert_eq!(
+            coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
+            Some("event-2")
+        );
         assert_eq!(coalescer.ready_at(), None);
         assert!(coalescer.is_empty());
     }
@@ -997,7 +1057,7 @@ mod tests {
 
         assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
         assert_eq!(coalescer.ready_at(), None);
-        assert!(coalescer.drain_ready().is_empty());
+        assert!(coalescer.pop_ready(now).is_none());
     }
 
     #[test]

@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
 const DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT: usize = 16 * 1024;
+const DEFAULT_OUTPUT_DRAIN_JSON_LIMIT: usize = 128 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalInputRecord {
@@ -294,6 +295,17 @@ impl TerminalStreamStore {
         self.record_change();
     }
 
+    pub fn remove_attachment(&self, session_id: &str, attachment_id: &str) {
+        let changed = self
+            .inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .remove_attachment(session_id, attachment_id);
+        if changed {
+            self.record_change();
+        }
+    }
+
     pub fn notify_terminal_projection_change(&self) {
         self.record_change();
     }
@@ -312,6 +324,7 @@ pub struct TerminalStreamService {
     completion_records: Vec<AssistantMessageCompletionRecord>,
     pending_output_record_limit_per_attachment: usize,
     output_coalesce_byte_limit: usize,
+    output_drain_json_limit: usize,
     trimmed_pending_output_recipients: u64,
     health_store: TerminalStreamHealthStore,
 }
@@ -322,6 +335,7 @@ impl TerminalStreamService {
             pending_output_record_limit_per_attachment:
                 DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT,
             output_coalesce_byte_limit: DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT,
+            output_drain_json_limit: DEFAULT_OUTPUT_DRAIN_JSON_LIMIT,
             ..Self::default()
         };
         service.refresh_health();
@@ -342,6 +356,16 @@ impl TerminalStreamService {
     fn with_output_coalesce_byte_limit(limit: usize) -> Self {
         let service = Self {
             output_coalesce_byte_limit: limit,
+            ..Self::new()
+        };
+        service.refresh_health();
+        service
+    }
+
+    #[cfg(test)]
+    fn with_output_drain_json_limit(limit: usize) -> Self {
+        let service = Self {
+            output_drain_json_limit: limit,
             ..Self::new()
         };
         service.refresh_health();
@@ -480,6 +504,7 @@ impl TerminalStreamService {
         attachment_id: &str,
     ) -> Vec<TerminalOutputRecord> {
         let mut drained = Vec::new();
+        let mut drained_json_bytes: usize = 2;
         for record in &mut self.output_records {
             if record.session_id == session_id
                 && record
@@ -487,7 +512,20 @@ impl TerminalStreamService {
                     .iter()
                     .any(|id| id == attachment_id)
             {
-                drained.push(record.clone());
+                let scoped = scoped_output_record(record, attachment_id);
+                let scoped_json_bytes = terminal_output_record_json_bytes(&scoped);
+                let candidate_json_bytes = if drained.is_empty() {
+                    2_usize.saturating_add(scoped_json_bytes)
+                } else {
+                    drained_json_bytes
+                        .saturating_add(1)
+                        .saturating_add(scoped_json_bytes)
+                };
+                if !drained.is_empty() && candidate_json_bytes > self.output_drain_json_limit {
+                    break;
+                }
+                drained_json_bytes = candidate_json_bytes;
+                drained.push(scoped);
                 record
                     .pending_recipient_attachment_ids
                     .retain(|id| id != attachment_id);
@@ -577,7 +615,7 @@ impl TerminalStreamService {
                     .iter()
                     .any(|id| id == attachment_id)
             {
-                drained.push(record.clone());
+                drained.push(scoped_completion_record(record, attachment_id));
                 record
                     .pending_recipient_attachment_ids
                     .retain(|id| id != attachment_id);
@@ -604,7 +642,7 @@ impl TerminalStreamService {
                         .iter()
                         .any(|id| id == attachment_id))
             {
-                drained.push(record.clone());
+                drained.push(scoped_notice_record(record, attachment_id));
                 record
                     .pending_recipient_attachment_ids
                     .retain(|id| id != attachment_id);
@@ -633,6 +671,52 @@ impl TerminalStreamService {
             .retain(|record| record.session_id != session_id);
         self.refresh_health();
     }
+
+    pub fn remove_attachment(&mut self, session_id: &str, attachment_id: &str) -> bool {
+        let mut changed = false;
+        for record in &mut self.output_records {
+            if record.session_id == session_id {
+                let previous_len = record.pending_recipient_attachment_ids.len();
+                record
+                    .pending_recipient_attachment_ids
+                    .retain(|id| id != attachment_id);
+                changed |= record.pending_recipient_attachment_ids.len() != previous_len;
+            }
+        }
+        for record in &mut self.notice_records {
+            if record.session_id == session_id {
+                let previous_len = record.pending_recipient_attachment_ids.len();
+                record
+                    .pending_recipient_attachment_ids
+                    .retain(|id| id != attachment_id);
+                changed |= record.pending_recipient_attachment_ids.len() != previous_len;
+            }
+        }
+        for record in &mut self.completion_records {
+            if record.session_id == session_id {
+                let previous_len = record.pending_recipient_attachment_ids.len();
+                record
+                    .pending_recipient_attachment_ids
+                    .retain(|id| id != attachment_id);
+                changed |= record.pending_recipient_attachment_ids.len() != previous_len;
+            }
+        }
+        self.output_records
+            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
+        self.notice_records.retain(|record| {
+            if record.recipient_attachment_ids.is_empty() {
+                false
+            } else {
+                !record.pending_recipient_attachment_ids.is_empty()
+            }
+        });
+        self.completion_records
+            .retain(|record| !record.pending_recipient_attachment_ids.is_empty());
+        if changed {
+            self.refresh_health();
+        }
+        changed
+    }
 }
 
 fn is_coalescible_output_kind(kind: &TerminalOutputKind) -> bool {
@@ -640,6 +724,41 @@ fn is_coalescible_output_kind(kind: &TerminalOutputKind) -> bool {
         kind,
         TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning
     )
+}
+
+fn scoped_output_record(
+    record: &TerminalOutputRecord,
+    attachment_id: &str,
+) -> TerminalOutputRecord {
+    let mut scoped = record.clone();
+    scoped.recipient_attachment_ids = vec![attachment_id.to_string()];
+    scoped.pending_recipient_attachment_ids = vec![attachment_id.to_string()];
+    scoped
+}
+
+fn scoped_notice_record(record: &RuntimeNoticeRecord, attachment_id: &str) -> RuntimeNoticeRecord {
+    let mut scoped = record.clone();
+    if !scoped.recipient_attachment_ids.is_empty() {
+        scoped.recipient_attachment_ids = vec![attachment_id.to_string()];
+    }
+    scoped.pending_recipient_attachment_ids = vec![attachment_id.to_string()];
+    scoped
+}
+
+fn scoped_completion_record(
+    record: &AssistantMessageCompletionRecord,
+    attachment_id: &str,
+) -> AssistantMessageCompletionRecord {
+    let mut scoped = record.clone();
+    scoped.recipient_attachment_ids = vec![attachment_id.to_string()];
+    scoped.pending_recipient_attachment_ids = vec![attachment_id.to_string()];
+    scoped
+}
+
+fn terminal_output_record_json_bytes(record: &TerminalOutputRecord) -> usize {
+    serde_json::to_vec(record)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]
@@ -697,11 +816,52 @@ mod tests {
 
         let first = terminal.drain_output_records("session-1", "attachment-1");
         assert_eq!(first.len(), 1);
+        assert_eq!(first[0].recipient_attachment_ids, vec!["attachment-1"]);
+        assert_eq!(
+            first[0].pending_recipient_attachment_ids,
+            vec!["attachment-1"]
+        );
         assert_eq!(terminal.output_records().len(), 1);
 
         let second = terminal.drain_output_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
+        assert_eq!(second[0].recipient_attachment_ids, vec!["attachment-2"]);
+        assert_eq!(
+            second[0].pending_recipient_attachment_ids,
+            vec!["attachment-2"]
+        );
         assert!(terminal.output_records().is_empty());
+    }
+
+    #[test]
+    fn output_polling_keeps_large_drains_batched() {
+        let mut terminal = TerminalStreamService::with_output_drain_json_limit(256);
+        for index in 0..4 {
+            terminal.fan_out_output(
+                "session-1",
+                "provider-run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some(format!("chunk-{index}")),
+                vec!["attachment-1".to_string()],
+                b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            );
+        }
+
+        let first = terminal.drain_output_records("session-1", "attachment-1");
+        assert!(!first.is_empty());
+        assert!(first.len() < 4);
+        assert_eq!(first[0].merge_key.as_deref(), Some("chunk-0"));
+        assert!(!terminal.output_records().is_empty());
+
+        let second = terminal.drain_output_records("session-1", "attachment-1");
+        assert!(!second.is_empty());
+        let expected_next_chunk = format!("chunk-{}", first.len());
+        assert_eq!(
+            second[0].merge_key.as_deref(),
+            Some(expected_next_chunk.as_str())
+        );
+        assert!(terminal.output_records().len() < 4);
     }
 
     #[test]
@@ -928,10 +1088,12 @@ mod tests {
 
         let first = terminal.drain_notice_records("session-1", "attachment-1");
         assert_eq!(first.len(), 1);
+        assert_eq!(first[0].recipient_attachment_ids, vec!["attachment-1"]);
         assert_eq!(terminal.notice_records().len(), 1);
 
         let second = terminal.drain_notice_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
+        assert_eq!(second[0].recipient_attachment_ids, vec!["attachment-2"]);
         assert!(terminal.notice_records().is_empty());
     }
 
@@ -949,12 +1111,63 @@ mod tests {
 
         let first = terminal.drain_completion_records("session-1", "attachment-1");
         assert_eq!(first.len(), 1);
+        assert_eq!(first[0].recipient_attachment_ids, vec!["attachment-1"]);
 
         let second = terminal.drain_completion_records("session-1", "attachment-2");
         assert_eq!(second.len(), 1);
+        assert_eq!(second[0].recipient_attachment_ids, vec!["attachment-2"]);
 
         let none_left = terminal.drain_completion_records("session-1", "attachment-2");
         assert!(none_left.is_empty());
+    }
+
+    #[test]
+    fn removing_attachment_prunes_pending_terminal_records() {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            None,
+            TerminalOutputKind::ProviderOutput,
+            None,
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            b"output",
+        );
+        terminal.record_notice(
+            "session-1",
+            None,
+            None,
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            "notice",
+        );
+        terminal.record_assistant_message_completion(
+            "session-1",
+            "provider-run-1",
+            None,
+            vec!["attachment-1".to_string(), "attachment-2".to_string()],
+            "message-1",
+            1,
+        );
+
+        assert!(terminal.remove_attachment("session-1", "attachment-1"));
+
+        assert_eq!(
+            terminal.output_records()[0].pending_recipient_attachment_ids,
+            vec!["attachment-2".to_string()],
+        );
+        assert_eq!(
+            terminal.notice_records()[0].pending_recipient_attachment_ids,
+            vec!["attachment-2".to_string()],
+        );
+        assert_eq!(
+            terminal.completion_records[0].pending_recipient_attachment_ids,
+            vec!["attachment-2".to_string()],
+        );
+
+        assert!(terminal.remove_attachment("session-1", "attachment-2"));
+        assert!(terminal.output_records().is_empty());
+        assert!(terminal.notice_records().is_empty());
+        assert!(terminal.completion_records.is_empty());
     }
 
     #[test]

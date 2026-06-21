@@ -36,6 +36,13 @@ pub(crate) async fn ensure_relay_subscription_attachment(
         .map(|_| ())
 }
 
+pub(crate) async fn detach_relay_subscription_attachment(
+    runtime_state: &KernelRuntimeState,
+    attachment_id: &str,
+) -> Result<(), DaemonError> {
+    runtime_state.detach(attachment_id).await.map(|_| ())
+}
+
 pub(crate) async fn watch_relay_subscription_state(
     runtime_state: &KernelRuntimeState,
     session_id: &str,

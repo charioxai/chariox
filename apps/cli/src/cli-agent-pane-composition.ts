@@ -60,6 +60,7 @@ export type CliAgentPaneCompositionDeps = {
     current: AnyFn
   }
   auxiliaryTranscriptSurfaceTone: AnyFn
+  onQueuedPromptAction: AnyFn
   renderScheduler: {
     requestRenderable: AnyFn
   }
@@ -154,6 +155,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
       (turnId, nextToggleEntryId) => toggleAuxiliaryPaneTurn(agentId, turnId, nextToggleEntryId),
       (entryId, collapsed) => toggleAuxiliaryPaneBlob(agentId, entryId, collapsed),
       deps.auxiliaryTranscriptSurfaceTone(agentId),
+      deps.onQueuedPromptAction,
     ),
     renderMode: transcriptRenderMode,
     requestRenderable: (renderable) => deps.renderScheduler.requestRenderable(renderable),

@@ -1,3 +1,4 @@
+use super::super::prompt::note_codex_turn_start_response;
 use super::*;
 
 #[test]
@@ -65,6 +66,87 @@ fn only_turn_completed_marks_the_prompt_as_complete() {
     assert_eq!(active_turn_id, None);
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+}
+
+#[test]
+fn steering_turn_start_preserves_original_active_turn_tracking() {
+    let mut active_turn_id = Some("original-turn".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_tool_started("sleep-tool");
+
+    note_codex_turn_start_response(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &json!({
+            "turn": {
+                "id": "steering-turn"
+            }
+        }),
+        true,
+    );
+
+    assert_eq!(active_turn_id.as_deref(), Some("original-turn"));
+    assert_eq!(turn_tracker.active_tool_count(), 1);
+
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ItemCompleted {
+            item: json!({
+                "type": "commandExecution",
+                "id": "sleep-tool",
+                "command": "sleep 30",
+                "status": "completed",
+            }),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "original-turn".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "codex-turn:original-turn");
 }
 
 #[test]

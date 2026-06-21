@@ -3,13 +3,17 @@ import {
   type CliOptions,
   type PromptAttachmentPart,
   type PromptSubmittedPayload,
+  type QueuedPromptCancelledPayload,
+  type QueuedPromptSteeredPayload,
   type RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { ArrobaLogger } from "./logging.js"
 import {
   cancelActivePromptRequest,
+  cancelQueuedPromptRequest,
   respondToInteractionRequest,
+  steerQueuedPromptRequest,
   submitPromptRequest,
 } from "./ipc-requests.js"
 import { expectVariant, firstVariantName } from "./ipc-response.js"
@@ -100,6 +104,40 @@ export async function cancelActivePrompt(
   attachmentId: string,
 ): Promise<void> {
   await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId))
+}
+
+export async function steerQueuedPrompt(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  promptId: string,
+): Promise<QueuedPromptSteeredPayload> {
+  const response = await client.send<Record<string, unknown>>(
+    steerQueuedPromptRequest(sessionId, attachmentId, targetAgentId, promptId),
+  )
+  const payload = expectVariant<QueuedPromptSteeredPayload>(response, "QueuedPromptSteered")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
+}
+
+export async function cancelQueuedPrompt(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  promptId: string,
+): Promise<QueuedPromptCancelledPayload> {
+  const response = await client.send<Record<string, unknown>>(
+    cancelQueuedPromptRequest(sessionId, attachmentId, targetAgentId, promptId),
+  )
+  const payload = expectVariant<QueuedPromptCancelledPayload>(response, "QueuedPromptCancelled")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
 }
 
 export async function respondToInteraction(

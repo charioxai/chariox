@@ -45,6 +45,10 @@ impl AgentRuntimeCommandExecutor {
                 request,
                 target_agent_id,
             } => self.cancel_active_prompt(request, target_agent_id).await,
+            AgentCommand::SteerQueuedPrompt { request } => self.steer_queued_prompt(request).await,
+            AgentCommand::CancelQueuedPrompt { request } => {
+                self.cancel_queued_prompt(request).await
+            }
             AgentCommand::CompletePrompt {
                 request,
                 target_agent_id,
@@ -153,6 +157,60 @@ impl AgentRuntimeCommandExecutor {
 
         Ok(LocalDaemonResponse::PromptCancelled {
             cancellation: prepared.cancellation,
+        })
+    }
+
+    async fn steer_queued_prompt(
+        &self,
+        request: crate::local::SteerQueuedPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let prepared = self
+            .prompt_commands
+            .steer_queued_prompt(
+                &request.session_id,
+                &request.target_agent_id,
+                &request.attachment_id,
+                &request.prompt_id,
+            )
+            .await?;
+        self.session_projection.update(prepared.session.clone());
+        self.agent_runtime_projection
+            .update_session(&prepared.session);
+
+        let agent_activity = self
+            .prompt_commands
+            .agent_activity_for_session(&prepared.session);
+        self.prompt_commands
+            .spawn_queued_prompt_steer_dispatch(prepared.dispatch);
+
+        Ok(LocalDaemonResponse::QueuedPromptSteered {
+            prompt: prepared.prompt,
+            session: prepared.session,
+            agent_activity,
+            agent_activity_revision: self.session_projection.change_sequence(),
+        })
+    }
+
+    async fn cancel_queued_prompt(
+        &self,
+        request: crate::local::CancelQueuedPromptRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let prepared = self
+            .prompt_commands
+            .cancel_queued_prompt(
+                &request.session_id,
+                &request.target_agent_id,
+                &request.attachment_id,
+                &request.prompt_id,
+            )
+            .await?;
+        self.session_projection.update(prepared.session.clone());
+        self.agent_runtime_projection
+            .update_session(&prepared.session);
+
+        Ok(LocalDaemonResponse::QueuedPromptCancelled {
+            prompt: prepared.prompt,
+            session: prepared.session,
         })
     }
 

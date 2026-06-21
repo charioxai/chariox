@@ -122,6 +122,38 @@ export function cancelActivePromptRequest(sessionId: string, attachmentId: strin
   }
 }
 
+export function steerQueuedPromptRequest(
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  promptId: string,
+) {
+  return {
+    SteerQueuedPrompt: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      target_agent_id: targetAgentId,
+      prompt_id: promptId,
+    },
+  }
+}
+
+export function cancelQueuedPromptRequest(
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  promptId: string,
+) {
+  return {
+    CancelQueuedPrompt: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      target_agent_id: targetAgentId,
+      prompt_id: promptId,
+    },
+  }
+}
+
 export function pollRuntimeNoticesRequest(sessionId: string, attachmentId: string) {
   return {
     PollRuntimeNotices: {

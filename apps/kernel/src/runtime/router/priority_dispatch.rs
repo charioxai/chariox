@@ -462,6 +462,16 @@ impl CommandRouter {
                     .dispatch_prompt_cancel(&command, request)
                     .await
             }
+            LocalDaemonRequest::SteerQueuedPrompt(request) => {
+                self.agent_runtime
+                    .dispatch_prompt_steer_queued(&command, request)
+                    .await
+            }
+            LocalDaemonRequest::CancelQueuedPrompt(request) => {
+                self.agent_runtime
+                    .dispatch_prompt_cancel_queued(&command, request)
+                    .await
+            }
             request => {
                 if is_workflow_command(&request) {
                     self.workflow_runtime

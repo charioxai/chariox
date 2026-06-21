@@ -13,6 +13,7 @@ import type {
   BootstrapState,
   RuntimeSession,
   TerminalOutputRecord,
+  TranscriptEntry,
 } from "./cli-types.js"
 import { createCliAgentPaneComposition } from "./cli-agent-pane-composition.js"
 import { createCliAppState } from "./cli-app-state.js"
@@ -68,7 +69,13 @@ import { createPromptStopController } from "./prompt-stop-controller.js"
 import { createPrimaryTranscriptRuntimeStoreController } from "./primary-transcript-runtime-store-controller.js"
 import {
   cancelActivePrompt,
+  cancelQueuedPrompt,
+  steerQueuedPrompt,
 } from "./prompt-runtime-api.js"
+import {
+  syncQueuedPromptEntriesByAgent,
+  syncQueuedPromptEntriesForAgent,
+} from "./queued-prompt-transcript.js"
 import {
   type BackendProviderId,
   normalizeBackendProviderId,
@@ -857,6 +864,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     onFooterFlashChange: () => updateSessionChrome(),
   })
   const flashFooter = footerFlashController.flash
+  let syncQueuedPromptsForSession = (_session: RuntimeSession) => {}
 
   const promptAttachmentIntakeController = createPromptAttachmentIntakeController({
     client,
@@ -899,6 +907,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     turnCompletion: turnCompletionController,
     cancelPendingTurnCompletion,
     promptStop: promptStopController,
+    syncQueuedPromptEntries: (session) => syncQueuedPromptsForSession(session),
     syncVisibleActivityLabel: () => syncVisibleActivityLabel(),
     updateSessionChrome: () => updateSessionChrome(),
     refreshSplitPaneFocusRepaint: () => refreshSplitPaneFocusRepaint(),
@@ -1037,6 +1046,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     agentPaneRuntimeStore,
     transcriptSyntaxStyleController,
     auxiliaryTranscriptSurfaceTone,
+    onQueuedPromptAction: handleQueuedPromptAction,
     renderScheduler,
     primaryTranscriptRuntimeStore,
     replaceTranscriptEntries: (nextEntries, agentId) => replaceTranscriptEntries(nextEntries, agentId),
@@ -1111,6 +1121,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     syncVisibleTranscriptPreview,
     toggleTurn,
     toggleBlob,
+    onQueuedPromptAction: handleQueuedPromptAction,
     primaryTranscriptSurfaceTone,
     requestTranscriptRender,
     requestRootRender: () => {
@@ -1123,6 +1134,82 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentPaneEntries,
     setAgentPanePreview,
   })
+
+  syncQueuedPromptsForSession = (session: RuntimeSession) => {
+    const byAgent = syncQueuedPromptEntriesByAgent(agentPaneEntries(), session)
+    if (byAgent.changed) {
+      setAgentPaneEntries(reconcile(byAgent.entriesByAgent))
+      setAgentPanePreviews((current) => ({
+        ...current,
+        ...byAgent.previews,
+      }))
+    }
+
+    const visibleAgentId = visibleTranscriptAgentId()
+    if (!visibleAgentId) {
+      return
+    }
+    const visibleSync = syncQueuedPromptEntriesForAgent(
+      transcriptEntryProjectionController.renderableEntries(),
+      session,
+      visibleAgentId,
+    )
+    if (visibleSync.changed) {
+      replaceTranscriptEntries(visibleSync.entries, visibleAgentId)
+    }
+  }
+
+  function handleQueuedPromptAction(entry: TranscriptEntry, action: "steer" | "cancel") {
+    const queuedPrompt = entry.queuedPrompt
+    if (!queuedPrompt) {
+      return
+    }
+    const attachment = attachmentState()
+    if (!attachment) {
+      flashFooter("No session attached.", "error")
+      return
+    }
+
+    updateQueuedPromptEntryStatus(queuedPrompt.agentId, queuedPrompt.promptId, action === "steer" ? "steering" : "cancelling")
+    void (async () => {
+      try {
+        const payload = action === "steer"
+          ? await steerQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
+          : await cancelQueuedPrompt(client, sessionState().id, attachment.id, queuedPrompt.agentId, queuedPrompt.promptId)
+        applySessionState(payload.session)
+        updateSessionChrome()
+      } catch (error) {
+        updateQueuedPromptEntryStatus(queuedPrompt.agentId, queuedPrompt.promptId, "queued")
+        flashFooter(formatError(error), "error")
+      }
+    })()
+  }
+
+  function updateQueuedPromptEntryStatus(
+    agentId: string,
+    promptId: string,
+    status: "queued" | "steering" | "cancelling",
+  ) {
+    const updateEntries = (currentEntries: TranscriptEntry[]) => currentEntries.map((candidate) => {
+      if (candidate.queuedPrompt?.agentId !== agentId || candidate.queuedPrompt.promptId !== promptId) {
+        return candidate
+      }
+      return {
+        ...candidate,
+        queuedPrompt: {
+          ...candidate.queuedPrompt,
+          status,
+        },
+      }
+    })
+    if (visibleTranscriptAgentId() === agentId) {
+      replaceTranscriptEntries(
+        updateEntries(transcriptEntryProjectionController.renderableEntries()),
+        agentId,
+      )
+    }
+    setAgentTranscriptEntries(agentId, updateEntries(currentAgentPaneEntries(agentId)))
+  }
 
   const workflowActions = createCliAppWorkflowActionComposition({
     client,

@@ -234,6 +234,7 @@ function createHarness(options: {
         calls.push("promptStop.reset")
       },
     },
+    syncQueuedPromptEntries: () => {},
     syncVisibleActivityLabel: () => {
       calls.push("syncVisibleActivityLabel")
     },

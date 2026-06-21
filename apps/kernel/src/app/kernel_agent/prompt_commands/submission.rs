@@ -140,8 +140,32 @@ impl<'a> KernelAgentService<'a> {
         let Some(dispatch) = dispatch else {
             return Ok(());
         };
-        if let Err(error) = self.app.enqueue_kernel_prompt_dispatch(&dispatch) {
-            self.app.fail_kernel_prompt_dispatch(dispatch, error)?;
+        if let Err(error) = crate::app::ProviderPromptDispatcher::new(self.app)
+            .dispatch_prompt_to_provider(
+                &dispatch.session_id,
+                &dispatch.provider_run_id,
+                &dispatch.source_attachment_id,
+                &dispatch.prompt,
+                &dispatch.hidden_system_context,
+                &dispatch.attachments,
+            )
+        {
+            crate::app::KernelAgentService::new(self.app).cancel_active_after_prompt_start_failure(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.provider_run_id,
+            );
+            let _ = crate::app::KernelSessionReadService::new(self.app)
+                .session_snapshot(&dispatch.session_id);
+            self.app.record_notice(
+                &dispatch.session_id,
+                Some(&dispatch.provider_run_id),
+                self.app
+                    .attachments
+                    .list_session_attachment_ids(&dispatch.session_id),
+                format!("Prompt dispatch failed after acknowledgement: {error}"),
+            );
+            return Err(error);
         }
         Ok(())
     }
@@ -316,6 +340,7 @@ impl<'a> KernelAgentService<'a> {
                     prompt: prompt.prompt().to_string(),
                     hidden_system_context: prompt.hidden_system_context().to_string(),
                     attachments: prompt.attachments().to_vec(),
+                    steering: false,
                 });
             }
             PromptSubmissionOutcome::Queued { prompt } => {

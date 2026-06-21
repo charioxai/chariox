@@ -872,6 +872,20 @@ export type TerminalOutputRecord = {
 export type PromptSubmittedPayload = {
   outcome: Record<string, unknown>
   session: RuntimeSession
+  agent_activity?: Record<string, AgentRuntimeActivity>
+  agent_activity_revision?: number
+}
+
+export type QueuedPromptSteeredPayload = {
+  prompt: PromptQueueItem
+  session: RuntimeSession
+  agent_activity?: Record<string, AgentRuntimeActivity>
+  agent_activity_revision?: number
+}
+
+export type QueuedPromptCancelledPayload = {
+  prompt: PromptQueueItem
+  session: RuntimeSession
 }
 
 export type SessionHistoryPageEntry = {
@@ -955,6 +969,11 @@ export type TranscriptEntry = {
   id: number
   role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"
   text: string
+  queuedPrompt?: {
+    promptId: string
+    agentId: string
+    status?: "queued" | "steering" | "cancelling"
+  }
   sourceText?: string
   mergeKey?: string
   source?: "external_provider_observed" | string | null

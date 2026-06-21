@@ -1,6 +1,7 @@
 use crate::app::{
     KernelPreparedPromptSubmission, KernelPromptAbortDispatch, KernelPromptCancellation,
-    KernelPromptDispatch, KernelPromptSubmission, KernelRemotePromptDispatch,
+    KernelPromptDispatch, KernelPromptSubmission, KernelQueuedPromptCancellation,
+    KernelQueuedPromptSteer, KernelRemotePromptDispatch,
 };
 use crate::error::DaemonError;
 use crate::provider::ProviderRunOperationLanes;
@@ -30,6 +31,11 @@ impl AgentPromptDispatchContext {
     fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
         self.state
             .spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+    }
+
+    fn spawn_queued_prompt_steer_dispatch(&self, dispatch: KernelPromptDispatch) {
+        self.state
+            .spawn_queued_prompt_steer_dispatch(dispatch, self.provider_runtime_lanes.clone());
     }
 
     fn spawn_remote_prompt_dispatch(&self, dispatch: KernelRemotePromptDispatch) {
@@ -68,6 +74,30 @@ impl AgentPromptCommandService {
     ) -> Result<KernelPromptCancellation, DaemonError> {
         self.state
             .cancel_agent_prompt(session_id, target_agent_id, attachment_id)
+            .await
+    }
+
+    pub(crate) async fn steer_queued_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<KernelQueuedPromptSteer, DaemonError> {
+        self.state
+            .steer_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)
+            .await
+    }
+
+    pub(crate) async fn cancel_queued_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<KernelQueuedPromptCancellation, DaemonError> {
+        self.state
+            .cancel_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)
             .await
     }
 
@@ -138,6 +168,11 @@ impl AgentPromptCommandService {
 
     pub(crate) fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
         self.dispatch_context().spawn_prompt_dispatch(dispatch);
+    }
+
+    pub(crate) fn spawn_queued_prompt_steer_dispatch(&self, dispatch: KernelPromptDispatch) {
+        self.dispatch_context()
+            .spawn_queued_prompt_steer_dispatch(dispatch);
     }
 
     pub(crate) fn spawn_remote_prompt_dispatch(&self, dispatch: KernelRemotePromptDispatch) {

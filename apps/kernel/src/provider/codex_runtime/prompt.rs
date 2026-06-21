@@ -66,10 +66,12 @@ pub fn submit_codex_prompt(
             return Ok(());
         }
     };
-    if let Some(turn_id) = codex_turn_id_from_start_response(&response) {
-        state.active_turn_id = Some(turn_id);
-    }
-    state.turn_tracker = CodexTurnTracker::default();
+    note_codex_turn_start_response(
+        &mut state.active_turn_id,
+        &mut state.turn_tracker,
+        &response,
+        envelope.steering,
+    );
     crate::logging::debug_with_fields(
         "daemon.provider.codex",
         "codex turn start response trace",
@@ -80,6 +82,23 @@ pub fn submit_codex_prompt(
         }),
     );
     Ok(())
+}
+
+pub(super) fn note_codex_turn_start_response(
+    active_turn_id: &mut Option<String>,
+    turn_tracker: &mut CodexTurnTracker,
+    response: &Value,
+    steering: bool,
+) {
+    let preserve_active_turn = steering && active_turn_id.is_some();
+    if let Some(turn_id) = codex_turn_id_from_start_response(response) {
+        if !preserve_active_turn {
+            *active_turn_id = Some(turn_id);
+        }
+    }
+    if !preserve_active_turn {
+        *turn_tracker = CodexTurnTracker::default();
+    }
 }
 
 fn ensure_codex_thread_ready(

@@ -1423,7 +1423,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 158
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 159
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1555,6 +1555,18 @@ export type PromptSubmittedPayload = {
   session: RuntimeSession
   agent_activity: Record<string, AgentRuntimeActivity>
   agent_activity_revision: number
+}
+
+export type QueuedPromptSteeredPayload = {
+  prompt: PromptQueueItem
+  session: RuntimeSession
+  agent_activity: Record<string, AgentRuntimeActivity>
+  agent_activity_revision: number
+}
+
+export type QueuedPromptCancelledPayload = {
+  prompt: PromptQueueItem
+  session: RuntimeSession
 }
 
 export type SessionHistoryPageEntry = {

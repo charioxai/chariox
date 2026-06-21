@@ -68,6 +68,84 @@ async fn routes_interactive_commands_through_bounded_lane() {
 }
 
 #[tokio::test]
+async fn queued_prompt_cancel_routes_through_interactive_dispatch_and_removes_strip_state() {
+    let fixture = queued_prompt_router_fixture("cancel");
+    let request = LocalDaemonRequest::CancelQueuedPrompt(CancelQueuedPromptRequest {
+        session_id: fixture.session_id.clone(),
+        attachment_id: fixture.attachment_id.clone(),
+        target_agent_id: fixture.agent_id.clone(),
+        prompt_id: fixture.queued_prompt_id.clone(),
+    });
+    let command =
+        KernelCommand::from_local_request("cmd-cancel-queued-prompt", None, None, &request);
+
+    let response = fixture
+        .router
+        .dispatch(command, request)
+        .await
+        .expect("queued prompt cancel should route through interactive dispatch");
+
+    let LocalDaemonResponse::QueuedPromptCancelled { prompt, session } = response else {
+        panic!("unexpected queued prompt cancel response");
+    };
+    assert_eq!(prompt.id(), fixture.queued_prompt_id);
+    assert_eq!(prompt.status(), PromptStatus::Cancelled);
+    assert_eq!(
+        session
+            .active_prompt_for_agent(&fixture.agent_id)
+            .map(|prompt| prompt.id()),
+        Some(fixture.active_prompt_id.as_str())
+    );
+    assert!(
+        session
+            .queued_prompts_for_agent(&fixture.agent_id)
+            .map(|queued| queued.is_empty())
+            .unwrap_or(true),
+        "cancelled queued prompt should disappear from prompt state"
+    );
+}
+
+#[tokio::test]
+async fn queued_prompt_steer_routes_through_interactive_dispatch_and_removes_strip_state() {
+    let fixture = queued_prompt_router_fixture("steer");
+    let request = LocalDaemonRequest::SteerQueuedPrompt(SteerQueuedPromptRequest {
+        session_id: fixture.session_id.clone(),
+        attachment_id: fixture.attachment_id.clone(),
+        target_agent_id: fixture.agent_id.clone(),
+        prompt_id: fixture.queued_prompt_id.clone(),
+    });
+    let command =
+        KernelCommand::from_local_request("cmd-steer-queued-prompt", None, None, &request);
+
+    let response = fixture
+        .router
+        .dispatch(command, request)
+        .await
+        .expect("queued prompt steer should route through interactive dispatch");
+
+    let LocalDaemonResponse::QueuedPromptSteered {
+        prompt, session, ..
+    } = response
+    else {
+        panic!("unexpected queued prompt steer response");
+    };
+    assert_eq!(prompt.id(), fixture.queued_prompt_id);
+    assert_eq!(
+        session
+            .active_prompt_for_agent(&fixture.agent_id)
+            .map(|prompt| prompt.id()),
+        Some(fixture.active_prompt_id.as_str())
+    );
+    assert!(
+        session
+            .queued_prompts_for_agent(&fixture.agent_id)
+            .map(|queued| queued.is_empty())
+            .unwrap_or(true),
+        "steered queued prompt should disappear from prompt state"
+    );
+}
+
+#[tokio::test]
 async fn rejects_session_commands_when_bounded_lane_is_full() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
@@ -144,6 +222,85 @@ async fn rejects_session_commands_when_bounded_lane_is_full() {
     let _ = queued_result_rx
         .await
         .expect("queued result should resolve");
+}
+
+struct QueuedPromptRouterFixture {
+    router: CommandRouter,
+    session_id: String,
+    agent_id: String,
+    attachment_id: String,
+    active_prompt_id: String,
+    queued_prompt_id: String,
+}
+
+fn queued_prompt_router_fixture(label: &str) -> QueuedPromptRouterFixture {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            &format!("workspace-queued-{label}"),
+            &format!("worktree-queued-{label}"),
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            &format!("client-queued-{label}"),
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    );
+    let active_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "active prompt",
+        PromptStatus::Queued,
+    );
+    let PromptSubmissionOutcome::Started {
+        prompt: active_prompt,
+    } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), active_prompt, false)
+        .expect("active prompt should start")
+    else {
+        panic!("first prompt should start");
+    };
+    let queued_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "queued prompt",
+        PromptStatus::Queued,
+    );
+    let PromptSubmissionOutcome::Queued {
+        prompt: queued_prompt,
+    } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+        .expect("second prompt should queue")
+    else {
+        panic!("second prompt should queue");
+    };
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let active_prompt_id = active_prompt.id().to_string();
+    let queued_prompt_id = queued_prompt.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+
+    QueuedPromptRouterFixture {
+        router,
+        session_id,
+        agent_id,
+        attachment_id,
+        active_prompt_id,
+        queued_prompt_id,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

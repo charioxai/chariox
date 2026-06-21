@@ -359,6 +359,24 @@ impl PromptStateOwner {
         })
     }
 
+    pub(crate) fn remove_queued_prompt(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Option<PromptQueueItem> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, agent_id);
+        let index = state
+            .queued_prompts
+            .iter()
+            .position(|prompt| prompt.id() == prompt_id)?;
+        state.queued_prompts.remove(index)
+    }
+
     pub(crate) fn state_parts(
         &self,
         session: &RuntimeSession,

@@ -140,6 +140,18 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
+        LocalDaemonRequest::SteerQueuedPrompt(request) => {
+            LocalRequestMetadata::new("prompt.queued.steer", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.target_agent_id)
+        }
+        LocalDaemonRequest::CancelQueuedPrompt(request) => {
+            LocalRequestMetadata::new("prompt.queued.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+                .agent(&request.target_agent_id)
+        }
         LocalDaemonRequest::ResizeTerminal(request) => {
             LocalRequestMetadata::new("terminal.resize", Interactive).session(&request.session_id)
         }
@@ -598,6 +610,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::SubmitPrompt(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
+        | LocalDaemonRequest::SteerQueuedPrompt(_)
+        | LocalDaemonRequest::CancelQueuedPrompt(_)
         | LocalDaemonRequest::ResizeTerminal(_)
         | LocalDaemonRequest::SendTerminalInput(_)
         | LocalDaemonRequest::FocusAgent(_)

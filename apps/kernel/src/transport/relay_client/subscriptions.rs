@@ -9,15 +9,29 @@ pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscri
 
 pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
+    pub(super) session_id: String,
+    pub(super) attachment_id: String,
+    pub(super) subscription_scope: Option<String>,
     pub(super) handle: JoinHandle<()>,
 }
 
-pub(super) async fn abort_subscription_tasks(subscription_tasks: &RelaySubscriptionTasks) {
+pub(super) async fn abort_subscription_tasks(
+    router: &Arc<CommandRouter>,
+    subscription_tasks: &RelaySubscriptionTasks,
+) {
     let mut guard = subscription_tasks.lock().await;
-    for (_, task) in guard.iter() {
+    let tasks = guard
+        .values()
+        .map(RelaySubscriptionTask::snapshot)
+        .collect::<Vec<_>>();
+    for task in guard.values() {
         task.handle.abort();
     }
     guard.clear();
+    drop(guard);
+    for task in tasks {
+        cleanup_relay_subscription_attachment(router, &task).await;
+    }
 }
 
 pub(super) async fn remove_relay_subscription_task_by_relay_id(
@@ -38,6 +52,55 @@ pub(super) fn relay_subscription_task_key(
 ) -> String {
     let scope = subscription_scope.unwrap_or("session");
     format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}")
+}
+
+#[derive(Debug, Clone)]
+struct RelaySubscriptionTaskSnapshot {
+    session_id: String,
+    attachment_id: String,
+    subscription_scope: Option<String>,
+}
+
+impl RelaySubscriptionTask {
+    fn snapshot(&self) -> RelaySubscriptionTaskSnapshot {
+        RelaySubscriptionTaskSnapshot {
+            session_id: self.session_id.clone(),
+            attachment_id: self.attachment_id.clone(),
+            subscription_scope: self.subscription_scope.clone(),
+        }
+    }
+}
+
+async fn cleanup_relay_subscription_attachment(
+    router: &Arc<CommandRouter>,
+    task: &RelaySubscriptionTaskSnapshot,
+) {
+    if task.subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE)
+        || task.session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
+        || task.attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
+    {
+        return;
+    }
+    match router
+        .detach_relay_subscription_attachment(&task.attachment_id)
+        .await
+    {
+        Ok(()) => {}
+        Err(DaemonError::AttachmentNotFound { .. })
+        | Err(DaemonError::AttachmentNotInSession { .. }) => {}
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "failed to clean up relay subscription attachment",
+                serde_json::json!({
+                    "session_id": task.session_id,
+                    "attachment_id": task.attachment_id,
+                    "subscription_scope": task.subscription_scope,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
 }
 
 pub(super) async fn handle_relay_subscribe(
@@ -200,6 +263,7 @@ pub(super) async fn handle_relay_subscribe(
     }
     if let Some(existing) = subscription_tasks.lock().await.remove(&task_key) {
         existing.handle.abort();
+        cleanup_relay_subscription_attachment(router, &existing.snapshot()).await;
     }
     if !is_inventory_subscription {
         if let Err(error) = replay_recent_relay_events(
@@ -231,9 +295,9 @@ pub(super) async fn handle_relay_subscribe(
         outgoing_tx.clone(),
         relay_subscription_id.clone(),
         client_public_key,
-        session_id,
-        attachment_id,
-        subscription_scope,
+        session_id.clone(),
+        attachment_id.clone(),
+        subscription_scope.clone(),
         Arc::clone(event_runtime),
         resume_from_event_id.is_some(),
     ));
@@ -241,6 +305,9 @@ pub(super) async fn handle_relay_subscribe(
         task_key,
         RelaySubscriptionTask {
             relay_subscription_id,
+            session_id,
+            attachment_id,
+            subscription_scope,
             handle: task,
         },
     );
@@ -260,6 +327,7 @@ pub(super) async fn handle_relay_unsubscribe(
             .await;
     if let Some(task) = existing {
         task.handle.abort();
+        cleanup_relay_subscription_attachment(router, &task.snapshot()).await;
     }
     let ack = match encrypt_json_response(
         router,
@@ -355,20 +423,28 @@ pub(super) async fn run_relay_subscription_loop(
                 workflow_design_events,
                 snapshot,
             } => {
-                if !records.is_empty()
-                    && emit_relay_event(
-                        &router,
-                        &outgoing_tx,
-                        &subscription_id,
-                        &client_public_key,
-                        &event_runtime,
-                        &event_stream_id,
-                        KernelEvent::TerminalOutput { records },
-                    )
-                    .await
-                    .is_err()
-                {
-                    break;
+                if !records.is_empty() {
+                    let mut terminal_output_failed = false;
+                    for records in terminal_output_event_batches(records) {
+                        if emit_relay_event(
+                            &router,
+                            &outgoing_tx,
+                            &subscription_id,
+                            &client_public_key,
+                            &event_runtime,
+                            &event_stream_id,
+                            KernelEvent::TerminalOutput { records },
+                        )
+                        .await
+                        .is_err()
+                        {
+                            terminal_output_failed = true;
+                            break;
+                        }
+                    }
+                    if terminal_output_failed {
+                        break;
+                    }
                 }
                 if !notices.is_empty()
                     && emit_relay_event(
@@ -750,6 +826,9 @@ mod tests {
             first_key.clone(),
             RelaySubscriptionTask {
                 relay_subscription_id: "relay-subscription-1".to_string(),
+                session_id: "session-1".to_string(),
+                attachment_id: "attachment-1".to_string(),
+                subscription_scope: None,
                 handle: first_handle,
             },
         );
@@ -764,6 +843,9 @@ mod tests {
             second_key,
             RelaySubscriptionTask {
                 relay_subscription_id: "relay-subscription-2".to_string(),
+                session_id: "session-1".to_string(),
+                attachment_id: "attachment-1".to_string(),
+                subscription_scope: None,
                 handle: second_handle,
             },
         );

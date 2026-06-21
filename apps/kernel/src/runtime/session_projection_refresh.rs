@@ -287,7 +287,11 @@ pub(crate) fn redact_agent_activity_for_session(
 pub(crate) fn should_update_agent_runtime_projection_from_response(
     response: &LocalDaemonResponse,
 ) -> bool {
-    !matches!(response, LocalDaemonResponse::PromptSubmitted { .. })
+    !matches!(
+        response,
+        LocalDaemonResponse::PromptSubmitted { .. }
+            | LocalDaemonResponse::QueuedPromptSteered { .. }
+    )
 }
 
 pub(crate) fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {

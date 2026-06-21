@@ -131,6 +131,40 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(crate) async fn steer_queued_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
+        {
+            let owned = &self.owned;
+            if let Some(steer) =
+                owned.steer_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)?
+            {
+                return Ok(steer);
+            }
+            Err(DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: "queued prompt steering for remote agents is not implemented".to_string(),
+            })
+        }
+    }
+
+    pub(crate) async fn cancel_queued_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<crate::app::KernelQueuedPromptCancellation, DaemonError> {
+        {
+            self.owned
+                .cancel_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)
+        }
+    }
+
     pub(crate) async fn complete_agent_prompt(
         &self,
         session_id: &str,

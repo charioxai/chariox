@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::session::{
-    RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice,
-    RuntimeInteractionLevel,
+    PromptQueueItem, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
+    RuntimeInteractionCustomChoice, RuntimeInteractionLevel,
 };
 use crate::slice::{
     SliceBackendKind, SliceDisplayEndpoint, SliceLogEntry, SliceProviderLoginStart, SliceRecord,
@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 158;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 159;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -303,6 +303,8 @@ pub enum LocalDaemonRequest {
     SubmitPrompt(SubmitPromptRequest),
     CompletePrompt(CompletePromptRequest),
     CancelActivePrompt(CancelActivePromptRequest),
+    SteerQueuedPrompt(SteerQueuedPromptRequest),
+    CancelQueuedPrompt(CancelQueuedPromptRequest),
     UpdateSessionConfig(UpdateSessionConfigRequest),
     UpdateAgentConfig(UpdateAgentConfigRequest),
     UpdateAgentProfile(UpdateAgentProfileRequest),
@@ -956,6 +958,17 @@ pub enum LocalDaemonResponse {
     },
     PromptCancelled {
         cancellation: PromptCancellation,
+    },
+    QueuedPromptSteered {
+        prompt: PromptQueueItem,
+        session: RuntimeSession,
+        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+        #[serde(default)]
+        agent_activity_revision: u64,
+    },
+    QueuedPromptCancelled {
+        prompt: PromptQueueItem,
+        session: RuntimeSession,
     },
     SessionConfigUpdated {
         config: SessionConfigState,

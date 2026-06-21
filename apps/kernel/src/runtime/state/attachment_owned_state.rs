@@ -81,6 +81,8 @@ impl KernelRuntimeOwnedState {
             .attachment_store
             .detach_with_effect(&mut sessions, attachment_id)?;
         drop(sessions);
+        self.terminal_stream
+            .remove_attachment(attachment.session_id(), attachment_id);
 
         let session = self.session_store.get_session(attachment.session_id())?;
         let owner_removed_queued_prompt_count = self

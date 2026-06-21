@@ -17,6 +17,7 @@ use crate::terminal::{RuntimeNoticeRecord, TerminalOutputRecord};
 
 pub(crate) const WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE: &str = "waiting_room_inventory";
 pub(crate) const WAITING_ROOM_INVENTORY_SENTINEL_ID: &str = "__waiting_room_inventory__";
+pub(crate) const MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -633,6 +634,39 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
     }
 }
 
+pub(crate) fn terminal_output_event_batches(
+    records: Vec<TerminalOutputRecord>,
+) -> Vec<Vec<TerminalOutputRecord>> {
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    for record in records {
+        if current.is_empty() {
+            current.push(record);
+            continue;
+        }
+        let mut candidate = current.clone();
+        candidate.push(record.clone());
+        if terminal_output_event_json_bytes(&candidate) <= MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES {
+            current = candidate;
+        } else {
+            batches.push(current);
+            current = vec![record];
+        }
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+fn terminal_output_event_json_bytes(records: &[TerminalOutputRecord]) -> usize {
+    serde_json::to_vec(&KernelEvent::TerminalOutput {
+        records: records.to_vec(),
+    })
+    .map(|bytes| bytes.len())
+    .unwrap_or(usize::MAX)
+}
+
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
@@ -676,6 +710,32 @@ mod tests {
         RuntimeInteractionChoiceStyle, RuntimeInteractionKind, RuntimeInteractionLevel,
         RuntimeSession, WorkflowRunStatus,
     };
+    use crate::terminal::TerminalOutputKind;
+
+    #[test]
+    fn terminal_output_event_batches_stay_under_json_byte_cap() {
+        let records = (0..20)
+            .map(|index| TerminalOutputRecord {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some(format!("chunk-{index}")),
+                recipient_attachment_ids: vec!["attachment-1".to_string()],
+                pending_recipient_attachment_ids: vec!["attachment-1".to_string()],
+                bytes: vec![b'x'; 16 * 1024],
+            })
+            .collect::<Vec<_>>();
+
+        let batches = terminal_output_event_batches(records);
+
+        assert!(batches.len() > 1);
+        for batch in batches {
+            assert!(
+                terminal_output_event_json_bytes(&batch) <= MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES
+            );
+        }
+    }
 
     #[test]
     fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {

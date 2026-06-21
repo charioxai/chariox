@@ -82,21 +82,22 @@ mod tests {
     use crate::local::{
         AckMetaagentEventsRequest, AcknowledgeAgentOutputSeenRequest, AddWorkflowEdgeRequest,
         AddWorkflowNodeRequest, AliasSessionRequest, AttachToSessionRequest,
-        AttachWorkspaceLinkRequest, CancelActivePromptRequest, CompletePromptRequest,
-        CreateWorkflowEndpointRequest, CreateWorkflowRequest, CreateWorkspaceLinkRequest,
-        CycleAgentFocusRequest, DeleteKernelRequest, DeleteSessionRequest, DestroyAgentRequest,
-        DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest,
-        GetMetaagentTurnBlobRequest, GetMetaagentTurnOverviewRequest, GetProviderAuthStatusRequest,
-        GetProviderCatalogRequest, GetProviderCommandCatalogsRequest, GetProviderRunRequest,
-        GetSessionStateRequest, GetWorkspaceLiveSyncStatusRequest, InvokeWorkflowEndpointRequest,
-        LaunchProviderRunRequest, ListAgentsRequest, ListMetaagentEventsRequest,
-        ListProviderProcessesRequest, ListSessionsRequest, ListWorkflowRunsRequest,
-        ListWorkflowWatchdogsRequest, ListWorkflowsRequest, LocalDaemonRequest,
-        LocalDaemonResponse, PollRuntimeNoticesRequest, PumpTerminalOutputRequest,
-        ReadMetaagentEventRequest, RelayStatusRequest, RemoveWorkflowEdgeRequest,
-        ResizeTerminalRequest, ResolveSessionRequest, ResolveWorkflowRequest,
-        RunShellCapabilityRequest, SearchMetaagentCommandsRequest, SpawnAgentRequest,
-        SubmitPromptRequest, TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
+        AttachWorkspaceLinkRequest, CancelActivePromptRequest, CancelQueuedPromptRequest,
+        CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
+        CreateWorkspaceLinkRequest, CycleAgentFocusRequest, DeleteKernelRequest,
+        DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
+        FocusAgentRequest, GetDaemonHealthRequest, GetMetaagentTurnBlobRequest,
+        GetMetaagentTurnOverviewRequest, GetProviderAuthStatusRequest, GetProviderCatalogRequest,
+        GetProviderCommandCatalogsRequest, GetProviderRunRequest, GetSessionStateRequest,
+        GetWorkspaceLiveSyncStatusRequest, InvokeWorkflowEndpointRequest, LaunchProviderRunRequest,
+        ListAgentsRequest, ListMetaagentEventsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        PumpTerminalOutputRequest, ReadMetaagentEventRequest, RelayStatusRequest,
+        RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
+        ResolveWorkflowRequest, RunShellCapabilityRequest, SearchMetaagentCommandsRequest,
+        SpawnAgentRequest, SteerQueuedPromptRequest, SubmitPromptRequest,
+        TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo,
@@ -107,9 +108,9 @@ mod tests {
     };
     use crate::runtime::router::CommandRouter;
     use crate::session::{
-        CreateSessionRequest, PromptStatus, PromptSubmissionOutcome, RuntimeInteraction,
-        RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionKind,
-        RuntimeInteractionLevel, SessionStatus, DEFAULT_LOCAL_USER_ID,
+        CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+        RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
+        RuntimeInteractionKind, RuntimeInteractionLevel, SessionStatus, DEFAULT_LOCAL_USER_ID,
     };
     use crate::{DaemonApp, DaemonConfig, DaemonError};
 

@@ -93,15 +93,17 @@ export function createNormalPromptSubmitController(
           inlineLocalFiles: deps.shouldInlineLocalFiles(),
         })
         submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
-        deps.appendUserPrompt(deps.renderPromptTranscript(prompt), targetAgentId)
         const submission = await deps.submitPrompt(attachment.id, targetAgentId, prompt, attachments)
         const payload = submission.payload
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
         deps.applySessionState(payload.session)
+        const outcomeName = submission.outcomeName
+        if (outcomeName !== "Queued") {
+          deps.appendUserPrompt(deps.renderPromptTranscript(prompt), submittedTargetAgentId)
+        }
         deps.setStreamingAgentId(submittedTargetAgentId)
         deps.setWorking(true)
         deps.updateSessionChrome()
-        const outcomeName = submission.outcomeName
         deps.logInfo?.("prompt submitted", {
           outcome: outcomeName,
           active_prompt_id: payload.session.active_prompt?.id ?? null,

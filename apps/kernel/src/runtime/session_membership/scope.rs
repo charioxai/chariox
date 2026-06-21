@@ -81,6 +81,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelActivePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SteerQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::UpdateSessionConfig(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
