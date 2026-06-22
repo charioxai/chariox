@@ -180,6 +180,22 @@ impl DaemonApp {
         Ok(active)
     }
 
+    pub(crate) fn prompt_owner_sync_external_active_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        active_prompt: Option<PromptQueueItem>,
+    ) -> Result<bool, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let changed =
+            self.prompt_state_owner
+                .sync_external_active_prompt(&session, agent_id, active_prompt);
+        if changed {
+            self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
+        }
+        Ok(changed)
+    }
+
     pub(crate) fn prompt_owner_submit_workflow_prompt(
         &mut self,
         session_id: &str,

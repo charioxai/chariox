@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::error::DaemonError;
-use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
+use crate::session::{
+    PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
+};
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
 
@@ -337,6 +339,47 @@ impl PromptStateOwner {
         prompt.set_status(PromptStatus::Running);
         state.active_prompt = Some(prompt.clone());
         prompt
+    }
+
+    pub(crate) fn sync_external_active_prompt(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        active_prompt: Option<PromptQueueItem>,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, agent_id);
+        match active_prompt {
+            Some(mut prompt) => {
+                if state
+                    .active_prompt
+                    .as_ref()
+                    .is_some_and(|active| active.prompt_origin() != PromptOrigin::External)
+                {
+                    return false;
+                }
+                prompt.set_status(PromptStatus::Running);
+                if state.active_prompt.as_ref() == Some(&prompt) {
+                    return false;
+                }
+                state.active_prompt = Some(prompt);
+                true
+            }
+            None => {
+                if state
+                    .active_prompt
+                    .as_ref()
+                    .is_some_and(|active| active.prompt_origin() == PromptOrigin::External)
+                {
+                    state.active_prompt = None;
+                    return true;
+                }
+                false
+            }
+        }
     }
 
     pub(crate) fn remove_queued_prompts_by_attachment(

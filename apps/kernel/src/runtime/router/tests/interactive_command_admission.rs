@@ -146,6 +146,37 @@ async fn queued_prompt_steer_routes_through_interactive_dispatch_and_removes_str
 }
 
 #[tokio::test]
+async fn queued_prompt_steer_rejects_external_active_prompt() {
+    let fixture =
+        queued_prompt_router_fixture_with_origin("external-steer", PromptOrigin::External);
+    let request = LocalDaemonRequest::SteerQueuedPrompt(SteerQueuedPromptRequest {
+        session_id: fixture.session_id.clone(),
+        attachment_id: fixture.attachment_id.clone(),
+        target_agent_id: fixture.agent_id.clone(),
+        prompt_id: fixture.queued_prompt_id.clone(),
+    });
+    let command =
+        KernelCommand::from_local_request("cmd-steer-external-active-prompt", None, None, &request);
+
+    let error = fixture
+        .router
+        .dispatch(command, request)
+        .await
+        .expect_err("external active prompt should reject steering");
+
+    match error {
+        DaemonError::LocalTransport { operation, message } => {
+            assert_eq!(operation, "steer queued prompt");
+            assert!(
+                message.contains("externally started provider turns"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn rejects_session_commands_when_bounded_lane_is_full() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
@@ -234,6 +265,13 @@ struct QueuedPromptRouterFixture {
 }
 
 fn queued_prompt_router_fixture(label: &str) -> QueuedPromptRouterFixture {
+    queued_prompt_router_fixture_with_origin(label, PromptOrigin::Arroba)
+}
+
+fn queued_prompt_router_fixture_with_origin(
+    label: &str,
+    active_prompt_origin: PromptOrigin,
+) -> QueuedPromptRouterFixture {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
@@ -262,7 +300,8 @@ fn queued_prompt_router_fixture(label: &str) -> QueuedPromptRouterFixture {
         agent.id(),
         "active prompt",
         PromptStatus::Queued,
-    );
+    )
+    .with_prompt_origin(active_prompt_origin);
     let PromptSubmissionOutcome::Started {
         prompt: active_prompt,
     } = app

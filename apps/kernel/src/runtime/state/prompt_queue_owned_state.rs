@@ -139,13 +139,19 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        if self
+        let Some(active_prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
-            .is_none()
-        {
+        else {
             return Err(DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
+            });
+        };
+        if active_prompt.prompt_origin() == crate::session::PromptOrigin::External {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: "queued prompts cannot be steered into externally started provider turns"
+                    .to_string(),
             });
         }
         let provider_run = self

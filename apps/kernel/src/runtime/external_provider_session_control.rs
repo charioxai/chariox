@@ -15,7 +15,10 @@ use crate::local::{
 };
 use crate::provider::ExternalProviderImportMetadata;
 use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
-use crate::session::{CreateSessionRequest, RuntimeSession, SessionAgentDefaults};
+use crate::session::{
+    CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession,
+    SessionAgentDefaults,
+};
 
 const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
 const EXTERNAL_PROVIDER_IMPORTED_ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
@@ -571,6 +574,8 @@ fn append_observed_external_turns_for_import(
         .import
         .external_provider_session_provider_id
         .clone();
+    let active_prompt_changed =
+        sync_observed_external_active_prompt(app, &read.target, &read.turns)?;
     let mut seen_merge_keys = existing_merge_keys;
     for (index, turn) in read.turns.into_iter().enumerate() {
         let kind = match turn.role {
@@ -630,8 +635,53 @@ fn append_observed_external_turns_for_import(
         )?;
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
+    } else if active_prompt_changed {
+        let _ = crate::app::KernelSessionReadService::new(app)
+            .session_snapshot(&read.target.session_id);
     }
     Ok(appended)
+}
+
+fn sync_observed_external_active_prompt(
+    app: &mut DaemonApp,
+    target: &ImportedExternalObserverTarget,
+    turns: &[crate::app::ObservedExternalProviderTurn],
+) -> Result<bool, DaemonError> {
+    let active_prompt = external_active_prompt_from_turns(target, turns);
+    app.prompt_owner_sync_external_active_prompt(
+        &target.session_id,
+        &target.agent_id,
+        active_prompt,
+    )
+}
+
+fn external_active_prompt_from_turns(
+    target: &ImportedExternalObserverTarget,
+    turns: &[crate::app::ObservedExternalProviderTurn],
+) -> Option<PromptQueueItem> {
+    let latest = turns.last()?;
+    if latest.role != crate::app::ObservedExternalProviderTurnRole::User {
+        return None;
+    }
+    let provider_turn_id = latest
+        .provider_turn_id
+        .clone()
+        .unwrap_or_else(|| "latest".to_string());
+    Some(
+        PromptQueueItem::new(
+            format!(
+                "external:{}:{}:{}",
+                target.import.external_provider,
+                target.import.external_provider_session_provider_id,
+                provider_turn_id
+            ),
+            format!("external:{}", target.import.external_provider),
+            target.agent_id.clone(),
+            latest.text.clone(),
+            PromptStatus::Running,
+        )
+        .with_prompt_origin(PromptOrigin::External),
+    )
 }
 
 fn emit_observed_external_history_signal(
@@ -994,6 +1044,131 @@ mod tests {
             .observed_cursor;
         assert_eq!(cursor.last_observed_turn_id.as_deref(), Some("item-1"));
         assert_eq!(cursor.last_observed_at_ms, Some(42));
+    }
+
+    #[test]
+    fn append_observed_external_user_turn_creates_external_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+
+        let appended = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: ImportedExternalObserverTarget {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    provider_run_id: None,
+                    import,
+                },
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-1".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    text: "external prompt".to_string(),
+                    observed_at_ms: Some(42),
+                }],
+            },
+        )
+        .expect("observed user turn should append");
+
+        assert_eq!(appended, 1);
+        let active_prompt = app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .expect("external user turn should mark active prompt");
+        assert_eq!(active_prompt.prompt_origin(), PromptOrigin::External);
+        assert_eq!(active_prompt.status(), PromptStatus::Running);
+        assert_eq!(active_prompt.prompt(), "external prompt");
+        assert_eq!(active_prompt.id(), "external:codex:thread-observed:user-1");
+        let mirrored_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session mirror should load");
+        assert_eq!(
+            mirrored_session
+                .active_prompt_for_agent(agent.id())
+                .map(|prompt| prompt.prompt_origin()),
+            Some(PromptOrigin::External)
+        );
+    }
+
+    #[test]
+    fn append_observed_external_assistant_turn_clears_external_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import: import.clone(),
+        };
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-1".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::User,
+                    text: "external prompt".to_string(),
+                    observed_at_ms: Some(42),
+                }],
+            },
+        )
+        .expect("observed user turn should append");
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_some(),
+            "external user turn should mark active before assistant output"
+        );
+
+        let appended = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    text: "external reply".to_string(),
+                    observed_at_ms: Some(84),
+                }],
+            },
+        )
+        .expect("observed assistant turn should append");
+
+        assert_eq!(appended, 1);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_none(),
+            "assistant output should settle the external active marker"
+        );
+        let mirrored_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session mirror should load");
+        assert!(mirrored_session
+            .active_prompt_for_agent(agent.id())
+            .is_none());
     }
 
     #[test]

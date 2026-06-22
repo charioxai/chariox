@@ -108,7 +108,7 @@ mod tests {
     };
     use crate::runtime::router::CommandRouter;
     use crate::session::{
-        CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+        CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
         RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
         RuntimeInteractionKind, RuntimeInteractionLevel, SessionStatus, DEFAULT_LOCAL_USER_ID,
     };
