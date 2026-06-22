@@ -210,6 +210,66 @@ async function seedOpenCodeSession(home, id, title, marker, workspace) {
   return file
 }
 
+async function seedCodexSession(home, id, title, marker, workspace) {
+  const file = path.join(home, "sessions", `${id}.jsonl`)
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, [
+    JSON.stringify({
+      timestamp: "2026-06-09T12:10:00.000Z",
+      type: "session_meta",
+      payload: { id, cwd: workspace, model_provider: "openai" },
+    }),
+    JSON.stringify({
+      timestamp: "2026-06-09T12:10:01.000Z",
+      type: "response_item",
+      payload: {
+        id: `${id}-user-1`,
+        role: "user",
+        content: [{ type: "input_text", text: `${title} external prompt ${marker}.` }],
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-06-09T12:10:02.000Z",
+      type: "response_item",
+      payload: {
+        id: `${id}-assistant-1`,
+        role: "assistant",
+        content: [{ type: "output_text", text: `${title} observed reply ${marker}.` }],
+      },
+    }),
+    "",
+  ].join("\n"))
+  return file
+}
+
+async function seedClaudeSession(home, id, title, marker, workspace) {
+  const file = path.join(home, "projects", "orphan-tui", `${id}.jsonl`)
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, [
+    JSON.stringify({
+      sessionId: id,
+      cwd: workspace,
+      timestamp: "2026-06-09T12:20:01.000Z",
+      type: "user",
+      uuid: `${id}-user-1`,
+      message: { content: `${title} external prompt ${marker}.` },
+    }),
+    JSON.stringify({
+      sessionId: id,
+      cwd: workspace,
+      timestamp: "2026-06-09T12:20:02.000Z",
+      type: "assistant",
+      uuid: `${id}-assistant-1`,
+      message: {
+        id: `${id}-assistant-1`,
+        content: `${title} observed reply ${marker}.`,
+      },
+    }),
+    "",
+  ].join("\n"))
+  return file
+}
+
 async function appendOpenCodeTurn(file, id, role, text) {
   const payload = JSON.parse(await readFile(file, "utf8"))
   payload.updatedAt = new Date().toISOString()
@@ -220,6 +280,36 @@ async function appendOpenCodeTurn(file, id, role, text) {
     createdAt: new Date().toISOString(),
   })
   await writeFile(file, JSON.stringify(payload, null, 2))
+  return { providerTurnId: id, text }
+}
+
+async function appendCodexTurn(file, id, role, text) {
+  const line = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "response_item",
+    payload: {
+      id,
+      role,
+      content: [{ type: role === "user" ? "input_text" : "output_text", text }],
+    },
+  })
+  await writeFile(file, `${await readFile(file, "utf8")}${line}\n`)
+  return { providerTurnId: id, text }
+}
+
+async function appendClaudeTurn(file, sessionId, id, role, text, workspace) {
+  const line = JSON.stringify({
+    sessionId,
+    cwd: workspace,
+    timestamp: new Date().toISOString(),
+    type: role,
+    uuid: id,
+    message: {
+      id,
+      content: text,
+    },
+  })
+  await writeFile(file, `${await readFile(file, "utf8")}${line}\n`)
   return { providerTurnId: id, text }
 }
 
@@ -236,10 +326,10 @@ function entriesForText(snapshot, text) {
   return allTranscriptEntries(snapshot).filter((entry) => String(entry?.text ?? "").includes(text))
 }
 
-function hasExternalMetadata(snapshot, providerTurnId) {
+function hasExternalMetadata(snapshot, provider, providerTurnId) {
   return allTranscriptEntries(snapshot).some((entry) => (
     entry?.source === "external_provider_observed"
-    && entry?.externalProvider === "opencode"
+    && entry?.externalProvider === provider
     && entry?.externalProviderTurnId === providerTurnId
     && typeof entry?.observedAtMs === "number"
   ))
@@ -293,10 +383,16 @@ async function main() {
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const opencodeHome = path.join(runtimeRoot, "provider-homes", "opencode")
+  const codexHome = path.join(runtimeRoot, "provider-homes", "codex")
+  const claudeHome = path.join(runtimeRoot, "provider-homes", "claude")
   const waitingProviderSessionId = `opencode-waiting-${marker}`
   const attachProviderSessionId = `opencode-attach-${marker}`
+  const codexProviderSessionId = `codex-attach-${marker}`
+  const claudeProviderSessionId = `claude-attach-${marker}`
   const waitingExternalSessionId = `opencode:${waitingProviderSessionId}`
   const attachExternalSessionId = `opencode:${attachProviderSessionId}`
+  const codexExternalSessionId = `codex:${codexProviderSessionId}`
+  const claudeExternalSessionId = `claude:${claudeProviderSessionId}`
   const evidence = []
   let daemon = null
   let cli = null
@@ -313,13 +409,17 @@ async function main() {
     const { kernelBinary, cliDist } = await ensureBuilt()
     const waitingFile = await seedOpenCodeSession(opencodeHome, waitingProviderSessionId, "OpenCode waiting-room orphan", marker, workspace)
     const attachFile = await seedOpenCodeSession(opencodeHome, attachProviderSessionId, "OpenCode attach orphan", marker, workspace)
-    assert.ok(waitingFile && attachFile)
+    const codexFile = await seedCodexSession(codexHome, codexProviderSessionId, "Codex attach orphan", marker, workspace)
+    const claudeFile = await seedClaudeSession(claudeHome, claudeProviderSessionId, "Claude attach orphan", marker, workspace)
+    assert.ok(waitingFile && attachFile && codexFile && claudeFile)
 
     const env = {
       ...process.env,
       HOME: path.join(runtimeRoot, "home"),
       XDG_CONFIG_HOME: path.join(runtimeRoot, "config"),
       XDG_STATE_HOME: path.join(runtimeRoot, "state"),
+      CODEX_HOME: codexHome,
+      CLAUDE_HOME: claudeHome,
       OPENCODE_DATA_HOME: opencodeHome,
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
@@ -338,13 +438,16 @@ async function main() {
     await waitForKernel(LocalIpcClient, requests.listSessionsRequest, kernelUrl)
     client = new LocalIpcClient(kernelUrl)
     const directRefresh = unwrap(
-      await client.send(refreshExternalProviderSessionsRequest("opencode")),
+      await client.send(refreshExternalProviderSessionsRequest()),
       "ExternalProviderSessionsRefreshed",
     ).page
     const directIds = (directRefresh?.sessions ?? []).map((session) => session.external_session_id)
     assert.ok(
-      directIds.includes(waitingExternalSessionId) && directIds.includes(attachExternalSessionId),
-      `kernel direct external-provider refresh did not discover seeded OpenCode sessions: ${directIds.join(", ")}`,
+      directIds.includes(waitingExternalSessionId)
+        && directIds.includes(attachExternalSessionId)
+        && directIds.includes(codexExternalSessionId)
+        && directIds.includes(claudeExternalSessionId),
+      `kernel direct external-provider refresh did not discover seeded provider sessions: ${directIds.join(", ")}`,
     )
     const publicSnapshot = unwrap(
       await client.send(requests.getWaitingRoomPublicSnapshotRequest()),
@@ -352,7 +455,10 @@ async function main() {
     ).snapshot
     const publicIds = (publicSnapshot?.external_provider_sessions ?? []).map((session) => session.external_session_id)
     assert.ok(
-      publicIds.includes(waitingExternalSessionId) && publicIds.includes(attachExternalSessionId),
+      publicIds.includes(waitingExternalSessionId)
+        && publicIds.includes(attachExternalSessionId)
+        && publicIds.includes(codexExternalSessionId)
+        && publicIds.includes(claudeExternalSessionId),
       `kernel waiting-room public snapshot did not include refreshed orphan agents: ${publicIds.join(", ")}`,
     )
 
@@ -395,6 +501,8 @@ async function main() {
         const rows = snapshot?.waitingRoom?.rows ?? []
         return rows.some((row) => row.externalSessionId === waitingExternalSessionId)
           && rows.some((row) => row.externalSessionId === attachExternalSessionId)
+          && rows.some((row) => row.externalSessionId === codexExternalSessionId)
+          && rows.some((row) => row.externalSessionId === claudeExternalSessionId)
       },
       "detached TUI waiting room orphan rows",
       60_000,
@@ -402,6 +510,8 @@ async function main() {
     evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "01-tui-waiting-room-orphan-agents.png", "TUI Waiting Room Orphan Agents", [
       `PASS waiting-room row visible: ${waitingExternalSessionId}`,
       `PASS attach row visible: ${attachExternalSessionId}`,
+      `PASS codex row visible: ${codexExternalSessionId}`,
+      `PASS claude row visible: ${claudeExternalSessionId}`,
       `rows=${(waitingRoomSnapshot.waitingRoom?.rows ?? []).filter((row) => row.externalSessionId).map((row) => row.externalSessionId).join(", ")}`,
     ])))
 
@@ -442,6 +552,41 @@ async function main() {
       `PASS observed attach history visible`,
     ])))
 
+    await automation.send("submit_prompt", { prompt: `/agent spawn --orphan-agent ${codexExternalSessionId}` })
+    await waitForSnapshot(
+      automation,
+      (snapshot) => Number(snapshot?.session?.agentCount ?? 0) >= 3
+        && entriesForText(snapshot, `Codex attach orphan observed reply ${marker}.`).length > 0,
+      "attached Codex orphan agent through TUI slash command",
+      60_000,
+    )
+    await automation.send("submit_prompt", { prompt: `/agent spawn --orphan-agent ${claudeExternalSessionId}` })
+    const providerMatrixAttachedSnapshot = await waitForSnapshot(
+      automation,
+      (snapshot) => Number(snapshot?.session?.agentCount ?? 0) >= 4
+        && entriesForText(snapshot, `Claude attach orphan observed reply ${marker}.`).length > 0,
+      "attached Claude orphan agent through TUI slash command",
+      60_000,
+    )
+    waitingSession = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
+    const codexAgent = agentForExternal(waitingSession, codexExternalSessionId)
+    const claudeAgent = agentForExternal(waitingSession, claudeExternalSessionId)
+    assert.ok(codexAgent, "Codex orphan should attach to the existing Arroba session")
+    assert.ok(claudeAgent, "Claude orphan should attach to the existing Arroba session")
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "04-tui-provider-matrix-orphans-attached.png", "TUI Provider Matrix Orphans Attached", [
+      `PASS session agent count=${providerMatrixAttachedSnapshot.session?.agentCount}`,
+      `PASS opencode agent=${attachAgent.id}`,
+      `PASS codex agent=${codexAgent.id}`,
+      `PASS claude agent=${claudeAgent.id}`,
+    ])))
+    await automation.send("submit_prompt", { prompt: `/agent focus ${attachAgent.id}` })
+    await waitForSnapshot(
+      automation,
+      (snapshot) => snapshot?.session?.focusedAgentId === attachAgent.id,
+      "focused OpenCode agent before external queue guard",
+      30_000,
+    )
+
     const userTurn = await appendOpenCodeTurn(
       attachFile,
       "opencode-user-2",
@@ -451,7 +596,7 @@ async function main() {
     unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
     const userMetadataSnapshot = await waitForSnapshot(
       automation,
-      (snapshot) => entriesForText(snapshot, userTurn.text).length > 0 && hasExternalMetadata(snapshot, userTurn.providerTurnId),
+      (snapshot) => entriesForText(snapshot, userTurn.text).length > 0 && hasExternalMetadata(snapshot, "opencode", userTurn.providerTurnId),
       "external user turn metadata in TUI",
       30_000,
     )
@@ -462,7 +607,7 @@ async function main() {
         ? active
         : false
     }, "kernel external active prompt for TUI attached orphan", 30_000)
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "04-tui-external-live-metadata.png", "TUI External Turn Metadata", [
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "05-tui-opencode-external-live-metadata.png", "TUI OpenCode External Turn Metadata", [
       `PASS source=external_provider_observed`,
       `PASS provider=opencode`,
       `PASS providerTurnId=${userTurn.providerTurnId}`,
@@ -477,7 +622,7 @@ async function main() {
       "TUI queued prompt with steering disabled",
       30_000,
     )
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "05-tui-external-active-queued-steer-disabled.png", "TUI External Active Queue Guard", [
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "06-tui-external-active-queued-steer-disabled.png", "TUI External Active Queue Guard", [
       `PASS queued prompt=${queuedPromptText}`,
       `PASS queuedPrompt.steerDisabled=true`,
       `PASS queued entries=${allTranscriptEntries(queuedSnapshot).filter((entry) => entry?.queuedPrompt).length}`,
@@ -492,7 +637,7 @@ async function main() {
     unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
     await waitForSnapshot(
       automation,
-      (snapshot) => entriesForText(snapshot, assistantTurn.text).length > 0 && hasExternalMetadata(snapshot, assistantTurn.providerTurnId),
+      (snapshot) => entriesForText(snapshot, assistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "opencode", assistantTurn.providerTurnId),
       "external assistant turn metadata in TUI",
       30_000,
     )
@@ -506,11 +651,83 @@ async function main() {
         : false
     }, "TUI queued prompt drained after external turn settled", 60_000)
     const finalSnapshot = await automation.send("snapshot")
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "06-tui-external-output-queue-drained.png", "TUI External Output And Queue Drain", [
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "07-tui-opencode-external-output-queue-drained.png", "TUI OpenCode External Output And Queue Drain", [
       `PASS providerTurnId=${assistantTurn.providerTurnId}`,
       `PASS external assistant output visible`,
       `PASS queued prompt drained`,
       `PASS total transcript entries=${allTranscriptEntries(finalSnapshot).length}`,
+    ])))
+
+    const codexUserTurn = await appendCodexTurn(
+      codexFile,
+      "codex-user-2",
+      "user",
+      `codex external prompt visible live in TUI ${marker}`,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("codex")), "ExternalProviderSessionsRefreshed")
+    const codexUserSnapshot = await waitForSnapshot(
+      automation,
+      (snapshot) => entriesForText(snapshot, codexUserTurn.text).length > 0 && hasExternalMetadata(snapshot, "codex", codexUserTurn.providerTurnId),
+      "Codex external user turn metadata in TUI",
+      30_000,
+    )
+    const codexAssistantTurn = await appendCodexTurn(
+      codexFile,
+      "codex-assistant-2",
+      "assistant",
+      `codex external output visible live in TUI ${marker}`,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("codex")), "ExternalProviderSessionsRefreshed")
+    await waitForSnapshot(
+      automation,
+      (snapshot) => entriesForText(snapshot, codexAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "codex", codexAssistantTurn.providerTurnId),
+      "Codex external assistant turn metadata in TUI",
+      30_000,
+    )
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "08-tui-codex-external-live-metadata.png", "TUI Codex External Metadata", [
+      `PASS source=external_provider_observed`,
+      `PASS provider=codex`,
+      `PASS user providerTurnId=${codexUserTurn.providerTurnId}`,
+      `PASS assistant providerTurnId=${codexAssistantTurn.providerTurnId}`,
+      `PASS observedAtMs=${entriesForText(codexUserSnapshot, codexUserTurn.text)[0]?.observedAtMs ?? "recorded"}`,
+    ])))
+
+    const claudeUserTurn = await appendClaudeTurn(
+      claudeFile,
+      claudeProviderSessionId,
+      "claude-user-2",
+      "user",
+      `claude external prompt visible live in TUI ${marker}`,
+      workspace,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("claude")), "ExternalProviderSessionsRefreshed")
+    const claudeUserSnapshot = await waitForSnapshot(
+      automation,
+      (snapshot) => entriesForText(snapshot, claudeUserTurn.text).length > 0 && hasExternalMetadata(snapshot, "claude", claudeUserTurn.providerTurnId),
+      "Claude external user turn metadata in TUI",
+      30_000,
+    )
+    const claudeAssistantTurn = await appendClaudeTurn(
+      claudeFile,
+      claudeProviderSessionId,
+      "claude-assistant-2",
+      "assistant",
+      `claude external output visible live in TUI ${marker}`,
+      workspace,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("claude")), "ExternalProviderSessionsRefreshed")
+    await waitForSnapshot(
+      automation,
+      (snapshot) => entriesForText(snapshot, claudeAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "claude", claudeAssistantTurn.providerTurnId),
+      "Claude external assistant turn metadata in TUI",
+      30_000,
+    )
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "09-tui-claude-external-live-metadata.png", "TUI Claude External Metadata", [
+      `PASS source=external_provider_observed`,
+      `PASS provider=claude`,
+      `PASS user providerTurnId=${claudeUserTurn.providerTurnId}`,
+      `PASS assistant providerTurnId=${claudeAssistantTurn.providerTurnId}`,
+      `PASS observedAtMs=${entriesForText(claudeUserSnapshot, claudeUserTurn.text)[0]?.observedAtMs ?? "recorded"}`,
     ])))
 
     const manifest = {
@@ -520,9 +737,13 @@ async function main() {
       kernelUrl,
       waitingExternalSessionId,
       attachExternalSessionId,
+      codexExternalSessionId,
+      claudeExternalSessionId,
       waitingSessionId,
       waitingAgentId: waitingAgent.id,
       attachAgentId: attachAgent.id,
+      codexAgentId: codexAgent.id,
+      claudeAgentId: claudeAgent.id,
       queuedPromptText,
       evidence,
     }
