@@ -97,3 +97,112 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     choices: [{ id: "yes", label: "Yes", style: "primary" }],
   })
 })
+
+test("buildCliAutomationSnapshot exposes external transcript and queued prompt metadata", () => {
+  const catalog = fallbackProviderCatalog()
+  const agent = {
+    id: "agent-1",
+    agent_ref: "A",
+    alias: "worker",
+    provider: "opencode",
+    model: "default",
+    state: "Idle",
+    is_processing: false,
+  } as AgentInstance
+  const session = {
+    id: "session-1",
+    workspace_id: "/repo",
+    worktree_id: "/repo",
+    focused_agent_id: "agent-1",
+    agents: [agent],
+    active_interactions: [],
+    workflows: [],
+    workflow_runs: [],
+  } as unknown as RuntimeSession
+
+  const snapshot = buildCliAutomationSnapshot({
+    workspaceScreenMode: () => "agents",
+    workflowScreenActive: () => false,
+    daemonDisconnected: () => false,
+    statusLine: () => "ready",
+    sessionState: () => session,
+    focusedAgentId: () => "agent-1",
+    agentActivityLabels: () => ({}),
+    hasPromptWorkByAgent: () => ({}),
+    streamingAgentId: () => null,
+    agentBusyLatch: () => false,
+    isAttached: () => true,
+    waitingRoomState: () => createWaitingRoomState([], catalog, "opencode", "default", "", "opencode", DEFAULT_THEME_REGISTRY),
+    availableSessions: () => [],
+    providerCatalogState: () => catalog,
+    waitingRoomCloudNotice: () => null,
+    waitingRoomInventoryStatus: () => "ready",
+    relayStatusState: () => null,
+    remoteMachinesState: () => [],
+    remoteKernelsState: () => [],
+    terminalsState: () => [],
+    slicesState: () => [],
+    waitingRoomTargets: () => ({ workspacePath: "/repo", worktreePath: "/repo" }),
+    themeRegistryState: () => DEFAULT_THEME_REGISTRY,
+    selectedWorkflowId: () => null,
+    selectedWorkflowNodeId: () => null,
+    workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
+    workspaceShellEntries: () => [],
+    transcriptEntries: () => [{
+      id: 1,
+      role: "assistant",
+      text: "external output",
+      source: "external_provider_observed",
+      externalProvider: "opencode",
+      externalProviderSessionId: "thread-1",
+      externalProviderTurnId: "turn-1",
+      observedAtMs: 123,
+    }],
+    agentPaneEntries: () => ({
+      "agent-1": [{
+        id: 2,
+        role: "notice",
+        text: "queued behind external turn",
+        queuedPrompt: {
+          promptId: "prompt-1",
+          agentId: "agent-1",
+          status: "queued",
+          steerDisabled: true,
+        },
+      }],
+    }),
+    footerFlash: () => null,
+    interactionChoiceSelection: () => 0,
+    interactionCustomReply: () => "",
+    interactionCustomEditing: () => false,
+  })
+
+  assert.deepEqual((snapshot.transcript?.entries as Array<Record<string, unknown>>)[0], {
+    id: 1,
+    role: "assistant",
+    text: "external output",
+    queuedPrompt: null,
+    source: "external_provider_observed",
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 123,
+    turnId: null,
+    hidden: false,
+    blobCollapsible: false,
+    blobCollapsed: null,
+    blobTitle: null,
+    blobSummary: null,
+    historyBlobId: null,
+    historyBlobAgentId: null,
+    historyBlobLoaded: null,
+    historyBlobLoading: null,
+    historyBlobError: null,
+  })
+  assert.deepEqual((snapshot.agentPanes?.["agent-1"] as Array<Record<string, unknown>>)[0]?.queuedPrompt, {
+    promptId: "prompt-1",
+    agentId: "agent-1",
+    status: "queued",
+    steerDisabled: true,
+  })
+})

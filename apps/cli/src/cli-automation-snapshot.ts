@@ -185,6 +185,19 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
     id: entry.id,
     role: entry.role,
     text: entry.text,
+    queuedPrompt: entry.queuedPrompt
+      ? {
+        promptId: entry.queuedPrompt.promptId,
+        agentId: entry.queuedPrompt.agentId,
+        status: entry.queuedPrompt.status ?? null,
+        steerDisabled: entry.queuedPrompt.steerDisabled ?? false,
+      }
+      : null,
+    source: entry.source ?? null,
+    externalProvider: entry.externalProvider ?? null,
+    externalProviderSessionId: entry.externalProviderSessionId ?? null,
+    externalProviderTurnId: entry.externalProviderTurnId ?? null,
+    observedAtMs: entry.observedAtMs ?? null,
     turnId: entry.turnId ?? null,
     hidden: entry.hidden ?? false,
     blobCollapsible: entry.blobCollapsible ?? false,
