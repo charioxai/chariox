@@ -19,7 +19,7 @@ export function waitingRoomExternalProviderSessionRows(
   if (sessions.length === 0 && options.inventoryLoading) {
     return [{
       id: "external-provider-sessions-loading",
-      title: "External sessions",
+      title: "Orphan agents",
       value: options.loadingText,
       titleWidth: options.titleWidth,
       indent: 1,
@@ -41,7 +41,7 @@ export function waitingRoomExternalProviderSessionRows(
   )
   const rows: WaitingRoomRow[] = [{
     id: "external-provider-session-header",
-    title: "External session",
+    title: "Orphan agent",
     value: "",
     titleWidth: options.titleWidth,
     columns: [
@@ -74,7 +74,7 @@ export function waitingRoomExternalProviderSessionRows(
   if (remote.externalProviderSessionsHasMore) {
     rows.push({
       id: "external-provider-session-more",
-      title: "Load older external sessions",
+      title: "Load older orphan agents",
       value: "",
       titleWidth: options.titleWidth,
       indent: 1,

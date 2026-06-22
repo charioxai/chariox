@@ -86,7 +86,7 @@ export async function handleAgentSpawnCommand(
     }
     if (parsed.externalSessionId) {
       if (!deps.importExternalProviderAgent) {
-        deps.flashFooter("external provider session import is unavailable", "error")
+        deps.flashFooter("orphan agent import is unavailable", "error")
         return
       }
       const payload = await deps.importExternalProviderAgent(parsed.externalSessionId)
@@ -95,7 +95,7 @@ export async function handleAgentSpawnCommand(
       deps.setProviderRunState(payload.providerRun ?? null)
       deps.rebuildTranscript()
       deps.refreshSplitPaneFocusRepaint()
-      deps.flashFooter(`imported external session ${parsed.externalSessionId} as ${payload.agent.agent_ref}`, "info")
+      deps.flashFooter(`attached orphan agent ${parsed.externalSessionId} as ${payload.agent.agent_ref}`, "info")
       return
     }
     if (count !== null && parsed.positional.length === 1) {

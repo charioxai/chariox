@@ -5,7 +5,7 @@ import type { ExternalProviderSessionRecord } from "./cli-types.js"
 import { waitingRoomExternalProviderSessionRows } from "./waiting-room-external-provider-session-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
-test("external provider sessions render as selectable waiting-room rows with load older action", () => {
+test("orphan agents render as selectable waiting-room rows with load older action", () => {
   const rows = waitingRoomExternalProviderSessionRows(
     waitingRoomState({ focus: "external-session", externalSessionIndex: 0 }),
     {
@@ -35,25 +35,25 @@ test("external provider sessions render as selectable waiting-room rows with loa
   assert.equal(rows[1]?.title, "Review payment flow")
   assert.equal(rows[1]?.selectable, true)
   assert.equal(rows[1]?.focused, true)
-  assert.equal(rows[2]?.title, "Load older external sessions")
+  assert.equal(rows[2]?.title, "Load older orphan agents")
   assert.equal(rows[2]?.selectable, true)
 })
 
-test("external provider sessions show a loading row while inventory is pending", () => {
+test("orphan agents show a loading row while inventory is pending", () => {
   const rows = waitingRoomExternalProviderSessionRows(
     waitingRoomState(),
     {},
     {
       inventoryLoading: true,
-      loadingText: "loading external sessions",
+      loadingText: "loading orphan agents",
       titleWidth: 28,
     },
   )
 
   assert.deepEqual(rows, [{
     id: "external-provider-sessions-loading",
-    title: "External sessions",
-    value: "loading external sessions",
+    title: "Orphan agents",
+    value: "loading orphan agents",
     titleWidth: 28,
     indent: 1,
     focused: false,

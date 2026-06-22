@@ -974,6 +974,7 @@ export type TranscriptEntry = {
     promptId: string
     agentId: string
     status?: "queued" | "steering" | "cancelling"
+    steerDisabled?: boolean
   }
   sourceText?: string
   mergeKey?: string

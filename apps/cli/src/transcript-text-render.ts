@@ -29,7 +29,7 @@ function appendExternalProviderObservedLabel(text: TextRenderable, entry: Transc
     return
   }
   const provider = entry.externalProvider?.trim() || "provider"
-  text.add(TextNodeRenderable.fromString(`[${provider} observed] `, {
+  text.add(TextNodeRenderable.fromString(`[external ${provider}] `, {
     fg: theme.secondary,
     attributes: TextAttributes.BOLD,
   }))

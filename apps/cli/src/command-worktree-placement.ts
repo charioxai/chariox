@@ -143,10 +143,10 @@ export function parsePlacementOptions(
       index += 1
       continue
     }
-    if ((arg === "--external" || arg === "--external-session" || arg === "--import") && allowMachine) {
+    if ((arg === "--orphan-agent" || arg === "--external" || arg === "--external-session" || arg === "--import") && allowMachine) {
       const value = args[index + 1]
       if (!value || value.startsWith("--")) {
-        error = "usage: /agent spawn --external|--import <external-session-id>"
+        error = "usage: /agent spawn --orphan-agent <orphan-agent-id>"
         break
       }
       externalSessionId = value
@@ -179,7 +179,7 @@ export function parsePlacementOptions(
     error = "usage: /agent spawn --slice <slice-ref> does not accept --dir or --worktree"
   }
   if (!error && externalSessionId && (directory || gitRequested || machineRef || kernelRef || sliceRef)) {
-    error = "usage: /agent spawn --external|--import <external-session-id> does not accept placement options"
+    error = "usage: /agent spawn --orphan-agent <orphan-agent-id> does not accept placement options"
   }
   if (!error && remoteRef && gitRequested && !gitWorktree) {
     error = "usage: /agent spawn [alias] [model] --machine/--kernel <ref> --worktree <remote-directory> --branch <branch>"
@@ -209,7 +209,7 @@ export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const parsed = parsePlacementOptions(spawnArgs, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--external|--import <external-session-id>]"
+    error = "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--orphan-agent <orphan-agent-id>]"
   }
   if (!error && metaagent && parsed.sliceRef) {
     error = "metaagents cannot be launched in a slice"

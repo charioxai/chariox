@@ -158,6 +158,7 @@ export function buildTranscriptEntryRenderable(
       && nextEntry.queuedPrompt?.status === currentEntry.queuedPrompt?.status
       && nextEntry.queuedPrompt?.promptId === currentEntry.queuedPrompt?.promptId
       && nextEntry.queuedPrompt?.agentId === currentEntry.queuedPrompt?.agentId
+      && nextEntry.queuedPrompt?.steerDisabled === currentEntry.queuedPrompt?.steerDisabled
     currentEntry = nextEntry
     if (canFastUpdate && fastUpdate(nextEntry)) {
       return
@@ -257,7 +258,9 @@ function buildQueuedPromptActionLabel(
   action: QueuedPromptAction,
   onQueuedPromptAction?: (entry: TranscriptEntry, action: QueuedPromptAction) => void,
 ) {
-  const disabled = entry.queuedPrompt?.status === "steering" || entry.queuedPrompt?.status === "cancelling"
+  const disabled = entry.queuedPrompt?.status === "steering"
+    || entry.queuedPrompt?.status === "cancelling"
+    || (action === "steer" && entry.queuedPrompt?.steerDisabled === true)
   const text = new TextRenderable(renderer, {
     content: disabled ? label : `[${label}]`,
     fg: disabled ? theme.textMuted : theme.primary,

@@ -72,7 +72,7 @@ test("waiting room focus movement tracks indexed targets", () => {
   assert.equal(state.sliceIndex, 0)
 })
 
-test("waiting room focus targets include external provider sessions and pagination", () => {
+test("waiting room focus targets include orphan agents and pagination", () => {
   const sessions = [session({ id: "arroba-session" })]
   const targets = waitingRoomFocusTargets(sessions, {
     externalProviderSessions: [

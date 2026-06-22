@@ -26,16 +26,28 @@ export function syncQueuedPromptEntriesForAgent(
 ): QueuedPromptTranscriptSyncResult {
   const queuedPrompts = queuedPromptsForAgent(session, agentId)
   const queuedIds = new Set(queuedPrompts.map((prompt) => prompt.id))
+  const steerDisabled = activePromptOrigin(session, agentId) === "external"
   let changed = false
-  const retained = entries.filter((entry) => {
+  const retained = entries.flatMap((entry) => {
     if (!entry.queuedPrompt) {
-      return true
+      return [entry]
     }
     const keep = entry.queuedPrompt.agentId === agentId && queuedIds.has(entry.queuedPrompt.promptId)
     if (!keep) {
       changed = true
+      return []
     }
-    return keep
+    if (entry.queuedPrompt.steerDisabled !== steerDisabled) {
+      changed = true
+      return [{
+        ...entry,
+        queuedPrompt: {
+          ...entry.queuedPrompt,
+          steerDisabled,
+        },
+      }]
+    }
+    return [entry]
   })
   const existingQueuedIds = new Set(
     retained
@@ -50,7 +62,7 @@ export function syncQueuedPromptEntriesForAgent(
     changed = true
     nextEntries = [
       ...nextEntries,
-      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries)),
+      queuedPromptTranscriptEntry(prompt, agentId, nextTranscriptEntryId(nextEntries), steerDisabled),
     ]
   }
   if (!changed) {
@@ -88,6 +100,7 @@ function queuedPromptTranscriptEntry(
   prompt: PromptQueueItem,
   agentId: string,
   id: number,
+  steerDisabled: boolean,
 ): TranscriptEntry {
   return {
     id,
@@ -97,8 +110,20 @@ function queuedPromptTranscriptEntry(
       promptId: prompt.id,
       agentId,
       status: "queued",
+      steerDisabled,
     },
   }
+}
+
+function activePromptOrigin(session: RuntimeSession, agentId: string): string | null {
+  const stateActivePrompt = session.prompt_states?.[agentId]?.active_prompt
+  if (stateActivePrompt) {
+    return stateActivePrompt.prompt_origin ?? "arroba"
+  }
+  if (session.active_prompt?.target_agent_id === agentId) {
+    return session.active_prompt.prompt_origin ?? "arroba"
+  }
+  return null
 }
 
 function nextTranscriptEntryId(entries: readonly TranscriptEntry[]) {

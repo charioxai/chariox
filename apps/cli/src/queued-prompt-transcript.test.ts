@@ -26,7 +26,29 @@ test("syncQueuedPromptEntriesForAgent appends queued prompts and removes settled
   assert.equal(synced.entries.at(-1)?.text, "new queued")
 })
 
-function sessionWithQueuedPrompt(): RuntimeSession {
+test("syncQueuedPromptEntriesForAgent disables steering behind external active prompts", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({
+      active_prompt: {
+        id: "prompt-external",
+        source_attachment_id: "attachment-external",
+        target_agent_id: "agent-1",
+        prompt: "external running",
+        status: "Running",
+        prompt_origin: "external",
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
+function sessionWithQueuedPrompt(
+  overrides: Partial<NonNullable<RuntimeSession["prompt_states"]>[string]> = {},
+): RuntimeSession {
   return {
     id: "session-1",
     workspace_id: "/workspace",
@@ -47,6 +69,7 @@ function sessionWithQueuedPrompt(): RuntimeSession {
           prompt: "new queued",
           status: "Queued",
         }],
+        ...overrides,
       },
     },
     focused_agent_id: "agent-1",

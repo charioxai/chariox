@@ -86,7 +86,7 @@ test("waiting room activation stages existing worktree selections for session cr
   }
 })
 
-test("waiting room activation imports focused external provider sessions", () => {
+test("waiting room activation opens focused orphan agents", () => {
   const catalog = fallbackProviderCatalog()
   const decision = deriveWaitingRoomActivationDecision({
     state: waitingRoomState({ focus: "external-session", externalSessionIndex: 1 }),

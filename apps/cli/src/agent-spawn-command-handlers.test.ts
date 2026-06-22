@@ -47,7 +47,7 @@ test("agent spawn command count inherits session defaults and launches each agen
   assert.equal(flashedMessage, "spawned 2 agents from session defaults")
 })
 
-test("agent spawn command imports an external provider session as a new agent", async () => {
+test("agent spawn command attaches an orphan agent as a new agent", async () => {
   let currentSession = session()
   const calls: string[] = []
   let flashedMessage = ""
@@ -85,7 +85,7 @@ test("agent spawn command imports an external provider session as a new agent", 
       }
     },
     refreshSplitPaneFocusRepaint: () => { calls.push("repaint") },
-  }, ["--external", "codex:thread-1"])
+  }, ["--orphan-agent", "codex:thread-1"])
 
   assert.deepEqual(calls, [
     "import:codex:thread-1",
@@ -95,10 +95,10 @@ test("agent spawn command imports an external provider session as a new agent", 
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "imported external session codex:thread-1 as provider-thread")
+  assert.equal(flashedMessage, "attached orphan agent codex:thread-1 as provider-thread")
 })
 
-test("agent spawn command accepts --import as external provider session alias", async () => {
+test("agent spawn command keeps --import as orphan agent compatibility alias", async () => {
   let currentSession = session()
   const calls: string[] = []
 
@@ -214,7 +214,7 @@ test("agent spawn command rejects external imports with placement options", asyn
     refreshSplitPaneFocusRepaint: () => {},
   }, ["--external", "codex:thread-1", "--slice", "new"])
 
-  assert.equal(flashedMessage, "usage: /agent spawn --external|--import <external-session-id> does not accept placement options")
+  assert.equal(flashedMessage, "usage: /agent spawn --orphan-agent <orphan-agent-id> does not accept placement options")
 })
 
 

@@ -168,12 +168,12 @@ export function createWaitingRoomActivationController(
     }
     if (decision.action === "load-older-external-sessions") {
       if (!deps.loadOlderExternalProviderSessions) {
-        deps.flashFooter("external provider session pagination is unavailable", "error")
+        deps.flashFooter("orphan agent pagination is unavailable", "error")
         return true
       }
       const count = await deps.loadOlderExternalProviderSessions()
       deps.flashFooter(
-        count > 0 ? `loaded ${count} older external session${count === 1 ? "" : "s"}` : "no older external sessions available",
+        count > 0 ? `loaded ${count} older orphan agent${count === 1 ? "" : "s"}` : "no older orphan agents available",
         "info",
       )
       return true
@@ -196,7 +196,7 @@ export function createWaitingRoomActivationController(
     }
     if (decision.action === "import-external-session") {
       if (!deps.importExternalProviderSession) {
-        deps.flashFooter("external provider session import is unavailable", "error")
+        deps.flashFooter("orphan agent import is unavailable", "error")
         return
       }
       const imported = await deps.importExternalProviderSession(decision.externalSessionId)
@@ -207,7 +207,7 @@ export function createWaitingRoomActivationController(
         model: imported.session.agent_defaults?.model ?? deps.getCurrentModel(),
         effort: imported.session.agent_defaults?.effort ?? "",
       })
-      deps.flashFooter(`imported external session ${decision.externalSessionId}`, "info")
+      deps.flashFooter(`opened orphan agent ${decision.externalSessionId}`, "info")
       return
     }
     if (decision.action === "error") {
