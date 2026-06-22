@@ -93,6 +93,9 @@ impl ExternalProviderSessionIndexStore {
             .sessions
             .values()
             .filter(|session| {
+                if session.already_imported {
+                    return false;
+                }
                 request
                     .provider
                     .as_deref()
@@ -224,6 +227,28 @@ mod tests {
         assert_eq!(session.imported_session_ids, vec!["session-1"]);
         assert_eq!(session.imported_agent_ids, vec!["agent-1"]);
         assert_eq!(session.last_modified_at_ms, 40);
+    }
+
+    #[test]
+    fn list_excludes_already_imported_external_provider_sessions() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 30));
+        store.upsert(record("codex", "thread-2", 20));
+        store.mark_imported("codex:thread-1", "session-1", "agent-1");
+
+        let page = store.list(&ListExternalProviderSessionsRequest {
+            provider: Some("codex".to_string()),
+            cursor: None,
+            limit: None,
+        });
+
+        assert_eq!(
+            page.sessions
+                .iter()
+                .map(|session| session.external_session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex:thread-2"]
+        );
     }
 
     fn record(

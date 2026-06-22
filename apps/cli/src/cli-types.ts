@@ -760,6 +760,7 @@ export type PromptQueueItem = {
   prompt: string
   attachments?: PromptAttachmentPart[]
   status: string
+  prompt_origin?: "arroba" | "external" | string
 }
 
 export type RuntimeAttachment = {

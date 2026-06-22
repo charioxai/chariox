@@ -966,6 +966,7 @@ export type PromptQueueItem = {
   prompt: string
   attachments?: PromptAttachmentPart[]
   status: string
+  prompt_origin?: "arroba" | "external" | string
 }
 
 export type RuntimeAttachment = {
@@ -1423,7 +1424,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 160
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 161
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

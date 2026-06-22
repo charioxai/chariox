@@ -305,6 +305,7 @@ fn import_external_provider_session(
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let external = external_session_or_refresh(app, store, &request.external_session_id)?;
+    ensure_external_session_is_orphan(&external)?;
     let provider = request
         .provider
         .unwrap_or_else(|| external.provider.clone());
@@ -377,6 +378,7 @@ fn import_external_provider_agent(
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let external = external_session_or_refresh(app, store, &request.external_session_id)?;
+    ensure_external_session_is_orphan(&external)?;
     let session = app.sessions().get_session(&request.session_id)?;
     let provider = request
         .provider
@@ -447,6 +449,31 @@ fn external_session_or_refresh(
             operation: "import external provider session",
             message: format!("external provider session `{external_session_id}` was not found"),
         })
+}
+
+fn ensure_external_session_is_orphan(
+    external: &ExternalProviderSessionRecord,
+) -> Result<(), DaemonError> {
+    if !external.already_imported {
+        return Ok(());
+    }
+    let session_label = external
+        .imported_session_ids
+        .first()
+        .map(String::as_str)
+        .unwrap_or("unknown");
+    let agent_label = external
+        .imported_agent_ids
+        .first()
+        .map(String::as_str)
+        .unwrap_or("unknown");
+    Err(DaemonError::LocalTransport {
+        operation: "import external provider session",
+        message: format!(
+            "external provider session `{}` is already attached to Arroba session `{}` agent `{}`",
+            external.external_session_id, session_label, agent_label
+        ),
+    })
 }
 
 fn launch_imported_external_provider(
@@ -797,6 +824,51 @@ mod tests {
                     .expect("record should remain indexed")
                     .already_imported
             );
+        });
+    }
+
+    #[test]
+    fn import_external_provider_session_rejects_already_attached_thread() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime.block_on(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+            ));
+            let store = {
+                let app = app.lock().await;
+                app.external_provider_session_index_store()
+            };
+            store.upsert(record(
+                "dev-stub",
+                "external-attached",
+                "/tmp/external-attached",
+            ));
+            store.mark_imported(
+                "dev-stub:external-attached",
+                "session-existing",
+                "agent-existing",
+            );
+
+            let error = execute_external_provider_session_request(
+                &app,
+                LocalDaemonRequest::ImportExternalProviderSession(
+                    ImportExternalProviderSessionRequest {
+                        external_session_id: "dev-stub:external-attached".to_string(),
+                        alias: None,
+                        provider: Some("dev-stub".to_string()),
+                        model: Some("default".to_string()),
+                        effort: None,
+                        worktree_id: None,
+                    },
+                ),
+                "external-import-user",
+            )
+            .await
+            .expect_err("already attached external session should be rejected");
+
+            assert!(error.to_string().contains(
+                "already attached to Arroba session `session-existing` agent `agent-existing`"
+            ));
         });
     }
 

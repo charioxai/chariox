@@ -11,6 +11,14 @@ pub enum PromptStatus {
     Cancelled,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptOrigin {
+    #[default]
+    Arroba,
+    External,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptAttachment {
     url: String,
@@ -62,6 +70,8 @@ pub struct PromptQueueItem {
     #[serde(default, skip_serializing, skip_deserializing)]
     hidden_system_context: String,
     status: PromptStatus,
+    #[serde(default)]
+    prompt_origin: PromptOrigin,
     workflow_run_id: Option<String>,
     workflow_node_run_id: Option<String>,
 }
@@ -82,6 +92,7 @@ impl PromptQueueItem {
             attachments: Vec::new(),
             hidden_system_context: String::new(),
             status,
+            prompt_origin: PromptOrigin::Arroba,
             workflow_run_id: None,
             workflow_node_run_id: None,
         }
@@ -104,6 +115,11 @@ impl PromptQueueItem {
     ) -> Self {
         self.workflow_run_id = Some(workflow_run_id.into());
         self.workflow_node_run_id = Some(workflow_node_run_id.into());
+        self
+    }
+
+    pub fn with_prompt_origin(mut self, prompt_origin: PromptOrigin) -> Self {
+        self.prompt_origin = prompt_origin;
         self
     }
 
@@ -133,6 +149,10 @@ impl PromptQueueItem {
 
     pub fn status(&self) -> PromptStatus {
         self.status
+    }
+
+    pub fn prompt_origin(&self) -> PromptOrigin {
+        self.prompt_origin
     }
 
     pub fn workflow_run_id(&self) -> Option<&str> {
