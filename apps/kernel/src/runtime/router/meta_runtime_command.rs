@@ -167,7 +167,7 @@ impl CommandRouter {
                 return Ok(result);
             }
         };
-        let result = meta_command_success_result(&args.command, &response);
+        let result = meta_command_success_result(&args.command, &response, &metaagent);
         self.audit_meta_run_command(
             Some(provider_run.id()),
             &session,
@@ -340,7 +340,7 @@ impl CommandRouter {
                 return Ok(result);
             }
         };
-        let result = meta_command_success_result(&args.command, &response);
+        let result = meta_command_success_result(&args.command, &response, &metaagent);
         self.audit_meta_run_command(
             None,
             &session,
@@ -583,7 +583,7 @@ impl CommandRouter {
             Ok(response) => response,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        let mut result = meta_command_success_result(command, &response);
+        let mut result = meta_command_success_result(command, &response, metaagent);
         if let Some(slice) = created_slice {
             if let Some(payload) = result.payload.as_object_mut() {
                 payload.insert("created_slice".to_string(), serde_json::json!(slice));
@@ -700,7 +700,7 @@ impl CommandRouter {
             .into_iter()
             .find(|agent| {
                 !agent.is_metaagent()
-                    && agent.owner_user_id() == metaagent.owner_user_id()
+                    && agent.controlled_by_metaagent_id() == Some(metaagent.id())
                     && (agent.id() == reference
                         || agent.agent_ref() == reference
                         || agent.alias() == Some(reference))
@@ -1135,7 +1135,7 @@ fn meta_owned_regular_agent_from_session(
         .iter()
         .find(|agent| {
             !agent.is_metaagent()
-                && agent.owner_user_id() == metaagent.owner_user_id()
+                && agent.controlled_by_metaagent_id() == Some(metaagent.id())
                 && (agent.id() == reference
                     || agent.agent_ref() == reference
                     || agent.alias() == Some(reference))
@@ -1888,12 +1888,16 @@ fn meta_command_failure_result(command: &str, error: DaemonError) -> RuntimeTool
     }
 }
 
-fn meta_command_success_result(command: &str, response: &LocalDaemonResponse) -> RuntimeToolResult {
+fn meta_command_success_result(
+    command: &str,
+    response: &LocalDaemonResponse,
+    metaagent: &crate::agent::AgentInstance,
+) -> RuntimeToolResult {
     RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({
             "command": redacted_meta_command_for_payload(command),
-            "response": summarize_meta_command_response(response),
+            "response": summarize_meta_command_response(response, metaagent),
         }),
     }
 }
@@ -1917,7 +1921,10 @@ fn redacted_meta_command_for_payload(command: &str) -> String {
     }
 }
 
-fn summarize_meta_command_response(response: &LocalDaemonResponse) -> serde_json::Value {
+fn summarize_meta_command_response(
+    response: &LocalDaemonResponse,
+    metaagent: &crate::agent::AgentInstance,
+) -> serde_json::Value {
     match response {
         LocalDaemonResponse::AgentSpawned { agent } => serde_json::json!({
             "type": "AgentSpawned",
@@ -1937,7 +1944,14 @@ fn summarize_meta_command_response(response: &LocalDaemonResponse) -> serde_json
         }),
         LocalDaemonResponse::AgentsListed { agents } => serde_json::json!({
             "type": "AgentsListed",
-            "agents": agents.iter().map(summarize_meta_agent).collect::<Vec<_>>(),
+            "agents": agents
+                .iter()
+                .filter(|agent| {
+                    !agent.is_metaagent()
+                        && agent.controlled_by_metaagent_id() == Some(metaagent.id())
+                })
+                .map(summarize_meta_agent)
+                .collect::<Vec<_>>(),
         }),
         LocalDaemonResponse::WorkflowCreated { workflow, .. } => serde_json::json!({
             "type": "WorkflowCreated",

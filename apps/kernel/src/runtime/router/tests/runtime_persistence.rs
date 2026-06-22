@@ -67,6 +67,7 @@ async fn workflow_definition_survives_kernel_restart() {
                     alias: Some("review".to_string()),
                 }),
                 DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
             )
             .await;
         let workflow_id = match created.expect("workflow should create") {
@@ -83,6 +84,7 @@ async fn workflow_definition_survives_kernel_restart() {
                     expected_workflow_revision: None,
                 }),
                 DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
             )
             .await;
         added.expect("workflow node should add");

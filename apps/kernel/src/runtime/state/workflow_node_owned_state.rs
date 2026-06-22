@@ -7,6 +7,7 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::AddWorkflowNodeRequest,
         caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_workflow_revision(
             &request.session_id,
@@ -28,6 +29,17 @@ impl KernelRuntimeOwnedState {
                 operation: "workflow.node.add",
                 message: "metaagents cannot be added as workflow nodes".to_string(),
             });
+        }
+        if let Some(metaagent_id) = caller_metaagent_id {
+            if agent.controlled_by_metaagent_id() != Some(metaagent_id) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workflow.node.add",
+                    message: format!(
+                        "agent `{}` is not controlled by metaagent `{metaagent_id}`",
+                        request.agent_id
+                    ),
+                });
+            }
         }
         let node = self.session_store.write().add_workflow_node_owned(
             &request.session_id,

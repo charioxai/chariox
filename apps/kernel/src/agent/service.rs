@@ -8,9 +8,8 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentRole,
-    AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition,
-    RemoteAgentBinding,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, GridPosition, RemoteAgentBinding,
 };
 
 #[derive(Debug, Clone)]
@@ -70,19 +69,6 @@ impl AgentService {
             }
         }
 
-        if request.role == AgentRole::Meta
-            && self
-                .store
-                .get_by_session(&request.session_id)
-                .into_iter()
-                .any(|agent| agent.owner_user_id() == request.owner_user_id && agent.is_metaagent())
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "agent.create",
-                message: "this user already has a metaagent in the session".to_string(),
-            });
-        }
-
         // Calculate position for new agent
         let position = self.calculate_position_for_new_agent(&request.session_id);
 
@@ -100,6 +86,7 @@ impl AgentService {
             position,
         );
         agent.set_owner_user_id(request.owner_user_id);
+        agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
         agent.set_role(request.role);
         agent.set_execution_mode_override(request.execution_mode_override);
         agent.set_permission_level_override(request.permission_level_override);
@@ -667,6 +654,22 @@ impl AgentService {
     /// Get all agents in a session
     pub fn get_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {
         self.store.get_by_session(session_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_controlled_by_metaagent_id(
+        &mut self,
+        agent_id: &str,
+        metaagent_id: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_controlled_by_metaagent_id(metaagent_id);
+        Ok(agent.clone())
     }
 
     pub fn list_agents(&self) -> Vec<AgentInstance> {

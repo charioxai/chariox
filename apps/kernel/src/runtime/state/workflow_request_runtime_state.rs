@@ -5,15 +5,25 @@ impl KernelRuntimeState {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
+        caller_metaagent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
         let owned = &self.owned;
 
+        if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
+            if let Err(error) =
+                owned.ensure_workflow_request_controlled_by_metaagent(&request, metaagent_id)
+            {
+                return (Err(error), None);
+            }
+        }
+
         let outcome = match request {
             LocalDaemonRequest::CreateWorkflow(request) => {
-                let result = owned.workflow_create_workflow(request);
+                let result =
+                    owned.workflow_create_workflow(request, caller_metaagent_id.as_deref());
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -37,9 +47,10 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
-            LocalDaemonRequest::ListWorkflows(request) => {
-                (owned.workflow_list_workflows(request), None)
-            }
+            LocalDaemonRequest::ListWorkflows(request) => (
+                owned.workflow_list_workflows(request, caller_metaagent_id.as_deref()),
+                None,
+            ),
             LocalDaemonRequest::ResolveWorkflow(request) => {
                 (owned.workflow_resolve_workflow(request), None)
             }
@@ -83,7 +94,11 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::AddWorkflowNode(request) => {
-                let result = owned.workflow_add_node(request, &caller_user_id);
+                let result = owned.workflow_add_node(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                );
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
@@ -154,9 +169,10 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
-            LocalDaemonRequest::ListWorkflowRuns(request) => {
-                (owned.workflow_list_runs(request), None)
-            }
+            LocalDaemonRequest::ListWorkflowRuns(request) => (
+                owned.workflow_list_runs(request, caller_metaagent_id.as_deref()),
+                None,
+            ),
             LocalDaemonRequest::GetWorkflowRun(request) => (owned.workflow_get_run(request), None),
             LocalDaemonRequest::CreateWorkflowWatchdog(request) => {
                 let result = owned.workflow_create_watchdog(request);

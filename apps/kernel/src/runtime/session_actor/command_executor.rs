@@ -128,7 +128,6 @@ impl SessionRuntimeCommandExecutor {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let caller_is_metaagent = caller_metaagent_id.is_some();
         match request {
             LocalDaemonRequest::CreateSession(request) => {
                 self.store.create_session(request, caller_user_id).await
@@ -186,12 +185,12 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::AliasSession(request) => self.store.alias_session(request).await,
             LocalDaemonRequest::SpawnAgent(request) => {
                 self.store
-                    .spawn_agent(request, caller_user_id, caller_is_metaagent)
+                    .spawn_agent(request, caller_user_id, caller_metaagent_id)
                     .await
             }
             LocalDaemonRequest::DestroyAgent(request) => {
                 self.store
-                    .destroy_agent(request, caller_user_id, caller_is_metaagent)
+                    .destroy_agent(request, caller_user_id, caller_metaagent_id.is_some())
                     .await
             }
             LocalDaemonRequest::EndSession(request) => self.store.end_session(request).await,

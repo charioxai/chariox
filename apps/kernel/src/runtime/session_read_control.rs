@@ -17,6 +17,27 @@ use crate::runtime::workflow_projection::{
 };
 use crate::session::RuntimeSession;
 
+fn ensure_projected_workflow_metaagent_scope(
+    workflow_metaagent_id: Option<&str>,
+    caller_metaagent_id: Option<&str>,
+    reference: &str,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let Some(caller_metaagent_id) = caller_metaagent_id else {
+        return Ok(());
+    };
+    if workflow_metaagent_id == Some(caller_metaagent_id) {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "workflow `{reference}` is not controlled by metaagent `{caller_metaagent_id}`"
+            ),
+        })
+    }
+}
+
 pub(crate) fn projected_session_state_response(
     session_projection: &SessionStateProjectionStore,
     provider_run_projection: &ProviderRunProjectionStore,
@@ -187,6 +208,7 @@ pub(crate) fn projected_session_inspection_response(
     session_projection: &SessionStateProjectionStore,
     request: &LocalDaemonRequest,
     caller_user_id: &str,
+    caller_metaagent_id: Option<&str>,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     match request {
         LocalDaemonRequest::ListAgents(request) => {
@@ -210,6 +232,11 @@ pub(crate) fn projected_session_inspection_response(
                 workflows: session
                     .workflows()
                     .iter()
+                    .filter(|workflow| {
+                        caller_metaagent_id.is_none_or(|metaagent_id| {
+                            workflow.controlled_by_metaagent_id() == Some(metaagent_id)
+                        })
+                    })
                     .cloned()
                     .map(|workflow| workflow.redacted_for_user(caller_user_id))
                     .collect(),
@@ -222,10 +249,16 @@ pub(crate) fn projected_session_inspection_response(
                     Err(error) => return Some(Err(error)),
                 };
             Some(
-                projected_resolve_workflow(&session, &request.workflow_ref).map(|workflow| {
-                    LocalDaemonResponse::WorkflowResolved {
+                projected_resolve_workflow(&session, &request.workflow_ref).and_then(|workflow| {
+                    ensure_projected_workflow_metaagent_scope(
+                        workflow.controlled_by_metaagent_id(),
+                        caller_metaagent_id,
+                        &request.workflow_ref,
+                        "resolve workflow",
+                    )?;
+                    Ok(LocalDaemonResponse::WorkflowResolved {
                         workflow: workflow.redacted_for_user(caller_user_id),
-                    }
+                    })
                 }),
             )
         }
@@ -236,8 +269,20 @@ pub(crate) fn projected_session_inspection_response(
                     Err(error) => return Some(Err(error)),
                 };
             Some(
-                projected_workflow_id(&session, request.workflow_ref.as_deref()).map(
+                projected_workflow_id(&session, request.workflow_ref.as_deref()).and_then(
                     |workflow_id| {
+                        if let Some(workflow_id) = workflow_id.as_deref() {
+                            let workflow = session
+                                .workflows()
+                                .iter()
+                                .find(|workflow| workflow.id() == workflow_id);
+                            ensure_projected_workflow_metaagent_scope(
+                                workflow.and_then(|workflow| workflow.controlled_by_metaagent_id()),
+                                caller_metaagent_id,
+                                request.workflow_ref.as_deref().unwrap_or(workflow_id),
+                                "list workflow runs",
+                            )?;
+                        }
                         let workflow_runs = session
                             .workflow_runs()
                             .iter()
@@ -245,6 +290,20 @@ pub(crate) fn projected_session_inspection_response(
                                 workflow_id
                                     .as_deref()
                                     .is_none_or(|id| workflow_run.workflow_id() == id)
+                            })
+                            .filter(|workflow_run| {
+                                caller_metaagent_id.is_none_or(|metaagent_id| {
+                                    session
+                                        .workflows()
+                                        .iter()
+                                        .find(|workflow| {
+                                            workflow.id() == workflow_run.workflow_id()
+                                        })
+                                        .is_some_and(|workflow| {
+                                            workflow.controlled_by_metaagent_id()
+                                                == Some(metaagent_id)
+                                        })
+                                })
                             })
                             .cloned()
                             .map(|workflow_run| {
@@ -257,7 +316,7 @@ pub(crate) fn projected_session_inspection_response(
                                 workflow_run.redacted_for_user(workflow, caller_user_id)
                             })
                             .collect();
-                        LocalDaemonResponse::WorkflowRunsListed { workflow_runs }
+                        Ok(LocalDaemonResponse::WorkflowRunsListed { workflow_runs })
                     },
                 ),
             )
@@ -269,15 +328,21 @@ pub(crate) fn projected_session_inspection_response(
                     Err(error) => return Some(Err(error)),
                 };
             Some(
-                projected_resolve_workflow_run(&session, &request.workflow_run_ref).map(
+                projected_resolve_workflow_run(&session, &request.workflow_run_ref).and_then(
                     |workflow_run| {
                         let workflow = session
                             .workflows()
                             .iter()
                             .find(|workflow| workflow.id() == workflow_run.workflow_id());
-                        LocalDaemonResponse::WorkflowRun {
+                        ensure_projected_workflow_metaagent_scope(
+                            workflow.and_then(|workflow| workflow.controlled_by_metaagent_id()),
+                            caller_metaagent_id,
+                            &request.workflow_run_ref,
+                            "get workflow run",
+                        )?;
+                        Ok(LocalDaemonResponse::WorkflowRun {
                             workflow_run: workflow_run.redacted_for_user(workflow, caller_user_id),
-                        }
+                        })
                     },
                 ),
             )

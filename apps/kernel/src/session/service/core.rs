@@ -478,11 +478,27 @@ impl SessionService {
         session_id: &str,
         alias: Option<String>,
     ) -> Result<WorkflowDefinition, DaemonError> {
+        self.create_workflow_controlled_by_metaagent(session_id, alias, None)
+    }
+
+    pub fn create_workflow_controlled_by_metaagent(
+        &mut self,
+        session_id: &str,
+        alias: Option<String>,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowDefinition, DaemonError> {
         let alias = normalize_workflow_alias(alias)?;
         if let Some(alias) = alias.as_deref() {
             self.ensure_workflow_alias_available(session_id, alias)?;
         }
-        let workflow = WorkflowDefinition::new(self.next_workflow_id(), alias);
+        let workflow = match controlled_by_metaagent_id {
+            Some(metaagent_id) => WorkflowDefinition::new_controlled_by_metaagent(
+                self.next_workflow_id(),
+                alias,
+                metaagent_id,
+            ),
+            None => WorkflowDefinition::new(self.next_workflow_id(), alias),
+        };
         let session =
             self.store
                 .get_mut(session_id)

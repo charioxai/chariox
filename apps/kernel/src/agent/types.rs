@@ -114,6 +114,8 @@ pub struct AgentInstance {
     session_id: String,
     #[serde(default = "default_agent_owner_user_id")]
     owner_user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    controlled_by_metaagent_id: Option<String>,
     #[serde(default)]
     role: AgentRole,
     alias: Option<String>,
@@ -185,6 +187,7 @@ impl AgentInstance {
             agent_ref: agent_ref.into(),
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
+            controlled_by_metaagent_id: None,
             role: AgentRole::Standard,
             alias,
             provider: provider.into(),
@@ -230,6 +233,10 @@ impl AgentInstance {
 
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
+    }
+
+    pub fn controlled_by_metaagent_id(&self) -> Option<&str> {
+        self.controlled_by_metaagent_id.as_deref()
     }
 
     pub fn role(&self) -> AgentRole {
@@ -415,6 +422,7 @@ impl AgentInstance {
         self.primary_effort = None;
         self.execution_mode_override = None;
         self.permission_level_override = None;
+        self.controlled_by_metaagent_id = None;
         self.workspace_id = None;
         self.worktree_id = None;
         self.remote_execution = None;
@@ -448,6 +456,10 @@ impl AgentInstance {
 
     pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
         self.owner_user_id = owner_user_id.into();
+    }
+
+    pub fn set_controlled_by_metaagent_id(&mut self, metaagent_id: Option<String>) {
+        self.controlled_by_metaagent_id = metaagent_id;
     }
 
     pub fn set_role(&mut self, role: AgentRole) {
@@ -659,6 +671,8 @@ pub struct CreateAgentRequest {
     pub session_id: String,
     #[serde(default = "default_agent_owner_user_id")]
     pub owner_user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controlled_by_metaagent_id: Option<String>,
     #[serde(default)]
     pub role: AgentRole,
     pub alias: Option<String>,
@@ -677,6 +691,7 @@ impl CreateAgentRequest {
         Self {
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
+            controlled_by_metaagent_id: None,
             role: AgentRole::Standard,
             alias: None,
             provider: provider.into(),
@@ -697,6 +712,11 @@ impl CreateAgentRequest {
 
     pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
         self.owner_user_id = owner_user_id.into();
+        self
+    }
+
+    pub fn with_controlled_by_metaagent_id(mut self, metaagent_id: impl Into<String>) -> Self {
+        self.controlled_by_metaagent_id = Some(metaagent_id.into());
         self
     }
 

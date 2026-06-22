@@ -72,7 +72,7 @@ impl KernelRuntimeState {
             ));
         let title = "Metaagent task needs a final decision".to_string();
         let summary = format!(
-            "Your last turn ended while task `{}` is still active and no same-owner regular agents have active or queued work. Decide the task state now: if it is done, call `arroba.meta.complete_task`; if it cannot be completed after exhausting options, call `arroba.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
+            "Your last turn ended while task `{}` is still active and no controlled regular agents have active or queued work. Decide the task state now: if it is done, call `arroba.meta.complete_task`; if it cannot be completed after exhausting options, call `arroba.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
             task.task_id()
         );
         let dispatches = self.owned.metaagent_event_prompt_for_metaagent(
@@ -107,7 +107,7 @@ impl KernelRuntimeState {
             .get_session_agents(session.id())
             .into_iter()
             .filter(|agent| !agent.is_metaagent())
-            .filter(|agent| agent.owner_user_id() == metaagent.owner_user_id())
+            .filter(|agent| agent.controlled_by_metaagent_id() == Some(metaagent.id()))
             .any(|agent| {
                 activity
                     .get(agent.id())

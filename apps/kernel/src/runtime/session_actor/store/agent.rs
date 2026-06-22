@@ -168,11 +168,19 @@ impl SessionRuntimeStore {
         &self,
         request: SpawnAgentRequest,
         caller_user_id: String,
-        caller_is_metaagent: bool,
+        caller_metaagent_id: Option<String>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if caller_metaagent_id.is_some() && request.metaagent {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    operation: "agent.spawn",
+                    message: "metaagents cannot spawn another metaagent".to_string(),
+                }))
+                .await;
+        }
         let session = match self.state.session_snapshot(&request.session_id).await {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
@@ -193,6 +201,12 @@ impl SessionRuntimeStore {
             create_request.with_role(AgentRole::Meta)
         } else {
             create_request
+        };
+        let create_request = match caller_metaagent_id.as_deref() {
+            Some(metaagent_id) if !request.metaagent => {
+                create_request.with_controlled_by_metaagent_id(metaagent_id)
+            }
+            _ => create_request,
         };
         let create_request = if let Some(alias) = request.alias {
             create_request.with_alias(alias)
@@ -298,7 +312,7 @@ impl SessionRuntimeStore {
                         return self.with_session_projection_action_result(Err(error)).await;
                     }
                 }
-                if !caller_is_metaagent && !agent.is_metaagent() {
+                if caller_metaagent_id.is_none() && !agent.is_metaagent() {
                     let _ = self
                         .state
                         .inject_metaagent_agent_lifecycle_event_for_agent(

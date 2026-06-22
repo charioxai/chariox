@@ -151,9 +151,12 @@ impl CommandRouter {
             }
             _ => {}
         }
-        if let Some(response) =
-            projected_session_inspection_response(&self.session_projection, request, caller_user_id)
-        {
+        if let Some(response) = projected_session_inspection_response(
+            &self.session_projection,
+            request,
+            caller_user_id,
+            command.caller.metaagent_id.as_deref(),
+        ) {
             return response.map(Some);
         }
         if let LocalDaemonRequest::PumpTerminalOutput(request) = request {

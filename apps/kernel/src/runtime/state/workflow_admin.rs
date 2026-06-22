@@ -16,11 +16,16 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_create_workflow(
         &self,
         request: crate::local::CreateWorkflowRequest,
+        controlled_by_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let workflow = self
             .session_store
             .write()
-            .create_workflow(&request.session_id, request.alias)?;
+            .create_workflow_controlled_by_metaagent(
+                &request.session_id,
+                request.alias,
+                controlled_by_metaagent_id.map(str::to_string),
+            )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowCreated { workflow, session })
     }

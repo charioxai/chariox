@@ -22,6 +22,16 @@ impl Drop for TestMetaRuntimeEnv {
     }
 }
 
+fn mark_test_agent_controlled_by_metaagent(
+    app: &mut DaemonApp,
+    agent_id: &str,
+    metaagent_id: &str,
+) {
+    app.agents_mut()
+        .set_controlled_by_metaagent_id(agent_id, Some(metaagent_id.to_string()))
+        .expect("test agent should exist");
+}
+
 fn run_large_stack_async_test<Fut>(name: &str, test: fn() -> Fut)
 where
     Fut: std::future::Future<Output = ()> + 'static,
@@ -186,6 +196,7 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -434,6 +445,7 @@ async fn metaagent_wait_trace_wakes_when_worker_output_arrives_after_wait_starts
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -1455,6 +1467,7 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -1539,7 +1552,7 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
             .payload
             .pointer("/agents/owned_total")
             .and_then(serde_json::Value::as_u64),
-        Some(3)
+        Some(1)
     );
     assert_eq!(
         overview
@@ -1743,9 +1756,6 @@ async fn metaagent_run_command_submits_prompts_through_router_path_inner() {
             workspace.to_string_lossy(),
         ))
         .expect("session should be created");
-    let worker = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
-        .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -1753,6 +1763,13 @@ async fn metaagent_run_command_submits_prompts_through_router_path_inner() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("worker")
+                .with_controlled_by_metaagent_id(metaagent.id()),
+        )
+        .expect("worker should spawn");
     let _worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -1892,6 +1909,197 @@ async fn metaagent_run_command_submits_prompts_through_router_path_inner() {
 }
 
 #[test]
+fn multiple_metaagents_in_one_session_are_isolated() {
+    run_large_stack_async_test(
+        "multiple-metaagents-isolated",
+        multiple_metaagents_in_one_session_are_isolated_inner,
+    );
+}
+
+async fn multiple_metaagents_in_one_session_are_isolated_inner() {
+    let env = TestMetaRuntimeEnv::new("multi-metaagent-isolation");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let meta_a = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta-a")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("first metaagent should spawn");
+    let meta_b = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta-b")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("second metaagent should spawn");
+    let meta_a_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        meta_a.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-a-model",
+    );
+    let meta_b_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        meta_b.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-b-model",
+    );
+    let meta_a_auth = meta_a_run
+        .runtime_mcp_auth_token()
+        .expect("meta A run should expose runtime MCP auth token")
+        .to_string();
+    let meta_b_auth = meta_b_run
+        .runtime_mcp_auth_token()
+        .expect("meta B run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let spawn_a = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_a_auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent spawn alpha" }),
+        )
+        .await
+        .expect("meta A spawn command should dispatch");
+    assert!(spawn_a.ok, "{:?}", spawn_a.payload);
+    let alpha_id = spawn_a
+        .payload
+        .pointer("/response/agent/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("spawn A response should include agent id")
+        .to_string();
+
+    let spawn_b = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_b_auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent spawn beta" }),
+        )
+        .await
+        .expect("meta B spawn command should dispatch");
+    assert!(spawn_b.ok, "{:?}", spawn_b.payload);
+    let beta_id = spawn_b
+        .payload
+        .pointer("/response/agent/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("spawn B response should include agent id")
+        .to_string();
+
+    {
+        let app = app.lock().await;
+        let alpha = app
+            .agents()
+            .get_agent(&alpha_id)
+            .expect("alpha worker should exist");
+        let beta = app
+            .agents()
+            .get_agent(&beta_id)
+            .expect("beta worker should exist");
+        assert_eq!(alpha.controlled_by_metaagent_id(), Some(meta_a.id()));
+        assert_eq!(beta.controlled_by_metaagent_id(), Some(meta_b.id()));
+    }
+
+    let list_a = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_a_auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent list" }),
+        )
+        .await
+        .expect("meta A list command should dispatch");
+    assert!(list_a.ok, "{:?}", list_a.payload);
+    let listed_agents = list_a
+        .payload
+        .pointer("/response/agents")
+        .and_then(serde_json::Value::as_array)
+        .expect("agent list should include agents");
+    assert_eq!(listed_agents.len(), 1);
+    assert_eq!(
+        listed_agents[0]
+            .get("alias")
+            .and_then(serde_json::Value::as_str),
+        Some("alpha")
+    );
+
+    let prompt_cross = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_a_auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "prompt beta \"do not allow this\"" }),
+        )
+        .await
+        .expect("cross prompt command should dispatch as a rejected tool result");
+    assert!(!prompt_cross.ok, "{:?}", prompt_cross.payload);
+    assert!(
+        prompt_cross
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not an owned regular agent")),
+        "{:?}",
+        prompt_cross.payload
+    );
+
+    let create_workflow = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_a_auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "workflow new flow-a" }),
+        )
+        .await
+        .expect("meta A workflow create should dispatch");
+    assert!(create_workflow.ok, "{:?}", create_workflow.payload);
+
+    let add_cross_node = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_a_auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "workflow node add flow-a beta" }),
+        )
+        .await
+        .expect("cross workflow node command should dispatch as a rejected tool result");
+    assert!(!add_cross_node.ok, "{:?}", add_cross_node.payload);
+
+    let resolve_cross_workflow = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_b_auth,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "workflow resolve flow-a" }),
+        )
+        .await
+        .expect("cross workflow resolve should dispatch as a rejected tool result");
+    assert!(
+        !resolve_cross_workflow.ok,
+        "{:?}",
+        resolve_cross_workflow.payload
+    );
+    assert!(
+        resolve_cross_workflow
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("not controlled by metaagent")),
+        "{:?}",
+        resolve_cross_workflow.payload
+    );
+}
+
+#[test]
 fn metaagent_prompt_command_does_not_steer_active_workflow_turns() {
     run_large_stack_async_test(
         "metaagent-prompt-active-workflow-guard",
@@ -1910,9 +2118,6 @@ async fn metaagent_prompt_command_does_not_steer_active_workflow_turns_inner() {
             workspace.to_string_lossy(),
         ))
         .expect("session should be created");
-    let worker = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
-        .expect("worker should spawn");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
@@ -1920,6 +2125,13 @@ async fn metaagent_prompt_command_does_not_steer_active_workflow_turns_inner() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("worker")
+                .with_controlled_by_metaagent_id(metaagent.id()),
+        )
+        .expect("worker should spawn");
     let _worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2068,6 +2280,7 @@ async fn metaagent_prompt_command_does_not_queue_over_workflow_turns_inner() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2174,6 +2387,7 @@ async fn metaagent_run_command_routes_core_workflow_commands_inner() {
                 .with_owner_user_id(metaagent.owner_user_id()),
         )
         .expect("worker should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2383,20 +2597,22 @@ async fn metaagent_workflow_run_commands_expose_execution_visibility_inner() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
-    crate::app::KernelSessionService::new(&mut app)
+    let worker = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("worker")
                 .with_owner_user_id(metaagent.owner_user_id()),
         )
         .expect("worker should spawn");
-    crate::app::KernelSessionService::new(&mut app)
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
+    let reviewer = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("reviewer")
                 .with_owner_user_id(metaagent.owner_user_id()),
         )
         .expect("reviewer should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, reviewer.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2619,6 +2835,7 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -2814,14 +3031,14 @@ async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_man
 }
 
 #[test]
-fn collaborator_metaagents_are_one_per_user_and_owner_scoped() {
+fn collaborator_metaagents_are_allowed_and_controller_scoped() {
     run_large_stack_async_test(
         "collaborator-metaagent-scope",
-        collaborator_metaagents_are_one_per_user_and_owner_scoped_inner,
+        collaborator_metaagents_are_allowed_and_controller_scoped_inner,
     );
 }
 
-async fn collaborator_metaagents_are_one_per_user_and_owner_scoped_inner() {
+async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
     let env = TestMetaRuntimeEnv::new("collaborator-metaagent-scope");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -2853,16 +3070,6 @@ async fn collaborator_metaagents_are_one_per_user_and_owner_scoped_inner() {
         .expect("session should remain")
         .has_member("user-2"));
 
-    let owner_worker = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-worker"))
-        .expect("owner worker should spawn");
-    let peer_worker = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(&session_id, "dev-stub")
-                .with_alias("peer-worker")
-                .with_owner_user_id("user-2"),
-        )
-        .expect("peer worker should spawn");
     let owner_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
@@ -2878,34 +3085,39 @@ async fn collaborator_metaagents_are_one_per_user_and_owner_scoped_inner() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("peer metaagent should spawn");
+    let owner_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("owner-worker")
+                .with_controlled_by_metaagent_id(owner_metaagent.id()),
+        )
+        .expect("owner worker should spawn");
+    let peer_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&session_id, "dev-stub")
+                .with_alias("peer-worker")
+                .with_owner_user_id("user-2")
+                .with_controlled_by_metaagent_id(peer_metaagent.id()),
+        )
+        .expect("peer worker should spawn");
 
-    let owner_duplicate = crate::app::KernelSessionService::new(&mut app)
+    let owner_second_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
                 .with_alias("owner-meta-2")
                 .with_role(crate::agent::AgentRole::Meta),
         )
-        .expect_err("owner should not get a second metaagent");
-    assert!(
-        owner_duplicate
-            .to_string()
-            .contains("this user already has a metaagent"),
-        "{owner_duplicate:?}"
-    );
-    let peer_duplicate = crate::app::KernelSessionService::new(&mut app)
+        .expect("owner should be allowed to create a second metaagent");
+    let peer_second_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
                 .with_alias("peer-meta-2")
                 .with_owner_user_id("user-2")
                 .with_role(crate::agent::AgentRole::Meta),
         )
-        .expect_err("collaborator should not get a second metaagent");
-    assert!(
-        peer_duplicate
-            .to_string()
-            .contains("this user already has a metaagent"),
-        "{peer_duplicate:?}"
-    );
+        .expect("collaborator should be allowed to create a second metaagent");
+    assert!(owner_second_metaagent.is_metaagent());
+    assert!(peer_second_metaagent.is_metaagent());
 
     let owner_meta_run = launch_test_provider(
         &mut app,
@@ -3266,6 +3478,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
                 .with_owner_user_id(metaagent.owner_user_id()),
         )
         .expect("prompt flag worker should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, prompt_flag_worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -3462,6 +3675,7 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry_i
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let _worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -3769,6 +3983,7 @@ async fn metaagent_turn_with_active_worker_does_not_inject_orphaned_task_event_i
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let _worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -3985,6 +4200,7 @@ async fn local_metaagent_turn_inspection_requests_enforce_owner_scope_impl() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -4426,6 +4642,7 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents() {
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let worker_run = launch_test_provider(
         &mut app,
         session.id(),
@@ -5095,6 +5312,7 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own(
                 .with_role(crate::agent::AgentRole::Meta),
         )
         .expect("metaagent should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
         session.id(),

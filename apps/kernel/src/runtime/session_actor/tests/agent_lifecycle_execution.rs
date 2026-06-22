@@ -204,7 +204,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
 }
 
 #[tokio::test]
-async fn local_spawn_agent_enforces_one_metaagent_per_user() {
+async fn local_spawn_agent_allows_multiple_metaagents_per_user() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -263,14 +263,14 @@ async fn local_spawn_agent_enforces_one_metaagent_per_user() {
         metaagent: true,
     });
     let command = KernelCommand::from_local_request("spawn-meta-2", None, None, &second);
-    let error = runtime
+    let response = runtime
         .dispatch_session_command(command, second)
         .await
-        .expect_err("second metaagent spawn should be rejected");
-    assert!(
-        error.to_string().contains("already has a metaagent"),
-        "unexpected error: {error}"
-    );
+        .expect("second metaagent spawn should be allowed");
+    let LocalDaemonResponse::AgentSpawned { agent } = response else {
+        panic!("unexpected response");
+    };
+    assert!(agent.is_metaagent());
 
     let collaborator = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
         session_id: session_id.clone(),

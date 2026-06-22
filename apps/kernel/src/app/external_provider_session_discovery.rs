@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use crate::local::{
@@ -184,10 +185,13 @@ pub(crate) fn discover_claude_external_sessions(root: &Path) -> Vec<ExternalProv
 pub(crate) fn discover_opencode_external_sessions(
     root: &Path,
 ) -> Vec<ExternalProviderSessionRecord> {
-    opencode_candidate_paths(root)
-        .into_iter()
-        .filter_map(|path| parse_opencode_session_file(&path))
-        .collect()
+    let mut sessions = discover_opencode_sqlite_sessions(root);
+    sessions.extend(
+        opencode_candidate_paths(root)
+            .into_iter()
+            .filter_map(|path| parse_opencode_session_file(&path)),
+    );
+    sessions
 }
 
 fn provider_session_candidate_paths(provider_filter: Option<&str>) -> Vec<(String, PathBuf)> {
@@ -237,8 +241,22 @@ fn claude_candidate_paths(root: &Path) -> Vec<PathBuf> {
 
 fn opencode_candidate_paths(root: &Path) -> Vec<PathBuf> {
     let mut candidates = session_json_candidates(root, 5);
+    candidates.extend(opencode_sqlite_signature_paths(root));
     candidates.truncate(MAX_PROVIDER_FILES);
     candidates
+}
+
+fn opencode_sqlite_db_path(root: &Path) -> PathBuf {
+    root.join("opencode.db")
+}
+
+fn opencode_sqlite_signature_paths(root: &Path) -> Vec<PathBuf> {
+    let db = opencode_sqlite_db_path(root);
+    let wal = root.join("opencode.db-wal");
+    [db, wal]
+        .into_iter()
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 fn jsonl_candidates(root: &Path, max_depth: usize) -> Vec<PathBuf> {
@@ -490,6 +508,9 @@ fn claude_observed_turns_from_path(
 }
 
 fn parse_opencode_session_file(path: &Path) -> Option<ExternalProviderSessionRecord> {
+    if is_opencode_sqlite_db(path) {
+        return None;
+    }
     if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
         return parse_opencode_jsonl(path);
     }
@@ -521,6 +542,10 @@ fn read_opencode_observed_turns(
     root: &Path,
     provider_session_id: &str,
 ) -> Vec<ObservedExternalProviderTurn> {
+    let sqlite_turns = read_opencode_sqlite_observed_turns(root, provider_session_id);
+    if !sqlite_turns.is_empty() {
+        return sqlite_turns.into_iter().take(MAX_OBSERVED_TURNS).collect();
+    }
     let mut candidates = session_json_candidates(root, 5);
     candidates.truncate(MAX_PROVIDER_FILES);
     candidates
@@ -533,6 +558,12 @@ fn opencode_observed_turns_from_path(
     path: &Path,
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
+    if is_opencode_sqlite_db(path) {
+        return Some(read_opencode_sqlite_observed_turns(
+            path.parent().unwrap_or_else(|| Path::new("")),
+            provider_session_id,
+        ));
+    }
     if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
         return opencode_jsonl_observed_turns_from_path(path, provider_session_id);
     }
@@ -619,6 +650,177 @@ fn parse_opencode_jsonl(path: &Path) -> Option<ExternalProviderSessionRecord> {
         None,
         observed_capabilities(true),
     ))
+}
+
+fn discover_opencode_sqlite_sessions(root: &Path) -> Vec<ExternalProviderSessionRecord> {
+    let db_path = opencode_sqlite_db_path(root);
+    let Some(connection) = open_opencode_sqlite(&db_path) else {
+        return Vec::new();
+    };
+    let mut statement = match connection.prepare(
+        "select s.id, s.title, s.directory, s.time_created, s.time_updated, \
+            (select p.data \
+               from part p \
+               join message m on m.id = p.message_id \
+              where p.session_id = s.id \
+                and json_extract(m.data, '$.role') = 'user' \
+                and json_extract(p.data, '$.type') = 'text' \
+              order by p.time_created asc, p.id asc \
+              limit 1) as first_user_part \
+           from session s \
+          order by s.time_updated desc, s.id asc \
+          limit ?1",
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match statement.query_map([MAX_PROVIDER_FILES as i64], |row| {
+        let provider_session_id: String = row.get(0)?;
+        let title: Option<String> = row.get(1)?;
+        let directory: Option<String> = row.get(2)?;
+        let created_at_ms: Option<i64> = row.get(3)?;
+        let updated_at_ms: Option<i64> = row.get(4)?;
+        let first_user_part: Option<String> = row.get(5)?;
+        Ok((
+            provider_session_id,
+            title,
+            directory,
+            created_at_ms.and_then(signed_millis_to_u64),
+            updated_at_ms.and_then(signed_millis_to_u64),
+            first_user_part,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+    rows.filter_map(Result::ok)
+        .map(
+            |(
+                provider_session_id,
+                title,
+                directory,
+                created_at_ms,
+                updated_at_ms,
+                first_user_part,
+            )| {
+                let first_prompt = first_user_part
+                    .as_deref()
+                    .and_then(opencode_text_from_sqlite_part_data)
+                    .or(title);
+                record_from_parts(
+                    "opencode",
+                    provider_session_id,
+                    first_prompt,
+                    directory,
+                    created_at_ms,
+                    updated_at_ms.unwrap_or_else(|| file_modified_ms(&db_path)),
+                    None,
+                    observed_capabilities(true),
+                )
+            },
+        )
+        .collect()
+}
+
+fn read_opencode_sqlite_observed_turns(
+    root: &Path,
+    provider_session_id: &str,
+) -> Vec<ObservedExternalProviderTurn> {
+    let db_path = opencode_sqlite_db_path(root);
+    let Some(connection) = open_opencode_sqlite(&db_path) else {
+        return Vec::new();
+    };
+    let mut statement = match connection.prepare(
+        "select m.id, json_extract(m.data, '$.role') as role, \
+                p.id, json_extract(p.data, '$.type') as part_type, \
+                p.data, p.time_created, p.time_updated \
+           from message m \
+           join part p on p.message_id = m.id \
+          where m.session_id = ?1 \
+          order by p.time_created asc, p.id asc \
+          limit ?2",
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match statement.query_map(
+        rusqlite::params![provider_session_id, MAX_OBSERVED_TURNS as i64],
+        |row| {
+            let message_id: String = row.get(0)?;
+            let role: Option<String> = row.get(1)?;
+            let part_id: String = row.get(2)?;
+            let part_type: Option<String> = row.get(3)?;
+            let part_data: String = row.get(4)?;
+            let created_at_ms: Option<i64> = row.get(5)?;
+            let updated_at_ms: Option<i64> = row.get(6)?;
+            Ok((
+                message_id,
+                role,
+                part_id,
+                part_type,
+                part_data,
+                created_at_ms.and_then(signed_millis_to_u64),
+                updated_at_ms.and_then(signed_millis_to_u64),
+            ))
+        },
+    ) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+    rows.filter_map(Result::ok)
+        .filter_map(
+            |(message_id, role, part_id, part_type, part_data, created_at_ms, updated_at_ms)| {
+                if part_type.as_deref() != Some("text") {
+                    return None;
+                }
+                let role = observed_role(role.as_deref())?;
+                let text = opencode_text_from_sqlite_part_data(&part_data)
+                    .and_then(|text| clean_observed_turn_text(Some(role_text(role)), text))?;
+                let provider_turn_id = if part_id.trim().is_empty() {
+                    message_id
+                } else {
+                    part_id
+                };
+                Some(ObservedExternalProviderTurn {
+                    role,
+                    text,
+                    provider_turn_id: Some(provider_turn_id),
+                    observed_at_ms: updated_at_ms.or(created_at_ms),
+                })
+            },
+        )
+        .collect()
+}
+
+fn open_opencode_sqlite(path: &Path) -> Option<Connection> {
+    if !path.is_file() {
+        return None;
+    }
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()
+}
+
+fn is_opencode_sqlite_db(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("opencode.db")
+}
+
+fn opencode_text_from_sqlite_part_data(data: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(data).ok()?;
+    text_from_content(&value)
+}
+
+fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
+    match role {
+        ObservedExternalProviderTurnRole::User => "user",
+        ObservedExternalProviderTurnRole::Assistant => "assistant",
+    }
+}
+
+fn signed_millis_to_u64(value: i64) -> Option<u64> {
+    u64::try_from(value).ok()
 }
 
 fn read_jsonl_values(path: &Path) -> Vec<Value> {
@@ -973,6 +1175,24 @@ mod tests {
     }
 
     #[test]
+    fn discovers_opencode_sqlite_sessions() {
+        let temp = temp_dir("opencode-sqlite-discovery");
+        let root = temp.path();
+        let db_path = root.join("opencode.db");
+        seed_opencode_sqlite(&db_path);
+
+        let sessions = discover_opencode_external_sessions(root);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].external_session_id, "opencode:ses_sqlite_1");
+        assert_eq!(
+            sessions[0].title.as_deref(),
+            Some("Investigate SQLite-backed OpenCode imports.")
+        );
+        assert_eq!(sessions[0].worktree_path.as_deref(), Some("/repo/sqlite"));
+        assert!(sessions[0].last_modified_at_ms >= 1_782_113_000_000);
+    }
+
+    #[test]
     fn reads_codex_observed_user_and_assistant_turns() {
         let temp = temp_dir("codex-observed-turns");
         let root = temp.path();
@@ -1040,6 +1260,26 @@ mod tests {
         assert_eq!(turns[1].text, "Capture the waiting-room evidence.");
     }
 
+    #[test]
+    fn reads_opencode_observed_sqlite_turns() {
+        let temp = temp_dir("opencode-sqlite-observed-turns");
+        let root = temp.path();
+        let db_path = root.join("opencode.db");
+        seed_opencode_sqlite(&db_path);
+
+        let turns = read_opencode_observed_turns(root, "ses_sqlite_1");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
+        assert_eq!(turns[0].text, "Investigate SQLite-backed OpenCode imports.");
+        assert_eq!(turns[0].provider_turn_id.as_deref(), Some("prt_user_text"));
+        assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
+        assert_eq!(turns[1].text, "Use the session, message, and part tables.");
+        assert_eq!(
+            turns[1].provider_turn_id.as_deref(),
+            Some("prt_assistant_text")
+        );
+    }
+
     struct TempDir {
         path: PathBuf,
     }
@@ -1068,5 +1308,92 @@ mod tests {
             }
             Err(error) => panic!("failed to create temp dir: {error}"),
         }
+    }
+
+    fn seed_opencode_sqlite(path: &Path) {
+        let connection = Connection::open(path).expect("sqlite fixture should open");
+        connection
+            .execute_batch(
+                r#"
+                create table session (
+                    id text primary key,
+                    project_id text not null,
+                    parent_id text,
+                    slug text not null,
+                    directory text not null,
+                    title text not null,
+                    version text not null,
+                    share_url text,
+                    summary_additions integer,
+                    summary_deletions integer,
+                    summary_files integer,
+                    summary_diffs text,
+                    revert text,
+                    permission text,
+                    time_created integer not null,
+                    time_updated integer not null,
+                    time_compacting integer,
+                    time_archived integer,
+                    workspace_id text
+                );
+                create table message (
+                    id text primary key,
+                    session_id text not null,
+                    time_created integer not null,
+                    time_updated integer not null,
+                    data text not null
+                );
+                create table part (
+                    id text primary key,
+                    message_id text not null,
+                    session_id text not null,
+                    time_created integer not null,
+                    time_updated integer not null,
+                    data text not null
+                );
+                insert into session (
+                    id, project_id, slug, directory, title, version,
+                    time_created, time_updated
+                ) values (
+                    'ses_sqlite_1', 'project_1', 'sqlite-imports',
+                    '/repo/sqlite', 'SQLite OpenCode import', '0.0.0',
+                    1782113000000, 1782113050000
+                );
+                insert into message (
+                    id, session_id, time_created, time_updated, data
+                ) values (
+                    'msg_user', 'ses_sqlite_1', 1782113001000, 1782113001000,
+                    '{"role":"user"}'
+                );
+                insert into part (
+                    id, message_id, session_id, time_created, time_updated, data
+                ) values (
+                    'prt_user_text', 'msg_user', 'ses_sqlite_1',
+                    1782113001001, 1782113001001,
+                    '{"type":"text","text":"Investigate SQLite-backed OpenCode imports."}'
+                );
+                insert into message (
+                    id, session_id, time_created, time_updated, data
+                ) values (
+                    'msg_assistant', 'ses_sqlite_1', 1782113002000, 1782113003000,
+                    '{"role":"assistant"}'
+                );
+                insert into part (
+                    id, message_id, session_id, time_created, time_updated, data
+                ) values (
+                    'prt_reasoning', 'msg_assistant', 'ses_sqlite_1',
+                    1782113002001, 1782113002001,
+                    '{"type":"reasoning","text":"Internal reasoning"}'
+                );
+                insert into part (
+                    id, message_id, session_id, time_created, time_updated, data
+                ) values (
+                    'prt_assistant_text', 'msg_assistant', 'ses_sqlite_1',
+                    1782113003000, 1782113003000,
+                    '{"type":"text","text":"Use the session, message, and part tables."}'
+                );
+                "#,
+            )
+            .expect("sqlite fixture should seed");
     }
 }

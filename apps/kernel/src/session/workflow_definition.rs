@@ -18,6 +18,8 @@ fn default_workflow_flush_agent_context_before_run() -> bool {
 pub struct WorkflowDefinition {
     id: String,
     alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    controlled_by_metaagent_id: Option<String>,
     #[serde(default = "unix_epoch_ms")]
     created_at_ms: u64,
     #[serde(default)]
@@ -40,6 +42,7 @@ impl WorkflowDefinition {
         Self {
             id: id.into(),
             alias,
+            controlled_by_metaagent_id: None,
             created_at_ms: unix_epoch_ms(),
             revision: 0,
             canvas_layout: None,
@@ -52,12 +55,26 @@ impl WorkflowDefinition {
         }
     }
 
+    pub fn new_controlled_by_metaagent(
+        id: impl Into<String>,
+        alias: Option<String>,
+        metaagent_id: impl Into<String>,
+    ) -> Self {
+        let mut workflow = Self::new(id, alias);
+        workflow.controlled_by_metaagent_id = Some(metaagent_id.into());
+        workflow
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
 
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
+    }
+
+    pub fn controlled_by_metaagent_id(&self) -> Option<&str> {
+        self.controlled_by_metaagent_id.as_deref()
     }
 
     pub fn created_at_ms(&self) -> u64 {
@@ -102,6 +119,11 @@ impl WorkflowDefinition {
 
     pub fn set_alias(&mut self, alias: Option<String>) {
         self.alias = alias;
+        self.bump_revision();
+    }
+
+    pub fn set_controlled_by_metaagent_id(&mut self, metaagent_id: Option<String>) {
+        self.controlled_by_metaagent_id = metaagent_id;
         self.bump_revision();
     }
 

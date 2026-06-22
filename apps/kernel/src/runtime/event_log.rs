@@ -3,7 +3,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex as StdMutex, OnceLock};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
@@ -15,6 +16,10 @@ pub const DEFAULT_PERSISTENT_EVENT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 pub const DEFAULT_PERSISTENT_EVENT_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
 const PERSISTENT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
 const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 1;
+const PERSISTENT_COMPACTION_TARGET_NUMERATOR: u64 = 3;
+const PERSISTENT_COMPACTION_TARGET_DENOMINATOR: u64 = 4;
+#[cfg(test)]
+const PERSISTENT_WRITER_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedEvent<E> {
@@ -145,7 +150,9 @@ impl<E: Clone + Serialize> EventLog<E> {
                 apply_retention(&mut streams, self.retention, unix_epoch_ms());
             let compact_snapshot = if compact_after_append {
                 match &self.persistence {
-                    Some(persistence) if persistence.should_compact_now()? => {
+                    Some(persistence)
+                        if persistence.should_compact_now_after_append(logged_jsonl_bytes)? =>
+                    {
                         Some(retained_events_snapshot(&streams))
                     }
                     _ => None,
@@ -156,9 +163,7 @@ impl<E: Clone + Serialize> EventLog<E> {
             (logged, compact_snapshot)
         };
         if let Some(persistence) = &self.persistence {
-            persistence
-                .persist_event(&logged, compact_snapshot.as_deref())
-                .await?;
+            persistence.persist_event(&logged, compact_snapshot.as_deref())?;
         }
         Ok(logged)
     }
@@ -207,6 +212,14 @@ impl<E: Clone + Serialize> EventLog<E> {
                 .collect(),
         )
     }
+
+    #[cfg(test)]
+    fn flush_persistence_for_tests(&self) -> io::Result<()> {
+        match &self.persistence {
+            Some(persistence) => persistence.flush_for_tests(),
+            None => Ok(()),
+        }
+    }
 }
 
 impl<E> EventLog<E>
@@ -244,14 +257,7 @@ where
             )?,
             retention,
             streams: Mutex::new(streams),
-            persistence: Some(PersistentEventStore {
-                path: event_store_path,
-                io_lock: Mutex::new(()),
-                skipped_compactions: AtomicU64::new(0),
-                max_file_bytes_before_compaction: retention.max_total_bytes.map(|bytes| {
-                    bytes.saturating_mul(PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER)
-                }),
-            }),
+            persistence: Some(PersistentEventStore::new(event_store_path, retention)?),
         })
     }
 }
@@ -259,13 +265,46 @@ where
 #[derive(Debug)]
 struct PersistentEventStore {
     path: PathBuf,
-    io_lock: Mutex<()>,
+    write_tx: std_mpsc::Sender<PersistentEventWrite>,
     skipped_compactions: AtomicU64,
     max_file_bytes_before_compaction: Option<u64>,
+    estimated_file_bytes: AtomicU64,
+    last_error: Arc<StdMutex<Option<String>>>,
+}
+
+#[derive(Debug)]
+enum PersistentEventWrite {
+    Append {
+        append_jsonl: Vec<u8>,
+        compact_jsonl: Option<Vec<u8>>,
+    },
+    #[cfg(test)]
+    Flush(std_mpsc::Sender<io::Result<()>>),
 }
 
 impl PersistentEventStore {
-    async fn persist_event<E>(
+    fn new(path: PathBuf, retention: EventRetentionPolicy) -> io::Result<Self> {
+        let estimated_file_bytes = match fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error),
+        };
+        let (write_tx, write_rx) = std_mpsc::channel();
+        let last_error = Arc::new(StdMutex::new(None));
+        spawn_persistent_event_writer(path.clone(), write_rx, Arc::clone(&last_error))?;
+        Ok(Self {
+            path,
+            write_tx,
+            skipped_compactions: AtomicU64::new(0),
+            max_file_bytes_before_compaction: retention
+                .max_total_bytes
+                .map(|bytes| bytes.saturating_mul(PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER)),
+            estimated_file_bytes: AtomicU64::new(estimated_file_bytes),
+            last_error,
+        })
+    }
+
+    fn persist_event<E>(
         &self,
         logged: &LoggedEvent<E>,
         compact_snapshot: Option<&[LoggedEvent<E>]>,
@@ -273,32 +312,137 @@ impl PersistentEventStore {
     where
         E: Clone + Serialize,
     {
-        let _guard = self.io_lock.lock().await;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        append_logged_event(&self.path, logged)?;
-        if let Some(snapshot) = compact_snapshot {
-            rewrite_logged_events(&self.path, snapshot)?;
+        self.check_last_error()?;
+        let append_jsonl = logged_event_jsonl_payload(logged)?;
+        let compact_jsonl = compact_snapshot
+            .map(logged_events_jsonl_payload)
+            .transpose()?;
+        let compact_jsonl_len = compact_jsonl.as_ref().map(|payload| payload.len() as u64);
+        let append_jsonl_len = append_jsonl.len() as u64;
+        self.write_tx
+            .send(PersistentEventWrite::Append {
+                append_jsonl,
+                compact_jsonl,
+            })
+            .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+        if let Some(compact_jsonl_len) = compact_jsonl_len {
+            self.estimated_file_bytes
+                .store(compact_jsonl_len, Ordering::Release);
             self.skipped_compactions.store(0, Ordering::Release);
+        } else {
+            self.estimated_file_bytes
+                .fetch_add(append_jsonl_len, Ordering::AcqRel);
         }
         Ok(())
     }
 
-    fn should_compact_now(&self) -> io::Result<bool> {
+    fn should_compact_now_after_append(&self, append_bytes: u64) -> io::Result<bool> {
+        self.check_last_error()?;
         let skipped = self.skipped_compactions.fetch_add(1, Ordering::AcqRel) + 1;
         if skipped >= PERSISTENT_COMPACTION_SKIP_LIMIT {
             return Ok(true);
         }
         if let Some(max_file_bytes) = self.max_file_bytes_before_compaction {
-            let file_bytes = match fs::metadata(&self.path) {
-                Ok(metadata) => metadata.len(),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
-                Err(error) => return Err(error),
-            };
+            let file_bytes = self
+                .estimated_file_bytes
+                .load(Ordering::Acquire)
+                .saturating_add(append_bytes);
             return Ok(file_bytes > max_file_bytes);
         }
         Ok(false)
+    }
+
+    fn check_last_error(&self) -> io::Result<()> {
+        let guard = self
+            .last_error
+            .lock()
+            .map_err(|_| io::Error::other("persistent event writer error lock was poisoned"))?;
+        match guard.as_ref() {
+            Some(message) => Err(io::Error::other(format!(
+                "persistent event writer failed for {}: {message}",
+                self.path.display()
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    fn flush_for_tests(&self) -> io::Result<()> {
+        let (tx, rx) = std_mpsc::channel();
+        self.write_tx
+            .send(PersistentEventWrite::Flush(tx))
+            .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+        rx.recv_timeout(PERSISTENT_WRITER_FLUSH_TIMEOUT)
+            .map_err(|_| io::Error::other("persistent event writer flush timed out"))?
+    }
+}
+
+fn spawn_persistent_event_writer(
+    path: PathBuf,
+    write_rx: std_mpsc::Receiver<PersistentEventWrite>,
+    last_error: Arc<StdMutex<Option<String>>>,
+) -> io::Result<()> {
+    thread::Builder::new()
+        .name("arroba-event-log-writer".to_string())
+        .spawn(move || run_persistent_event_writer(path, write_rx, last_error))
+        .map(|_| ())
+}
+
+fn run_persistent_event_writer(
+    path: PathBuf,
+    write_rx: std_mpsc::Receiver<PersistentEventWrite>,
+    last_error: Arc<StdMutex<Option<String>>>,
+) {
+    for write in write_rx {
+        let result = match write {
+            PersistentEventWrite::Append {
+                append_jsonl,
+                compact_jsonl,
+            } => persist_event_jsonl_payloads(&path, &append_jsonl, compact_jsonl.as_deref()),
+            #[cfg(test)]
+            PersistentEventWrite::Flush(reply_tx) => {
+                let result = persistent_writer_last_error(&last_error);
+                let _ = reply_tx.send(result);
+                continue;
+            }
+        };
+        if let Err(error) = result {
+            record_persistent_writer_error(&last_error, error);
+        }
+    }
+}
+
+fn persist_event_jsonl_payloads(
+    path: &Path,
+    append_jsonl: &[u8],
+    compact_jsonl: Option<&[u8]>,
+) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    append_logged_event_jsonl(path, append_jsonl)?;
+    if let Some(compact_jsonl) = compact_jsonl {
+        rewrite_logged_events_jsonl(path, compact_jsonl)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn persistent_writer_last_error(last_error: &Arc<StdMutex<Option<String>>>) -> io::Result<()> {
+    let guard = last_error
+        .lock()
+        .map_err(|_| io::Error::other("persistent event writer error lock was poisoned"))?;
+    match guard.as_ref() {
+        Some(message) => Err(io::Error::other(message.clone())),
+        None => Ok(()),
+    }
+}
+
+fn record_persistent_writer_error(last_error: &Arc<StdMutex<Option<String>>>, error: io::Error) {
+    if let Ok(mut guard) = last_error.lock() {
+        if guard.is_none() {
+            *guard = Some(error.to_string());
+        }
     }
 }
 
@@ -360,15 +504,26 @@ where
     }
 
     if let Some(max_total_bytes) = retention.max_total_bytes {
-        while retained_events_jsonl_bytes(streams) > max_total_bytes {
-            if !remove_oldest_retained_event(streams) {
-                break;
+        if retained_events_jsonl_bytes(streams) > max_total_bytes {
+            let target_total_bytes = persistent_compaction_target_bytes(max_total_bytes);
+            while retained_events_jsonl_bytes(streams) > target_total_bytes {
+                if !remove_oldest_retained_event(streams) {
+                    break;
+                }
+                compacted = true;
             }
-            compacted = true;
         }
     }
 
     compacted
+}
+
+fn persistent_compaction_target_bytes(max_total_bytes: u64) -> u64 {
+    max_total_bytes
+        .saturating_mul(PERSISTENT_COMPACTION_TARGET_NUMERATOR)
+        .checked_div(PERSISTENT_COMPACTION_TARGET_DENOMINATOR)
+        .unwrap_or(0)
+        .max(1)
 }
 
 fn remove_oldest_retained_event<E>(streams: &mut BTreeMap<String, EventStream<E>>) -> bool
@@ -427,35 +582,52 @@ fn logged_event_jsonl_bytes<E>(event: &LoggedEvent<E>) -> io::Result<u64>
 where
     E: Serialize,
 {
-    let bytes = serde_json::to_vec(event).map_err(io::Error::other)?;
-    Ok(bytes.len().saturating_add(1) as u64)
+    Ok(logged_event_jsonl_payload(event)?.len() as u64)
 }
 
-fn append_logged_event<E>(path: &Path, logged: &LoggedEvent<E>) -> io::Result<()>
+fn logged_event_jsonl_payload<E>(event: &LoggedEvent<E>) -> io::Result<Vec<u8>>
 where
     E: Serialize,
 {
+    let mut bytes = serde_json::to_vec(event).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn logged_events_jsonl_payload<E>(events: &[LoggedEvent<E>]) -> io::Result<Vec<u8>>
+where
+    E: Serialize,
+{
+    let mut bytes = Vec::new();
+    for event in events {
+        serde_json::to_writer(&mut bytes, event).map_err(io::Error::other)?;
+        bytes.write_all(b"\n")?;
+    }
+    Ok(bytes)
+}
+
+fn append_logged_event_jsonl(path: &Path, payload: &[u8]) -> io::Result<()> {
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    serde_json::to_writer(&mut file, logged).map_err(io::Error::other)?;
-    file.write_all(b"\n")
+    file.write_all(payload)
 }
 
 fn rewrite_logged_events<E>(path: &Path, events: &[LoggedEvent<E>]) -> io::Result<()>
 where
     E: Serialize,
 {
+    rewrite_logged_events_jsonl(path, &logged_events_jsonl_payload(events)?)
+}
+
+fn rewrite_logged_events_jsonl(path: &Path, payload: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("jsonl.tmp");
     let mut file = fs::File::create(&tmp_path)?;
-    for event in events {
-        serde_json::to_writer(&mut file, event).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
-    }
+    file.write_all(payload)?;
     fs::rename(tmp_path, path)
 }
 
@@ -750,6 +922,9 @@ mod tests {
             .append("session:a", "second".to_string())
             .await
             .expect("second event should append");
+        first_log
+            .flush_persistence_for_tests()
+            .expect("persistent writer should flush before restart");
 
         let restarted_log =
             EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
@@ -852,11 +1027,16 @@ mod tests {
             log.append("session:a", format!("extra-{index}"))
                 .await
                 .expect("extra event should append");
+            log.flush_persistence_for_tests()
+                .expect("persistent writer should flush before reading event store");
             let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
             if !stored.contains("\"first\"") {
                 assert!(
-                    stored.len() as u64 <= retention.max_total_bytes.unwrap(),
-                    "event store should compact after bounded file growth: {stored}"
+                    stored.len() as u64
+                        <= super::persistent_compaction_target_bytes(
+                            retention.max_total_bytes.unwrap()
+                        ),
+                    "event store should compact with headroom after bounded file growth: {stored}"
                 );
                 let _ = std::fs::remove_dir_all(root);
                 return;

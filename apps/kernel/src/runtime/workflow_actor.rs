@@ -24,6 +24,7 @@ struct WorkflowCommandEnvelope {
     command_type: String,
     telemetry: LaneCommandTrace,
     caller_user_id: String,
+    caller_metaagent_id: Option<String>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -73,6 +74,7 @@ impl WorkflowRuntime {
         let lane = self.workflow_lane(&session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
         let caller_user_id = command_workflow_actor_user_id(&command);
+        let caller_metaagent_id = command.caller.metaagent_id.clone();
         let telemetry = LaneCommandTrace::new(
             CommandTrace::from_command(&command),
             crate::runtime::command_latency::now_ms(),
@@ -83,6 +85,7 @@ impl WorkflowRuntime {
             command_type: telemetry.command_type().to_string(),
             telemetry: telemetry.clone(),
             caller_user_id,
+            caller_metaagent_id,
             request,
             result_tx,
         }) {
@@ -207,9 +210,10 @@ impl WorkflowRuntimeStore {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
+        caller_metaagent_id: Option<String>,
     ) -> WorkflowStoreExecutionResult {
         self.state
-            .execute_workflow_request(request, caller_user_id)
+            .execute_workflow_request(request, caller_user_id, caller_metaagent_id)
             .await
     }
 }
@@ -241,7 +245,11 @@ async fn run_workflow_command_lane(
             }),
         );
         let result = executor
-            .execute(envelope.request, envelope.caller_user_id)
+            .execute(
+                envelope.request,
+                envelope.caller_user_id,
+                envelope.caller_metaagent_id,
+            )
             .await;
         log_lane_completed(
             &envelope.telemetry,
@@ -278,10 +286,11 @@ impl WorkflowRuntimeCommandExecutor {
         &self,
         request: LocalDaemonRequest,
         caller_user_id: String,
+        caller_metaagent_id: Option<String>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let (result, projected_session) = self
             .store
-            .execute_workflow_request(request, caller_user_id)
+            .execute_workflow_request(request, caller_user_id, caller_metaagent_id)
             .await;
         if let Some(session) = projected_session {
             self.agent_runtime_projection.update_session(&session);

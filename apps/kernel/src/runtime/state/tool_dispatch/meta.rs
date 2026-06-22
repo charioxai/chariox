@@ -599,7 +599,10 @@ impl KernelRuntimeState {
         let session_agents = self.owned.agent_store.get_session_agents(session.id());
         let owned_agents = session_agents
             .iter()
-            .filter(|candidate| candidate.owner_user_id() == agent.owner_user_id())
+            .filter(|candidate| {
+                !candidate.is_metaagent()
+                    && candidate.controlled_by_metaagent_id() == Some(agent.id())
+            })
             .collect::<Vec<_>>();
         let pending_interactions = session
             .active_interactions()
@@ -612,9 +615,27 @@ impl KernelRuntimeState {
                         .get_agent(interaction.agent_id())
                         .is_ok_and(|target| {
                             !target.is_metaagent()
-                                && target.owner_user_id() == agent.owner_user_id()
+                                && target.controlled_by_metaagent_id() == Some(agent.id())
                         })
             })
+            .collect::<Vec<_>>();
+        let owned_workflow_ids = session
+            .workflows()
+            .iter()
+            .filter(|workflow| workflow.controlled_by_metaagent_id() == Some(agent.id()))
+            .map(|workflow| workflow.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let owned_workflows = session
+            .workflows()
+            .iter()
+            .filter(|workflow| workflow.controlled_by_metaagent_id() == Some(agent.id()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let owned_workflow_runs = session
+            .workflow_runs()
+            .iter()
+            .filter(|run| owned_workflow_ids.contains(run.workflow_id()))
+            .cloned()
             .collect::<Vec<_>>();
         Ok(RuntimeToolResult {
             ok: true,
@@ -645,8 +666,8 @@ impl KernelRuntimeState {
                 },
                 "workflows": if include_workflows {
                     serde_json::json!({
-                        "definitions": session.workflows(),
-                        "runs": session.workflow_runs(),
+                        "definitions": owned_workflows,
+                        "runs": owned_workflow_runs,
                     })
                 } else {
                     serde_json::Value::Null
@@ -672,6 +693,7 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&projected, agent.id())
             .is_some()
+            && session.metaagent_task(agent.id()).is_some()
             && projected.metaagent_task(agent.id()).is_none()
         {
             return Err(DaemonError::LocalTransport {
@@ -1186,7 +1208,7 @@ impl KernelRuntimeState {
                 });
             }
         };
-        if target.is_metaagent() || target.owner_user_id() != metaagent.owner_user_id() {
+        if target.is_metaagent() || target.controlled_by_metaagent_id() != Some(metaagent.id()) {
             return Ok(RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
@@ -1272,7 +1294,7 @@ impl KernelRuntimeState {
             .get_session_agents(session_id)
             .into_iter()
             .filter(|agent| {
-                !agent.is_metaagent() && agent.owner_user_id() == metaagent.owner_user_id()
+                !agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())
             })
             .collect()
     }
