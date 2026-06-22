@@ -64,6 +64,8 @@ export type CliPrimaryTranscriptCompositionDeps = {
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
   terminalsState: AnyFn
+  externalProviderSessionsState: AnyFn
+  externalProviderSessionsPageState: AnyFn
   waitingRoomTargets: AnyFn
   themeRegistryState: AnyFn
   transcriptScrollboxRefController: {
@@ -157,6 +159,9 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         machines: deps.remoteMachinesState(),
         kernels: deps.remoteKernelsState(),
         terminals: deps.terminalsState(),
+        externalProviderSessions: deps.externalProviderSessionsState(),
+        externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
+        externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
       }, deps.waitingRoomTargets(), deps.themeRegistryState()),
     buildEntryRenderable: (entry) => buildTranscriptEntryRenderable(
       deps.renderer,

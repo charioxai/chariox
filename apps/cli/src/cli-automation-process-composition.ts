@@ -40,6 +40,7 @@ export type CliAutomationProcessCompositionDeps = {
   agentBusyLatch: AnyFn
   isAttached: AnyFn
   waitingRoomState: AnyFn
+  setWaitingRoomState: AnyFn
   availableSessions: AnyFn
   providerCatalogState: AnyFn
   waitingRoomCloudNotice: AnyFn
@@ -48,6 +49,8 @@ export type CliAutomationProcessCompositionDeps = {
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
   terminalsState: AnyFn
+  externalProviderSessionsState: AnyFn
+  externalProviderSessionsPageState: AnyFn
   slicesState: AnyFn
   waitingRoomTargets: AnyFn
   themeRegistryState: AnyFn
@@ -103,6 +106,8 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     remoteMachinesState: deps.remoteMachinesState,
     remoteKernelsState: deps.remoteKernelsState,
     terminalsState: deps.terminalsState,
+    externalProviderSessionsState: deps.externalProviderSessionsState,
+    externalProviderSessionsPageState: deps.externalProviderSessionsPageState,
     slicesState: deps.slicesState,
     waitingRoomTargets: deps.waitingRoomTargets,
     themeRegistryState: deps.themeRegistryState,
@@ -138,6 +143,9 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     setPromptText: deps.setPromptText,
     submitPrompt: deps.submitPrompt,
     activateWaitingRoom: deps.activateWaitingRoom,
+    waitingRoomState: deps.waitingRoomState,
+    setWaitingRoomState: deps.setWaitingRoomState,
+    externalProviderSessionsState: deps.externalProviderSessionsState,
     connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,
     cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,

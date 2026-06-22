@@ -1108,6 +1108,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     remoteMachinesState,
     remoteKernelsState,
     terminalsState,
+    externalProviderSessionsState,
+    externalProviderSessionsPageState,
     waitingRoomTargets,
     themeRegistryState,
     transcriptScrollboxRefController,

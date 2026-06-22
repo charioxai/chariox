@@ -14,6 +14,7 @@ import {
 import { submitPromptWithRecovery } from "./prompt-runtime-api.js"
 import { launchProviderRun } from "./provider-api.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type CliAutomationActionDeps = {
   client: LocalIpcClient
@@ -41,6 +42,9 @@ export type CliAutomationActionDeps = {
   setInteractionCustomEditing: (interactionId: string, editing: boolean) => void
   toggleBlob: (entryId: number, collapsed: boolean) => void
   restoreTerminalAndExit: (exitCode: number) => Promise<void>
+  waitingRoomState: () => WaitingRoomState
+  setWaitingRoomState: (state: WaitingRoomState) => void
+  externalProviderSessionsState: () => Array<{ external_session_id: string }>
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -124,6 +128,32 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         if (deps.isAttached()) {
           throw new Error("cannot activate waiting room while attached")
         }
+        await deps.activateWaitingRoom()
+        return deps.snapshot()
+      }
+      case "activate_orphan_agent": {
+        if (deps.isAttached()) {
+          throw new Error("cannot activate orphan agent while attached")
+        }
+        const sessions = deps.externalProviderSessionsState()
+        const externalSessionId = typeof request.externalSessionId === "string" ? request.externalSessionId : ""
+        const requestedIndex = typeof request.externalSessionIndex === "number" ? request.externalSessionIndex : null
+        const candidateIndex = externalSessionId
+          ? sessions.findIndex((session) => session.external_session_id === externalSessionId)
+          : requestedIndex
+        if (
+          typeof candidateIndex !== "number"
+          || !Number.isInteger(candidateIndex)
+          || candidateIndex < 0
+          || candidateIndex >= sessions.length
+        ) {
+          throw new Error("usage: activate_orphan_agent externalSessionId=<id> or externalSessionIndex=<index>")
+        }
+        deps.setWaitingRoomState({
+          ...deps.waitingRoomState(),
+          focus: "external-session",
+          externalSessionIndex: candidateIndex,
+        })
         await deps.activateWaitingRoom()
         return deps.snapshot()
       }

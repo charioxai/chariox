@@ -4,6 +4,7 @@ import type {
   RuntimeSession,
   SliceRecord,
   TranscriptEntry,
+  ExternalProviderSessionRecord,
 } from "./cli-types.js"
 import type { CliAutomationSnapshot } from "./cli-automation.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
@@ -44,6 +45,8 @@ export type CliAutomationSnapshotDeps = {
   remoteMachinesState: () => RemoteMachineView[]
   remoteKernelsState: () => RemoteKernelView[]
   terminalsState: () => TerminalView[]
+  externalProviderSessionsState: () => ExternalProviderSessionRecord[]
+  externalProviderSessionsPageState: () => { hasMore: boolean; nextCursor: string | null }
   slicesState: () => SliceRecord[]
   waitingRoomTargets: () => WaitingRoomTargetState
   themeRegistryState: () => ThemeRegistry
@@ -124,9 +127,13 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           machines: deps.remoteMachinesState(),
           kernels: deps.remoteKernelsState(),
           terminals: deps.terminalsState(),
+          externalProviderSessions: deps.externalProviderSessionsState(),
+          externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
+          externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
           slices: deps.slicesState(),
         }, deps.waitingRoomTargets(), deps.themeRegistryState()).map((row) => ({
           id: row.id,
+          externalSessionId: row.id.startsWith("external-session:") ? row.id.slice("external-session:".length) : null,
           title: row.title,
           value: row.value,
           focused: row.focused,

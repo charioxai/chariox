@@ -23,6 +23,8 @@ export type CliAutomationRequest = {
   workflowAlias?: unknown
   entryId?: unknown
   collapsed?: unknown
+  externalSessionId?: unknown
+  externalSessionIndex?: unknown
 }
 
 export type CliAutomationResponse = {

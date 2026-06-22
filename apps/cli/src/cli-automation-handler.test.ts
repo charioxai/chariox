@@ -3,6 +3,7 @@ import test from "node:test"
 
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
 import type { CliOptions, RuntimeSession } from "./cli-types.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 
 test("automation action handler switches attached workspace screens through app deps", async () => {
@@ -114,6 +115,41 @@ test("automation prompt submit does not relaunch when the session has an active 
   assert.deepEqual(result, { promptText: "hello", submitted: true })
 })
 
+test("automation action handler activates a selected orphan agent", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  let activated = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    externalProviderSessionsState: () => [
+      { external_session_id: "opencode:first" },
+      { external_session_id: "codex:second" },
+    ],
+    activateWaitingRoom: async () => {
+      activated = true
+    },
+    snapshot: () => ({
+      waitingRoomState,
+      activated,
+    }),
+  })
+
+  const result = await handler({ action: "activate_orphan_agent", externalSessionId: "codex:second" })
+
+  assert.equal(activated, true)
+  assert.deepEqual(result, {
+    waitingRoomState: {
+      ...waitingRoomState,
+      focus: "external-session",
+      externalSessionIndex: 1,
+    },
+    activated: true,
+  })
+})
+
 function baseDeps() {
   return {
     client: null as never,
@@ -141,5 +177,27 @@ function baseDeps() {
     setInteractionCustomEditing: () => {},
     toggleBlob: () => {},
     restoreTerminalAndExit: async () => {},
+    waitingRoomState: () => waitingRoomFixture(),
+    setWaitingRoomState: () => {},
+    externalProviderSessionsState: () => [],
+  }
+}
+
+function waitingRoomFixture(): WaitingRoomState {
+  return {
+    focus: "new",
+    sessionIndex: 0,
+    externalSessionIndex: 0,
+    machineIndex: 0,
+    remoteKernelIndex: 0,
+    terminalIndex: 0,
+    worktreeSelectionId: "/repo",
+    workspaceLiveSyncMode: "off",
+    providerId: "opencode",
+    modelId: "default",
+    effort: "",
+    themeId: "dark",
+    introStep: 0,
+    keyState: { up: false, down: false, left: false, right: false },
   }
 }
