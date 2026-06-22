@@ -183,6 +183,36 @@
         <li>Coexistence drill: while an Arroba-owned prompt is active, submit a prompt from the external terminal; verify Arroba labels the external turn, keeps its own queue consistent, and does not crash or fork the Arroba session.</li>
         <li>TUI parity drill: repeat discovery/import and attach flows in the TUI waiting room and <code>/agent spawn --orphan-agent</code>; verify external labels and disabled steering match web behavior.</li>
       </ul>
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>External source</th>
+            <th>Metadata validation</th>
+            <th>Required surfaces</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Codex</td>
+            <td>Codex CLI/app-created thread in the shared provider history directory</td>
+            <td>Prompt/output labels, provider turn id, observed timestamp, persisted status/tool/reasoning metadata when present, and completion/error state.</td>
+            <td>Web terminal and TUI screenshots plus structured snapshot assertions.</td>
+          </tr>
+          <tr>
+            <td>OpenCode</td>
+            <td>OpenCode CLI/app-created session in the shared provider history directory</td>
+            <td>Prompt/output labels, provider turn id, observed timestamp, persisted status/tool/reasoning metadata when present, and completion/error state.</td>
+            <td>Web terminal and TUI screenshots plus structured snapshot assertions.</td>
+          </tr>
+          <tr>
+            <td>Claude</td>
+            <td>Claude CLI/headless-created thread in the shared provider history directory or hook output path</td>
+            <td>Prompt/output labels, provider turn id, observed timestamp, persisted status/tool/thinking metadata when present, and completion/error state.</td>
+            <td>Web terminal and TUI screenshots plus structured snapshot assertions.</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <section aria-labelledby="assumptions">

@@ -77,6 +77,7 @@ export type CliAutomationProcessCompositionDeps = {
   submitPrompt: AnyFn
   activateWaitingRoom: AnyFn
   connectDetachedKernelFromWaitingRoom: AnyFn
+  refreshWaitingRoomData: AnyFn
   submitFocusedInteractionChoice: AnyFn
   cycleFocusedInteractionChoice: AnyFn
   toggleBlob: AnyFn
@@ -147,6 +148,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     setWaitingRoomState: deps.setWaitingRoomState,
     externalProviderSessionsState: deps.externalProviderSessionsState,
     connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
+    refreshWaitingRoomData: deps.refreshWaitingRoomData,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,
     cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,
     setInteractionCustomReply: deps.setInteractionCustomReply,

@@ -260,6 +260,27 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     appendNotice: (message, tone) => deps.appendNotice(message, tone === "warning" ? "warning" : "muted"),
     connectedStatusLine: DEFAULT_CONNECTED_STATUS,
     markAssistantMessageCompleted: deps.markAssistantMessageCompleted,
+    handleExternalProviderHistoryUpdated: (agentId) => {
+      void (async () => {
+        if (!deps.isAttached()) {
+          return
+        }
+        const currentSession = deps.sessionState()
+        const latestSession = await deps.getSessionState(currentSession.id)
+        deps.applySessionState(latestSession)
+        await deps.refreshAgentPanes(latestSession)
+        deps.syncVisibleTranscriptPreview()
+        deps.appLogger?.debug?.("refreshed external provider history", {
+          session_id: latestSession.id,
+          agent_id: agentId,
+        })
+      })().catch((error) => {
+        deps.appLogger?.warn?.("failed to refresh external provider history", {
+          agent_id: agentId,
+          error: deps.formatError(error),
+        })
+      })
+    },
   })
 
   const kernelSessionSnapshotController = createKernelSessionSnapshotController({

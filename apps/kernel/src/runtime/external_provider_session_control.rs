@@ -15,6 +15,7 @@ use crate::local::{
 };
 use crate::provider::ExternalProviderImportMetadata;
 use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun};
+use crate::runtime::state::KernelRuntimeState;
 use crate::session::{
     CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession,
     SessionAgentDefaults,
@@ -280,6 +281,7 @@ async fn refresh_external_provider_session_index(
 
 pub(crate) async fn execute_external_provider_session_request(
     app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
     request: LocalDaemonRequest,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -308,6 +310,12 @@ pub(crate) async fn execute_external_provider_session_request(
                     store.replace_provider_sessions(provider, provider_sessions);
                 }
             }
+            refresh_imported_external_provider_histories(
+                app,
+                runtime_state,
+                request.provider.as_deref(),
+            )
+            .await;
             let list_request = ListExternalProviderSessionsRequest {
                 provider: request.provider,
                 cursor: None,
@@ -332,6 +340,74 @@ pub(crate) async fn execute_external_provider_session_request(
             operation: "external provider session request",
             message: "unsupported external provider session request".to_string(),
         }),
+    }
+}
+
+async fn refresh_imported_external_provider_histories(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: Option<&KernelRuntimeState>,
+    provider_filter: Option<&str>,
+) {
+    let targets = {
+        let app = app.lock().await;
+        imported_external_observer_targets(&app)
+            .into_iter()
+            .filter(|target| {
+                provider_filter
+                    .map(|provider| target.import.external_provider == provider)
+                    .unwrap_or(true)
+            })
+            .collect::<Vec<_>>()
+    };
+    for target in targets {
+        let provider = target.import.external_provider.clone();
+        let provider_session_id = target
+            .import
+            .external_provider_session_provider_id
+            .clone();
+        let read = match tokio::task::spawn_blocking(move || {
+            crate::app::read_external_provider_observed_turns(&provider, &provider_session_id)
+        })
+        .await
+        {
+            Ok(turns) => ImportedExternalObserverRead { target, turns },
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.external_provider_sessions",
+                    "external provider session refresh failed to read imported history",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                continue;
+            }
+        };
+        let outcome = {
+            let mut app = app.lock().await;
+            append_observed_external_turns_for_import(&mut app, read).unwrap_or_default()
+        };
+        if outcome.external_active_prompt_settled {
+            if let (Some(runtime_state), Some(provider_run_id)) =
+                (runtime_state, outcome.provider_run_id.as_deref())
+            {
+                if let Err(error) = runtime_state
+                    .dispatch_next_queued_prompt_after_external_settlement(
+                        &outcome.session_id,
+                        &outcome.agent_id,
+                        provider_run_id,
+                    )
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.external_provider_sessions",
+                        "external provider session refresh failed to dispatch queued prompt after external settlement",
+                        serde_json::json!({
+                            "session_id": outcome.session_id,
+                            "agent_id": outcome.agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -882,6 +958,7 @@ mod tests {
 
             let response = execute_external_provider_session_request(
                 &app,
+                None,
                 LocalDaemonRequest::ImportExternalProviderSession(
                     ImportExternalProviderSessionRequest {
                         external_session_id: "dev-stub:external-1".to_string(),
@@ -966,6 +1043,7 @@ mod tests {
 
             let error = execute_external_provider_session_request(
                 &app,
+                None,
                 LocalDaemonRequest::ImportExternalProviderSession(
                     ImportExternalProviderSessionRequest {
                         external_session_id: "dev-stub:external-attached".to_string(),
@@ -1006,6 +1084,7 @@ mod tests {
 
             let response = execute_external_provider_session_request(
                 &app,
+                None,
                 LocalDaemonRequest::ImportExternalProviderAgent(
                     ImportExternalProviderAgentRequest {
                         session_id: session_id.clone(),

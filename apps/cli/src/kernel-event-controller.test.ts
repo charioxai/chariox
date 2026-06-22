@@ -139,6 +139,35 @@ test("visible provider status updates activity and appends renderable status chu
   ])
 })
 
+test("external provider history update status triggers pane refresh hook", () => {
+  const { deps, calls } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    handleExternalProviderHistoryUpdated: (agentId: string | null) => {
+      calls.push(`external-history:${agentId ?? "null"}`)
+    },
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    kind: "provider_status",
+    bytes: [...Buffer.from("external_provider_history_updated", "utf8")],
+  })
+
+  assert.deepEqual(calls, [
+    "activity:terminal_record",
+    "turn-activity:terminal_record",
+    "external-history:agent-a",
+    "streaming:agent-a",
+    "busy:agent-a",
+    "agent-activity:agent-a:null",
+    "provider-activity:null",
+    "provider-active:false",
+    "chunk:status:external_provider_history_updated:__provider_status__",
+    "sync-visible-preview",
+  ])
+})
+
 test("idle provider status is ignored so it cannot demote a live turn to idle", () => {
   const { deps, calls } = createDeps({
     resolveTerminalRecordAgentId: () => "agent-a",

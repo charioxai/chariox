@@ -71,12 +71,18 @@ export function createWaitingRoomInventoryRefreshController(
     }
     options.setInventoryStatus("ready")
     if (snapshot.inventoryVersion === inventoryVersion) {
+      applySupplementalInventory(snapshot)
       options.reconcileWaitingRoom(options.getWaitingRoomState())
       return
     }
 
     inventoryVersion = snapshot.inventoryVersion
     options.setAvailableSessions(snapshot.sessions)
+    applySupplementalInventory(snapshot)
+    options.reconcileWaitingRoom(options.getWaitingRoomState())
+  }
+
+  const applySupplementalInventory = (snapshot: WaitingRoomInventory) => {
     options.setRelayStatus(snapshot.relayStatus)
     options.setRemoteMachines(snapshot.remoteMachines)
     options.setRemoteKernels(snapshot.remoteKernels.filter((kernel) => (
@@ -90,7 +96,6 @@ export function createWaitingRoomInventoryRefreshController(
       hasMore: snapshot.externalProviderSessionsHasMore ?? false,
       nextCursor: snapshot.externalProviderSessionsNextCursor ?? null,
     })
-    options.reconcileWaitingRoom(options.getWaitingRoomState())
   }
 
   return {

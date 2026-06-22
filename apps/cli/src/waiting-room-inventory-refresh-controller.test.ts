@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
@@ -123,6 +123,28 @@ test("waiting room inventory row patch merges changes and removals", () => {
   })
 })
 
+test("waiting room refresh still hydrates orphan agents after a row patch set the inventory version", async () => {
+  const harness = createHarness({
+    snapshots: [inventory("v2", {
+      externalProviderSessions: [externalProviderSession("opencode:thread-1")],
+      externalProviderSessionsHasMore: true,
+      externalProviderSessionsNextCursor: "cursor-2",
+    })],
+  })
+
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "v2",
+    sessions: [session("session-1")],
+    removedSessionIds: [],
+  })
+  await harness.controller.refreshNow()
+
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-1"])
+  assert.deepEqual(harness.externalProviderSessions().map((entry) => entry.external_session_id), ["opencode:thread-1"])
+  assert.deepEqual(harness.externalProviderSessionsPage(), { hasMore: true, nextCursor: "cursor-2" })
+  assert.equal(harness.reconcileCount(), 2)
+})
+
 test("waiting room inventory row patch ignores duplicate versions and disconnected kernels", () => {
   const harness = createHarness({ connected: true })
 
@@ -218,6 +240,8 @@ function createHarness(options: {
   let relayStatus: RelayStatusView | null = null
   let remoteMachines: RemoteMachineView[] = []
   let remoteKernels: RemoteKernelView[] = []
+  let externalProviderSessions: ExternalProviderSessionRecord[] = []
+  let externalProviderSessionsPage = { hasMore: false, nextCursor: null as string | null }
   let inventoryCalls = 0
   let reconcileCount = 0
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
@@ -253,6 +277,12 @@ function createHarness(options: {
     },
     setTerminals: () => {},
     setSlices: () => {},
+    setExternalProviderSessions: (sessions) => {
+      externalProviderSessions = sessions
+    },
+    setExternalProviderSessionsPage: (page) => {
+      externalProviderSessionsPage = page
+    },
     reconcileWaitingRoom: (state) => {
       waitingRoomState = state
       reconcileCount += 1
@@ -270,8 +300,21 @@ function createHarness(options: {
     relayStatus: () => relayStatus,
     remoteMachines: () => remoteMachines,
     remoteKernels: () => remoteKernels,
+    externalProviderSessions: () => externalProviderSessions,
+    externalProviderSessionsPage: () => externalProviderSessionsPage,
     reconcileCount: () => reconcileCount,
     warnings: () => warnings,
+  }
+}
+
+function externalProviderSession(externalSessionId: string): ExternalProviderSessionRecord {
+  const [provider = "opencode", providerSessionId = externalSessionId] = externalSessionId.split(":", 2)
+  return {
+    external_session_id: externalSessionId,
+    provider,
+    provider_session_id: providerSessionId,
+    title: "External thread",
+    last_modified_at_ms: 1,
   }
 }
 

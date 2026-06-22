@@ -56,10 +56,10 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
   const slices = await listSlices(client).catch(() => [])
   return {
     inventoryVersion: payload.inventory_version,
-    sessions: payload.sessions.slice().sort((left, right) => right.created_at_ms - left.created_at_ms),
+    sessions: (payload.sessions ?? []).slice().sort((left, right) => right.created_at_ms - left.created_at_ms),
     relayStatus: payload.relay_status,
-    remoteMachines: payload.remote_machines,
-    remoteKernels: payload.remote_kernels,
+    remoteMachines: payload.remote_machines ?? [],
+    remoteKernels: payload.remote_kernels ?? [],
     terminals: payload.terminals ?? [],
     slices,
     externalProviderSessions: payload.external_provider_sessions ?? [],

@@ -36,6 +36,7 @@ export type CliAutomationActionDeps = {
   submitPrompt: () => Promise<void>
   activateWaitingRoom: () => Promise<void>
   connectDetachedKernelFromWaitingRoom: () => Promise<void>
+  refreshWaitingRoomData: () => Promise<void>
   submitFocusedInteractionChoice: (choiceIndex?: number) => Promise<unknown>
   cycleFocusedInteractionChoice: (delta: number) => void
   setInteractionCustomReply: (interactionId: string, reply: string) => void
@@ -159,9 +160,14 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
       }
       case "connect_detached_kernel": {
         if (deps.kernelConnected()) {
+          await deps.refreshWaitingRoomData()
           return deps.snapshot()
         }
         await deps.connectDetachedKernelFromWaitingRoom()
+        return deps.snapshot()
+      }
+      case "refresh_waiting_room": {
+        await deps.refreshWaitingRoomData()
         return deps.snapshot()
       }
       case "snapshot":

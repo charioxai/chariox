@@ -1515,6 +1515,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     agentBusyLatch,
     isAttached,
     waitingRoomState,
+    setWaitingRoomState,
     availableSessions,
     providerCatalogState,
     waitingRoomCloudNotice,
@@ -1523,6 +1524,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     remoteMachinesState,
     remoteKernelsState,
     terminalsState,
+    externalProviderSessionsState,
+    externalProviderSessionsPageState,
     slicesState,
     waitingRoomTargets,
     themeRegistryState,
@@ -1549,6 +1552,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     submitPrompt,
     activateWaitingRoom,
     connectDetachedKernelFromWaitingRoom,
+    refreshWaitingRoomData,
     submitFocusedInteractionChoice,
     cycleFocusedInteractionChoice,
     toggleBlob,
@@ -1631,7 +1635,6 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     sessionStatusMode,
     workspaceLiveSyncStatus,
     renderSplitPaneFooters,
-    setWaitingRoomState,
     hydrateCurrentAttachedSession,
   })
   recordDaemonActivity = runtimeRecordDaemonActivity

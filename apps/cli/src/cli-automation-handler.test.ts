@@ -150,6 +150,22 @@ test("automation action handler activates a selected orphan agent", async () => 
   })
 })
 
+test("automation connect action refreshes waiting room when already connected", async () => {
+  let refreshed = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    kernelConnected: () => true,
+    refreshWaitingRoomData: async () => {
+      refreshed = true
+    },
+    snapshot: () => ({ refreshed }),
+  })
+
+  const result = await handler({ action: "connect_detached_kernel" })
+
+  assert.deepEqual(result, { refreshed: true })
+})
+
 function baseDeps() {
   return {
     client: null as never,
@@ -171,6 +187,7 @@ function baseDeps() {
     submitPrompt: async () => {},
     activateWaitingRoom: async () => {},
     connectDetachedKernelFromWaitingRoom: async () => {},
+    refreshWaitingRoomData: async () => {},
     submitFocusedInteractionChoice: async () => {},
     cycleFocusedInteractionChoice: () => {},
     setInteractionCustomReply: () => {},

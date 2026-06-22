@@ -48,7 +48,10 @@ type KernelEventControllerDeps = {
   appendNotice: (message: string, tone?: "default" | "warning") => void
   connectedStatusLine: string
   markAssistantMessageCompleted: (agentId: string | null | undefined) => void
+  handleExternalProviderHistoryUpdated?: (agentId: string | null) => void
 }
+
+const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS = "external_provider_history_updated"
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
   let lastTransportNoticeMessage: string | null = null
@@ -61,6 +64,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const recordAgentId = deps.resolveTerminalRecordAgentId(record)
     if (!recordAgentId) {
       return
+    }
+    if (record.kind === "provider_status" && text.trim() === EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS) {
+      deps.handleExternalProviderHistoryUpdated?.(recordAgentId)
     }
     if (record.kind !== "prompt_echo") {
       deps.setStreamingAgentId(recordAgentId)

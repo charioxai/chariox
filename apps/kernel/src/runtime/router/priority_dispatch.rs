@@ -298,7 +298,13 @@ impl CommandRouter {
             | LocalDaemonRequest::ImportExternalProviderAgent(_)
             | LocalDaemonRequest::WatchExternalProviderSessionStatus(_)) => {
                 let caller_user_id = command_caller_user_id(&command);
-                execute_external_provider_session_request(&self.app, request, &caller_user_id).await
+                execute_external_provider_session_request(
+                    &self.app,
+                    Some(&self.runtime_state),
+                    request,
+                    &caller_user_id,
+                )
+                .await
             }
             LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(request) => {
                 let caller_user_id = command_caller_user_id(&command);
