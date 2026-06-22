@@ -29,10 +29,24 @@ function appendExternalProviderObservedLabel(text: TextRenderable, entry: Transc
     return
   }
   const provider = entry.externalProvider?.trim() || "provider"
-  text.add(TextNodeRenderable.fromString(`[external ${provider}] `, {
+  const metadata = [
+    "external",
+    provider,
+    entry.externalProviderSessionId ? `session=${entry.externalProviderSessionId}` : null,
+    entry.externalProviderTurnId ? `turn=${entry.externalProviderTurnId}` : null,
+    typeof entry.observedAtMs === "number" ? `observed=${formatObservedAt(entry.observedAtMs)}` : null,
+  ].filter(Boolean)
+  text.add(TextNodeRenderable.fromString(`[${metadata.join(" ")}] `, {
     fg: theme.secondary,
     attributes: TextAttributes.BOLD,
   }))
+}
+
+function formatObservedAt(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "unknown"
+  }
+  return new Date(value).toISOString()
 }
 
 function applyPromptTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
