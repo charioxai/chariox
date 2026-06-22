@@ -32,6 +32,12 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
+        if active_prompt.prompt_origin() == crate::session::PromptOrigin::External {
+            let _ = owned.clear_prompt_activity(provider_run_id);
+            let _ = owned.sync_focused_provider_run_if_idle(session_id);
+            let _ = owned.session_snapshot(session_id);
+            return Ok(());
+        }
         let _ = self.inject_metaagent_turn_failure_event(
             session_id,
             &agent_id,

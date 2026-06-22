@@ -33,6 +33,70 @@ async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState 
     )
 }
 
+fn sync_external_active_prompt_and_queue_arroba_prompt(
+    app: &mut DaemonApp,
+    session_id: &str,
+    attachment_id: &str,
+    agent_id: &str,
+) -> (String, String) {
+    let external_prompt_id = format!("external:claude:test-session:{agent_id}:user-1");
+    let external_prompt = crate::session::PromptQueueItem::new(
+        external_prompt_id.clone(),
+        "external:claude",
+        agent_id,
+        "external prompt in progress",
+        crate::session::PromptStatus::Running,
+    )
+    .with_prompt_origin(crate::session::PromptOrigin::External);
+    app.prompt_owner_sync_external_active_prompt(session_id, agent_id, Some(external_prompt))
+        .expect("external active prompt should sync");
+
+    let queued_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment_id,
+        agent_id,
+        "queued from Arroba\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session_id, queued_prompt, false)
+        .expect("Arroba prompt should queue behind external active prompt")
+    else {
+        panic!("Arroba prompt must not start while external prompt is active");
+    };
+    (external_prompt_id, prompt.id().to_string())
+}
+
+fn assert_external_active_prompt_and_queued_arroba_prompt(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    external_prompt_id: &str,
+    queued_prompt_id: &str,
+) {
+    let session_state = runtime
+        .owned
+        .session_snapshot(session_id)
+        .expect("session snapshot should exist");
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent_id)
+        .expect("external prompt should remain active");
+    assert_eq!(active_prompt.id(), external_prompt_id);
+    assert_eq!(
+        active_prompt.prompt_origin(),
+        crate::session::PromptOrigin::External
+    );
+    let queued_prompts = session_state
+        .queued_prompts_for_agent(agent_id)
+        .expect("queued prompts should be mirrored");
+    assert!(
+        queued_prompts
+            .iter()
+            .any(|prompt| prompt.id() == queued_prompt_id),
+        "Arroba prompt should stay queued behind external active prompt"
+    );
+}
+
 #[tokio::test]
 async fn provider_output_pump_ignores_projected_remote_active_run() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -401,6 +465,139 @@ async fn provider_completed_signal_settles_matching_active_prompt() {
         .expect("session should exist")
         .active_prompt_for_agent(agent.id())
         .is_none());
+}
+
+#[tokio::test]
+async fn provider_completion_signal_preserves_external_active_prompt_and_queue() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-external-settlement",
+            "worktree-external-settlement",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-external-settlement",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    let (external_prompt_id, queued_prompt_id) =
+        sync_external_active_prompt_and_queue_arroba_prompt(
+            &mut app,
+            session.id(),
+            attachment.id(),
+            agent.id(),
+        );
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let settlement = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
+        .await
+        .expect("provider completion signal should be accepted");
+    assert!(!settlement.had_active_prompt);
+    assert!(!settlement.started_next_prompt);
+    assert_external_active_prompt_and_queued_arroba_prompt(
+        &runtime,
+        session.id(),
+        agent.id(),
+        &external_prompt_id,
+        &queued_prompt_id,
+    );
+}
+
+#[tokio::test]
+async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-external-terminal-failure",
+            "worktree-external-terminal-failure",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-external-terminal-failure",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.3-codex-spark",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-external-terminal-failure",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let (external_prompt_id, queued_prompt_id) =
+        sync_external_active_prompt_and_queue_arroba_prompt(
+            &mut app,
+            session.id(),
+            attachment.id(),
+            agent.id(),
+        );
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some("external provider stderr".to_string()),
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("terminal failure batch should be accepted");
+    assert_external_active_prompt_and_queued_arroba_prompt(
+        &runtime,
+        session.id(),
+        agent.id(),
+        &external_prompt_id,
+        &queued_prompt_id,
+    );
 }
 
 #[tokio::test]

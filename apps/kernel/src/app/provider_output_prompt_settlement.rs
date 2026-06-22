@@ -4,7 +4,7 @@ use crate::app::{ActivePromptState, ActiveTurnStore, DaemonApp, PromptActivitySt
 use crate::error::DaemonError;
 use crate::provider::ProviderProcessServiceStore;
 use crate::runtime::projection::AgentRuntimeProjectionStore;
-use crate::session::{PromptQueueItem, PromptStatus};
+use crate::session::{PromptOrigin, PromptQueueItem, PromptStatus};
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
 
@@ -286,10 +286,21 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             .filter(|projection| projection.session_id == session_id)
             .and_then(|projection| projection.active_prompt)
         {
+            if prompt.prompt_origin() == PromptOrigin::External {
+                return Ok(None);
+            }
             return Ok(Some(prompt));
         }
-        self.app
-            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
+        let active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?;
+        if active
+            .as_ref()
+            .is_some_and(|prompt| prompt.prompt_origin() == PromptOrigin::External)
+        {
+            return Ok(None);
+        }
+        Ok(active)
     }
 
     fn provider_run_agent_id(&self, provider_run_id: &str) -> Result<String, DaemonError> {

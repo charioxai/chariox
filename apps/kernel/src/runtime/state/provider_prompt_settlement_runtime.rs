@@ -61,6 +61,31 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         };
+        if active_prompt.prompt_origin() == crate::session::PromptOrigin::External {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "settle provider prompt ignored external active prompt",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                    "prompt_completed": prompt_completed,
+                    "force": force,
+                }),
+            );
+            if owned.clear_prompt_activity(provider_run_id) {
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+            }
+            self.observe_git_after_provider_activity_if_pending(provider_run_id)
+                .await;
+            let _ = owned.sync_focused_provider_run_if_idle(session_id);
+            let _ = owned.session_snapshot(session_id);
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        }
 
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
