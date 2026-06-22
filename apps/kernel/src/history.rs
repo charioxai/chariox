@@ -497,6 +497,146 @@ impl OperationalHistoryStore {
         Ok(event)
     }
 
+    pub fn replace_transcript_by_merge_key(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        merge_key: &str,
+        entry: &SessionHistoryEntry,
+        context: HistoryEventTurnContext,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let existing = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT event_json
+                     FROM history_events
+                     WHERE session_id = ?1
+                     ORDER BY sequence ASC",
+                )
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "prepare operational history replacement lookup",
+                    message: error.to_string(),
+                })?;
+            let mut rows = statement.query(params![session_id]).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "query operational history replacement lookup",
+                    message: error.to_string(),
+                }
+            })?;
+            let mut existing = None;
+            while let Some(row) =
+                rows.next()
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "read operational history replacement lookup",
+                        message: error.to_string(),
+                    })?
+            {
+                let event_json =
+                    row.get::<_, String>(0)
+                        .map_err(|error| DaemonError::SessionHistoryFailed {
+                            session_id: Some(session_id.to_string()),
+                            operation: "read operational history replacement event",
+                            message: error.to_string(),
+                        })?;
+                let event = serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
+                    DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode operational history replacement event",
+                        message: error.to_string(),
+                    }
+                })?;
+                if event.agent_id.as_deref() == agent_id
+                    && event
+                        .metadata
+                        .get("merge_key")
+                        .and_then(|value| value.as_str())
+                        == Some(merge_key)
+                {
+                    existing = Some(event);
+                    break;
+                }
+            }
+            existing
+        };
+        let Some(existing) = existing else {
+            return Ok(None);
+        };
+        let mut replacement = HistoryEvent::transcript(existing.sequence, entry, context);
+        replacement.event_id = existing.event_id.clone();
+        replacement.sequence = existing.sequence;
+        let event_json = serde_json::to_string(&replacement).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: replacement.session_id.clone(),
+                operation: "encode operational history replacement",
+                message: error.to_string(),
+            }
+        })?;
+        let metadata_text = searchable_metadata(&replacement);
+        connection
+            .execute(
+                "UPDATE history_events
+                 SET timestamp_ms = ?2,
+                     kind = ?3,
+                     session_id = ?4,
+                     agent_id = ?5,
+                     provider = ?6,
+                     model = ?7,
+                     turn_id = ?8,
+                     prompt_id = ?9,
+                     provider_run_id = ?10,
+                     workflow_id = ?11,
+                     workflow_run_id = ?12,
+                     workflow_node_id = ?13,
+                     machine_id = ?14,
+                     repo_root = ?15,
+                     worktree_path = ?16,
+                     content = ?17,
+                     content_ref = ?18,
+                     metadata_text = ?19,
+                     event_json = ?20
+                 WHERE event_id = ?1",
+                params![
+                    replacement.event_id.as_str(),
+                    replacement.timestamp_ms as i64,
+                    history_event_kind_key(replacement.kind),
+                    replacement.session_id.as_deref(),
+                    replacement.agent_id.as_deref(),
+                    replacement.provider.as_deref(),
+                    replacement.model.as_deref(),
+                    replacement.turn_id.as_deref(),
+                    replacement.prompt_id.as_deref(),
+                    replacement.provider_run_id.as_deref(),
+                    replacement.workflow_id.as_deref(),
+                    replacement.workflow_run_id.as_deref(),
+                    replacement.workflow_node_id.as_deref(),
+                    replacement.machine_id.as_deref(),
+                    replacement.repo_root.as_deref(),
+                    replacement.worktree_path.as_deref(),
+                    replacement.content.as_deref(),
+                    replacement.content_ref.as_deref(),
+                    metadata_text,
+                    event_json,
+                ],
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: replacement.session_id.clone(),
+                operation: "replace operational history event",
+                message: error.to_string(),
+            })?;
+        Ok(Some(replacement))
+    }
+
     pub fn reserve_sequence(&self) -> u64 {
         self.next_sequence.fetch_add(1, Ordering::Relaxed)
     }

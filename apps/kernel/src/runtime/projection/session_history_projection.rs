@@ -35,6 +35,19 @@ impl SessionHistoryProjectionStore {
         }
     }
 
+    pub(crate) fn replace_by_merge_key_or_append(&self, entry: SessionHistoryEntry) {
+        let mut entries_by_session = self
+            .entries
+            .lock()
+            .expect("session history projection lock should not be poisoned");
+        if let Some(projection) = entries_by_session.get_mut(&entry.session_id) {
+            if projection.replace_by_merge_key(&entry) {
+                return;
+            }
+            projection.push(entry);
+        }
+    }
+
     pub(crate) fn remove(&self, session_id: &str) {
         self.entries
             .lock()
@@ -64,5 +77,20 @@ impl SessionHistoryProjection {
             let overflow = self.entries.len() - SESSION_HISTORY_PROJECTION_ENTRY_LIMIT;
             self.entries.drain(0..overflow);
         }
+    }
+
+    fn replace_by_merge_key(&mut self, entry: &SessionHistoryEntry) -> bool {
+        let Some(merge_key) = entry.merge_key.as_deref() else {
+            return false;
+        };
+        if let Some(existing) = self
+            .entries
+            .iter_mut()
+            .find(|existing| existing.merge_key.as_deref() == Some(merge_key))
+        {
+            *existing = entry.clone();
+            return true;
+        }
+        false
     }
 }

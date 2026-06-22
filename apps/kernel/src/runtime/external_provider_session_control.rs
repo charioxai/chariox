@@ -561,12 +561,13 @@ fn append_observed_external_turns_for_import(
             .get_latest_run_for_agent(session.id(), agent.id())
             .map(|run| run.id().to_string())
     });
-    let existing_merge_keys = app
+    let existing_entries_by_merge_key = app
         .load_session_history_entries(&session, Some(agent.id()))?
         .into_iter()
-        .filter_map(|entry| entry.merge_key)
-        .collect::<BTreeSet<_>>();
+        .filter_map(|entry| entry.merge_key.clone().map(|merge_key| (merge_key, entry)))
+        .collect::<BTreeMap<_, _>>();
     let mut appended = 0usize;
+    let mut updated = 0usize;
     let mut last_cursor = read.target.import.observed_cursor.clone();
     let provider = read.target.import.external_provider.clone();
     let provider_session_id = read
@@ -576,7 +577,10 @@ fn append_observed_external_turns_for_import(
         .clone();
     let active_prompt_changed =
         sync_observed_external_active_prompt(app, &read.target, &read.turns)?;
-    let mut seen_merge_keys = existing_merge_keys;
+    let mut seen_merge_keys = existing_entries_by_merge_key
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     for (index, turn) in read.turns.into_iter().enumerate() {
         let kind = match turn.role {
             crate::app::ObservedExternalProviderTurnRole::User => {
@@ -593,12 +597,6 @@ fn append_observed_external_turns_for_import(
         let merge_key = provider_turn_id
             .as_ref()
             .map(|turn_id| format!("external:{provider}:{provider_session_id}:{turn_id}"));
-        if merge_key
-            .as_ref()
-            .is_some_and(|merge_key| seen_merge_keys.contains(merge_key))
-        {
-            continue;
-        }
         let entry = SessionHistoryEntry::external_provider_observed(
             &read.target.session_id,
             provider_run_id.as_deref(),
@@ -610,22 +608,48 @@ fn append_observed_external_turns_for_import(
             provider_turn_id.clone(),
             turn.observed_at_ms,
         );
-        app.append_history_entry(&read.target.session_id, entry.clone());
-        emit_observed_external_history_signal(
-            app,
-            &read.target,
-            provider_run_id.as_deref(),
-            &entry,
-        );
+        let is_duplicate = merge_key
+            .as_ref()
+            .is_some_and(|merge_key| seen_merge_keys.contains(merge_key));
+        if is_duplicate {
+            if let Some(merge_key) = merge_key.as_deref() {
+                if existing_entries_by_merge_key
+                    .get(merge_key)
+                    .is_some_and(|existing| observed_external_entry_changed(existing, &entry))
+                {
+                    app.replace_history_entry_by_merge_key_or_append(
+                        &read.target.session_id,
+                        merge_key,
+                        entry.clone(),
+                    );
+                    emit_observed_external_history_signal(
+                        app,
+                        &read.target,
+                        provider_run_id.as_deref(),
+                        &entry,
+                    );
+                    updated += 1;
+                }
+            }
+        } else {
+            app.append_history_entry(&read.target.session_id, entry.clone());
+            emit_observed_external_history_signal(
+                app,
+                &read.target,
+                provider_run_id.as_deref(),
+                &entry,
+            );
+            appended += 1;
+        }
         if let Some(merge_key) = merge_key {
             seen_merge_keys.insert(merge_key.clone());
             last_cursor.last_observed_merge_key = Some(merge_key);
         }
         last_cursor.last_observed_turn_id = provider_turn_id;
         last_cursor.last_observed_at_ms = turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
-        appended += 1;
     }
-    if appended > 0 {
+    let changed = appended + updated;
+    if changed > 0 {
         let next_import = read.target.import.clone().with_cursor(last_cursor);
         persist_external_import_metadata(
             app,
@@ -639,7 +663,14 @@ fn append_observed_external_turns_for_import(
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
     }
-    Ok(appended)
+    Ok(changed)
+}
+
+fn observed_external_entry_changed(
+    existing: &SessionHistoryEntry,
+    next: &SessionHistoryEntry,
+) -> bool {
+    existing != next
 }
 
 fn sync_observed_external_active_prompt(
@@ -1169,6 +1200,69 @@ mod tests {
         assert!(mirrored_session
             .active_prompt_for_agent(agent.id())
             .is_none());
+    }
+
+    #[test]
+    fn append_observed_external_turns_replaces_changed_duplicate_merge_key() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import: import.clone(),
+        };
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    text: "partial external reply".to_string(),
+                    observed_at_ms: Some(42),
+                }],
+            },
+        )
+        .expect("initial observed assistant turn should append");
+
+        let changed = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![crate::app::ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                    text: "complete external reply".to_string(),
+                    observed_at_ms: Some(84),
+                }],
+            },
+        )
+        .expect("changed observed assistant turn should replace");
+
+        assert_eq!(changed, 1);
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "complete external reply");
+        assert_eq!(entries[0].observed_at_ms, Some(84));
+        let legacy_entries = app
+            .history_store()
+            .load(&session)
+            .expect("legacy history should load");
+        assert_eq!(legacy_entries.len(), 1);
+        assert_eq!(legacy_entries[0].text, "complete external reply");
     }
 
     #[test]

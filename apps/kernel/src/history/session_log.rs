@@ -287,6 +287,96 @@ impl SessionHistoryStore {
         self.enforce_size_budget(session, &path)
     }
 
+    pub fn replace_by_merge_key(
+        &self,
+        session: &RuntimeSession,
+        merge_key: &str,
+        entry: &SessionHistoryEntry,
+    ) -> Result<bool, DaemonError> {
+        let path = self.path_for_session(session);
+        if !path.exists() {
+            return Ok(false);
+        }
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "lock session history replace",
+                message: error.to_string(),
+            })?;
+        let input = fs::File::open(&path).map_err(|error| DaemonError::SessionHistoryFailed {
+            session_id: Some(session.id().to_string()),
+            operation: "open session history for replace",
+            message: error.to_string(),
+        })?;
+        let mut entries = Vec::new();
+        let mut replaced = false;
+        for line in BufReader::new(input).lines() {
+            let line = line.map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "read session history for replace",
+                message: error.to_string(),
+            })?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mut decoded =
+                serde_json::from_str::<SessionHistoryEntry>(&line).map_err(|error| {
+                    DaemonError::SessionHistoryFailed {
+                        session_id: Some(session.id().to_string()),
+                        operation: "decode session history for replace",
+                        message: error.to_string(),
+                    }
+                })?;
+            if decoded.merge_key.as_deref() == Some(merge_key) {
+                decoded = entry.clone();
+                replaced = true;
+            }
+            entries.push(decoded);
+        }
+        if !replaced {
+            return Ok(false);
+        }
+        let temp_path = path.with_extension("jsonl.replace");
+        let mut output =
+            fs::File::create(&temp_path).map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "create replacement session history",
+                message: error.to_string(),
+            })?;
+        for entry in entries {
+            let encoded = serde_json::to_string(&entry).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.id().to_string()),
+                    operation: "encode replacement session history",
+                    message: error.to_string(),
+                }
+            })?;
+            output
+                .write_all(encoded.as_bytes())
+                .and_then(|_| output.write_all(b"\n"))
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session.id().to_string()),
+                    operation: "write replacement session history",
+                    message: error.to_string(),
+                })?;
+        }
+        output
+            .flush()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session.id().to_string()),
+                operation: "flush replacement session history",
+                message: error.to_string(),
+            })?;
+        fs::rename(&temp_path, &path).map_err(|error| DaemonError::SessionHistoryFailed {
+            session_id: Some(session.id().to_string()),
+            operation: "replace session history",
+            message: error.to_string(),
+        })?;
+        Ok(true)
+    }
+
     pub fn path_for_session(&self, session: &RuntimeSession) -> PathBuf {
         self.root.join(history_file_name(session))
     }

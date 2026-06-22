@@ -184,6 +184,94 @@ impl DaemonApp {
         }
     }
 
+    pub(crate) fn replace_history_entry_by_merge_key_or_append(
+        &self,
+        session_id: &str,
+        merge_key: &str,
+        entry: SessionHistoryEntry,
+    ) {
+        let session = match self.sessions.get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "skipping history replacement because session lookup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "merge_key": merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        match self
+            .history
+            .replace_by_merge_key(&session, merge_key, &entry)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(error) = self.history.append(&session, &entry) {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to append legacy session history entry after replacement miss",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "merge_key": merge_key,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to replace legacy session history entry",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "merge_key": merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+
+        let context = self.history_event_context(&entry);
+        match self.operational_history.replace_transcript_by_merge_key(
+            session_id,
+            entry.agent_id.as_deref(),
+            merge_key,
+            &entry,
+            context,
+        ) {
+            Ok(Some(event)) => {
+                if self.history_archive_enabled() {
+                    self.enqueue_history_archive_event(&event);
+                }
+                self.history_projection
+                    .replace_by_merge_key_or_append(entry);
+            }
+            Ok(None) => {
+                self.append_operational_history_entry(&entry);
+                self.history_projection
+                    .replace_by_merge_key_or_append(entry);
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to replace operational session history entry",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "merge_key": merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+                self.history_projection
+                    .replace_by_merge_key_or_append(entry);
+            }
+        }
+    }
+
     fn append_operational_history_entry(&self, entry: &SessionHistoryEntry) {
         let context = self.history_event_context(entry);
         match self.operational_history.append_transcript(entry, context) {
