@@ -8,6 +8,10 @@ use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore
 use crate::slice::SliceRecord;
 
 impl CommandRouter {
+    pub(crate) fn runtime_state(&self) -> crate::runtime::state::KernelRuntimeState {
+        self.runtime_state.clone()
+    }
+
     pub(crate) fn kernel_websocket_bind_address(&self) -> (String, u16) {
         let config = self.config_projection.snapshot();
         (config.kernel_websocket_host, config.kernel_websocket_port)

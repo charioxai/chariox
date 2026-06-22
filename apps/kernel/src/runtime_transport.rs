@@ -164,6 +164,33 @@ where
     run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
 }
 
+pub(crate) async fn run_kernel_websocket_server_with_router<F>(
+    router: Arc<CommandRouter>,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
+    let (bind_host, bind_port) = router.kernel_websocket_bind_address();
+    let bind_started = Instant::now();
+    let listener = TcpListener::bind((bind_host.as_str(), bind_port))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "bind kernel websocket",
+            message: error.to_string(),
+        })?;
+    crate::logging::info_with_fields(
+        "daemon.startup",
+        "kernel websocket listener bound",
+        serde_json::json!({
+            "bind_ms": bind_started.elapsed().as_millis(),
+            "bind_host": bind_host,
+            "bind_port": bind_port,
+        }),
+    );
+    run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
+}
+
 pub async fn run_kernel_websocket_server_on_listener<F>(
     app: Arc<Mutex<DaemonApp>>,
     listener: StdTcpListener,

@@ -66,6 +66,15 @@ struct ImportedExternalObserverRead {
     turns: Vec<crate::app::ObservedExternalProviderTurn>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ImportedExternalObserverAppendOutcome {
+    changed_count: usize,
+    external_active_prompt_settled: bool,
+    session_id: String,
+    agent_id: String,
+    provider_run_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct ImportedExternalObserverSchedule {
     next_due_at: tokio::time::Instant,
@@ -85,6 +94,7 @@ impl ImportedExternalObserverSchedule {
 
 pub(crate) async fn run_imported_external_provider_transcript_observer(
     app: Arc<Mutex<DaemonApp>>,
+    runtime_state: crate::runtime::state::KernelRuntimeState,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut schedule: BTreeMap<String, ImportedExternalObserverSchedule> = BTreeMap::new();
@@ -98,7 +108,7 @@ pub(crate) async fn run_imported_external_provider_transcript_observer(
                 }
             }
             _ = interval.tick() => {
-                poll_imported_external_provider_transcripts(&app, &mut schedule).await;
+                poll_imported_external_provider_transcripts(&app, &runtime_state, &mut schedule).await;
             }
         }
     }
@@ -106,6 +116,7 @@ pub(crate) async fn run_imported_external_provider_transcript_observer(
 
 async fn poll_imported_external_provider_transcripts(
     app: &Arc<Mutex<DaemonApp>>,
+    runtime_state: &crate::runtime::state::KernelRuntimeState,
     schedule: &mut BTreeMap<String, ImportedExternalObserverSchedule>,
 ) {
     let now = tokio::time::Instant::now();
@@ -145,15 +156,38 @@ async fn poll_imported_external_provider_transcripts(
         };
         match read {
             Ok(read) => {
-                let appended = {
+                let outcome = {
                     let mut app = app.lock().await;
                     append_observed_external_turns_for_import(&mut app, read).unwrap_or_default()
                 };
+                if outcome.external_active_prompt_settled {
+                    if let Some(provider_run_id) = outcome.provider_run_id.as_deref() {
+                        if let Err(error) = runtime_state
+                            .dispatch_next_queued_prompt_after_external_settlement(
+                                &outcome.session_id,
+                                &outcome.agent_id,
+                                provider_run_id,
+                            )
+                            .await
+                        {
+                            crate::logging::warn_with_fields(
+                                "daemon.external_provider_sessions",
+                                "failed to dispatch queued prompt after external provider turn settled",
+                                serde_json::json!({
+                                    "session_id": outcome.session_id,
+                                    "agent_id": outcome.agent_id,
+                                    "provider_run_id": provider_run_id,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
                 let state = schedule
                     .entry(key)
                     .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
                 state.consecutive_errors = 0;
-                if appended > 0 {
+                if outcome.changed_count > 0 {
                     state.active_until = Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW);
                 }
                 let active = state
@@ -550,9 +584,15 @@ fn append_observed_external_history(
 fn append_observed_external_turns_for_import(
     app: &mut DaemonApp,
     read: ImportedExternalObserverRead,
-) -> Result<usize, DaemonError> {
+) -> Result<ImportedExternalObserverAppendOutcome, DaemonError> {
+    let mut outcome = ImportedExternalObserverAppendOutcome {
+        session_id: read.target.session_id.clone(),
+        agent_id: read.target.agent_id.clone(),
+        provider_run_id: read.target.provider_run_id.clone(),
+        ..ImportedExternalObserverAppendOutcome::default()
+    };
     if read.turns.is_empty() {
-        return Ok(0);
+        return Ok(outcome);
     }
     let session = app.sessions().get_session(&read.target.session_id)?;
     let agent = app.agents.get_agent(&read.target.agent_id)?;
@@ -561,6 +601,7 @@ fn append_observed_external_turns_for_import(
             .get_latest_run_for_agent(session.id(), agent.id())
             .map(|run| run.id().to_string())
     });
+    outcome.provider_run_id = provider_run_id.clone();
     let existing_entries_by_merge_key = app
         .load_session_history_entries(&session, Some(agent.id()))?
         .into_iter()
@@ -575,8 +616,13 @@ fn append_observed_external_turns_for_import(
         .import
         .external_provider_session_provider_id
         .clone();
-    let active_prompt_changed =
-        sync_observed_external_active_prompt(app, &read.target, &read.turns)?;
+    let active_prompt = external_active_prompt_from_turns(&read.target, &read.turns);
+    let active_prompt_changed = app.prompt_owner_sync_external_active_prompt(
+        &read.target.session_id,
+        &read.target.agent_id,
+        active_prompt.clone(),
+    )?;
+    outcome.external_active_prompt_settled = active_prompt_changed && active_prompt.is_none();
     let mut seen_merge_keys = existing_entries_by_merge_key
         .keys()
         .cloned()
@@ -649,6 +695,7 @@ fn append_observed_external_turns_for_import(
         last_cursor.last_observed_at_ms = turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
     }
     let changed = appended + updated;
+    outcome.changed_count = changed;
     if changed > 0 {
         let next_import = read.target.import.clone().with_cursor(last_cursor);
         persist_external_import_metadata(
@@ -663,7 +710,7 @@ fn append_observed_external_turns_for_import(
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
     }
-    Ok(changed)
+    Ok(outcome)
 }
 
 fn observed_external_entry_changed(
@@ -671,19 +718,6 @@ fn observed_external_entry_changed(
     next: &SessionHistoryEntry,
 ) -> bool {
     existing != next
-}
-
-fn sync_observed_external_active_prompt(
-    app: &mut DaemonApp,
-    target: &ImportedExternalObserverTarget,
-    turns: &[crate::app::ObservedExternalProviderTurn],
-) -> Result<bool, DaemonError> {
-    let active_prompt = external_active_prompt_from_turns(target, turns);
-    app.prompt_owner_sync_external_active_prompt(
-        &target.session_id,
-        &target.agent_id,
-        active_prompt,
-    )
 }
 
 fn external_active_prompt_from_turns(
@@ -1036,7 +1070,7 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let appended = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
                 target: ImportedExternalObserverTarget {
@@ -1055,7 +1089,7 @@ mod tests {
         )
         .expect("observed turn should append");
 
-        assert_eq!(appended, 1);
+        assert_eq!(outcome.changed_count, 1);
         let entries = app
             .load_session_history_entries(&session, Some(agent.id()))
             .expect("history should load");
@@ -1092,7 +1126,7 @@ mod tests {
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
 
-        let appended = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
                 target: ImportedExternalObserverTarget {
@@ -1111,7 +1145,8 @@ mod tests {
         )
         .expect("observed user turn should append");
 
-        assert_eq!(appended, 1);
+        assert_eq!(outcome.changed_count, 1);
+        assert!(!outcome.external_active_prompt_settled);
         let active_prompt = app
             .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
             .expect("active prompt should load")
@@ -1172,7 +1207,7 @@ mod tests {
             "external user turn should mark active before assistant output"
         );
 
-        let appended = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
                 target,
@@ -1186,7 +1221,8 @@ mod tests {
         )
         .expect("observed assistant turn should append");
 
-        assert_eq!(appended, 1);
+        assert_eq!(outcome.changed_count, 1);
+        assert!(outcome.external_active_prompt_settled);
         assert!(
             app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
                 .expect("active prompt should load")
@@ -1236,7 +1272,7 @@ mod tests {
         )
         .expect("initial observed assistant turn should append");
 
-        let changed = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
                 target,
@@ -1250,7 +1286,7 @@ mod tests {
         )
         .expect("changed observed assistant turn should replace");
 
-        assert_eq!(changed, 1);
+        assert_eq!(outcome.changed_count, 1);
         let entries = app
             .load_session_history_entries(&session, Some(agent.id()))
             .expect("history should load");
@@ -1298,7 +1334,7 @@ mod tests {
         let agent =
             persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
                 .expect("metadata should persist");
-        let appended = append_observed_external_turns_for_import(
+        let outcome = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
                 target: ImportedExternalObserverTarget {
@@ -1317,7 +1353,7 @@ mod tests {
         )
         .expect("observed turn should append");
 
-        assert_eq!(appended, 1);
+        assert_eq!(outcome.changed_count, 1);
         let records = app
             .terminal_mut()
             .drain_output_records(session.id(), attachment.id());

@@ -116,6 +116,13 @@ impl DaemonApp {
 
     pub async fn run(self) -> Result<(), DaemonError> {
         let app = Arc::new(tokio::sync::Mutex::new(self));
+        let router = std::sync::Arc::new(
+            crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+                Arc::clone(&app),
+                crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+            ),
+        );
+        let runtime_state = router.runtime_state();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let relay_state = {
             let app = app.lock().await;
@@ -135,12 +142,13 @@ impl DaemonApp {
         let imported_external_provider_observer_task = tokio::spawn(
             crate::runtime::external_provider_session_control::run_imported_external_provider_transcript_observer(
                 Arc::clone(&app),
+                runtime_state,
                 shutdown_tx.subscribe(),
             ),
         );
 
         let result =
-            crate::runtime_transport::run_kernel_websocket_server(Arc::clone(&app), async {
+            crate::runtime_transport::run_kernel_websocket_server_with_router(router, async {
                 let _ = tokio::signal::ctrl_c().await;
                 let _ = shutdown_tx.send(true);
             })
