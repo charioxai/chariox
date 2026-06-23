@@ -1503,9 +1503,10 @@ fn read_opencode_sqlite_observed_turns(
         return Vec::new();
     };
     let mut statement = match connection.prepare(
-        "select message_id, role, part_id, part_type, part_data, time_created, time_updated \
+        "select message_id, role, message_data, part_id, part_type, part_data, time_created, time_updated \
            from ( \
                 select m.id as message_id, json_extract(m.data, '$.role') as role, \
+                       m.data as message_data, \
                        p.id as part_id, json_extract(p.data, '$.type') as part_type, \
                        p.data as part_data, p.time_created as time_created, p.time_updated as time_updated \
                   from message m \
@@ -1524,14 +1525,16 @@ fn read_opencode_sqlite_observed_turns(
         |row| {
             let message_id: String = row.get(0)?;
             let role: Option<String> = row.get(1)?;
-            let part_id: String = row.get(2)?;
-            let part_type: Option<String> = row.get(3)?;
-            let part_data: String = row.get(4)?;
-            let created_at_ms: Option<i64> = row.get(5)?;
-            let updated_at_ms: Option<i64> = row.get(6)?;
+            let message_data: String = row.get(2)?;
+            let part_id: String = row.get(3)?;
+            let part_type: Option<String> = row.get(4)?;
+            let part_data: String = row.get(5)?;
+            let created_at_ms: Option<i64> = row.get(6)?;
+            let updated_at_ms: Option<i64> = row.get(7)?;
             Ok((
                 message_id,
                 role,
+                message_data,
                 part_id,
                 part_type,
                 part_data,
@@ -1543,29 +1546,52 @@ fn read_opencode_sqlite_observed_turns(
         Ok(rows) => rows,
         Err(_) => return Vec::new(),
     };
-    rows.filter_map(Result::ok)
-        .filter_map(
-            |(message_id, role, part_id, part_type, part_data, created_at_ms, updated_at_ms)| {
-                if part_type.as_deref() != Some("text") {
-                    return None;
+    let mut turns = Vec::new();
+    let mut status_message_ids = BTreeSet::new();
+    let mut status_turns = Vec::new();
+    for (
+        message_id,
+        role,
+        message_data,
+        part_id,
+        part_type,
+        part_data,
+        created_at_ms,
+        updated_at_ms,
+    ) in rows.filter_map(Result::ok)
+    {
+        let observed_at_ms = updated_at_ms.or(created_at_ms);
+        if part_type.as_deref() == Some("text") {
+            if let Some(role) = observed_role(role.as_deref()) {
+                if let Some(text) = opencode_text_from_sqlite_part_data(&part_data)
+                    .and_then(|text| clean_observed_turn_text(Some(role_text(role)), text))
+                {
+                    let provider_turn_id = if part_id.trim().is_empty() {
+                        message_id.clone()
+                    } else {
+                        part_id
+                    };
+                    turns.push(ObservedExternalProviderTurn {
+                        role,
+                        text,
+                        provider_turn_id: Some(provider_turn_id),
+                        observed_at_ms,
+                    });
                 }
-                let role = observed_role(role.as_deref())?;
-                let text = opencode_text_from_sqlite_part_data(&part_data)
-                    .and_then(|text| clean_observed_turn_text(Some(role_text(role)), text))?;
-                let provider_turn_id = if part_id.trim().is_empty() {
-                    message_id
-                } else {
-                    part_id
-                };
-                Some(ObservedExternalProviderTurn {
-                    role,
-                    text,
-                    provider_turn_id: Some(provider_turn_id),
-                    observed_at_ms: updated_at_ms.or(created_at_ms),
-                })
-            },
-        )
-        .collect()
+            }
+        }
+        if status_message_ids.insert(message_id.clone()) {
+            if let Ok(message_info) = serde_json::from_str::<Value>(&message_data) {
+                if let Some(status) =
+                    opencode_message_status_turn(&message_info, Some(&message_id), observed_at_ms)
+                {
+                    status_turns.push(status);
+                }
+            }
+        }
+    }
+    turns.extend(status_turns);
+    turns
 }
 
 fn latest_observed_turns(
@@ -2583,7 +2609,7 @@ mod tests {
         seed_opencode_sqlite(&db_path);
 
         let turns = read_opencode_observed_turns(root, "ses_sqlite_1");
-        assert_eq!(turns.len(), 2);
+        assert_eq!(turns.len(), 3);
         assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
         assert_eq!(turns[0].text, "Investigate SQLite-backed OpenCode imports.");
         assert_eq!(turns[0].provider_turn_id.as_deref(), Some("prt_user_text"));
@@ -2593,6 +2619,13 @@ mod tests {
             turns[1].provider_turn_id.as_deref(),
             Some("prt_assistant_text")
         );
+        assert_eq!(turns[2].role, ObservedExternalProviderTurnRole::Status);
+        assert_eq!(
+            turns[2].provider_turn_id.as_deref(),
+            Some("message-status-msg_assistant")
+        );
+        assert!(turns[2].text.contains("opencode message completed"));
+        assert!(turns[2].text.contains("kimi-k2.6"));
     }
 
     struct TempDir {
@@ -2691,7 +2724,7 @@ mod tests {
                     id, session_id, time_created, time_updated, data
                 ) values (
                     'msg_assistant', 'ses_sqlite_1', 1782113002000, 1782113003000,
-                    '{"role":"assistant"}'
+                    '{"role":"assistant","modelID":"kimi-k2.6","tokens":{"input":10,"output":5},"time":{"completed":1782113003000},"finish":"stop"}'
                 );
                 insert into part (
                     id, message_id, session_id, time_created, time_updated, data
