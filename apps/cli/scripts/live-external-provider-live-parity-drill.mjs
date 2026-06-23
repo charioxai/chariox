@@ -143,29 +143,43 @@ function providerModel(options, provider) {
   return options.providerModels.get(provider) ?? defaultModels[provider] ?? "default"
 }
 
-function buildPrompt(provider, marker, workspace) {
+function buildPrompt(provider, marker, workspace, observerGate) {
   const promptMarker = `EXTERNAL_PARITY_USER_PROMPT_${marker}`
   const text = [
     `You are running the Arroba external provider live parity drill for provider ${provider}.`,
     `Drill marker: ${marker}.`,
     `User prompt marker: ${promptMarker}.`,
     `Workspace: ${workspace}.`,
+    `Observer gate directory: ${observerGate.dir}.`,
+    `Observer gate ready file: ${observerGate.readyFile}.`,
+    `Observer gate go file: ${observerGate.goFile}.`,
     "",
     "Requirements:",
-    "1. Produce exactly 20 separate assistant progress messages, one for each ASSISTANT_STEP_01 through ASSISTANT_STEP_20.",
-    "2. Run exactly 20 observable tool calls, one for each TOOL_STEP_01 through TOOL_STEP_20.",
-    "3. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
-    "4. Each tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
-    "5. Use only a temporary directory named .arroba-external-parity-drill under the workspace.",
-    "6. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
-    "7. Delete the temporary directory before finishing.",
-    `8. End with the exact final summary marker ${finalMarker} and include the drill marker.`,
-    "9. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
+    "1. Before emitting any ASSISTANT_STEP_NN, TOOL_STEP_NN, or FINAL_EXTERNAL_PARITY_SUMMARY marker, create the observer gate directory, write the ready file, and wait until the go file exists.",
+    "2. The observer gate setup/wait can use provider tools, but it must not include TOOL_STEP_NN markers and it does not count toward the 20 marked tool calls.",
+    "3. After the go file exists, produce exactly 20 separate assistant progress messages, one for each ASSISTANT_STEP_01 through ASSISTANT_STEP_20.",
+    "4. After the go file exists, run exactly 20 observable marked tool calls, one for each TOOL_STEP_01 through TOOL_STEP_20.",
+    "5. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
+    "6. Each marked tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
+    "7. Use only the observer gate directory for temporary drill files.",
+    "8. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
+    "9. Delete the temporary directory before finishing.",
+    `10. End with the exact final summary marker ${finalMarker} and include the drill marker.`,
+    "11. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
     "",
     `Assistant markers: ${requiredAssistantMarkers.join(", ")}.`,
     `Tool markers: ${requiredToolMarkers.join(", ")}.`,
   ].join("\n")
   return { text, promptMarker }
+}
+
+function observerGate(marker, workspace) {
+  const dir = path.join(workspace, ".arroba-external-parity-drill", marker)
+  return {
+    dir,
+    readyFile: path.join(dir, "observer-ready.txt"),
+    goFile: path.join(dir, "observer-go.txt"),
+  }
 }
 
 function providerCommand(provider, model, prompt, workspace) {
@@ -264,7 +278,8 @@ async function runProviderDrill(provider, options) {
   const marker = `ARROBA_EXTERNAL_PARITY_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
   const model = providerModel(options, provider)
   const providerRoot = path.join(options.artifactRoot, provider)
-  const prompt = buildPrompt(provider, marker, options.workspace)
+  const gate = observerGate(marker, options.workspace)
+  const prompt = buildPrompt(provider, marker, options.workspace, gate)
   const command = providerCommand(provider, model, prompt.text, options.workspace)
   await mkdir(providerRoot, { recursive: true })
   await writeFile(path.join(providerRoot, "prompt.txt"), prompt.text, "utf8")
@@ -292,6 +307,7 @@ async function runProviderDrill(provider, options) {
     providerLimitations: [],
     evidence: {},
   }
+  result.evidence.observerGate = gate
 
   if (options.dryRun) {
     result.ok = true
@@ -362,6 +378,9 @@ async function runProviderDrill(provider, options) {
       monitors.push(startWebMonitor({ page, provider, marker, promptMarker: prompt.promptMarker, providerRoot, options }))
     }
 
+    await releaseObserverGate(gate, marker)
+    result.assertions.push(pass("observer gate released after Arroba monitors started"))
+
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
     result.evidence.providerExit = providerExit
     await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, promptMarker: prompt.promptMarker, options })
@@ -399,9 +418,13 @@ async function runProviderDrill(provider, options) {
     assertSurface(result, kernel, "kernel history")
     if (!options.skipWeb) assertSurface(result, web, "product web terminal")
     if (!options.skipTui) assertSurface(result, tui, "TUI")
+    assertLiveObservation(result, kernel, "kernel")
+    if (web) assertLiveObservation(result, web, "web")
+    if (tui) assertLiveObservation(result, tui, "tui")
     assertBadgeLifecycle(result, kernel, "kernel")
     if (web) assertBadgeLifecycle(result, web, "web")
     if (tui) assertBadgeLifecycle(result, tui, "tui")
+    if (web) assertWebTurnCollapse(result, web)
 
     result.providerLimitations = providerLimitations(provider, { kernel, web, tui })
     if (!providerTranscript.found) {
@@ -428,6 +451,11 @@ async function runProviderDrill(provider, options) {
     await writeJson(path.join(providerRoot, "manifest.json"), result)
   }
   return result
+}
+
+async function releaseObserverGate(gate, marker) {
+  await mkdir(gate.dir, { recursive: true })
+  await writeFile(gate.goFile, `arroba observers attached for ${marker}\n`, "utf8")
 }
 
 function spawnProviderProcess(command, artifactDir, workspace) {
@@ -816,6 +844,10 @@ async function webSample(page, provider, marker, promptMarker) {
 function summarizeSamples(surface, samples) {
   const valid = samples.filter((sample) => !sample.error)
   const text = valid.map((sample) => sample.text ?? "").join("\n")
+  const firstFinalSampleIndex = valid.findIndex((sample) => sample.finalSeen)
+  const preFinalSamples = firstFinalSampleIndex >= 0 ? valid.slice(0, firstFinalSampleIndex) : valid
+  const finalAndLaterSamples = firstFinalSampleIndex >= 0 ? valid.slice(firstFinalSampleIndex) : []
+  const countMax = (entries, key) => Math.max(0, ...entries.map((sample) => Number(sample[key] ?? 0)).filter(Number.isFinite))
   return {
     surface,
     sampleCount: samples.length,
@@ -827,6 +859,16 @@ function summarizeSamples(surface, samples) {
     statuses: valid.map((sample) => sample.status).filter(Boolean),
     maxBottomDistance: Math.max(0, ...valid.map((sample) => Number(sample.bottomDistance ?? 0)).filter(Number.isFinite)),
     promptOccurrenceMax: Math.max(0, ...valid.map((sample) => Number(sample.promptOccurrences ?? 0)).filter(Number.isFinite)),
+    firstFinalSampleIndex,
+    preFinalSampleCount: preFinalSamples.length,
+    preFinalMaxAssistantMarkers: Math.max(0, ...preFinalSamples.map((sample) => sample.assistantMarkers?.length ?? 0)),
+    preFinalMaxToolMarkers: Math.max(0, ...preFinalSamples.map((sample) => sample.toolMarkers?.length ?? 0)),
+    preFinalStatuses: preFinalSamples.map((sample) => sample.status).filter(Boolean),
+    preFinalMaxTurnCollapsedCount: countMax(preFinalSamples, "turnCollapsedCount"),
+    preFinalMaxTurnExpandedCount: countMax(preFinalSamples, "turnExpandedCount"),
+    finalMaxTurnCollapsedCount: countMax(finalAndLaterSamples, "turnCollapsedCount"),
+    finalMaxTurnExpandedCount: countMax(finalAndLaterSamples, "turnExpandedCount"),
+    finalMaxBlobCollapsedCount: countMax(finalAndLaterSamples, "blobCollapsedCount"),
   }
 }
 
@@ -1130,6 +1172,21 @@ function assertSurface(result, surfaceResult, label) {
   }
 }
 
+function assertLiveObservation(result, surfaceResult, label) {
+  if (!surfaceResult) return
+  result.assertions.push(assertion(`${label} sampled turn before final summary`, surfaceResult.preFinalSampleCount > 0, {
+    preFinalSampleCount: surfaceResult.preFinalSampleCount,
+    firstFinalSampleIndex: surfaceResult.firstFinalSampleIndex,
+  }))
+  const preFinalStatuses = surfaceResult.preFinalStatuses.map(normalizeLifecycleStatus)
+  result.assertions.push(assertion(`${label} observed active pre-final lifecycle`, preFinalStatuses.includes("WORKING"), preFinalStatuses))
+  const sawPreFinalContent = surfaceResult.preFinalMaxAssistantMarkers > 0 || surfaceResult.preFinalMaxToolMarkers > 0
+  result.assertions.push(assertion(`${label} observed live pre-final content`, sawPreFinalContent, {
+    assistantMarkers: surfaceResult.preFinalMaxAssistantMarkers,
+    toolMarkers: surfaceResult.preFinalMaxToolMarkers,
+  }))
+}
+
 function assertBadgeLifecycle(result, surfaceResult, label) {
   if (!surfaceResult) return
   const statuses = surfaceResult.statuses.map(normalizeLifecycleStatus)
@@ -1141,6 +1198,18 @@ function assertBadgeLifecycle(result, surfaceResult, label) {
     ? statuses.slice(firstWorking, finalIndex).some((status) => status === "IDLE" || status === "DONE")
     : false
   result.assertions.push(assertion(`${label} did not go idle before final summary`, !prematureIdle, statuses))
+}
+
+function assertWebTurnCollapse(result, webResult) {
+  result.assertions.push(assertion("web did not expose a completed turn toggle before final summary", webResult.preFinalMaxTurnCollapsedCount === 0, {
+    preFinalCollapsed: webResult.preFinalMaxTurnCollapsedCount,
+    preFinalExpanded: webResult.preFinalMaxTurnExpandedCount,
+  }))
+  result.assertions.push(assertion("web collapsed completed turn after final summary", webResult.finalMaxTurnCollapsedCount > 0, {
+    finalCollapsed: webResult.finalMaxTurnCollapsedCount,
+    finalExpanded: webResult.finalMaxTurnExpandedCount,
+    finalBlobCollapsed: webResult.finalMaxBlobCollapsedCount,
+  }))
 }
 
 function normalizeLifecycleStatus(status) {
