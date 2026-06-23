@@ -875,7 +875,9 @@ fn append_observed_external_turns_for_import_with_options(
         changed > 0,
         &arroba_owned_prompt_texts,
     );
+    let latest_observation_settles = latest_observed_turn_settles(&read.turns);
     let should_sync_active_prompt = latest_active_prompt.is_some()
+        || latest_observation_settles
         || (changed == 0 && options.allow_external_active_prompt_settlement);
     let active_prompt_changed = if should_sync_active_prompt {
         app.prompt_owner_sync_external_active_prompt(
@@ -924,6 +926,9 @@ fn external_active_prompt_from_turns(
     has_new_observations: bool,
     arroba_owned_prompt_texts: &BTreeSet<String>,
 ) -> Option<PromptQueueItem> {
+    if latest_observed_turn_settles(turns) {
+        return None;
+    }
     let latest = if has_new_observations {
         turns
             .iter()
@@ -971,6 +976,21 @@ fn external_active_prompt_from_turns(
         )
         .with_prompt_origin(PromptOrigin::External),
     )
+}
+
+fn latest_observed_turn_settles(turns: &[crate::app::ObservedExternalProviderTurn]) -> bool {
+    let Some(latest) = turns.last() else {
+        return false;
+    };
+    match latest.role {
+        crate::app::ObservedExternalProviderTurnRole::Status => {
+            external_status_turn_settles(&latest.text)
+        }
+        crate::app::ObservedExternalProviderTurnRole::Assistant
+        | crate::app::ObservedExternalProviderTurnRole::User
+        | crate::app::ObservedExternalProviderTurnRole::Reasoning
+        | crate::app::ObservedExternalProviderTurnRole::Tool => false,
+    }
 }
 
 fn external_status_turn_settles(text: &str) -> bool {
@@ -1986,10 +2006,32 @@ mod tests {
             &mut app,
             ImportedExternalObserverRead {
                 target: target.clone(),
+                turns: vec![prompt.clone()],
+            },
+        )
+        .expect("observed prompt should append");
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_some(),
+            "OpenCode prompt should mark the external turn running"
+        );
+
+        let first_status_outcome = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
                 turns: vec![prompt.clone(), status.clone()],
             },
         )
         .expect("observed prompt and status should append");
+        assert!(first_status_outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_none(),
+            "OpenCode completion metadata should settle the external turn immediately"
+        );
 
         let stable_status_outcome = append_observed_external_turns_for_import_with_options(
             &mut app,
@@ -2001,15 +2043,15 @@ mod tests {
                 allow_external_active_prompt_settlement: true,
             },
         )
-        .expect("stable completion status should settle");
+        .expect("stable completion status should stay settled");
 
         assert_eq!(stable_status_outcome.changed_count, 0);
-        assert!(stable_status_outcome.external_active_prompt_settled);
+        assert!(!stable_status_outcome.external_active_prompt_settled);
         assert!(
             app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
                 .expect("active prompt should load")
                 .is_none(),
-            "OpenCode completion metadata should settle the external turn"
+            "OpenCode completion metadata should keep the external turn settled"
         );
     }
 
