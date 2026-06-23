@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
+import { readFileSync } from "node:fs"
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
@@ -155,7 +156,7 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     `Observer gate go file: ${observerGate.goFile}.`,
     "",
     "Requirements:",
-    "1. Before emitting any ASSISTANT_STEP_NN, TOOL_STEP_NN, or FINAL_EXTERNAL_PARITY_SUMMARY marker, create the observer gate directory, write the ready file, and wait until the go file exists.",
+    "1. Before emitting any ASSISTANT_STEP_NN, TOOL_STEP_NN, or FINAL_EXTERNAL_PARITY_SUMMARY marker, wait until the observer gate go file exists.",
     "2. The observer gate setup/wait can use provider tools, but it must not include TOOL_STEP_NN markers and it does not count toward the 20 marked tool calls.",
     "3. After the go file exists, produce exactly 20 separate assistant progress messages, each with an assistant step marker.",
     "4. Assistant step markers must be built from prefix ASSISTANT_STEP_ plus two-digit numbers from 01 to 20.",
@@ -163,11 +164,13 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     "6. Tool step markers must be built from prefix TOOL_STEP_ plus two-digit numbers from 01 to 20.",
     "7. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
     "8. Each marked tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
-    "9. Use only the observer gate directory for temporary drill files.",
+    "9. Use only the observer gate directory for temporary drill files; it will exist when the go file appears.",
     "10. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
     "11. Delete the temporary directory before finishing.",
     `12. End with the exact final summary marker formed by joining prefix ${finalMarkerPrefix}, an underscore, and the drill marker.`,
     "13. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
+    "14. Use only low-risk shell commands: printf, cat, ls, wc, stat, find, test, touch, rm, rmdir, and sleep.",
+    "15. Do not use xattr, chmod, chown, install, Python, Node, Ruby, Perl, network commands, package managers, git, or any command likely to require interactive approval.",
   ].join("\n")
   return { text, promptMarker }
 }
@@ -434,7 +437,14 @@ async function runProviderDrill(provider, options) {
     if (tui) assertBadgeLifecycle(result, tui, "tui")
     if (web) assertWebTurnCollapse(result, web)
 
-    result.providerLimitations = providerLimitations(provider, { kernel, web, tui })
+    result.providerLimitations = providerLimitations(provider, { kernel, web, tui, providerTranscript }, {
+      providerSessionId: result.providerSessionId,
+      externalSessionId: result.externalSessionId,
+      arrobaSessionId: result.arrobaSessionId,
+      agentId: result.agentId,
+      model,
+      providerExit,
+    })
     if (!providerTranscript.found) {
       result.providerLimitations.push({
         provider,
@@ -1321,23 +1331,143 @@ function normalizeLifecycleStatus(status) {
   return normalized
 }
 
-function providerLimitations(provider, monitorResults) {
-  const limitations = []
-  const kernelText = monitorResults.kernel?.samples?.map((sample) => sample.text ?? "").join("\n") ?? ""
-  for (const field of ["token", "reasoning", "thinking", "model"]) {
-    if (!kernelText.toLowerCase().includes(field)) {
-      limitations.push({
-        provider,
-        metadata: field,
-        status: "not_observed",
-        classification: "requires_raw_provider_transcript_review",
-        note: `${field} metadata was not observed in imported external history`,
-      })
-    }
+function providerLimitations(provider, monitorResults, context = {}) {
+  const surfaceTexts = new Map([
+    ["provider_transcript", monitorResults.providerTranscript?.found ? readArtifactTextSync(monitorResults.providerTranscript) : ""],
+    ["kernel", monitorResults.kernel?.samples?.map((sample) => sample.text ?? "").join("\n") ?? ""],
+    ["web", monitorResults.web?.samples?.map((sample) => sample.text ?? "").join("\n") ?? ""],
+    ["tui", monitorResults.tui?.samples?.map((sample) => sample.text ?? "").join("\n") ?? ""],
+  ])
+  const combinedText = [...surfaceTexts.values()].join("\n").toLowerCase()
+  const surfacesWithText = (predicate) => [...surfaceTexts.entries()]
+    .filter(([, text]) => text && predicate(text.toLowerCase()))
+    .map(([surface]) => surface)
+  const metadataReport = [
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "status/running_state",
+      observed: Boolean(monitorResults.kernel?.statuses?.length || monitorResults.web?.statuses?.length || monitorResults.tui?.statuses?.length),
+      surfaces: ["kernel", monitorResults.web ? "web" : null, monitorResults.tui ? "tui" : null].filter(Boolean),
+      observedNote: "Arroba observed external turn lifecycle from WORKING to final IDLE/DONE.",
+      missingNote: "No lifecycle statuses were sampled during the drill.",
+      missingClassification: "arroba_bug",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "assistant_text",
+      observed: (monitorResults.kernel?.assistantMarkersSeen?.length ?? 0) === 20,
+      surfaces: surfacesWithText((text) => requiredAssistantMarkers.every((marker) => text.includes(marker.toLowerCase()))),
+      observedNote: "All assistant progress markers were visible in imported external history.",
+      missingNote: "Assistant text did not fully appear in imported external history.",
+      missingClassification: "arroba_bug",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "tool_calls",
+      observed: (monitorResults.kernel?.toolMarkersSeen?.length ?? 0) === 20,
+      surfaces: surfacesWithText((text) => requiredToolMarkers.every((marker) => text.includes(marker.toLowerCase()))),
+      observedNote: "All marked provider tool calls were visible in imported external history.",
+      missingNote: "Tool-call markers did not fully appear in imported external history.",
+      missingClassification: "arroba_bug",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "tool_results",
+      observed: requiredToolMarkers.some((marker) => combinedText.includes(marker.toLowerCase())),
+      surfaces: surfacesWithText((text) => requiredToolMarkers.some((marker) => text.includes(marker.toLowerCase()))),
+      observedNote: "Provider tool result/output text was visible at least through marked tool-call output.",
+      missingNote: "Tool result/output text was not observed in imported external history.",
+      missingClassification: "provider_persistence_or_adapter_limitation",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "reasoning/thinking_summaries",
+      observed: /\b(reasoning|thinking|thought|summary unavailable|visible summary)\b/i.test(combinedText),
+      surfaces: surfacesWithText((text) => /\b(reasoning|thinking|thought|summary unavailable|visible summary)\b/i.test(text)),
+      observedNote: "Reasoning/thinking metadata or an explicit unavailable-summary entry was visible.",
+      missingNote: "Reasoning/thinking summaries were not observed in imported external history.",
+      missingClassification: "provider_persistence_limitation",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "timestamps",
+      observed: Boolean(monitorResults.kernel?.samples?.some((sample) => sample.at) || monitorResults.providerTranscript?.found),
+      surfaces: ["provider_transcript", "kernel"].filter((surface) => surface !== "provider_transcript" || monitorResults.providerTranscript?.found),
+      observedNote: "Observation timestamps and/or provider transcript timestamps were captured.",
+      missingNote: "No timestamps were captured for provider or Arroba observations.",
+      missingClassification: "drill_observation_limitation",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "token_usage",
+      observed: /\b(token|usage|input_tokens|output_tokens|cached_input_tokens)\b/i.test(combinedText),
+      surfaces: surfacesWithText((text) => /\b(token|usage|input_tokens|output_tokens|cached_input_tokens)\b/i.test(text)),
+      observedNote: "Token usage metadata was visible in provider/imported history.",
+      missingNote: "Token usage metadata was not observed in imported external history.",
+      missingClassification: "provider_persistence_limitation",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "model_identity",
+      observed: Boolean(context.model) || /\b(model|gpt|sonnet|kimi|claude)\b/i.test(combinedText),
+      surfaces: context.model ? ["drill_config"] : surfacesWithText((text) => /\b(model|gpt|sonnet|kimi|claude)\b/i.test(text)),
+      observedNote: `Model identity was available to the drill as ${context.model ?? "provider transcript metadata"}.`,
+      missingNote: "Model identity was not observed.",
+      missingClassification: "drill_observation_limitation",
+    }),
+    metadataAvailability({
+      provider,
+      context,
+      metadata: "final_completion_or_error_state",
+      observed: Boolean(monitorResults.kernel?.finalSeen || context.providerExit),
+      surfaces: ["provider_process", "kernel"].filter((surface) => surface !== "kernel" || monitorResults.kernel?.finalSeen),
+      observedNote: `Provider exit and final marker were captured${context.providerExit ? ` with exit ${JSON.stringify(context.providerExit)}` : ""}.`,
+      missingNote: "Final completion/error state was not captured.",
+      missingClassification: "arroba_bug",
+    }),
+  ]
+  if (!monitorResults.web) metadataReport.push({ provider, surface: "web", status: "skipped", classification: "drill_observation_limitation" })
+  if (!monitorResults.tui) metadataReport.push({ provider, surface: "tui", status: "skipped", classification: "drill_observation_limitation" })
+  return metadataReport
+}
+
+function metadataAvailability({ provider, context, metadata, observed, surfaces, observedNote, missingNote, missingClassification }) {
+  return {
+    provider,
+    providerSessionId: context.providerSessionId ?? null,
+    externalSessionId: context.externalSessionId ?? null,
+    arrobaSessionId: context.arrobaSessionId ?? null,
+    agentId: context.agentId ?? null,
+    metadata,
+    status: observed ? "observed" : "not_observed",
+    classification: observed ? "available_to_arroba" : missingClassification,
+    surfaces: dedupe((surfaces ?? []).filter(Boolean)),
+    note: observed ? observedNote : missingNote,
   }
-  if (!monitorResults.web) limitations.push({ provider, surface: "web", status: "skipped", classification: "drill_observation_limitation" })
-  if (!monitorResults.tui) limitations.push({ provider, surface: "tui", status: "skipped", classification: "drill_observation_limitation" })
-  return limitations
+}
+
+function readArtifactTextSync(transcript) {
+  const artifactPath = transcript.artifactPath ?? transcript.path
+  if (!artifactPath) return ""
+  try {
+    return readFileSync(artifactPath, "utf8")
+  } catch {
+    return [
+      transcript.path ?? "",
+      transcript.artifactPath ?? "",
+      ...(transcript.assistantMarkersSeen ?? []),
+      ...(transcript.toolMarkersSeen ?? []),
+      transcript.finalSeen ? "final" : "",
+    ].join("\n")
+  }
 }
 
 async function waitForAutomation(socketPath, child) {
