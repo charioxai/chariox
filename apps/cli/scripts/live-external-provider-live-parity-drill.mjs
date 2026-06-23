@@ -9,10 +9,10 @@ import { pathToFileURL } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
-import { historyOutlineRows } from "./lib/drill-history-outline.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
+  getSessionHistoryBlobContentRequest,
   getSessionHistoryOutlineRequest,
   getSessionStateRequest,
   importExternalProviderSessionRequest,
@@ -395,6 +395,7 @@ async function runProviderDrill(provider, options) {
         sample: () => webSample(page, provider, marker, finalMarker, prompt.promptMarker),
         options,
       })
+      await expandWebTranscript(page, options)
     }
     if (tuiSocketPath) {
       await waitForSurfaceFinalIdle({
@@ -402,6 +403,7 @@ async function runProviderDrill(provider, options) {
         sample: () => tuiSample(tuiSocketPath, provider, marker, finalMarker, prompt.promptMarker),
         options,
       })
+      await expandTuiTranscriptBlobs(tuiSocketPath, options)
     }
     const providerTranscript = await snapshotProviderTranscript({
       provider,
@@ -534,10 +536,11 @@ async function waitForNewExternalSession({ client, provider, before, marker, tim
 
 function startKernelMonitor({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
   const samples = []
+  const blobTextCache = new Map()
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }).catch((error) => ({
+      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, blobTextCache }).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -548,14 +551,14 @@ function startKernelMonitor({ client, sessionId, agentId, provider, marker, fina
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }).catch((error) => ({ error: String(error?.message ?? error) }))
+      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, blobTextCache }).catch((error) => ({ error: String(error?.message ?? error) }))
       samples.push(finalSample)
       return summarizeSamples("kernel", samples, finalMarker)
     },
   }
 }
 
-async function kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }) {
+async function kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, blobTextCache }) {
   const stateResponse = await client.send(getSessionStateRequest(sessionId))
   const sessionState = stateResponse.SessionState ?? stateResponse.SessionStateLoaded ?? {}
   const session = sessionState.session
@@ -565,7 +568,7 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, fina
     ?? sessionState.agent_activity?.[String(agentId)]
     ?? null
   const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 1)), "SessionHistoryOutline")
-  const text = historyOutlineRows(outline, { includeUserPrompt: true }).map((row) => row.entry?.text ?? "").join("\n")
+  const text = await historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline, blobTextCache })
   return {
     at: new Date().toISOString(),
     surface: "kernel",
@@ -577,6 +580,50 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, fina
     promptOccurrences: countOccurrences(text, promptMarker),
     provider,
   }
+}
+
+async function historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline, blobTextCache }) {
+  const chunks = []
+  for (const agent of outline.agents ?? []) {
+    for (const turn of agent.turns ?? []) {
+      if (turn.user_prompt?.entry?.text) chunks.push(turn.user_prompt.entry.text)
+      const items = [
+        ...(turn.entries ?? []).map((entry) => ({ sequence: entry.entry_index ?? 0, entry })),
+        ...(turn.blobs ?? []).map((blob) => ({ sequence: blob.sequence_start ?? 0, blob })),
+        ...(turn.summary ? [{ sequence: turn.summary.entry_index ?? Number.MAX_SAFE_INTEGER, entry: turn.summary }] : []),
+      ].sort((left, right) => left.sequence - right.sequence)
+      for (const item of items) {
+        if ("entry" in item) {
+          if (item.entry?.entry?.text) chunks.push(item.entry.entry.text)
+          continue
+        }
+        const blob = item.blob
+        if (!blob?.blob_id) {
+          if (blob?.summary) chunks.push(blob.summary)
+          continue
+        }
+        const cacheKey = `${agent.agent_id ?? agentId}:${blob.blob_id}`
+        let blobText = blobTextCache.get(cacheKey)
+        if (blobText === undefined) {
+          blobText = await loadHistoryBlobText(client, sessionId, agent.agent_id ?? agentId, blob.blob_id)
+            .catch(() => blob.summary ?? "")
+          blobTextCache.set(cacheKey, blobText)
+        }
+        if (blobText) chunks.push(blobText)
+      }
+    }
+  }
+  return chunks.join("\n")
+}
+
+async function loadHistoryBlobText(client, sessionId, agentId, blobId) {
+  const response = unwrap(
+    await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blobId)),
+    "SessionHistoryBlobContent",
+  )
+  return (response.entries ?? [])
+    .map((entry) => entry.entry?.text ?? "")
+    .join("\n")
 }
 
 async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
@@ -776,6 +823,58 @@ async function clearSessionPickerOverlay(page) {
   await page.locator("[data-freeform-pane-grid], .freeform-workspace").first().waitFor({ timeout: 90_000 })
 }
 
+async function expandWebTranscript(page, options) {
+  const deadline = Date.now() + Math.min(30_000, Math.max(5_000, options.timeoutMs))
+  while (Date.now() < deadline) {
+    const clicked = await page.evaluate(() => {
+      let count = 0
+      for (const button of document.querySelectorAll('[data-freeform-turn-toggle][aria-expanded="false"]')) {
+        if (button instanceof HTMLElement) {
+          button.click()
+          count += 1
+        }
+      }
+      for (const button of document.querySelectorAll('.freeform-blob-header[aria-expanded="false"]')) {
+        if (button instanceof HTMLElement) {
+          button.click()
+          count += 1
+        }
+      }
+      return count
+    }).catch(() => 0)
+    if (!clicked) break
+    await sleep(350)
+  }
+  await sleep(1_000)
+}
+
+async function expandTuiTranscriptBlobs(socketPath, options) {
+  const deadline = Date.now() + Math.min(30_000, Math.max(5_000, options.timeoutMs))
+  const expanded = new Set()
+  while (Date.now() < deadline) {
+    const snapshot = await automationRequest(socketPath, { action: "snapshot" }).catch(() => null)
+    const entries = snapshot
+      ? [
+          ...(snapshot.transcript?.entries ?? []),
+          ...Object.values(snapshot.agentPanes ?? {}).flat(),
+        ].filter(Boolean)
+      : []
+    const target = entries.find((entry) => {
+      const entryId = Number(entry?.id)
+      return Number.isInteger(entryId)
+        && entry?.blobCollapsible === true
+        && entry?.blobCollapsed !== false
+        && !expanded.has(entryId)
+    })
+    if (!target) break
+    const entryId = Number(target.id)
+    expanded.add(entryId)
+    await automationRequest(socketPath, { action: "toggle_blob", entryId, collapsed: false }).catch(() => null)
+    await sleep(350)
+  }
+  await sleep(1_000)
+}
+
 async function waitForWebCondition(page, predicate, timeoutMs, message, arg = undefined) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
@@ -853,6 +952,7 @@ function summarizeSamples(surface, samples, finalMarker) {
   const firstFinalSampleIndex = valid.findIndex((sample) => sample.finalSeen)
   const preFinalSamples = firstFinalSampleIndex >= 0 ? valid.slice(0, firstFinalSampleIndex) : valid
   const finalAndLaterSamples = firstFinalSampleIndex >= 0 ? valid.slice(firstFinalSampleIndex) : []
+  const beforeAssistantCompleteSamples = valid.filter((sample) => (sample.assistantMarkers?.length ?? 0) < requiredAssistantMarkers.length)
   const countMax = (entries, key) => Math.max(0, ...entries.map((sample) => Number(sample[key] ?? 0)).filter(Number.isFinite))
   return {
     surface,
@@ -872,6 +972,8 @@ function summarizeSamples(surface, samples, finalMarker) {
     preFinalStatuses: preFinalSamples.map((sample) => sample.status).filter(Boolean),
     preFinalMaxTurnCollapsedCount: countMax(preFinalSamples, "turnCollapsedCount"),
     preFinalMaxTurnExpandedCount: countMax(preFinalSamples, "turnExpandedCount"),
+    beforeAssistantCompleteMaxTurnCollapsedCount: countMax(beforeAssistantCompleteSamples, "turnCollapsedCount"),
+    beforeAssistantCompleteMaxTurnExpandedCount: countMax(beforeAssistantCompleteSamples, "turnExpandedCount"),
     finalMaxTurnCollapsedCount: countMax(finalAndLaterSamples, "turnCollapsedCount"),
     finalMaxTurnExpandedCount: countMax(finalAndLaterSamples, "turnExpandedCount"),
     finalMaxBlobCollapsedCount: countMax(finalAndLaterSamples, "blobCollapsedCount"),
@@ -1207,9 +1309,9 @@ function assertBadgeLifecycle(result, surfaceResult, label) {
 }
 
 function assertWebTurnCollapse(result, webResult) {
-  result.assertions.push(assertion("web did not expose a completed turn toggle before final summary", webResult.preFinalMaxTurnCollapsedCount === 0, {
-    preFinalCollapsed: webResult.preFinalMaxTurnCollapsedCount,
-    preFinalExpanded: webResult.preFinalMaxTurnExpandedCount,
+  result.assertions.push(assertion("web did not collapse before all assistant progress appeared", webResult.beforeAssistantCompleteMaxTurnCollapsedCount === 0, {
+    beforeAssistantCompleteCollapsed: webResult.beforeAssistantCompleteMaxTurnCollapsedCount,
+    beforeAssistantCompleteExpanded: webResult.beforeAssistantCompleteMaxTurnExpandedCount,
   }))
   result.assertions.push(assertion("web collapsed completed turn after final summary", webResult.finalMaxTurnCollapsedCount > 0, {
     finalCollapsed: webResult.finalMaxTurnCollapsedCount,
