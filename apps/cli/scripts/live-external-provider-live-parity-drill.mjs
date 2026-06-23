@@ -559,6 +559,7 @@ function startKernelMonitor({ client, sessionId, agentId, provider, marker, fina
 }
 
 async function kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, blobTextCache }) {
+  const cache = blobTextCache ?? new Map()
   const stateResponse = await client.send(getSessionStateRequest(sessionId))
   const sessionState = stateResponse.SessionState ?? stateResponse.SessionStateLoaded ?? {}
   const session = sessionState.session
@@ -568,7 +569,7 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, fina
     ?? sessionState.agent_activity?.[String(agentId)]
     ?? null
   const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 1)), "SessionHistoryOutline")
-  const text = await historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline, blobTextCache })
+  const text = await historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline, blobTextCache: cache })
   return {
     at: new Date().toISOString(),
     surface: "kernel",
