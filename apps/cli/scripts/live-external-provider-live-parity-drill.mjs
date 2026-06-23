@@ -211,6 +211,7 @@ async function main() {
     dryRun: options.dryRun,
     providers: options.providers,
     results: [],
+    providerLimitations: [],
   }
   let failure = null
   try {
@@ -220,6 +221,7 @@ async function main() {
       if (!result.ok) break
     }
     summary.ok = summary.results.length === options.providers.length && summary.results.every((result) => result.ok)
+    summary.providerLimitations = collectProviderLimitations(summary.results)
     await writeJson(path.join(options.artifactRoot, "manifest.json"), summary)
     if (!summary.ok) {
       throw new Error(`external provider live parity drill failed: ${summary.results.filter((result) => !result.ok).map((result) => result.provider).join(", ")}`)
@@ -228,6 +230,7 @@ async function main() {
     failure = error
     summary.ok = false
     summary.error = String(error?.stack ?? error)
+    summary.providerLimitations = collectProviderLimitations(summary.results)
     await writeJson(path.join(options.artifactRoot, "manifest.json"), summary).catch(() => {})
     throw error
   } finally {
@@ -250,6 +253,10 @@ async function main() {
     })
   }
   console.log(JSON.stringify(summary, null, 2))
+}
+
+function collectProviderLimitations(results) {
+  return results.flatMap((result) => result.providerLimitations ?? [])
 }
 
 async function runProviderDrill(provider, options) {
