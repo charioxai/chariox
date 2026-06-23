@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -356,6 +356,13 @@ async function runProviderDrill(provider, options) {
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
     result.evidence.providerExit = providerExit
     await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, promptMarker: prompt.promptMarker, options })
+    const providerTranscript = await snapshotProviderTranscript({
+      provider,
+      providerSessionId: result.providerSessionId,
+      providerRoot,
+      promptMarker: prompt.promptMarker,
+    })
+    result.evidence.providerTranscript = providerTranscript
     const monitorResults = []
     for (const monitor of monitors) {
       monitorResults.push(await monitor.stop())
@@ -365,6 +372,7 @@ async function runProviderDrill(provider, options) {
     const web = monitorResults.find((entry) => entry.surface === "web")
     const tui = monitorResults.find((entry) => entry.surface === "tui")
 
+    assertProviderTranscript(result, providerTranscript, "provider transcript")
     assertSurface(result, kernel, "kernel history")
     if (!options.skipWeb) assertSurface(result, web, "product web terminal")
     if (!options.skipTui) assertSurface(result, tui, "TUI")
@@ -373,6 +381,15 @@ async function runProviderDrill(provider, options) {
     if (tui) assertBadgeLifecycle(result, tui, "tui")
 
     result.providerLimitations = providerLimitations(provider, { kernel, web, tui })
+    if (!providerTranscript.found) {
+      result.providerLimitations.push({
+        provider,
+        surface: "provider_transcript",
+        status: "not_observed",
+        classification: "drill_observation_limitation",
+        note: providerTranscript.reason ?? "provider-native transcript file was not found",
+      })
+    }
     result.ok = result.assertions.every((assertion) => assertion.passed)
   } catch (error) {
     result.ok = false
@@ -744,6 +761,206 @@ function summarizeSamples(surface, samples) {
     maxBottomDistance: Math.max(0, ...valid.map((sample) => Number(sample.bottomDistance ?? 0)).filter(Number.isFinite)),
     promptOccurrenceMax: Math.max(0, ...valid.map((sample) => Number(sample.promptOccurrences ?? 0)).filter(Number.isFinite)),
   }
+}
+
+async function snapshotProviderTranscript({ provider, providerSessionId, providerRoot, promptMarker }) {
+  if (!providerSessionId) {
+    return { surface: "provider", found: false, reason: "provider session id unavailable" }
+  }
+  const path = await findProviderTranscriptPath(provider, providerSessionId)
+  if (!path) {
+    return {
+      surface: "provider",
+      found: false,
+      providerSessionId,
+      reason: `no ${provider} transcript path matched provider session ${providerSessionId}`,
+    }
+  }
+  const text = await readFile(path, "utf8")
+  const artifactPath = pathJoin(providerRoot, `provider-transcript${pathExt(path)}`)
+  await writeFile(artifactPath, text, "utf8")
+  return {
+    surface: "provider",
+    found: true,
+    providerSessionId,
+    path,
+    artifactPath,
+    byteLength: Buffer.byteLength(text),
+    assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => text.includes(marker)),
+    toolMarkersSeen: requiredToolMarkers.filter((marker) => text.includes(marker)),
+    finalSeen: text.includes(finalMarker),
+    promptOccurrences: countOccurrences(text, promptMarker),
+  }
+}
+
+async function findProviderTranscriptPath(provider, providerSessionId) {
+  const roots = providerTranscriptRoots(provider)
+  for (const root of roots) {
+    const candidates = await providerTranscriptCandidates(provider, root)
+    for (const candidate of candidates) {
+      if (await providerTranscriptMatches(provider, candidate, providerSessionId)) {
+        return candidate
+      }
+    }
+  }
+  return null
+}
+
+function providerTranscriptRoots(provider) {
+  const home = os.homedir()
+  if (provider === "codex") {
+    return [process.env.CODEX_HOME || path.join(home, ".codex")]
+  }
+  if (provider === "claude") {
+    return [process.env.CLAUDE_HOME || path.join(home, ".claude")]
+  }
+  if (provider === "opencode") {
+    return dedupe([
+      process.env.OPENCODE_DATA_HOME,
+      process.env.XDG_DATA_HOME ? path.join(process.env.XDG_DATA_HOME, "opencode") : null,
+      path.join(home, ".local", "share", "opencode"),
+      path.join(home, ".config", "opencode"),
+    ].filter(Boolean))
+  }
+  return []
+}
+
+async function providerTranscriptCandidates(provider, root) {
+  const specs = {
+    codex: [
+      { root: path.join(root, "archived_sessions"), depth: 4, extensions: new Set([".jsonl"]) },
+      { root: path.join(root, "sessions"), depth: 4, extensions: new Set([".jsonl"]) },
+    ],
+    claude: [
+      { root: path.join(root, "projects"), depth: 3, extensions: new Set([".jsonl"]) },
+    ],
+    opencode: [
+      { root, depth: 5, extensions: new Set([".json", ".jsonl"]) },
+    ],
+  }[provider] ?? []
+  const files = []
+  for (const spec of specs) {
+    files.push(...await fileCandidates(spec.root, spec.depth, spec.extensions, provider === "opencode"))
+  }
+  await primeStatCache(files)
+  return sortRecentFiles(dedupe(files)).slice(0, 1_000)
+}
+
+async function providerTranscriptMatches(provider, file, providerSessionId) {
+  if (path.basename(file) === `${providerSessionId}.json` || path.basename(file) === `${providerSessionId}.jsonl`) {
+    return true
+  }
+  if (path.basename(file).includes(providerSessionId)) {
+    return true
+  }
+  const text = await readFile(file, "utf8").catch(() => "")
+  if (!text) return false
+  if (provider === "codex") {
+    return jsonlValues(text).some((value) => value?.type === "session_meta"
+      && stringField(value.payload, ["id", "session_id", "sessionId"]) === providerSessionId)
+  }
+  if (provider === "claude") {
+    return jsonlValues(text).some((value) => stringField(value, ["sessionId", "session_id"]) === providerSessionId)
+  }
+  if (provider === "opencode") {
+    if (path.extname(file) === ".jsonl") {
+      return jsonlValues(text).some((value) => stringField(value, ["sessionID", "sessionId", "session_id", "id"]) === providerSessionId)
+    }
+    const value = parseJson(text)
+    if (!value) return false
+    return stringField(value, ["id", "sessionID", "sessionId", "session_id"]) === providerSessionId
+  }
+  return false
+}
+
+async function fileCandidates(root, depth, extensions, opencodeNamesOnly = false) {
+  if (depth <= 0) return []
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  const files = []
+  for (const entry of entries) {
+    if (entry.name === "node_modules") continue
+    const file = path.join(root, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...await fileCandidates(file, depth - 1, extensions, opencodeNamesOnly))
+    } else if (entry.isFile() && extensions.has(path.extname(entry.name))) {
+      const lower = file.toLowerCase()
+      if (!opencodeNamesOnly || lower.includes("session") || lower.includes("conversation") || lower.includes("message") || lower.endsWith(".jsonl")) {
+        files.push(file)
+      }
+    }
+  }
+  return files
+}
+
+function sortRecentFiles(files) {
+  return files.sort((left, right) => fileModifiedMs(right) - fileModifiedMs(left) || left.localeCompare(right))
+}
+
+function fileModifiedMs(file) {
+  return statSyncCache.get(file) ?? 0
+}
+
+const statSyncCache = new Map()
+
+async function primeStatCache(files) {
+  await Promise.all(files.map(async (file) => {
+    const metadata = await stat(file).catch(() => null)
+    statSyncCache.set(file, metadata?.mtimeMs ?? 0)
+  }))
+}
+
+function jsonlValues(text) {
+  return String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+function stringField(value, keys) {
+  if (!value || typeof value !== "object") return null
+  for (const key of keys) {
+    const field = value[key]
+    if (typeof field === "string" && field.length > 0) return field
+  }
+  return null
+}
+
+function pathJoin(...parts) {
+  return path.join(...parts)
+}
+
+function pathExt(file) {
+  const extension = path.extname(file)
+  return extension || ".txt"
+}
+
+function assertProviderTranscript(result, transcript, label) {
+  result.assertions.push(assertion(`${label} file found`, Boolean(transcript?.found), transcript?.reason ?? transcript?.path))
+  if (!transcript?.found) return
+  result.assertions.push(assertion(`${label} saw all assistant markers`, transcript.assistantMarkersSeen.length === 20, transcript.assistantMarkersSeen))
+  result.assertions.push(assertion(`${label} saw all tool markers`, transcript.toolMarkersSeen.length === 20, transcript.toolMarkersSeen))
+  result.assertions.push(assertion(`${label} saw final summary marker`, transcript.finalSeen, transcript.finalSeen))
+  result.assertions.push(assertion(`${label} saw external prompt marker`, transcript.promptOccurrences >= 1, transcript.promptOccurrences))
+}
+
+function dedupe(values) {
+  return [...new Set(values)]
 }
 
 function assertSurface(result, surfaceResult, label) {
