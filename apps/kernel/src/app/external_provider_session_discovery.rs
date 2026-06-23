@@ -840,7 +840,7 @@ fn claude_assistant_observed_turns(
     let Some(content) = message.get("content").or_else(|| value.get("content")) else {
         return Vec::new();
     };
-    match content {
+    let mut turns = match content {
         Value::Array(items) => items
             .iter()
             .enumerate()
@@ -962,7 +962,36 @@ fn claude_assistant_observed_turns(
             })
             .unwrap_or_default(),
         _ => Vec::new(),
+    };
+    if let Some(completion) = claude_assistant_completion_status(value, message, observed_at_ms) {
+        turns.push(completion);
     }
+    turns
+}
+
+fn claude_assistant_completion_status(
+    value: &Value,
+    message: &Value,
+    observed_at_ms: Option<u64>,
+) -> Option<ObservedExternalProviderTurn> {
+    let stop_reason = string_field(message, &["stop_reason", "stopReason"])
+        .or_else(|| string_field(value, &["stop_reason", "stopReason"]))?;
+    if stop_reason == "tool_use" {
+        return None;
+    }
+    let provider_turn_id = string_field(value, &["uuid", "id", "message_id"])
+        .or_else(|| string_field(message, &["id"]))
+        .map(|id| format!("{id}:completed"));
+    let details = compact_json_text(serde_json::json!({
+        "type": "claude_message_completed",
+        "stop_reason": stop_reason,
+    }));
+    Some(ObservedExternalProviderTurn {
+        role: ObservedExternalProviderTurnRole::Status,
+        text: format!("claude message completed\n{details}"),
+        provider_turn_id,
+        observed_at_ms,
+    })
 }
 
 fn claude_tool_use_text(item: &Value) -> String {
@@ -2363,6 +2392,40 @@ mod tests {
         assert_eq!(turns[0].text, "Summarize external imports.");
         assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
         assert_eq!(turns[1].provider_turn_id.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn reads_claude_end_turn_as_completion_status() {
+        let temp = temp_dir("claude-observed-completion");
+        let root = temp.path();
+        let session_dir = root.join("projects").join("-repo");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("session-1.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run a drill.\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}\n",
+                "{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"FINAL_EXTERNAL_PARITY_SUMMARY\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:02.000Z\"}\n",
+                "{\"type\":\"last-prompt\",\"sessionId\":\"session-1\",\"leafUuid\":\"a1\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let turns = read_claude_observed_turns(root, "session-1");
+        assert_eq!(
+            turns.iter().map(|turn| turn.role).collect::<Vec<_>>(),
+            vec![
+                ObservedExternalProviderTurnRole::User,
+                ObservedExternalProviderTurnRole::Assistant,
+                ObservedExternalProviderTurnRole::Status,
+                ObservedExternalProviderTurnRole::Status,
+            ]
+        );
+        assert_eq!(turns[1].text, "FINAL_EXTERNAL_PARITY_SUMMARY");
+        assert_eq!(turns[2].provider_turn_id.as_deref(), Some("a1:completed"));
+        assert!(turns[2].text.starts_with("claude message completed"));
+        assert!(turns[2].text.contains("stop_reason"));
+        assert!(turns[2].text.contains("end_turn"));
+        assert!(turns[3].text.starts_with("claude last-prompt"));
     }
 
     #[test]
