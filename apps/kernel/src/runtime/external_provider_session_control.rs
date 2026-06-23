@@ -88,6 +88,7 @@ impl Default for ImportedExternalObserverAppendOptions {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ImportedExternalObserverAppendOutcome {
     changed_count: usize,
+    active_relevant_changed_count: usize,
     external_active_prompt_settled: bool,
     session_id: String,
     agent_id: String,
@@ -221,7 +222,7 @@ async fn poll_imported_external_provider_transcripts(
                     .entry(key)
                     .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
                 state.consecutive_errors = 0;
-                if outcome.changed_count > 0 {
+                if outcome.active_relevant_changed_count > 0 {
                     state.active_until = Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW);
                     state.last_changed_at = Some(now);
                 }
@@ -787,6 +788,7 @@ fn append_observed_external_turns_for_import_with_options(
         }
     }
     let mut appended = 0usize;
+    let mut active_relevant_appended = 0usize;
     let mut last_cursor = read.target.import.observed_cursor.clone();
     let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
     let mut seen_merge_keys = existing_merge_keys;
@@ -859,6 +861,9 @@ fn append_observed_external_turns_for_import_with_options(
                 &entry,
             );
             appended += 1;
+            if !external_observed_turn_is_passive_telemetry(&provider, turn) {
+                active_relevant_appended += 1;
+            }
         }
         if let Some(merge_key) = merge_key {
             seen_merge_keys.insert(merge_key.clone());
@@ -869,10 +874,11 @@ fn append_observed_external_turns_for_import_with_options(
     }
     let changed = appended;
     outcome.changed_count = changed;
+    outcome.active_relevant_changed_count = active_relevant_appended;
     let latest_active_prompt = external_active_prompt_from_turns(
         &read.target,
         &read.turns,
-        changed > 0,
+        active_relevant_appended > 0,
         &arroba_owned_prompt_texts,
     );
     let latest_observation_settles = latest_observed_turn_settles(&read.turns);
@@ -1033,6 +1039,14 @@ fn external_status_turn_settles(text: &str) -> bool {
 fn external_status_turn_is_passive_telemetry(provider: &str, text: &str) -> bool {
     provider == "claude"
         && (text.starts_with("claude last-prompt") || text.starts_with("claude ai-title"))
+}
+
+fn external_observed_turn_is_passive_telemetry(
+    provider: &str,
+    turn: &crate::app::ObservedExternalProviderTurn,
+) -> bool {
+    turn.role == crate::app::ObservedExternalProviderTurnRole::Status
+        && external_status_turn_is_passive_telemetry(provider, &turn.text)
 }
 
 fn external_provider_uses_explicit_completion(provider: &str) -> bool {
@@ -2107,7 +2121,7 @@ mod tests {
             observed_at_ms: Some(126),
         };
 
-        append_observed_external_turns_for_import(
+        let initial_outcome = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
                 target: target.clone(),
@@ -2115,6 +2129,8 @@ mod tests {
             },
         )
         .expect("observed Claude turn should append");
+        assert_eq!(initial_outcome.changed_count, 3);
+        assert_eq!(initial_outcome.active_relevant_changed_count, 2);
 
         let outcome = append_observed_external_turns_for_import_with_options(
             &mut app,
@@ -2129,6 +2145,7 @@ mod tests {
         .expect("stable Claude telemetry should settle");
 
         assert_eq!(outcome.changed_count, 0);
+        assert_eq!(outcome.active_relevant_changed_count, 0);
         assert!(outcome.external_active_prompt_settled);
         assert!(
             app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
