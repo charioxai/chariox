@@ -201,7 +201,7 @@ function providerCommand(provider, model, prompt, workspace) {
     return { command: "codex", args: ["exec", "--model", model, prompt] }
   }
   if (provider === "claude") {
-    return { command: "claude", args: ["-p", "--model", model, prompt] }
+    return { command: "claude", args: ["-p", "--model", model, "--permission-mode", "bypassPermissions", "--dangerously-skip-permissions", prompt] }
   }
   if (provider === "opencode") {
     return { command: "opencode", args: ["run", "-m", model, prompt] }
