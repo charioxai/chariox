@@ -158,13 +158,6 @@ test("external provider history update status triggers pane refresh hook", () =>
     "activity:terminal_record",
     "turn-activity:terminal_record",
     "external-history:agent-a",
-    "streaming:agent-a",
-    "busy:agent-a",
-    "agent-activity:agent-a:null",
-    "provider-activity:null",
-    "provider-active:false",
-    "chunk:status:external_provider_history_updated:__provider_status__",
-    "sync-visible-preview",
   ])
 })
 

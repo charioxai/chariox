@@ -67,6 +67,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     }
     if (record.kind === "provider_status" && text.trim() === EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS) {
       deps.handleExternalProviderHistoryUpdated?.(recordAgentId)
+      return
     }
     if (record.kind !== "prompt_echo") {
       deps.setStreamingAgentId(recordAgentId)
