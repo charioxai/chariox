@@ -1396,10 +1396,17 @@ function pipeChildLogs(child, stdoutPath, stderrPath) {
 
 async function closeWithTimeout(target, label) {
   if (!target?.close) return
+  let timedOut = false
   await Promise.race([
     target.close(),
-    sleep(3_000).then(() => console.warn(`${label} close timed out`)),
+    sleep(3_000).then(() => {
+      timedOut = true
+      console.warn(`${label} close timed out`)
+    }),
   ]).catch(() => {})
+  if (timedOut && typeof target.process === "function") {
+    target.process()?.kill("SIGKILL")
+  }
 }
 
 function stopChild(child) {
