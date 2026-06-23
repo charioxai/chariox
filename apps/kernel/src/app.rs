@@ -147,6 +147,7 @@ pub struct DaemonApp {
     leased_agents: BTreeMap<String, LeasedAgent>,
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
     remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
+    completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     slices: crate::slice::SliceStore,
     next_execution_lease_number: u64,
     next_leased_agent_number: u64,
@@ -244,6 +245,8 @@ impl DaemonApp {
             leased_agents: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
+            completed_git_turn_snapshots:
+                crate::git_observer::CompletedGitTurnSnapshotStore::default(),
             slices: crate::slice::SliceStore::default(),
             next_execution_lease_number: 0,
             next_leased_agent_number: 0,
@@ -405,6 +408,12 @@ impl DaemonApp {
 
     pub(crate) fn active_turn_store(&self) -> ActiveTurnStore {
         self.active_turns.clone()
+    }
+
+    pub(crate) fn completed_git_turn_snapshot_store(
+        &self,
+    ) -> crate::git_observer::CompletedGitTurnSnapshotStore {
+        self.completed_git_turn_snapshots.clone()
     }
 
     pub(crate) fn prompt_workspace_claim_store(&self) -> PromptWorkspaceClaimStore {

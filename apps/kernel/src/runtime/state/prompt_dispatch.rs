@@ -225,13 +225,12 @@ impl KernelRuntimeState {
                     target_agent_id,
                     owned_provider_run_id.as_deref(),
                 )? {
-                    if let Some(provider_run_id) = owned_provider_run_id.as_deref() {
-                        self.observe_git_after_prompt_completion(
-                            provider_run_id,
-                            &completion.completion.completed,
-                        )
-                        .await;
-                    }
+                    self.observe_git_after_completed_prompt(
+                        Some(session_id),
+                        owned_provider_run_id.as_deref(),
+                        &completion.completion.completed,
+                    )
+                    .await;
                     if completion.completion.completed.workflow_run_id().is_some() {
                         let dispatches = owned.workflow_complete_prompt(
                             session_id,
@@ -263,13 +262,12 @@ impl KernelRuntimeState {
                 next_queued_prompt,
             )? {
                 let completion_result = completion.completion;
-                if let Some(provider_run_id) = owned_provider_run_id.as_deref() {
-                    self.observe_git_after_prompt_completion(
-                        provider_run_id,
-                        &completion_result.completed,
-                    )
-                    .await;
-                }
+                self.observe_git_after_completed_prompt(
+                    Some(session_id),
+                    owned_provider_run_id.as_deref(),
+                    &completion_result.completed,
+                )
+                .await;
                 if completion_result.completed.workflow_run_id().is_some() {
                     let dispatches = owned.workflow_complete_prompt(
                         session_id,

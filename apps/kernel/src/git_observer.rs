@@ -284,6 +284,24 @@ impl GitTurnSnapshotStore {
         guard.get(key).cloned()
     }
 
+    pub(crate) fn get_for_session_agent_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Option<GitTurnSnapshot> {
+        self.inner
+            .lock()
+            .expect("git turn snapshot mutex poisoned")
+            .values()
+            .find(|snapshot| {
+                snapshot.session_id == session_id
+                    && snapshot.agent_id == agent_id
+                    && snapshot.prompt_id == prompt_id
+            })
+            .cloned()
+    }
+
     pub(crate) fn provider_run_ids_for_session(&self, session_id: &str) -> BTreeSet<String> {
         self.read()
             .values()

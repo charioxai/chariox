@@ -314,7 +314,6 @@ pub(super) fn compose_command_router(
         provider_run_projection,
         provider_process_projection,
         active_turns,
-        prompt_activity,
         remote_relay_inventory_projection,
         config_projection,
         relay_state,

@@ -74,6 +74,24 @@ impl KernelRuntimeOwnedState {
                 prompt.target_agent_id().to_string()
             }
         };
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
+            let provider_run_id =
+                provider_run_id
+                    .as_deref()
+                    .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                        session_id: session_id.clone(),
+                    })?;
+            if let Ok(provider_run) = self.provider_store.get_run(provider_run_id) {
+                self.capture_git_turn_snapshot_for_started_prompt(
+                    &session,
+                    &target_agent_id,
+                    &provider_run,
+                    prompt,
+                    Some(prompt_sent_at_ms),
+                );
+            }
+        }
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, &outcome_agent_id);
@@ -83,7 +101,6 @@ impl KernelRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         )?;
-        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
         self.agent_store
             .note_prompt_sent_at(&outcome_agent_id, prompt_sent_at_ms)?;
         self.session_store
@@ -98,33 +115,6 @@ impl KernelRuntimeOwnedState {
                         .ok_or_else(|| DaemonError::NoActiveProviderRun {
                             session_id: session_id.clone(),
                         })?;
-                if let Ok(provider_run) = self.provider_store.get_run(provider_run_id) {
-                    let worktree_path = provider_run
-                        .working_directory()
-                        .cloned()
-                        .unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id()));
-                    let context = crate::git_observer::GitTurnContext {
-                        session_id: session_id.clone(),
-                        agent_id: target_agent_id.clone(),
-                        provider: provider_run.provider().to_string(),
-                        model: provider_run.model().to_string(),
-                        provider_run_id: provider_run_id.to_string(),
-                        provider_session_id: provider_run.provider_session_id().map(str::to_string),
-                        prompt_id: prompt.id().to_string(),
-                        turn_id: prompt.id().to_string(),
-                        started_at_ms: Some(prompt_sent_at_ms),
-                        worktree_path,
-                        workspace_live_sync_tracked: provider_run.tracks_workspace_live_sync(),
-                        machine_id: None,
-                        prompt_summary: crate::prompt_transcript::render_prompt_transcript(
-                            prompt.prompt(),
-                            prompt.attachments(),
-                        ),
-                    };
-                    if let Some(snapshot) = crate::git_observer::capture_turn_snapshot(context) {
-                        self.git_turn_snapshots.insert(snapshot);
-                    }
-                }
                 self.echo_prompt_to_other_attachments(
                     &session_id,
                     provider_run_id,
@@ -179,5 +169,47 @@ impl KernelRuntimeOwnedState {
             dispatch,
             remote_dispatch: None,
         }))
+    }
+
+    pub(super) fn capture_git_turn_snapshot_for_started_prompt(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent_id: &str,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        prompt: &crate::session::PromptQueueItem,
+        started_at_ms: Option<u64>,
+    ) {
+        if self
+            .git_turn_snapshots
+            .get(provider_run.id(), prompt.id())
+            .is_some()
+        {
+            return;
+        }
+        let worktree_path = provider_run
+            .working_directory()
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id()));
+        let context = crate::git_observer::GitTurnContext {
+            session_id: session.id().to_string(),
+            agent_id: agent_id.to_string(),
+            provider: provider_run.provider().to_string(),
+            model: provider_run.model().to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            provider_session_id: provider_run.provider_session_id().map(str::to_string),
+            prompt_id: prompt.id().to_string(),
+            turn_id: prompt.id().to_string(),
+            started_at_ms,
+            worktree_path,
+            workspace_live_sync_tracked: provider_run.tracks_workspace_live_sync(),
+            machine_id: None,
+            prompt_summary: crate::prompt_transcript::render_prompt_transcript(
+                prompt.prompt(),
+                prompt.attachments(),
+            ),
+        };
+        if let Some(snapshot) = crate::git_observer::capture_turn_snapshot(context) {
+            self.git_turn_snapshots.insert(snapshot);
+        }
     }
 }

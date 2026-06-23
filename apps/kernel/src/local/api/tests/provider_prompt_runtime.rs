@@ -530,6 +530,256 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
 }
 
 #[test]
+fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
+    let root = temp_git_repo("native-tui-turn-actions");
+    let proof_path = root.join("web-terminal-undo-proof.txt");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "turn-actions-client".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let provider_run = match harness
+        .dispatch(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: Some("default".to_string()),
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: true,
+            },
+        ))
+        .expect("provider launch should succeed")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
+        other => panic!("unexpected provider launch response: {other:?}"),
+    };
+    assert!(
+        provider_run.tracks_workspace_live_sync(),
+        "tracked session should launch a tracked provider run"
+    );
+    harness.with_app_mut(|app| {
+        if app
+            .providers()
+            .get_run(provider_run.id())
+            .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
+        {
+            app.providers_mut()
+                .mark_run_running(provider_run.id())
+                .expect("provider run should be marked running");
+        }
+    });
+
+    let prompt = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent.id().to_string()),
+            prompt: "turn actions prompt".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("prompt submit should start")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected prompt submit response: {other:?}"),
+    };
+    fs::write(&proof_path, "created by native tui turn\n").expect("proof file should be written");
+    match harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("prompt completion should succeed")
+    {
+        LocalDaemonResponse::PromptCompleted { completion } => {
+            assert_eq!(completion.completed.id(), prompt.id());
+        }
+        other => panic!("unexpected completion response: {other:?}"),
+    }
+
+    let agent_activity = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { agent_activity, .. } => agent_activity,
+        other => panic!("unexpected session state response: {other:?}"),
+    };
+    let completed_turn = agent_activity
+        .get(agent.id())
+        .and_then(|activity| activity.last_completed_turn.as_ref())
+        .expect("completed tracked turn should project a turn action");
+    assert_eq!(completed_turn.agent_id, agent.id());
+    assert_eq!(completed_turn.prompt_id, prompt.id());
+    assert!(completed_turn.undo_available);
+    assert_eq!(
+        completed_turn.changed_paths,
+        vec!["web-terminal-undo-proof.txt".to_string()]
+    );
+    let event_projection = harness.with_app_mut(|app| {
+        crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(app, session.id(), 0)
+            .expect("subscription projection should load")
+    });
+    let event_completed_turn = event_projection
+        .agent_activity
+        .get(agent.id())
+        .and_then(|activity| activity.last_completed_turn.as_ref())
+        .expect("subscription projection should include completed tracked turn action");
+    assert_eq!(event_completed_turn.prompt_id, prompt.id());
+    assert!(event_completed_turn.undo_available);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn queued_native_tui_turn_projects_undo_action_after_provider_launch() {
+    let root = temp_git_repo("queued-native-tui-turn-actions");
+    let proof_path = root.join("web-terminal-undo-proof.txt");
+    let mut config = DaemonConfig::for_tests();
+    config.provider_runtime_init_delay_ms = 50;
+    let harness = LocalRouterTestHarness::with_config(config);
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "queued-turn-actions-client".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let provider_run = match harness
+        .dispatch(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: Some("default".to_string()),
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: true,
+            },
+        ))
+        .expect("provider launch should be accepted")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
+        other => panic!("unexpected provider launch response: {other:?}"),
+    };
+
+    let prompt = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent.id().to_string()),
+            prompt: "queued turn actions prompt".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("prompt submit should queue while native TUI provider starts")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Queued { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected prompt submit response: {other:?}"),
+    };
+
+    harness.wait_for_session_where(
+        session.id(),
+        "queued native TUI prompt should become active after provider launch",
+        |session| {
+            session
+                .active_prompt_for_agent(agent.id())
+                .is_some_and(|active| active.id() == prompt.id())
+        },
+    );
+    fs::write(&proof_path, "created by queued native tui turn\n")
+        .expect("proof file should be written");
+    match harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("queued prompt completion should succeed")
+    {
+        LocalDaemonResponse::PromptCompleted { completion } => {
+            assert_eq!(completion.completed.id(), prompt.id());
+        }
+        other => panic!("unexpected completion response: {other:?}"),
+    }
+
+    let agent_activity = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { agent_activity, .. } => agent_activity,
+        other => panic!("unexpected session state response: {other:?}"),
+    };
+    let completed_turn = agent_activity
+        .get(agent.id())
+        .and_then(|activity| activity.last_completed_turn.as_ref())
+        .expect("completed queued tracked turn should project a turn action");
+    assert_eq!(completed_turn.agent_id, agent.id());
+    assert_eq!(completed_turn.prompt_id, prompt.id());
+    assert_eq!(completed_turn.provider_run_id, provider_run.id());
+    assert!(completed_turn.undo_available);
+    assert_eq!(
+        completed_turn.changed_paths,
+        vec!["web-terminal-undo-proof.txt".to_string()]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
@@ -864,4 +1114,34 @@ fn local_request_api_can_cancel_an_active_prompt() {
         }
         _ => panic!("unexpected local response"),
     }
+}
+
+fn temp_git_repo(label: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-{label}-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    fs::create_dir_all(&root).expect("temp repo should be created");
+    run_git(&root, &["init"]);
+    run_git(&root, &["config", "user.email", "tests@example.invalid"]);
+    run_git(&root, &["config", "user.name", "Arroba Tests"]);
+    fs::write(root.join("README.md"), "turn actions seed\n").expect("seed file should be written");
+    run_git(&root, &["add", "README.md"]);
+    run_git(&root, &["commit", "-m", "initial"]);
+    root
+}
+
+fn run_git(cwd: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

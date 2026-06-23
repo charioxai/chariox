@@ -8,6 +8,14 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
         provider_run: &crate::provider::RuntimeProviderRun,
     ) {
+        if self
+            .owned
+            .git_turn_snapshots
+            .get(provider_run.id(), &dispatch.prompt_id)
+            .is_some()
+        {
+            return;
+        }
         let Some(worktree_path) = provider_run.working_directory().cloned().or_else(|| {
             self.owned
                 .session_store
@@ -82,27 +90,62 @@ impl KernelRuntimeState {
         provider_run_id: &str,
         completed_prompt: &crate::session::PromptQueueItem,
     ) {
-        let Some(before) = self
+        let session_id = self
             .owned
-            .git_turn_snapshots
-            .get(provider_run_id, completed_prompt.id())
-            .or_else(|| {
-                self.owned
-                    .git_turn_snapshots
-                    .get_for_provider_run(provider_run_id)
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .map(|run| run.session_id().to_string());
+        self.observe_git_after_completed_prompt(
+            session_id.as_deref(),
+            Some(provider_run_id),
+            completed_prompt,
+        )
+        .await;
+    }
+
+    pub(super) async fn observe_git_after_completed_prompt(
+        &self,
+        session_id: Option<&str>,
+        provider_run_id: Option<&str>,
+        completed_prompt: &crate::session::PromptQueueItem,
+    ) {
+        let before = provider_run_id.and_then(|provider_run_id| {
+            self.owned
+                .git_turn_snapshots
+                .get(provider_run_id, completed_prompt.id())
+                .or_else(|| {
+                    self.owned
+                        .git_turn_snapshots
+                        .get_for_provider_run(provider_run_id)
+                })
+        });
+        let before = before.or_else(|| {
+            session_id.and_then(|session_id| {
+                self.owned.git_turn_snapshots.get_for_session_agent_prompt(
+                    session_id,
+                    completed_prompt.target_agent_id(),
+                    completed_prompt.id(),
+                )
             })
-        else {
+        });
+        let Some(before) = before else {
+            let provider_run_id = provider_run_id.unwrap_or("<none>");
+            let session_id = session_id.unwrap_or("<unknown>");
             crate::logging::warn_with_fields(
                 "daemon.git_observer",
                 "missing pre-turn git snapshot for completed prompt",
                 serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": completed_prompt.target_agent_id(),
                     "provider_run_id": provider_run_id,
                     "prompt_id": completed_prompt.id(),
                 }),
             );
             return;
         };
-        self.observe_git_after_turn_snapshot(provider_run_id, completed_prompt.id(), before, true)
+        let provider_run_id = before.provider_run_id.clone();
+        self.observe_git_after_turn_snapshot(&provider_run_id, completed_prompt.id(), before, true)
             .await;
     }
 

@@ -300,6 +300,18 @@ impl KernelRuntimeState {
             crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
+        let completed_git_turn_snapshots = {
+            let started = Instant::now();
+            loop {
+                if let Ok(app) = app.try_lock() {
+                    break app.completed_git_turn_snapshot_store();
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    panic!("KernelRuntimeState could not acquire the app lock during bootstrap");
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
         let workspace_live_sync_journal =
             match crate::git_observer::WorkspaceLiveSyncJournal::restore_from_durable_state(
                 &durable_state_store,
@@ -359,8 +371,7 @@ impl KernelRuntimeState {
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
-                completed_git_turn_snapshots:
-                    crate::git_observer::CompletedGitTurnSnapshotStore::default(),
+                completed_git_turn_snapshots,
                 workspace_live_sync_journal,
                 remote_workspace_live_sync_invocations: Arc::new(Mutex::new(BTreeMap::new())),
                 remote_extension_invocations: Arc::new(Mutex::new(BTreeMap::new())),

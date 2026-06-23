@@ -155,6 +155,13 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        self.capture_git_turn_snapshot_for_started_prompt(
+            &session,
+            agent_id,
+            &provider_run,
+            &started_next,
+            Some(crate::session::unix_epoch_ms()),
+        );
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.session_store.mirror_agent_prompt_state(

@@ -84,13 +84,14 @@ impl SessionSnapshotProjection {
         let prompt_activity = app.prompt_activity_store();
         let prompt_activity = prompt_activity.read();
         let active_turns = app.active_turn_store().snapshot();
+        let completed_git_turn_snapshots = app.completed_git_turn_snapshot_store();
         let agent_activity = agent_activity_for_session_projection(
             &session,
             |agent_id| app.providers().get_run_for_agent(session.id(), agent_id),
             &prompt_activity,
             &active_turns,
             None,
-            |_| None,
+            |agent_id| completed_git_turn_snapshots.latest_projection_for_agent(session.id(), agent_id),
         );
         Ok(Self {
             metadata: ProjectionMetadata::new(3, last_event_id),

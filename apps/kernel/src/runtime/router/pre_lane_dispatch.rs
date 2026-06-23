@@ -31,8 +31,6 @@ impl CommandRouter {
             &self.session_projection,
             &self.provider_run_projection,
             &self.provider_launch_pending,
-            &self.prompt_activity,
-            &self.active_turns,
             request,
             caller_user_id,
         )

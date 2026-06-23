@@ -22,11 +22,69 @@ impl KernelRuntimeState {
             )
             .with_trace_id(trace_id),
         );
+        if self
+            .owned
+            .git_turn_snapshots
+            .get(provider_run_id, prompt_id)
+            .is_some()
+        {
+            return;
+        }
+        let Ok(provider_run) = self.owned.provider_store.get_run(provider_run_id) else {
+            return;
+        };
+        let Ok(session) = self.owned.session_store.get_session(session_id) else {
+            return;
+        };
+        let worktree_path = provider_run
+            .working_directory()
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from(session.worktree_id()));
+        let prompt_summary = session
+            .active_prompt_for_agent(agent_id)
+            .map(|prompt| {
+                crate::prompt_transcript::render_prompt_transcript(
+                    prompt.prompt(),
+                    prompt.attachments(),
+                )
+            })
+            .unwrap_or_default();
+        let context = crate::git_observer::GitTurnContext {
+            session_id: session_id.to_string(),
+            agent_id: agent_id.to_string(),
+            provider: provider_run.provider().to_string(),
+            model: provider_run.model().to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            provider_session_id: provider_run.provider_session_id().map(str::to_string),
+            prompt_id: prompt_id.to_string(),
+            turn_id: prompt_id.to_string(),
+            started_at_ms: self
+                .owned
+                .active_turns
+                .snapshot()
+                .get(provider_run_id)
+                .map(|turn| turn.started_at_ms),
+            worktree_path,
+            workspace_live_sync_tracked: provider_run.tracks_workspace_live_sync(),
+            machine_id: None,
+            prompt_summary,
+        };
+        if let Some(snapshot) = crate::git_observer::capture_turn_snapshot(context) {
+            self.owned.git_turn_snapshots.insert(snapshot);
+        }
     }
 
     pub(crate) fn agent_activity_for_session(
         &self,
         session: &crate::session::RuntimeSession,
+    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.agent_activity_for_session_with_unread(session, None)
+    }
+
+    pub(crate) fn agent_activity_for_session_with_unread(
+        &self,
+        session: &crate::session::RuntimeSession,
+        unread_for_user_id: Option<&str>,
     ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
         let prompt_activity = self.owned.prompt_activity.read();
         let active_turns = self.owned.active_turns.snapshot();
@@ -44,7 +102,7 @@ impl KernelRuntimeState {
             },
             &prompt_activity,
             &active_turns,
-            None,
+            unread_for_user_id,
             |agent_id| {
                 self.owned
                     .completed_git_turn_snapshots

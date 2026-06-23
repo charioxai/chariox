@@ -1,15 +1,9 @@
-use std::collections::BTreeMap;
-
-use crate::app::{ActiveTurnStore, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::local::{
     GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
     LocalDaemonResponse, ResolveSessionRequest,
 };
-use crate::runtime::projection::{
-    agent_activity_for_session_projection, AgentRuntimeActivity, ProviderRunProjectionStore,
-    SessionStateProjectionStore,
-};
+use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workflow_projection::{
@@ -39,10 +33,8 @@ fn ensure_projected_workflow_metaagent_scope(
 }
 
 pub(crate) fn projected_session_state_response(
+    runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
-    provider_run_projection: &ProviderRunProjectionStore,
-    prompt_activity: &PromptActivityStore,
-    active_turns: &ActiveTurnStore,
     request: &GetSessionStateRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
@@ -53,11 +45,8 @@ pub(crate) fn projected_session_state_response(
                 user_id: caller_user_id.to_string(),
             }));
         }
-        let agent_activity = projected_agent_activity(
+        let agent_activity = runtime_state.agent_activity_for_session_with_unread(
             &session,
-            provider_run_projection,
-            prompt_activity,
-            active_turns,
             Some(caller_user_id),
         );
         let redacted_session = session.clone().redacted_for_user(caller_user_id);
@@ -144,8 +133,6 @@ pub(crate) async fn projected_session_read_response(
     session_projection: &SessionStateProjectionStore,
     provider_run_projection: &ProviderRunProjectionStore,
     provider_launch_pending: &ProviderLaunchPendingTracker,
-    prompt_activity: &PromptActivityStore,
-    active_turns: &ActiveTurnStore,
     request: &LocalDaemonRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
@@ -159,10 +146,8 @@ pub(crate) async fn projected_session_read_response(
             .await
         {
             if let Some(response) = projected_session_state_response(
+                runtime_state,
                 session_projection,
-                provider_run_projection,
-                prompt_activity,
-                active_turns,
                 request,
                 caller_user_id,
             ) {
@@ -184,25 +169,6 @@ pub(crate) async fn projected_session_read_response(
         );
     }
     None
-}
-
-pub(crate) fn projected_agent_activity(
-    session: &RuntimeSession,
-    provider_run_projection: &ProviderRunProjectionStore,
-    prompt_activity: &PromptActivityStore,
-    active_turns: &ActiveTurnStore,
-    unread_for_user_id: Option<&str>,
-) -> BTreeMap<String, AgentRuntimeActivity> {
-    let prompt_activity = prompt_activity.read();
-    let active_turns = active_turns.snapshot();
-    agent_activity_for_session_projection(
-        session,
-        |agent_id| provider_run_projection.get_for_agent(session.id(), agent_id),
-        &prompt_activity,
-        &active_turns,
-        unread_for_user_id,
-        |_| None,
-    )
 }
 
 pub(crate) fn projected_session_inspection_response(

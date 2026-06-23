@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 
-use crate::app::{DaemonApp, PromptActivityStore};
+use crate::app::DaemonApp;
 use crate::history::OperationalHistoryStore;
 use crate::history::SessionHistoryStore;
 use crate::provider::ProviderRunOperationLanes;
@@ -55,8 +55,8 @@ pub(crate) struct CommandRouter {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    #[allow(dead_code)]
     active_turns: crate::app::ActiveTurnStore,
-    prompt_activity: PromptActivityStore,
     config_projection: DaemonConfigProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
