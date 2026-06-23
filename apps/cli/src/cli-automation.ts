@@ -22,6 +22,8 @@ export type CliAutomationRequest = {
   shellEntryCount?: unknown
   workflowAlias?: unknown
   entryId?: unknown
+  turnId?: unknown
+  agentId?: unknown
   collapsed?: unknown
   externalSessionId?: unknown
   externalSessionIndex?: unknown

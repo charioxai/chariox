@@ -166,6 +166,50 @@ test("automation connect action refreshes waiting room when already connected", 
   assert.deepEqual(result, { refreshed: true })
 })
 
+test("automation action handler toggles an agent pane blob when agentId is provided", async () => {
+  const toggles: Array<{ agentId: string; entryId: number; collapsed: boolean }> = []
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    toggleAgentPaneBlob: (agentId, entryId, collapsed) => {
+      toggles.push({ agentId, entryId, collapsed })
+    },
+    snapshot: () => ({ toggles }),
+  })
+
+  const result = await handler({
+    action: "toggle_blob",
+    agentId: "agent-1",
+    entryId: 42,
+    collapsed: false,
+  })
+
+  assert.deepEqual(toggles, [{ agentId: "agent-1", entryId: 42, collapsed: false }])
+  assert.deepEqual(result, { toggles })
+})
+
+test("automation action handler toggles an agent pane turn when agentId is provided", async () => {
+  const toggles: Array<{ agentId: string; turnId: number; toggleEntryId?: number }> = []
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    toggleAgentPaneTurn: (agentId, turnId, toggleEntryId) => {
+      toggles.push(toggleEntryId === undefined
+        ? { agentId, turnId }
+        : { agentId, turnId, toggleEntryId })
+    },
+    snapshot: () => ({ toggles }),
+  })
+
+  const result = await handler({
+    action: "toggle_turn",
+    agentId: "agent-1",
+    turnId: 7,
+    entryId: 99,
+  })
+
+  assert.deepEqual(toggles, [{ agentId: "agent-1", turnId: 7, toggleEntryId: 99 }])
+  assert.deepEqual(result, { toggles })
+})
+
 function baseDeps() {
   return {
     client: null as never,
@@ -192,6 +236,7 @@ function baseDeps() {
     cycleFocusedInteractionChoice: () => {},
     setInteractionCustomReply: () => {},
     setInteractionCustomEditing: () => {},
+    toggleTurn: () => {},
     toggleBlob: () => {},
     restoreTerminalAndExit: async () => {},
     waitingRoomState: () => waitingRoomFixture(),

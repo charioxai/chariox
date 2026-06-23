@@ -80,7 +80,10 @@ export type CliAutomationProcessCompositionDeps = {
   refreshWaitingRoomData: AnyFn
   submitFocusedInteractionChoice: AnyFn
   cycleFocusedInteractionChoice: AnyFn
+  toggleTurn: AnyFn
+  toggleAgentPaneTurn?: AnyFn
   toggleBlob: AnyFn
+  toggleAgentPaneBlob?: AnyFn
   restoreTerminalAndExit: AnyFn
   sleep: AnyFn
 }
@@ -153,7 +156,10 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,
     setInteractionCustomReply: deps.setInteractionCustomReply,
     setInteractionCustomEditing: deps.setInteractionCustomEditing,
+    toggleTurn: deps.toggleTurn,
+    toggleAgentPaneTurn: deps.toggleAgentPaneTurn,
     toggleBlob: deps.toggleBlob,
+    toggleAgentPaneBlob: deps.toggleAgentPaneBlob,
     restoreTerminalAndExit: deps.restoreTerminalAndExit,
     sleep: deps.sleep,
   })

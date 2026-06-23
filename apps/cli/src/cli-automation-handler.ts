@@ -41,7 +41,10 @@ export type CliAutomationActionDeps = {
   cycleFocusedInteractionChoice: (delta: number) => void
   setInteractionCustomReply: (interactionId: string, reply: string) => void
   setInteractionCustomEditing: (interactionId: string, editing: boolean) => void
+  toggleTurn: (turnId: number, toggleEntryId?: number) => void
+  toggleAgentPaneTurn?: ((agentId: string, turnId: number, toggleEntryId?: number) => void) | undefined
   toggleBlob: (entryId: number, collapsed: boolean) => void
+  toggleAgentPaneBlob?: ((agentId: string, entryId: number, collapsed: boolean) => void) | undefined
   restoreTerminalAndExit: (exitCode: number) => Promise<void>
   waitingRoomState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
@@ -202,7 +205,32 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         if (!Number.isInteger(entryId)) {
           throw new Error("usage: toggle_blob entryId=<integer> collapsed=<boolean>")
         }
+        const agentId = typeof request.agentId === "string" ? request.agentId : null
+        if (agentId) {
+          if (!deps.toggleAgentPaneBlob) {
+            throw new Error("toggle_blob agentId=<id> is not available in this CLI")
+          }
+          deps.toggleAgentPaneBlob(agentId, entryId, request.collapsed === true)
+          return deps.snapshot()
+        }
         deps.toggleBlob(entryId, request.collapsed === true)
+        return deps.snapshot()
+      }
+      case "toggle_turn": {
+        const turnId = typeof request.turnId === "number" ? request.turnId : Number.NaN
+        const toggleEntryId = typeof request.entryId === "number" ? request.entryId : undefined
+        if (!Number.isInteger(turnId)) {
+          throw new Error("usage: toggle_turn turnId=<integer> [entryId=<integer>]")
+        }
+        const agentId = typeof request.agentId === "string" ? request.agentId : null
+        if (agentId) {
+          if (!deps.toggleAgentPaneTurn) {
+            throw new Error("toggle_turn agentId=<id> is not available in this CLI")
+          }
+          deps.toggleAgentPaneTurn(agentId, turnId, toggleEntryId)
+          return deps.snapshot()
+        }
+        deps.toggleTurn(turnId, toggleEntryId)
         return deps.snapshot()
       }
       case "wait_for": {

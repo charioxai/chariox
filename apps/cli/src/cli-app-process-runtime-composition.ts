@@ -84,7 +84,10 @@ export function createCliAppProcessRuntimeComposition(
     refreshWaitingRoomData: deps.refreshWaitingRoomData,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,
     cycleFocusedInteractionChoice: deps.cycleFocusedInteractionChoice,
+    toggleTurn: deps.toggleTurn,
+    toggleAgentPaneTurn: deps.toggleAgentPaneTurn,
     toggleBlob: deps.toggleBlob,
+    toggleAgentPaneBlob: deps.toggleAgentPaneBlob,
     restoreTerminalAndExit: deps.restoreTerminalAndExit,
     sleep: deps.sleep,
   })

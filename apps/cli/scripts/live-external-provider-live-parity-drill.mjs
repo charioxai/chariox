@@ -407,6 +407,11 @@ async function runProviderDrill(provider, options) {
         options,
       })
       await expandTuiTranscriptBlobs(tuiSocketPath, options)
+      await waitForSurfaceFinalIdle({
+        surface: "tui",
+        sample: () => tuiSample(tuiSocketPath, provider, marker, finalMarker, prompt.promptMarker),
+        options,
+      })
     }
     const providerTranscript = await snapshotProviderTranscript({
       provider,
@@ -668,14 +673,20 @@ async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, ma
 async function waitForSurfaceFinalIdle({ surface, sample, options }) {
   const deadline = Date.now() + Math.min(45_000, Math.max(10_000, options.timeoutMs))
   let lastSample = null
+  let stableIdleCount = 0
   while (Date.now() < deadline) {
     lastSample = await sample().catch((error) => ({
       error: String(error?.message ?? error),
     }))
     const status = normalizeLifecycleStatus(lastSample.status)
     if (!lastSample.error && lastSample.finalSeen && status !== "WORKING") {
-      await sleep(Math.max(750, options.pollMs))
-      return lastSample
+      stableIdleCount += 1
+      if (stableIdleCount >= 2) {
+        await sleep(Math.max(750, options.pollMs))
+        return lastSample
+      }
+    } else {
+      stableIdleCount = 0
     }
     await sleep(options.pollMs)
   }
@@ -876,27 +887,67 @@ async function expandTuiTranscriptBlobs(socketPath, options) {
   const attempts = new Map()
   while (Date.now() < deadline) {
     const snapshot = await automationRequest(socketPath, { action: "snapshot" }).catch(() => null)
-    const transcriptEntries = (snapshot?.transcript?.entries ?? []).filter(Boolean)
-    const paneEntries = snapshot ? Object.values(snapshot.agentPanes ?? {}).flat().filter(Boolean) : []
-    const entries = [...transcriptEntries, ...paneEntries]
-    const targets = entries.filter((entry) => {
+    const entries = tuiSnapshotEntries(snapshot)
+    const turnTargets = entries.filter(({ entry }) => {
+      const turnId = Number(entry?.turnId)
       const entryId = Number(entry?.id)
-      const key = String(entry?.historyBlobId ?? entryId)
+      return Number.isInteger(turnId)
+        && Number.isInteger(entryId)
+        && entry?.role === "turn_toggle"
+        && entry?.toggleMode === "expand"
+        && (attempts.get(`turn:${entry.agentId ?? "primary"}:${turnId}:${entryId}`) ?? 0) < 3
+    }).slice(0, 16)
+    if (turnTargets.length > 0) {
+      for (const target of turnTargets) {
+        const turnId = Number(target.entry.turnId)
+        const entryId = Number(target.entry.id)
+        const key = `turn:${target.agentId ?? "primary"}:${turnId}:${entryId}`
+        attempts.set(key, (attempts.get(key) ?? 0) + 1)
+        await automationRequest(socketPath, {
+          action: "toggle_turn",
+          agentId: target.agentId,
+          turnId,
+          entryId,
+        }).catch(() => null)
+      }
+      await sleep(750)
+      continue
+    }
+
+    const blobTargets = entries.filter(({ entry }) => {
+      const entryId = Number(entry?.id)
+      const key = `blob:${entry.agentId ?? "primary"}:${String(entry?.historyBlobId ?? entryId)}`
       return Number.isInteger(entryId)
         && entry?.blobCollapsible === true
         && entry?.blobCollapsed !== false
         && (attempts.get(key) ?? 0) < 4
     }).slice(0, 24)
-    if (targets.length === 0) break
-    for (const target of targets) {
-      const entryId = Number(target.id)
-      const key = String(target.historyBlobId ?? entryId)
+    if (blobTargets.length === 0) break
+    for (const target of blobTargets) {
+      const entryId = Number(target.entry.id)
+      const key = `blob:${target.agentId ?? "primary"}:${String(target.entry.historyBlobId ?? entryId)}`
       attempts.set(key, (attempts.get(key) ?? 0) + 1)
-      await automationRequest(socketPath, { action: "toggle_blob", entryId, collapsed: false }).catch(() => null)
+      await automationRequest(socketPath, {
+        action: "toggle_blob",
+        agentId: target.agentId,
+        entryId,
+        collapsed: false,
+      }).catch(() => null)
     }
     await sleep(750)
   }
   await sleep(1_000)
+}
+
+function tuiSnapshotEntries(snapshot) {
+  if (!snapshot) return []
+  const transcriptEntries = (snapshot.transcript?.entries ?? [])
+    .filter(Boolean)
+    .map((entry) => ({ entry, agentId: null }))
+  const paneEntries = Object.entries(snapshot.agentPanes ?? {}).flatMap(([agentId, entries]) =>
+    (entries ?? []).filter(Boolean).map((entry) => ({ entry, agentId })),
+  )
+  return [...transcriptEntries, ...paneEntries]
 }
 
 async function waitForWebCondition(page, predicate, timeoutMs, message, arg = undefined) {
