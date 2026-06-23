@@ -311,6 +311,7 @@ async function runProviderDrill(provider, options) {
   let client = null
   let providerProcess = null
   let tuiProcess = null
+  let tuiSocketPath = null
   let browser = null
   let context = null
   let page = null
@@ -349,6 +350,7 @@ async function runProviderDrill(provider, options) {
     if (!options.skipTui) {
       const tui = await startTuiObserver({ sessionId: result.arrobaSessionId, options, providerRoot })
       tuiProcess = tui.process
+      tuiSocketPath = tui.socketPath
       monitors.push(startTuiMonitor({ socketPath: tui.socketPath, provider, marker, promptMarker: prompt.promptMarker, options }))
       result.evidence.tuiSocketPath = tui.socketPath
     }
@@ -363,6 +365,20 @@ async function runProviderDrill(provider, options) {
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
     result.evidence.providerExit = providerExit
     await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, promptMarker: prompt.promptMarker, options })
+    if (page) {
+      await waitForSurfaceFinalIdle({
+        surface: "web",
+        sample: () => webSample(page, provider, marker, prompt.promptMarker),
+        options,
+      })
+    }
+    if (tuiSocketPath) {
+      await waitForSurfaceFinalIdle({
+        surface: "tui",
+        sample: () => tuiSample(tuiSocketPath, provider, marker, prompt.promptMarker),
+        options,
+      })
+    }
     const providerTranscript = await snapshotProviderTranscript({
       provider,
       providerSessionId: result.providerSessionId,
@@ -545,6 +561,23 @@ async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, ma
   throw new Error(`external turn did not settle to final idle in kernel history; last=${JSON.stringify(lastSample)}`)
 }
 
+async function waitForSurfaceFinalIdle({ surface, sample, options }) {
+  const deadline = Date.now() + Math.min(45_000, Math.max(10_000, options.timeoutMs))
+  let lastSample = null
+  while (Date.now() < deadline) {
+    lastSample = await sample().catch((error) => ({
+      error: String(error?.message ?? error),
+    }))
+    const status = normalizeLifecycleStatus(lastSample.status)
+    if (!lastSample.error && lastSample.finalSeen && status !== "WORKING") {
+      await sleep(Math.max(750, options.pollMs))
+      return lastSample
+    }
+    await sleep(options.pollMs)
+  }
+  throw new Error(`${surface} did not observe final idle; last=${JSON.stringify(lastSample)}`)
+}
+
 function agentStatus(agent, agentActivity = null) {
   if (agentActivity) {
     const status = String(agentActivity.status ?? "").toLowerCase()
@@ -613,10 +646,14 @@ function startTuiMonitor({ socketPath, provider, marker, promptMarker, options }
 
 async function tuiSample(socketPath, provider, marker, promptMarker) {
   const snapshot = await automationRequest(socketPath, { action: "snapshot" })
-  const text = [
-    ...(snapshot.transcript?.entries ?? []).map((entry) => entry.text ?? ""),
-    ...Object.values(snapshot.agentPanes ?? {}).flat().map((entry) => entry.text ?? ""),
-  ].join("\n")
+  const transcriptText = (snapshot.transcript?.entries ?? [])
+    .map((entry) => entry.text ?? "")
+    .join("\n")
+  const paneText = Object.values(snapshot.agentPanes ?? {})
+    .flat()
+    .map((entry) => entry.text ?? "")
+    .join("\n")
+  const text = [transcriptText, paneText].filter(Boolean).join("\n")
   const badge = snapshot.session?.agents?.[0]?.badge ?? null
   const entries = [
     ...(snapshot.transcript?.entries ?? []),
@@ -630,7 +667,10 @@ async function tuiSample(socketPath, provider, marker, promptMarker) {
     assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
     toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
     finalSeen: text.includes(finalMarker),
-    promptOccurrences: countOccurrences(text, promptMarker),
+    promptOccurrences: Math.max(
+      countOccurrences(transcriptText, promptMarker),
+      countOccurrences(paneText, promptMarker),
+    ),
     collapsedEntries: entries.filter((entry) => entry.blobCollapsed === true).length,
     expandedEntries: entries.filter((entry) => entry.blobCollapsed === false).length,
     provider,
