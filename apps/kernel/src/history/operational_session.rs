@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use rusqlite::params;
 
 use crate::error::DaemonError;
@@ -244,6 +246,165 @@ impl OperationalHistoryStore {
             .into_iter()
             .filter_map(|event| event.to_session_history_entry())
             .collect())
+    }
+
+    pub fn load_external_import_index(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        external_merge_key_prefix: &str,
+    ) -> Result<(Vec<String>, BTreeSet<String>), DaemonError> {
+        self.delay_read_if_configured();
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let like_pattern = format!("%{external_merge_key_prefix}%");
+        let mut statement = connection
+            .prepare(
+                "SELECT kind,
+                        CASE WHEN kind = 'user_prompt' THEN content ELSE NULL END,
+                        metadata_text
+                 FROM history_events
+                 WHERE session_id = ?1
+                   AND agent_id = ?2
+                   AND (kind = 'user_prompt' OR metadata_text LIKE ?3)",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare external import history index load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![session_id, agent_id, like_pattern])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load external import history index",
+                message: error.to_string(),
+            })?;
+        let mut arroba_owned_prompts = Vec::new();
+        let mut external_merge_keys = BTreeSet::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "read external import history index",
+                message: error.to_string(),
+            })?
+        {
+            let kind =
+                row.get::<_, String>(0)
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode external import history index kind",
+                        message: error.to_string(),
+                    })?;
+            let content = row.get::<_, Option<String>>(1).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode external import history index content",
+                    message: error.to_string(),
+                }
+            })?;
+            let metadata_text = row.get::<_, Option<String>>(2).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode external import history index metadata",
+                    message: error.to_string(),
+                }
+            })?;
+            let metadata_text = metadata_text.unwrap_or_default();
+            if kind == "user_prompt"
+                && !metadata_text
+                    .lines()
+                    .any(|line| line == "external_provider_observed")
+            {
+                if let Some(content) = content {
+                    arroba_owned_prompts.push(content);
+                }
+            }
+            for line in metadata_text.lines() {
+                if line.starts_with(external_merge_key_prefix) {
+                    external_merge_keys.insert(line.to_string());
+                }
+            }
+        }
+        Ok((arroba_owned_prompts, external_merge_keys))
+    }
+
+    pub fn load_arroba_owned_prompt_texts(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        self.delay_read_if_configured();
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let mut statement = connection
+            .prepare(
+                "SELECT content, metadata_text
+                 FROM history_events
+                 WHERE session_id = ?1
+                   AND agent_id = ?2
+                   AND kind = 'user_prompt'",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare arroba-owned prompt history load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![session_id, agent_id])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load arroba-owned prompt history",
+                message: error.to_string(),
+            })?;
+        let mut prompts = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "read arroba-owned prompt history",
+                message: error.to_string(),
+            })?
+        {
+            let content = row.get::<_, Option<String>>(0).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode arroba-owned prompt content",
+                    message: error.to_string(),
+                }
+            })?;
+            let metadata_text = row.get::<_, Option<String>>(1).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode arroba-owned prompt metadata",
+                    message: error.to_string(),
+                }
+            })?;
+            if metadata_text
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line == "external_provider_observed")
+            {
+                continue;
+            }
+            if let Some(content) = content {
+                prompts.push(content);
+            }
+        }
+        Ok(prompts)
     }
 
     pub fn has_session_events(&self, session_id: &str) -> Result<bool, DaemonError> {

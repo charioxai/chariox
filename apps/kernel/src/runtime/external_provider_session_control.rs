@@ -726,15 +726,49 @@ fn append_observed_external_turns_for_import_with_options(
             .map(|run| run.id().to_string())
     });
     outcome.provider_run_id = provider_run_id.clone();
-    let existing_history_entries = app.load_session_history_entries(&session, Some(agent.id()))?;
-    let mut arroba_owned_prompt_texts = existing_history_entries
+    let provider = read.target.import.external_provider.clone();
+    let provider_session_id = read
+        .target
+        .import
+        .external_provider_session_provider_id
+        .clone();
+    let external_merge_key_prefix = format!("external:{provider}:{provider_session_id}:");
+    let cursor_merge_key = read
+        .target
+        .import
+        .observed_cursor
+        .last_observed_merge_key
+        .as_deref();
+    let has_cursor = cursor_merge_key.is_some();
+    let mut cursor_seen = !has_cursor;
+    let mut candidate_turns = Vec::new();
+    for turn in &read.turns {
+        let merge_key = observed_external_turn_merge_key(&external_merge_key_prefix, turn);
+        if !cursor_seen {
+            if merge_key.as_deref() == cursor_merge_key {
+                cursor_seen = true;
+            }
+            continue;
+        }
+        candidate_turns.push(turn);
+    }
+    let (arroba_owned_prompt_history, existing_merge_keys) = if has_cursor && cursor_seen {
+        (
+            app.operational_history_store()
+                .load_arroba_owned_prompt_texts(&read.target.session_id, &read.target.agent_id)?,
+            BTreeSet::new(),
+        )
+    } else {
+        candidate_turns = read.turns.iter().collect();
+        app.operational_history_store().load_external_import_index(
+            &read.target.session_id,
+            &read.target.agent_id,
+            &external_merge_key_prefix,
+        )?
+    };
+    let mut arroba_owned_prompt_texts = arroba_owned_prompt_history
         .iter()
-        .filter(|entry| entry.kind == SessionHistoryEntryKind::UserPrompt)
-        .filter(|entry| {
-            entry.source
-                != Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved)
-        })
-        .filter_map(|entry| normalized_observed_prompt_text(&entry.text))
+        .filter_map(|text| normalized_observed_prompt_text(text))
         .collect::<BTreeSet<_>>();
     if let Some(prompt_state) = session.prompt_states().get(agent.id()) {
         if let Some(active_prompt) = prompt_state.active_prompt() {
@@ -752,26 +786,12 @@ fn append_observed_external_turns_for_import_with_options(
             }
         }
     }
-    let existing_entries_by_merge_key = existing_history_entries
-        .into_iter()
-        .filter_map(|entry| entry.merge_key.clone().map(|merge_key| (merge_key, entry)))
-        .collect::<BTreeMap<_, _>>();
     let mut appended = 0usize;
-    let mut updated = 0usize;
     let mut last_cursor = read.target.import.observed_cursor.clone();
-    let provider = read.target.import.external_provider.clone();
-    let provider_session_id = read
-        .target
-        .import
-        .external_provider_session_provider_id
-        .clone();
     let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
-    let mut seen_merge_keys = existing_entries_by_merge_key
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
+    let mut seen_merge_keys = existing_merge_keys;
     let mut current_observed_turn_is_arroba_owned = false;
-    for turn in read.turns.iter() {
+    for turn in candidate_turns {
         let kind = match turn.role {
             crate::app::ObservedExternalProviderTurnRole::User => {
                 SessionHistoryEntryKind::UserPrompt
@@ -830,27 +850,7 @@ fn append_observed_external_turns_for_import_with_options(
         let is_duplicate = merge_key
             .as_ref()
             .is_some_and(|merge_key| seen_merge_keys.contains(merge_key));
-        if is_duplicate {
-            if let Some(merge_key) = merge_key.as_deref() {
-                if existing_entries_by_merge_key
-                    .get(merge_key)
-                    .is_some_and(|existing| observed_external_entry_changed(existing, &entry))
-                {
-                    app.replace_history_entry_by_merge_key_or_append(
-                        &read.target.session_id,
-                        merge_key,
-                        entry.clone(),
-                    );
-                    emit_observed_external_history_signal(
-                        app,
-                        &read.target,
-                        provider_run_id.as_deref(),
-                        &entry,
-                    );
-                    updated += 1;
-                }
-            }
-        } else {
+        if !is_duplicate {
             app.append_history_entry(&read.target.session_id, entry.clone());
             emit_observed_external_history_signal(
                 app,
@@ -867,7 +867,7 @@ fn append_observed_external_turns_for_import_with_options(
         last_cursor.last_observed_turn_id = merge_turn_id;
         last_cursor.last_observed_at_ms = turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
     }
-    let changed = appended + updated;
+    let changed = appended;
     outcome.changed_count = changed;
     let latest_active_prompt = external_active_prompt_from_turns(
         &read.target,
@@ -891,6 +891,7 @@ fn append_observed_external_turns_for_import_with_options(
     outcome.external_active_prompt_settled =
         active_prompt_changed && latest_active_prompt.is_none();
     let cursor_changed = last_cursor != read.target.import.observed_cursor;
+    let state_signal_merge_key = last_cursor.last_observed_merge_key.clone();
     if changed > 0 || cursor_changed {
         let next_import = read.target.import.clone().with_cursor(last_cursor);
         persist_external_import_metadata(
@@ -905,14 +906,30 @@ fn append_observed_external_turns_for_import_with_options(
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
     }
+    if active_prompt_changed {
+        emit_observed_external_state_signal(
+            app,
+            &read.target,
+            provider_run_id.as_deref(),
+            state_signal_merge_key.as_deref(),
+            if latest_active_prompt.is_some() {
+                "active_prompt_started"
+            } else {
+                "active_prompt_settled"
+            },
+        );
+    }
     Ok(outcome)
 }
 
-fn observed_external_entry_changed(
-    existing: &SessionHistoryEntry,
-    next: &SessionHistoryEntry,
-) -> bool {
-    existing != next
+fn observed_external_turn_merge_key(
+    external_merge_key_prefix: &str,
+    turn: &crate::app::ObservedExternalProviderTurn,
+) -> Option<String> {
+    turn.provider_turn_id
+        .clone()
+        .or_else(|| Some(turn.stable_fallback_id()))
+        .map(|turn_id| format!("{external_merge_key_prefix}{turn_id}"))
 }
 
 fn normalized_observed_prompt_text(text: &str) -> Option<String> {
@@ -937,14 +954,21 @@ fn external_active_prompt_from_turns(
     } else {
         let latest = turns.last()?;
         match latest.role {
-            crate::app::ObservedExternalProviderTurnRole::Assistant => return None,
+            crate::app::ObservedExternalProviderTurnRole::Assistant
+                if !external_provider_uses_explicit_completion(
+                    &target.import.external_provider,
+                ) =>
+            {
+                return None;
+            }
             crate::app::ObservedExternalProviderTurnRole::Status
                 if external_status_turn_settles(&latest.text) =>
             {
                 return None;
             }
             crate::app::ObservedExternalProviderTurnRole::User => latest,
-            crate::app::ObservedExternalProviderTurnRole::Reasoning
+            crate::app::ObservedExternalProviderTurnRole::Assistant
+            | crate::app::ObservedExternalProviderTurnRole::Reasoning
             | crate::app::ObservedExternalProviderTurnRole::Tool
             | crate::app::ObservedExternalProviderTurnRole::Status => turns
                 .iter()
@@ -994,9 +1018,11 @@ fn latest_observed_turn_settles(turns: &[crate::app::ObservedExternalProviderTur
 }
 
 fn external_status_turn_settles(text: &str) -> bool {
-    text.starts_with("codex task_complete")
-        || text.starts_with("codex token_count")
-        || text.starts_with("opencode message completed")
+    text.starts_with("codex task_complete") || text.starts_with("opencode message completed")
+}
+
+fn external_provider_uses_explicit_completion(provider: &str) -> bool {
+    matches!(provider, "codex" | "opencode")
 }
 
 fn latest_observed_user_turn_id(
@@ -1037,6 +1063,41 @@ fn emit_observed_external_history_signal(
         Some(&target.agent_id),
         crate::terminal::TerminalOutputKind::ProviderStatus,
         entry.merge_key.clone(),
+        recipient_attachment_ids,
+        b"external_provider_history_updated",
+    );
+}
+
+fn emit_observed_external_state_signal(
+    app: &DaemonApp,
+    target: &ImportedExternalObserverTarget,
+    provider_run_id: Option<&str>,
+    latest_merge_key: Option<&str>,
+    reason: &str,
+) {
+    let Ok(agent) = app.agents().get_agent(&target.agent_id) else {
+        return;
+    };
+    let recipient_attachment_ids = app
+        .attachments
+        .list_session_attachment_ids_for_user(&target.session_id, agent.owner_user_id());
+    if recipient_attachment_ids.is_empty() {
+        return;
+    }
+    let provider_run_id = provider_run_id
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("external-observer:{}", target.agent_id));
+    let provider = &target.import.external_provider;
+    let provider_session_id = &target.import.external_provider_session_provider_id;
+    let latest_merge_key = latest_merge_key.unwrap_or("none");
+    app.terminal_stream_store().fan_out_output(
+        &target.session_id,
+        &provider_run_id,
+        Some(&target.agent_id),
+        crate::terminal::TerminalOutputKind::ProviderStatus,
+        Some(format!(
+            "external:{provider}:{provider_session_id}:state:{reason}:{latest_merge_key}"
+        )),
         recipient_attachment_ids,
         b"external_provider_history_updated",
     );
@@ -1724,8 +1785,8 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
         let import = ExternalProviderImportMetadata::observed_history(
-            "codex:thread-observed".to_string(),
-            "codex".to_string(),
+            "claude:thread-observed".to_string(),
+            "claude".to_string(),
             "thread-observed".to_string(),
         );
         let agent =
@@ -1812,7 +1873,7 @@ mod tests {
     }
 
     #[test]
-    fn append_observed_external_assistant_turn_waits_for_settlement_permission() {
+    fn append_observed_external_codex_assistant_waits_for_task_complete_to_settle() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -1820,6 +1881,94 @@ mod tests {
         let import = ExternalProviderImportMetadata::observed_history(
             "codex:thread-observed".to_string(),
             "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import,
+        };
+        let prompt = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("user-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            observed_at_ms: Some(42),
+        };
+        let assistant = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("assistant-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            text: "intermediate commentary".to_string(),
+            observed_at_ms: Some(84),
+        };
+        let task_complete = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("task-complete-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+            observed_at_ms: Some(126),
+        };
+
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone(), assistant.clone()],
+            },
+        )
+        .expect("observed Codex assistant turn should append");
+
+        let stable_assistant_outcome = append_observed_external_turns_for_import_with_options(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone(), assistant],
+            },
+            ImportedExternalObserverAppendOptions {
+                allow_external_active_prompt_settlement: true,
+            },
+        )
+        .expect("stable Codex assistant turn should stay active");
+
+        assert_eq!(stable_assistant_outcome.changed_count, 0);
+        assert!(!stable_assistant_outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_some(),
+            "Codex assistant commentary can be followed by tools and must not settle the turn"
+        );
+
+        let complete_outcome = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![prompt, task_complete],
+            },
+        )
+        .expect("Codex task_complete should settle");
+
+        assert_eq!(complete_outcome.changed_count, 1);
+        assert!(complete_outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_none(),
+            "Codex task_complete should clear the external active prompt"
+        );
+    }
+
+    #[test]
+    fn append_observed_external_assistant_turn_waits_for_settlement_permission() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "claude:thread-observed".to_string(),
+            "claude".to_string(),
             "thread-observed".to_string(),
         );
         let agent =
@@ -1966,6 +2115,71 @@ mod tests {
                 .expect("active prompt should load")
                 .is_some(),
             "tool output alone should not settle the external turn"
+        );
+    }
+
+    #[test]
+    fn append_observed_external_codex_token_count_keeps_active_prompt_running() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import,
+        };
+        let prompt = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("user-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            observed_at_ms: Some(42),
+        };
+        let token_count = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("token-count-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            text: "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}"
+                .to_string(),
+            observed_at_ms: Some(84),
+        };
+
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone()],
+            },
+        )
+        .expect("observed prompt should append");
+
+        let token_count_outcome = append_observed_external_turns_for_import_with_options(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![prompt, token_count],
+            },
+            ImportedExternalObserverAppendOptions {
+                allow_external_active_prompt_settlement: true,
+            },
+        )
+        .expect("Codex token count should append without settling");
+
+        assert_eq!(token_count_outcome.changed_count, 1);
+        assert!(!token_count_outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_some(),
+            "Codex token_count is telemetry and must not settle the external turn"
         );
     }
 
@@ -2189,19 +2403,53 @@ mod tests {
         let stable_reply_outcome = append_observed_external_turns_for_import(
             &mut app,
             ImportedExternalObserverRead {
-                target,
-                turns: vec![prompt, reasoning, tool, reply_one, reply_two],
+                target: target.clone(),
+                turns: vec![
+                    prompt.clone(),
+                    reasoning.clone(),
+                    tool.clone(),
+                    reply_one,
+                    reply_two,
+                ],
             },
         )
-        .expect("stable observed assistant turn should settle");
+        .expect("stable observed assistant turn should stay active for Codex");
 
         assert_eq!(stable_reply_outcome.changed_count, 0);
-        assert!(stable_reply_outcome.external_active_prompt_settled);
+        assert!(!stable_reply_outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_some(),
+            "Codex stable assistant output should stay active until task_complete"
+        );
+
+        let complete_outcome = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![
+                    prompt,
+                    reasoning,
+                    tool,
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("task-complete-1".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Status,
+                        text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+                        observed_at_ms: Some(168),
+                    },
+                ],
+            },
+        )
+        .expect("Codex task_complete should settle");
+
+        assert_eq!(complete_outcome.changed_count, 1);
+        assert!(complete_outcome.external_active_prompt_settled);
         assert!(
             app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
                 .expect("active prompt should load")
                 .is_none(),
-            "stable assistant output should clear the external active marker"
+            "Codex task_complete should clear the external active marker"
         );
     }
 
@@ -2358,7 +2606,7 @@ mod tests {
     }
 
     #[test]
-    fn append_observed_external_turns_replaces_changed_duplicate_merge_key() {
+    fn append_observed_external_turns_skips_changed_duplicate_merge_key() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -2403,21 +2651,21 @@ mod tests {
                 }],
             },
         )
-        .expect("changed observed assistant turn should replace");
+        .expect("changed observed assistant duplicate should be skipped");
 
-        assert_eq!(outcome.changed_count, 1);
+        assert_eq!(outcome.changed_count, 0);
         let entries = app
             .load_session_history_entries(&session, Some(agent.id()))
             .expect("history should load");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].text, "complete external reply");
-        assert_eq!(entries[0].observed_at_ms, Some(84));
+        assert_eq!(entries[0].text, "partial external reply");
+        assert_eq!(entries[0].observed_at_ms, Some(42));
         let legacy_entries = app
             .history_store()
             .load(&session)
             .expect("legacy history should load");
         assert_eq!(legacy_entries.len(), 1);
-        assert_eq!(legacy_entries[0].text, "complete external reply");
+        assert_eq!(legacy_entries[0].text, "partial external reply");
     }
 
     #[test]
@@ -2544,6 +2792,86 @@ mod tests {
             crate::terminal::TerminalOutputKind::ProviderStatus
         );
         assert_eq!(records[0].bytes, b"external_provider_history_updated");
+    }
+
+    #[test]
+    fn append_observed_external_completion_signals_settled_state_refresh() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-1",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import,
+        };
+        let prompt = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("user-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            observed_at_ms: Some(42),
+        };
+        let completion = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("task-complete-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+            observed_at_ms: Some(84),
+        };
+
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone()],
+            },
+        )
+        .expect("prompt should append");
+        let _ = app
+            .terminal_mut()
+            .drain_output_records(session.id(), attachment.id());
+
+        let outcome = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![prompt, completion],
+            },
+        )
+        .expect("completion should append and settle");
+
+        assert!(outcome.external_active_prompt_settled);
+        let records = app
+            .terminal_mut()
+            .drain_output_records(session.id(), attachment.id());
+        assert_eq!(
+            records.len(),
+            2,
+            "completion must signal both the new history row and the settled state projection"
+        );
+        assert_eq!(records[0].bytes, b"external_provider_history_updated");
+        assert_eq!(records[1].bytes, b"external_provider_history_updated");
+        assert_eq!(
+            records[1].merge_key.as_deref(),
+            Some(
+                "external:codex:thread-observed:state:active_prompt_settled:external:codex:thread-observed:task-complete-1"
+            )
+        );
     }
 
     #[test]

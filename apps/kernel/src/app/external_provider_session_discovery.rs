@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -14,7 +15,13 @@ use crate::session::unix_epoch_ms;
 
 const MAX_PROVIDER_FILES: usize = 1_000;
 const MAX_JSONL_LINES: usize = 300;
+const MAX_RECENT_JSONL_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+const RECENT_JSONL_TAIL_CHUNK_BYTES: u64 = 256 * 1024;
 const MAX_OBSERVED_TURNS: usize = 200;
+const MAX_OBSERVED_METADATA_STRING_CHARS: usize = 4_000;
+const MAX_OBSERVED_METADATA_ARRAY_ITEMS: usize = 40;
+const MAX_OBSERVED_METADATA_OBJECT_FIELDS: usize = 80;
+const MAX_OBSERVED_METADATA_TEXT_CHARS: usize = 16_000;
 const MAX_PROMPT_PREVIEW_CHARS: usize = 240;
 const MAX_TITLE_CHARS: usize = 80;
 
@@ -407,7 +414,7 @@ fn codex_observed_turns_from_path(
     if parsed_session_id != provider_session_id {
         return None;
     }
-    let lines = read_recent_jsonl_values(path);
+    let lines = read_recent_codex_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
@@ -638,7 +645,7 @@ fn codex_tool_text(payload: &Value) -> String {
             let namespace = string_field(payload, &["namespace"]);
             let arguments = payload
                 .get("arguments")
-                .and_then(|value| value.as_str().map(parse_json_string_or_raw))
+                .and_then(|value| value.as_str().map(parse_bounded_json_string_or_raw))
                 .unwrap_or(Value::Null);
             compact_json_text(serde_json::json!({
                 "tool": name,
@@ -652,7 +659,7 @@ fn codex_tool_text(payload: &Value) -> String {
             "tool": "function_call_output",
             "status": "completed",
             "call_id": string_field(payload, &["call_id"]),
-            "output": payload.get("output").cloned().unwrap_or(Value::Null),
+            "output": payload.get("output").map(bounded_observed_metadata_value).unwrap_or(Value::Null),
         })),
         _ => codex_metadata_text("codex tool item", payload),
     }
@@ -747,7 +754,11 @@ fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExternalProvid
             vec![ObservedExternalProviderTurn {
                 role: ObservedExternalProviderTurnRole::Status,
                 text: claude_metadata_text(&format!("claude {}", record_type.unwrap()), value),
-                provider_turn_id: claude_record_turn_id(value, record_type.unwrap(), observed_at_ms),
+                provider_turn_id: claude_record_turn_id(
+                    value,
+                    record_type.unwrap(),
+                    observed_at_ms,
+                ),
                 observed_at_ms,
             }]
         }
@@ -835,10 +846,7 @@ fn claude_assistant_observed_turns(
             .enumerate()
             .filter_map(|(index, item)| {
                 let single_content_block = items.len() == 1;
-                let block_type = item
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("text");
+                let block_type = item.get("type").and_then(Value::as_str).unwrap_or("text");
                 match block_type {
                     "text" => item
                         .get("text")
@@ -899,8 +907,8 @@ fn claude_assistant_observed_turns(
                         ),
                         observed_at_ms,
                     }),
-                    "tool_result" => claude_tool_result_text(item).map(|text| {
-                        ObservedExternalProviderTurn {
+                    "tool_result" => {
+                        claude_tool_result_text(item).map(|text| ObservedExternalProviderTurn {
                             role: ObservedExternalProviderTurnRole::Tool,
                             text,
                             provider_turn_id: claude_content_turn_id(
@@ -912,8 +920,8 @@ fn claude_assistant_observed_turns(
                                 observed_at_ms,
                             ),
                             observed_at_ms,
-                        }
-                    }),
+                        })
+                    }
                     _ => Some(ObservedExternalProviderTurn {
                         role: ObservedExternalProviderTurnRole::Status,
                         text: claude_metadata_text(&format!("claude content {block_type}"), item),
@@ -1152,7 +1160,11 @@ fn opencode_observed_turns_from_value(value: &Value) -> Vec<ObservedExternalProv
     if value.get("parts").and_then(Value::as_array).is_some() {
         return opencode_message_observed_turns(value);
     }
-    if value.get("info").and_then(|info| info.get("parts")).is_some() {
+    if value
+        .get("info")
+        .and_then(|info| info.get("parts"))
+        .is_some()
+    {
         return opencode_message_observed_turns(value);
     }
     opencode_observed_turn_from_value(value)
@@ -1212,7 +1224,12 @@ fn opencode_message_observed_turns(value: &Value) -> Vec<ObservedExternalProvide
                 turns.push(ObservedExternalProviderTurn {
                     role: ObservedExternalProviderTurnRole::Tool,
                     text: opencode_tool_text(part),
-                    provider_turn_id: opencode_part_turn_id(part, message_id.as_deref(), "tool", index),
+                    provider_turn_id: opencode_part_turn_id(
+                        part,
+                        message_id.as_deref(),
+                        "tool",
+                        index,
+                    ),
                     observed_at_ms,
                 });
             }
@@ -1264,7 +1281,8 @@ fn opencode_message_observed_turns(value: &Value) -> Vec<ObservedExternalProvide
             },
         );
     }
-    if let Some(status) = opencode_message_status_turn(info, message_id.as_deref(), observed_at_ms) {
+    if let Some(status) = opencode_message_status_turn(info, message_id.as_deref(), observed_at_ms)
+    {
         turns.push(status);
     }
     turns
@@ -1521,7 +1539,14 @@ fn latest_observed_turns(
         return turns;
     }
     let start = turns.len() - MAX_OBSERVED_TURNS;
+    let latest_user_before_tail = turns[..start]
+        .iter()
+        .rposition(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+        .map(|index| turns[index].clone());
     turns.drain(0..start);
+    if let Some(latest_user) = latest_user_before_tail {
+        turns.insert(0, latest_user);
+    }
     turns
 }
 
@@ -1571,14 +1596,85 @@ fn read_jsonl_values(path: &Path) -> Vec<Value> {
 }
 
 fn read_recent_jsonl_values(path: &Path) -> Vec<Value> {
-    let Ok(payload) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let lines = payload.lines().collect::<Vec<_>>();
+    let lines = read_recent_jsonl_lines(path);
     let start = lines.len().saturating_sub(MAX_JSONL_LINES);
     lines[start..]
         .iter()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| serde_json::from_str::<Value>(line.as_str()).ok())
+        .collect()
+}
+
+fn read_recent_codex_jsonl_values(path: &Path) -> Vec<Value> {
+    let lines = read_recent_jsonl_lines(path);
+    let start = lines.len().saturating_sub(MAX_JSONL_LINES);
+    let anchor = if start > 0 {
+        lines[..start].iter().rev().find_map(|line| {
+            let value = serde_json::from_str::<Value>(line.as_str()).ok()?;
+            let turn = codex_observed_turn_from_value(&value)?;
+            (turn.role == ObservedExternalProviderTurnRole::User).then_some(value)
+        })
+    } else {
+        None
+    };
+    let mut values = Vec::with_capacity(MAX_JSONL_LINES + usize::from(anchor.is_some()));
+    if let Some(anchor) = anchor {
+        values.push(anchor);
+    }
+    values.extend(
+        lines[start..]
+            .iter()
+            .filter_map(|line| serde_json::from_str::<Value>(line.as_str()).ok()),
+    );
+    values
+}
+
+fn read_recent_jsonl_lines(path: &Path) -> Vec<String> {
+    let Ok(mut file) = fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(metadata) = file.metadata() else {
+        return Vec::new();
+    };
+    let file_len = metadata.len();
+    if file_len == 0 {
+        return Vec::new();
+    }
+    let mut remaining = file_len.min(MAX_RECENT_JSONL_TAIL_BYTES);
+    let mut read_from = file_len;
+    let mut chunks = Vec::new();
+    let mut newline_count = 0usize;
+    while remaining > 0 {
+        let chunk_len = remaining.min(RECENT_JSONL_TAIL_CHUNK_BYTES);
+        read_from = read_from.saturating_sub(chunk_len);
+        if file.seek(SeekFrom::Start(read_from)).is_err() {
+            return Vec::new();
+        }
+        let mut chunk = vec![0u8; chunk_len as usize];
+        if file.read_exact(&mut chunk).is_err() {
+            return Vec::new();
+        }
+        newline_count += chunk.iter().filter(|byte| **byte == b'\n').count();
+        chunks.push(chunk);
+        if newline_count > MAX_JSONL_LINES && read_from == 0 {
+            break;
+        }
+        if newline_count > MAX_JSONL_LINES * 2 {
+            break;
+        }
+        remaining -= chunk_len;
+    }
+    chunks.reverse();
+    let mut bytes = chunks.into_iter().flatten().collect::<Vec<_>>();
+    if read_from > 0 {
+        if let Some(first_newline) = bytes.iter().position(|byte| *byte == b'\n') {
+            bytes.drain(..=first_newline);
+        } else {
+            bytes.clear();
+        }
+    }
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .map(str::to_string)
         .collect()
 }
 
@@ -1658,12 +1754,63 @@ fn text_from_content(value: &Value) -> Option<String> {
     }
 }
 
-fn parse_json_string_or_raw(value: &str) -> Value {
-    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
+fn parse_bounded_json_string_or_raw(value: &str) -> Value {
+    if value.chars().count() > MAX_OBSERVED_METADATA_STRING_CHARS {
+        return bounded_observed_string_value(value);
+    }
+    serde_json::from_str(value)
+        .map(|value| bounded_observed_metadata_value(&value))
+        .unwrap_or_else(|_| Value::String(value.to_string()))
 }
 
 fn compact_json_text(value: Value) -> String {
-    serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+    let bounded = bounded_observed_metadata_value(&value);
+    let text = serde_json::to_string_pretty(&bounded).unwrap_or_else(|_| bounded.to_string());
+    truncate_chars(&text, MAX_OBSERVED_METADATA_TEXT_CHARS)
+}
+
+fn bounded_observed_metadata_value(value: &Value) -> Value {
+    match value {
+        Value::String(text) => bounded_observed_string_value(text),
+        Value::Array(items) => {
+            let mut bounded = items
+                .iter()
+                .take(MAX_OBSERVED_METADATA_ARRAY_ITEMS)
+                .map(bounded_observed_metadata_value)
+                .collect::<Vec<_>>();
+            if items.len() > MAX_OBSERVED_METADATA_ARRAY_ITEMS {
+                bounded.push(serde_json::json!({
+                    "__arroba_truncated_items": items.len() - MAX_OBSERVED_METADATA_ARRAY_ITEMS,
+                }));
+            }
+            Value::Array(bounded)
+        }
+        Value::Object(map) => {
+            let mut bounded = serde_json::Map::new();
+            for (key, item) in map.iter().take(MAX_OBSERVED_METADATA_OBJECT_FIELDS) {
+                bounded.insert(key.clone(), bounded_observed_metadata_value(item));
+            }
+            if map.len() > MAX_OBSERVED_METADATA_OBJECT_FIELDS {
+                bounded.insert(
+                    "__arroba_truncated_fields".to_string(),
+                    serde_json::json!(map.len() - MAX_OBSERVED_METADATA_OBJECT_FIELDS),
+                );
+            }
+            Value::Object(bounded)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn bounded_observed_string_value(value: &str) -> Value {
+    if value.chars().count() <= MAX_OBSERVED_METADATA_STRING_CHARS {
+        return Value::String(value.to_string());
+    }
+    Value::String(format!(
+        "{} [arroba truncated {} chars]",
+        truncate_chars(value, MAX_OBSERVED_METADATA_STRING_CHARS),
+        value.chars().count() - MAX_OBSERVED_METADATA_STRING_CHARS,
+    ))
 }
 
 fn clean_provider_prompt(prompt: String) -> Option<String> {
@@ -2027,6 +2174,45 @@ mod tests {
     }
 
     #[test]
+    fn reads_codex_observed_metadata_bounds_large_tool_payloads() {
+        let temp = temp_dir("codex-observed-bounded-metadata");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        let large_output = "x".repeat(MAX_OBSERVED_METADATA_TEXT_CHARS * 2);
+        let line = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:05.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-large",
+                "output": large_output,
+            }
+        });
+        fs::write(
+            session_dir.join("rollout.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({
+                    "timestamp": "2026-01-01T00:00:00.000Z",
+                    "type": "session_meta",
+                    "payload": {"id": "thread-large", "cwd": "/repo"},
+                }),
+                line
+            ),
+        )
+        .unwrap();
+
+        let turns = read_codex_observed_turns(root, "thread-large");
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::Tool);
+        assert!(turns[0].text.len() <= MAX_OBSERVED_METADATA_TEXT_CHARS + 3);
+        assert!(turns[0].text.contains("arroba truncated"));
+        assert!(turns[0].text.contains("call-large"));
+    }
+
+    #[test]
     fn reads_codex_observed_turns_from_recent_jsonl_tail() {
         let temp = temp_dir("codex-observed-tail");
         let root = temp.path();
@@ -2059,6 +2245,68 @@ mod tests {
                 .and_then(|turn| turn.provider_turn_id.as_deref()),
             Some("u-tail")
         );
+    }
+
+    #[test]
+    fn reads_codex_observed_turns_preserves_latest_user_before_recent_tail() {
+        let temp = temp_dir("codex-observed-tail-user");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        let mut lines = vec![
+            "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-tail-user\",\"cwd\":\"/repo\"}}".to_string(),
+            "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u-active\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Long running external prompt.\"}]}}".to_string(),
+        ];
+        for index in 0..MAX_OBSERVED_TURNS + 25 {
+            lines.push(format!(
+                "{{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"total_tokens\":{index}}}}}}}}}"
+            ));
+        }
+        fs::write(
+            session_dir.join("rollout.jsonl"),
+            format!("{}\n", lines.join("\n")),
+        )
+        .unwrap();
+
+        let turns = read_codex_observed_turns(root, "thread-tail-user");
+        assert_eq!(turns.len(), MAX_OBSERVED_TURNS + 1);
+        assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
+        assert_eq!(turns[0].text, "Long running external prompt.");
+        assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u-active"));
+        assert!(turns[1..]
+            .iter()
+            .all(|turn| turn.role == ObservedExternalProviderTurnRole::Status));
+    }
+
+    #[test]
+    fn reads_codex_observed_turns_preserves_latest_user_before_recent_jsonl_window() {
+        let temp = temp_dir("codex-observed-window-user");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        let mut lines = vec![
+            "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-window-user\",\"cwd\":\"/repo\"}}".to_string(),
+            "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u-window\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Very long external prompt turn.\"}]}}".to_string(),
+        ];
+        for index in 0..MAX_JSONL_LINES + 25 {
+            lines.push(format!(
+                "{{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"total_tokens\":{index}}}}}}}}}"
+            ));
+        }
+        fs::write(
+            session_dir.join("rollout.jsonl"),
+            format!("{}\n", lines.join("\n")),
+        )
+        .unwrap();
+
+        let turns = read_codex_observed_turns(root, "thread-window-user");
+        assert_eq!(turns.len(), MAX_OBSERVED_TURNS + 1);
+        assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
+        assert_eq!(turns[0].text, "Very long external prompt turn.");
+        assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u-window"));
+        assert!(turns[1..]
+            .iter()
+            .all(|turn| turn.role == ObservedExternalProviderTurnRole::Status));
     }
 
     #[test]
@@ -2161,11 +2409,9 @@ mod tests {
         assert!(turns[6].text.contains("tool_result"));
         assert!(turns[6].text.contains("created"));
         assert!(turns[7].text.contains("claude last-prompt"));
-        assert!(
-            turns
-                .iter()
-                .all(|turn| !turn.text.contains("file-history-snapshot"))
-        );
+        assert!(turns
+            .iter()
+            .all(|turn| !turn.text.contains("file-history-snapshot")));
     }
 
     #[test]

@@ -91,7 +91,9 @@ impl SessionSnapshotProjection {
             &prompt_activity,
             &active_turns,
             None,
-            |agent_id| completed_git_turn_snapshots.latest_projection_for_agent(session.id(), agent_id),
+            |agent_id| {
+                completed_git_turn_snapshots.latest_projection_for_agent(session.id(), agent_id)
+            },
         );
         Ok(Self {
             metadata: ProjectionMetadata::new(3, last_event_id),

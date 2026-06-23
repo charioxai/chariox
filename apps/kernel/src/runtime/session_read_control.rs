@@ -45,10 +45,8 @@ pub(crate) fn projected_session_state_response(
                 user_id: caller_user_id.to_string(),
             }));
         }
-        let agent_activity = runtime_state.agent_activity_for_session_with_unread(
-            &session,
-            Some(caller_user_id),
-        );
+        let agent_activity =
+            runtime_state.agent_activity_for_session_with_unread(&session, Some(caller_user_id));
         let redacted_session = session.clone().redacted_for_user(caller_user_id);
         let visible_agent_ids = redacted_session
             .agents()

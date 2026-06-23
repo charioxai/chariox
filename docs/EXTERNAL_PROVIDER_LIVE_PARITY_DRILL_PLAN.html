@@ -238,13 +238,14 @@
       <li><span class="caution">Fail:</span> duplicated prompts, stale history after joining, premature <code>IDLE</code>, premature collapse, missing final collapse, missing tool/assistant markers, or scroll jumps while pinned to bottom.</li>
     </ul>
 
-    <h2>Provider Limitations Report</h2>
-    <p>At the end of the drill, the report must include a provider-by-provider limitations section. It should clarify what each provider persists and exposes live, what Arroba can display, and what is unavailable because the provider does not write it to its session files or event stream.</p>
+    <h2>Final Provider Limitations Report</h2>
+    <p>Every completed drill run must end with a provider-by-provider limitations section. This is part of the acceptance criteria, not an optional appendix. The report must clarify what each provider persists and exposes live, what Arroba can display from that data, and what is unavailable because the provider does not write it to its session files or event stream.</p>
     <ul>
       <li>For each provider, list available live metadata: status/running state, assistant text, tool calls, tool results, reasoning/thinking summaries, timestamps, token usage, model identity, and final completion/error state.</li>
       <li>For each missing metadata category, state whether it is an Arroba bug, a provider persistence limitation, or a drill-observation limitation.</li>
       <li>Do not imply parity for traces or hidden reasoning that the provider does not expose.</li>
       <li>Include exact provider session IDs and Arroba session/agent IDs so limitations can be reproduced.</li>
+      <li>When a provider falls short, record the product impact and the expected Arroba behavior, such as showing an explicit unavailable metadata state rather than leaving the UI blank or implying the turn is still active.</li>
     </ul>
   </main>
 </body>

@@ -507,14 +507,19 @@ function startKernelMonitor({ client, sessionId, agentId, provider, marker, prom
 
 async function kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }) {
   const stateResponse = await client.send(getSessionStateRequest(sessionId))
-  const session = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded)?.session
+  const sessionState = stateResponse.SessionState ?? stateResponse.SessionStateLoaded ?? {}
+  const session = sessionState.session
   const agent = (session?.agents ?? []).find((entry) => entry.id === agentId)
+  const agentActivity = sessionState.agent_activity?.[agentId]
+    ?? sessionState.agentActivity?.[agentId]
+    ?? sessionState.agent_activity?.[String(agentId)]
+    ?? null
   const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 1)), "SessionHistoryOutline")
   const text = historyOutlineRows(outline, { includeUserPrompt: true }).map((row) => row.entry?.text ?? "").join("\n")
   return {
     at: new Date().toISOString(),
     surface: "kernel",
-    status: agentStatus(agent),
+    status: agentStatus(agent, agentActivity),
     text,
     assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
     toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
@@ -540,7 +545,22 @@ async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, ma
   throw new Error(`external turn did not settle to final idle in kernel history; last=${JSON.stringify(lastSample)}`)
 }
 
-function agentStatus(agent) {
+function agentStatus(agent, agentActivity = null) {
+  if (agentActivity) {
+    const status = String(agentActivity.status ?? "").toLowerCase()
+    const promptStatus = String(agentActivity.prompt_status ?? agentActivity.promptStatus ?? "").toLowerCase()
+    if (
+      agentActivity.busy === true
+      || agentActivity.active_turn
+      || agentActivity.activeTurn
+      || ["working", "running", "thinking", "streaming"].includes(status)
+      || (promptStatus && promptStatus !== "none" && promptStatus !== "idle")
+    ) {
+      return "WORKING"
+    }
+    if (status === "error") return "ERROR"
+    return "IDLE"
+  }
   if (!agent) return "UNKNOWN"
   if (agent.is_processing || String(agent.state ?? "").toLowerCase() === "working") return "WORKING"
   return "IDLE"
@@ -986,7 +1006,7 @@ function assertSurface(result, surfaceResult, label) {
 
 function assertBadgeLifecycle(result, surfaceResult, label) {
   if (!surfaceResult) return
-  const statuses = surfaceResult.statuses.map((status) => String(status).toUpperCase())
+  const statuses = surfaceResult.statuses.map(normalizeLifecycleStatus)
   result.assertions.push(assertion(`${label} observed WORKING`, statuses.includes("WORKING"), statuses))
   result.assertions.push(assertion(`${label} ended IDLE or unknown-idle-compatible`, statuses.at(-1) === "IDLE" || statuses.at(-1) === "IDLE/DONE" || statuses.at(-1) === "DONE", statuses.at(-1)))
   const firstWorking = statuses.indexOf("WORKING")
@@ -995,6 +1015,12 @@ function assertBadgeLifecycle(result, surfaceResult, label) {
     ? statuses.slice(firstWorking, finalIndex).some((status) => status === "IDLE" || status === "DONE")
     : false
   result.assertions.push(assertion(`${label} did not go idle before final summary`, !prematureIdle, statuses))
+}
+
+function normalizeLifecycleStatus(status) {
+  const normalized = String(status ?? "").trim().toUpperCase()
+  if (["WORKING", "RUNNING", "THINKING", "STREAMING", "BUSY"].includes(normalized)) return "WORKING"
+  return normalized
 }
 
 function providerLimitations(provider, monitorResults) {
