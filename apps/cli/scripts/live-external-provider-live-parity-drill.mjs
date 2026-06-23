@@ -355,6 +355,7 @@ async function runProviderDrill(provider, options) {
 
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
     result.evidence.providerExit = providerExit
+    await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, promptMarker: prompt.promptMarker, options })
     const monitorResults = []
     for (const monitor of monitors) {
       monitorResults.push(await monitor.stop())
@@ -499,6 +500,22 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, prom
   }
 }
 
+async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, marker, promptMarker, options }) {
+  const deadline = Date.now() + Math.min(120_000, Math.max(15_000, options.timeoutMs))
+  let lastSample = null
+  while (Date.now() < deadline) {
+    lastSample = await kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }).catch((error) => ({
+      error: String(error?.message ?? error),
+    }))
+    if (!lastSample.error && lastSample.finalSeen && String(lastSample.status).toUpperCase() !== "WORKING") {
+      await sleep(Math.max(750, options.pollMs))
+      return lastSample
+    }
+    await sleep(options.pollMs)
+  }
+  throw new Error(`external turn did not settle to final idle in kernel history; last=${JSON.stringify(lastSample)}`)
+}
+
 function agentStatus(agent) {
   if (!agent) return "UNKNOWN"
   if (agent.is_processing || String(agent.state ?? "").toLowerCase() === "working") return "WORKING"
@@ -510,7 +527,7 @@ async function startTuiObserver({ sessionId, options, providerRoot }) {
   const stdoutPath = path.join(providerRoot, "tui.stdout.log")
   const stderrPath = path.join(providerRoot, "tui.stderr.log")
   await rm(socketPath, { force: true }).catch(() => {})
-  const child = spawn(process.execPath, [
+  const child = spawn("bun", [
     path.join(cliRoot, "dist/index.js"),
     "--kernel-url",
     options.kernelUrl,
@@ -582,14 +599,81 @@ async function startWebObserver({ sessionId, webUrl, providerRoot }) {
   const context = await browser.newContext({ baseURL: webUrl, viewport: { width: 1500, height: 980 } })
   const page = await context.newPage()
   page.on("pageerror", (error) => console.log(`[web-pageerror] ${error.message}`))
-  await page.goto("/", { waitUntil: "domcontentloaded" })
-  await page.evaluate((targetSessionId) => {
-    window.history.pushState({}, "", `/terminal?session=${encodeURIComponent(targetSessionId)}`)
-    window.dispatchEvent(new PopStateEvent("popstate"))
-  }, sessionId)
+  await page.goto("/waiting-room", { waitUntil: "domcontentloaded" })
+  await waitForProductKernelReady(page, 90_000)
+  await waitForWaitingRoomSessionRow(page, sessionId, 90_000)
+  await waitForWaitingRoomSessionRowEnabled(page, sessionId, 30_000)
+  await page.screenshot({ path: path.join(providerRoot, "web-waiting-room.png"), fullPage: true }).catch(() => {})
+  await openSessionFromWaitingRoom(page, sessionId)
   await page.locator("[data-freeform-pane-grid], .freeform-workspace").first().waitFor({ timeout: 90_000 })
+  await clearSessionPickerOverlay(page)
   await page.screenshot({ path: path.join(providerRoot, "web-opened.png"), fullPage: true }).catch(() => {})
   return { browser, context, page }
+}
+
+async function waitForProductKernelReady(page, timeoutMs) {
+  await waitForWebCondition(page, async () => {
+    const textFor = (selector) => document.querySelector(selector)?.textContent?.trim() ?? ""
+    const status = textFor("[data-waiting-room-footer-status]")
+    const kernel = textFor("[data-waiting-room-footer-kernel]")
+    const banner = textFor("[data-waiting-room-status]")
+    return status === "ready"
+      && Boolean(kernel)
+      && !/no kernel connected|loading/i.test(kernel)
+      && /Kernel waiting room ready/i.test(banner)
+  }, timeoutMs, "product waiting room did not reach connected kernel state")
+}
+
+async function waitForWaitingRoomSessionRow(page, sessionId, timeoutMs) {
+  await page.locator(`[data-waiting-session-id="${cssAttributeValue(sessionId)}"]`).first().waitFor({ timeout: timeoutMs })
+}
+
+async function waitForWaitingRoomSessionRowEnabled(page, sessionId, timeoutMs) {
+  await waitForWebCondition(page, (targetSessionId) => {
+    const row = document.querySelector(`[data-waiting-session-id="${targetSessionId}"]`)
+    return Boolean(row)
+      && !row.hasAttribute("disabled")
+      && row.getAttribute("aria-disabled") !== "true"
+      && !row.classList.contains("disabled")
+  }, timeoutMs, `waiting-room session row ${sessionId} did not become enabled`, sessionId)
+}
+
+async function openSessionFromWaitingRoom(page, sessionId) {
+  const joinRow = page.locator("[data-waiting-row-key='join']").first()
+  await joinRow.click()
+  const pickerRow = page.locator(`[data-session-picker-session-id="${cssAttributeValue(sessionId)}"]`).first()
+  await pickerRow.waitFor({ timeout: 30_000 })
+  await pickerRow.evaluate((element) => {
+    if (element instanceof HTMLElement) element.click()
+  })
+}
+
+async function clearSessionPickerOverlay(page) {
+  const overlay = page.locator("[data-session-picker-close]").first()
+  if (!(await overlay.isVisible().catch(() => false))) return
+  await page.mouse.click(40, 40)
+  await sleep(500)
+  if (!(await overlay.isVisible().catch(() => false))) return
+  await page.reload({ waitUntil: "domcontentloaded" })
+  await page.locator("[data-freeform-pane-grid], .freeform-workspace").first().waitFor({ timeout: 90_000 })
+}
+
+async function waitForWebCondition(page, predicate, timeoutMs, message, arg = undefined) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      if (await page.evaluate(predicate, arg)) return
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(250)
+  }
+  throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`)
+}
+
+function cssAttributeValue(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 }
 
 function startWebMonitor({ page, provider, marker, promptMarker, providerRoot, options }) {
