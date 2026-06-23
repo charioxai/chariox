@@ -48,7 +48,7 @@ function parseArgs(argv) {
     dryRun: false,
     skipWeb: false,
     skipTui: false,
-    keepArtifactsOnSuccess: false,
+    keepArtifactsOnSuccess: true,
   }
   for (let index = 2; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -119,7 +119,7 @@ Options:
   --dry-run
   --skip-web
   --skip-tui
-  --keep-artifacts-on-success
+  --keep-artifacts-on-success  Preserve artifacts after successful runs (default)
 
 Provider command overrides:
   ARROBA_EXTERNAL_PARITY_CODEX_COMMAND='codex exec --model {model} {prompt}'
