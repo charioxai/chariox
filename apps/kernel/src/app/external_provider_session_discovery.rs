@@ -731,32 +731,298 @@ fn claude_observed_turns_from_path(
     let lines = read_recent_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
-        let role = value.get("type").and_then(Value::as_str);
-        let Some(role) = observed_role(role) else {
-            continue;
-        };
-        let message = value.get("message").unwrap_or(value);
-        let Some(text) = message
-            .get("content")
-            .or_else(|| value.get("content"))
-            .or_else(|| value.get("message"))
-            .and_then(text_from_content)
-            .and_then(|text| {
-                clean_observed_turn_text(value.get("type").and_then(Value::as_str), text)
-            })
-        else {
-            continue;
-        };
-        turns.push(ObservedExternalProviderTurn {
-            role,
-            text,
-            provider_turn_id: string_field(value, &["uuid", "id", "message_id"])
-                .or_else(|| string_field(message, &["id"])),
-            observed_at_ms: string_field(value, &["timestamp"])
-                .and_then(|timestamp| parse_timestamp_millis(&timestamp)),
-        });
+        turns.extend(claude_observed_turns_from_value(value));
     }
     Some(latest_observed_turns(turns))
+}
+
+fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExternalProviderTurn> {
+    let observed_at_ms = string_field(value, &["timestamp"])
+        .and_then(|timestamp| parse_timestamp_millis(&timestamp));
+    let record_type = value.get("type").and_then(Value::as_str);
+    match record_type {
+        Some("user") => claude_user_observed_turns(value, observed_at_ms),
+        Some("assistant") => claude_assistant_observed_turns(value, observed_at_ms),
+        Some("mode" | "permission-mode" | "queue-operation" | "ai-title" | "last-prompt") => {
+            vec![ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Status,
+                text: claude_metadata_text(&format!("claude {}", record_type.unwrap()), value),
+                provider_turn_id: claude_record_turn_id(value, record_type.unwrap(), observed_at_ms),
+                observed_at_ms,
+            }]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn claude_user_observed_turns(
+    value: &Value,
+    observed_at_ms: Option<u64>,
+) -> Vec<ObservedExternalProviderTurn> {
+    let message = value.get("message").unwrap_or(value);
+    let content = message.get("content").or_else(|| value.get("content"));
+    let mut turns = Vec::new();
+    let mut prompt_parts = Vec::new();
+    match content {
+        Some(Value::Array(items)) => {
+            for (index, item) in items.iter().enumerate() {
+                match item.get("type").and_then(Value::as_str) {
+                    Some("tool_result") => {
+                        if let Some(text) = claude_tool_result_text(item) {
+                            turns.push(ObservedExternalProviderTurn {
+                                role: ObservedExternalProviderTurnRole::Tool,
+                                text,
+                                provider_turn_id: claude_content_turn_id(
+                                    value,
+                                    message,
+                                    item,
+                                    "tool-result",
+                                    index,
+                                    observed_at_ms,
+                                ),
+                                observed_at_ms,
+                            });
+                        }
+                    }
+                    Some("text") | None => {
+                        if let Some(text) = item
+                            .get("text")
+                            .or_else(|| item.get("content"))
+                            .and_then(Value::as_str)
+                        {
+                            prompt_parts.push(text.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(Value::String(text)) => prompt_parts.push(text.to_string()),
+        Some(Value::Object(_)) => {
+            if let Some(text) = content.and_then(text_from_content) {
+                prompt_parts.push(text);
+            }
+        }
+        _ => {}
+    }
+    let prompt = prompt_parts.join("\n");
+    if let Some(text) = clean_observed_turn_text(Some("user"), prompt) {
+        turns.insert(
+            0,
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text,
+                provider_turn_id: string_field(value, &["uuid", "id", "message_id"])
+                    .or_else(|| string_field(message, &["id"])),
+                observed_at_ms,
+            },
+        );
+    }
+    turns
+}
+
+fn claude_assistant_observed_turns(
+    value: &Value,
+    observed_at_ms: Option<u64>,
+) -> Vec<ObservedExternalProviderTurn> {
+    let message = value.get("message").unwrap_or(value);
+    let Some(content) = message.get("content").or_else(|| value.get("content")) else {
+        return Vec::new();
+    };
+    match content {
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let single_content_block = items.len() == 1;
+                let block_type = item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("text");
+                match block_type {
+                    "text" => item
+                        .get("text")
+                        .or_else(|| item.get("content"))
+                        .and_then(Value::as_str)
+                        .and_then(|text| {
+                            clean_observed_turn_text(Some("assistant"), text.to_string())
+                        })
+                        .map(|text| ObservedExternalProviderTurn {
+                            role: ObservedExternalProviderTurnRole::Assistant,
+                            text,
+                            provider_turn_id: if single_content_block {
+                                string_field(value, &["uuid", "id", "message_id"])
+                                    .or_else(|| string_field(message, &["id"]))
+                            } else {
+                                claude_content_turn_id(
+                                    value,
+                                    message,
+                                    item,
+                                    "assistant",
+                                    index,
+                                    observed_at_ms,
+                                )
+                            },
+                            observed_at_ms,
+                        }),
+                    "thinking" => item
+                        .get("thinking")
+                        .or_else(|| item.get("text"))
+                        .or_else(|| item.get("content"))
+                        .and_then(Value::as_str)
+                        .and_then(|text| {
+                            clean_observed_turn_text(Some("reasoning"), text.to_string())
+                        })
+                        .map(|text| ObservedExternalProviderTurn {
+                            role: ObservedExternalProviderTurnRole::Reasoning,
+                            text,
+                            provider_turn_id: claude_content_turn_id(
+                                value,
+                                message,
+                                item,
+                                "thinking",
+                                index,
+                                observed_at_ms,
+                            ),
+                            observed_at_ms,
+                        }),
+                    "tool_use" => Some(ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::Tool,
+                        text: claude_tool_use_text(item),
+                        provider_turn_id: claude_content_turn_id(
+                            value,
+                            message,
+                            item,
+                            "tool-use",
+                            index,
+                            observed_at_ms,
+                        ),
+                        observed_at_ms,
+                    }),
+                    "tool_result" => claude_tool_result_text(item).map(|text| {
+                        ObservedExternalProviderTurn {
+                            role: ObservedExternalProviderTurnRole::Tool,
+                            text,
+                            provider_turn_id: claude_content_turn_id(
+                                value,
+                                message,
+                                item,
+                                "tool-result",
+                                index,
+                                observed_at_ms,
+                            ),
+                            observed_at_ms,
+                        }
+                    }),
+                    _ => Some(ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::Status,
+                        text: claude_metadata_text(&format!("claude content {block_type}"), item),
+                        provider_turn_id: claude_content_turn_id(
+                            value,
+                            message,
+                            item,
+                            block_type,
+                            index,
+                            observed_at_ms,
+                        ),
+                        observed_at_ms,
+                    }),
+                }
+            })
+            .collect(),
+        Value::String(text) => clean_observed_turn_text(Some("assistant"), text.to_string())
+            .map(|text| {
+                vec![ObservedExternalProviderTurn {
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text,
+                    provider_turn_id: string_field(value, &["uuid", "id", "message_id"])
+                        .or_else(|| string_field(message, &["id"])),
+                    observed_at_ms,
+                }]
+            })
+            .unwrap_or_default(),
+        Value::Object(_) => text_from_content(content)
+            .and_then(|text| clean_observed_turn_text(Some("assistant"), text))
+            .map(|text| {
+                vec![ObservedExternalProviderTurn {
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text,
+                    provider_turn_id: string_field(value, &["uuid", "id", "message_id"])
+                        .or_else(|| string_field(message, &["id"])),
+                    observed_at_ms,
+                }]
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn claude_tool_use_text(item: &Value) -> String {
+    let name = string_field(item, &["name"]).unwrap_or_else(|| "tool_use".to_string());
+    compact_json_text(serde_json::json!({
+        "tool": name,
+        "status": "called",
+        "id": string_field(item, &["id"]),
+        "input": item.get("input").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+fn claude_tool_result_text(item: &Value) -> Option<String> {
+    let content = item
+        .get("content")
+        .and_then(text_from_content)
+        .unwrap_or_else(|| {
+            item.get("content")
+                .cloned()
+                .map(compact_json_text)
+                .unwrap_or_else(|| "".to_string())
+        });
+    let content = content.trim();
+    if content.is_empty() {
+        return None;
+    }
+    Some(compact_json_text(serde_json::json!({
+        "tool": "tool_result",
+        "status": if item.get("is_error").and_then(Value::as_bool) == Some(true) {
+            "error"
+        } else {
+            "completed"
+        },
+        "tool_use_id": string_field(item, &["tool_use_id", "toolUseId"]),
+        "content": content,
+    })))
+}
+
+fn claude_record_turn_id(
+    value: &Value,
+    label: &str,
+    observed_at_ms: Option<u64>,
+) -> Option<String> {
+    string_field(value, &["uuid", "id", "message_id"])
+        .map(|id| format!("{label}-{id}"))
+        .or_else(|| observed_at_ms.map(|ms| format!("{label}-{ms}")))
+}
+
+fn claude_content_turn_id(
+    value: &Value,
+    message: &Value,
+    item: &Value,
+    label: &str,
+    index: usize,
+    observed_at_ms: Option<u64>,
+) -> Option<String> {
+    string_field(item, &["id", "tool_use_id", "toolUseId"])
+        .map(|id| format!("{label}-{id}"))
+        .or_else(|| {
+            string_field(message, &["id"])
+                .or_else(|| string_field(value, &["uuid", "id", "message_id"]))
+                .map(|id| format!("{label}-{id}-{index}"))
+        })
+        .or_else(|| observed_at_ms.map(|ms| format!("{label}-{ms}-{index}")))
+}
+
+fn claude_metadata_text(label: &str, payload: &Value) -> String {
+    format!("{label}\n{}", compact_json_text(payload.clone()))
 }
 
 fn claude_session_id_from_values(lines: &[Value]) -> Option<String> {
@@ -1663,6 +1929,57 @@ mod tests {
         assert_eq!(turns[0].text, "Summarize external imports.");
         assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
         assert_eq!(turns[1].provider_turn_id.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn reads_claude_observed_reasoning_tools_and_status_metadata() {
+        let temp = temp_dir("claude-observed-metadata");
+        let root = temp.path();
+        let session_dir = root.join("projects").join("-repo");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("session-1.jsonl"),
+            concat!(
+                "{\"type\":\"mode\",\"mode\":\"default\",\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:00.000Z\"}\n",
+                "{\"type\":\"permission-mode\",\"permissionMode\":\"acceptEdits\",\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:00.500Z\"}\n",
+                "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Create, inspect, and delete a file.\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}\n",
+                "{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"Planning file changes.\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"printf alpha > drill.txt\"}},{\"type\":\"text\",\"text\":\"I will inspect the file next.\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:02.000Z\"}\n",
+                "{\"type\":\"user\",\"uuid\":\"u2\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"created\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:03.000Z\"}\n",
+                "{\"type\":\"last-prompt\",\"prompt\":\"Create, inspect, and delete a file.\",\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:04.000Z\"}\n",
+                "{\"type\":\"file-history-snapshot\",\"snapshot\":{\"large\":true},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:05.000Z\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let turns = read_claude_observed_turns(root, "session-1");
+        assert_eq!(
+            turns.iter().map(|turn| turn.role).collect::<Vec<_>>(),
+            vec![
+                ObservedExternalProviderTurnRole::Status,
+                ObservedExternalProviderTurnRole::Status,
+                ObservedExternalProviderTurnRole::User,
+                ObservedExternalProviderTurnRole::Reasoning,
+                ObservedExternalProviderTurnRole::Tool,
+                ObservedExternalProviderTurnRole::Assistant,
+                ObservedExternalProviderTurnRole::Tool,
+                ObservedExternalProviderTurnRole::Status,
+            ]
+        );
+        assert!(turns[0].text.contains("claude mode"));
+        assert!(turns[1].text.contains("permissionMode"));
+        assert_eq!(turns[2].text, "Create, inspect, and delete a file.");
+        assert_eq!(turns[3].text, "Planning file changes.");
+        assert!(turns[4].text.contains("Bash"));
+        assert!(turns[4].text.contains("printf alpha > drill.txt"));
+        assert_eq!(turns[5].text, "I will inspect the file next.");
+        assert!(turns[6].text.contains("tool_result"));
+        assert!(turns[6].text.contains("created"));
+        assert!(turns[7].text.contains("claude last-prompt"));
+        assert!(
+            turns
+                .iter()
+                .all(|turn| !turn.text.contains("file-history-snapshot"))
+        );
     }
 
     #[test]
