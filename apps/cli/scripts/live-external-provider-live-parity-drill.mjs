@@ -834,6 +834,10 @@ async function snapshotProviderTranscript({ provider, providerSessionId, provide
   if (!providerSessionId) {
     return { surface: "provider", found: false, reason: "provider session id unavailable" }
   }
+  if (provider === "opencode") {
+    const sqliteSnapshot = await snapshotOpenCodeSqliteTranscript({ providerSessionId, providerRoot, promptMarker })
+    if (sqliteSnapshot.found) return sqliteSnapshot
+  }
   const path = await findProviderTranscriptPath(provider, providerSessionId)
   if (!path) {
     return {
@@ -858,6 +862,88 @@ async function snapshotProviderTranscript({ provider, providerSessionId, provide
     finalSeen: text.includes(finalMarker),
     promptOccurrences: countOccurrences(text, promptMarker),
   }
+}
+
+async function snapshotOpenCodeSqliteTranscript({ providerSessionId, providerRoot, promptMarker }) {
+  for (const root of providerTranscriptRoots("opencode")) {
+    const dbPath = path.join(root, "opencode.db")
+    if (!(await stat(dbPath).catch(() => null))) continue
+    const sessionId = sqliteString(providerSessionId)
+    const query = `
+      select 'message' as kind, id, session_id, null as message_id, time_created, time_updated, data
+        from message
+       where session_id = '${sessionId}'
+      union all
+      select 'part' as kind, id, session_id, message_id, time_created, time_updated, data
+        from part
+       where session_id = '${sessionId}'
+       order by time_created, id
+    `
+    const capture = await captureCommand("sqlite3", ["-json", dbPath, query], { maxBytes: 16 * 1024 * 1024 }).catch((error) => ({
+      ok: false,
+      stderr: String(error?.message ?? error),
+    }))
+    if (!capture.ok || !capture.stdout.trim()) continue
+    const rows = parseJson(capture.stdout)
+    if (!Array.isArray(rows) || rows.length === 0) continue
+    const text = JSON.stringify(rows, null, 2)
+    const artifactPath = pathJoin(providerRoot, "provider-transcript.sqlite.json")
+    await writeFile(artifactPath, text, "utf8")
+    return {
+      surface: "provider",
+      found: true,
+      providerSessionId,
+      path: dbPath,
+      artifactPath,
+      byteLength: Buffer.byteLength(text),
+      rowCount: rows.length,
+      assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => text.includes(marker)),
+      toolMarkersSeen: requiredToolMarkers.filter((marker) => text.includes(marker)),
+      finalSeen: text.includes(finalMarker),
+      promptOccurrences: countOccurrences(text, promptMarker),
+    }
+  }
+  return {
+    surface: "provider",
+    found: false,
+    providerSessionId,
+    reason: `no OpenCode SQLite transcript rows matched provider session ${providerSessionId}`,
+  }
+}
+
+function sqliteString(value) {
+  return String(value).replace(/'/g, "''")
+}
+
+function captureCommand(command, args, { maxBytes = 1024 * 1024 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] })
+    const stdout = []
+    const stderr = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length
+      if (stdoutBytes <= maxBytes) stdout.push(chunk)
+      if (stdoutBytes > maxBytes) child.kill("SIGTERM")
+    })
+    child.stderr.on("data", (chunk) => {
+      stderrBytes += chunk.length
+      if (stderrBytes <= maxBytes) stderr.push(chunk)
+    })
+    child.on("error", reject)
+    child.on("close", (code, signal) => {
+      const result = {
+        ok: code === 0,
+        code,
+        signal,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      }
+      if (result.ok) resolve(result)
+      else reject(new Error(`${command} exited with ${signal ?? code}: ${result.stderr}`))
+    })
+  })
 }
 
 async function findProviderTranscriptPath(provider, providerSessionId) {
