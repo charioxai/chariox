@@ -232,11 +232,11 @@ impl KernelRuntimeState {
         let recipient_attachment_ids = owned
             .attachment_store
             .list_session_attachment_ids(session_id);
-        for provider_run_id in provider_run_ids {
+        for provider_run_id in &provider_run_ids {
             let result = self
                 .pump_owned_provider_output(
                     session_id,
-                    &provider_run_id,
+                    provider_run_id,
                     recipient_attachment_ids.clone(),
                     false,
                 )
@@ -245,14 +245,14 @@ impl KernelRuntimeState {
                 if matches!(error, DaemonError::ProviderRunNotFound { .. })
                     && owned
                         .provider_run_projection
-                        .get(&provider_run_id)
+                        .get(provider_run_id)
                         .is_some_and(|run| run.session_id() == session_id)
                 {
                     continue;
                 }
                 return Err(error);
             }
-            self.observe_git_after_provider_activity_if_pending(&provider_run_id)
+            self.observe_git_after_provider_activity_if_pending(provider_run_id)
                 .await;
         }
         self.drain_active_remote_prompt_projections_for_session(&session)
@@ -261,6 +261,10 @@ impl KernelRuntimeState {
             .terminal_stream
             .drain_output_records(session_id, attachment_id);
         let session = owned.session_snapshot(session_id).ok();
+        for provider_run_id in &provider_run_ids {
+            self.observe_git_after_provider_activity_if_pending(provider_run_id)
+                .await;
+        }
         Ok((records, session))
     }
 

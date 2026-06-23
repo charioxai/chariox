@@ -85,11 +85,11 @@ impl KernelRuntimeState {
         let Some(before) = self
             .owned
             .git_turn_snapshots
-            .remove(provider_run_id, completed_prompt.id())
+            .get(provider_run_id, completed_prompt.id())
             .or_else(|| {
                 self.owned
                     .git_turn_snapshots
-                    .remove_for_provider_run(provider_run_id)
+                    .get_for_provider_run(provider_run_id)
             })
         else {
             crate::logging::warn_with_fields(
@@ -123,18 +123,14 @@ impl KernelRuntimeState {
         else {
             return;
         };
-        let prompt_is_active = self
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_some();
+        let prompt_is_active = session.active_prompt_for_agent(agent_id).is_some();
         if prompt_is_active {
             return;
         }
         let Some(before) = self
             .owned
             .git_turn_snapshots
-            .remove_for_provider_run(provider_run_id)
+            .get_for_provider_run(provider_run_id)
         else {
             crate::logging::debug_with_fields(
                 "daemon.git_observer",
@@ -176,6 +172,8 @@ impl KernelRuntimeState {
         let history = self.owned.operational_history_store.clone();
         let before_workspace_live_sync_tracked = before.workspace_live_sync_tracked;
         let before_status_fingerprint = before.status_fingerprint.clone();
+        let pending_provider_run_id = before.provider_run_id.clone();
+        let pending_prompt_id = before.prompt_id.clone();
         let observation = tokio::task::spawn_blocking(move || {
             let retry_delays_ms: &[u64] = if before.workspace_live_sync_tracked {
                 &[50, 150, 300, 500]
@@ -216,15 +214,13 @@ impl KernelRuntimeState {
                     } else {
                         Ok(Vec::new())
                     };
-                    return Some(history_events.map(|events| {
-                        (
-                            events,
-                            tracked_change,
-                            attempts,
-                            after_status_fingerprint,
-                            completed_turn,
-                        )
-                    }));
+                    return Some((
+                        history_events,
+                        tracked_change,
+                        attempts,
+                        after_status_fingerprint,
+                        completed_turn,
+                    ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(retry_delays_ms[attempts]));
                 attempts += 1;
@@ -232,16 +228,19 @@ impl KernelRuntimeState {
         })
         .await;
         match observation {
-            Ok(Some(Ok((
-                events,
+            Ok(Some((
+                history_events,
                 tracked_change,
                 retry_attempts,
                 after_status_fingerprint,
                 completed_turn,
-            )))) => {
+            ))) => {
                 self.owned
                     .completed_git_turn_snapshots
                     .record(completed_turn);
+                self.owned
+                    .git_turn_snapshots
+                    .remove(&pending_provider_run_id, &pending_prompt_id);
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
                     self.record_and_fanout_workspace_live_sync_change(change, None, None)
@@ -269,27 +268,31 @@ impl KernelRuntimeState {
                         }),
                     );
                 }
-                if !events.is_empty() {
-                    crate::logging::info_with_fields(
+                match history_events {
+                    Ok(events) => {
+                        if !events.is_empty() {
+                            crate::logging::info_with_fields(
+                                "daemon.git_observer",
+                                "recorded git history events after agent turn",
+                                serde_json::json!({
+                                    "provider_run_id": provider_run_id,
+                                    "prompt_id": prompt_id,
+                                    "event_count": events.len(),
+                                }),
+                            );
+                        }
+                    }
+                    Err(error) => crate::logging::warn_with_fields(
                         "daemon.git_observer",
-                        "recorded git history events after agent turn",
+                        "failed to record git history events after agent turn",
                         serde_json::json!({
                             "provider_run_id": provider_run_id,
                             "prompt_id": prompt_id,
-                            "event_count": events.len(),
+                            "error": error.to_string(),
                         }),
-                    );
+                    ),
                 }
             }
-            Ok(Some(Err(error))) => crate::logging::warn_with_fields(
-                "daemon.git_observer",
-                "failed to record git history events after agent turn",
-                serde_json::json!({
-                    "provider_run_id": provider_run_id,
-                    "prompt_id": prompt_id,
-                    "error": error.to_string(),
-                }),
-            ),
             Ok(None) => {
                 if before_workspace_live_sync_tracked {
                     crate::logging::warn_with_fields(

@@ -88,9 +88,12 @@ pub struct CompletedGitTurnActionProjection {
     pub turn_id: String,
     pub prompt_id: String,
     pub provider_run_id: String,
+    pub agent_id: String,
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub changed_paths: Vec<String>,
     #[serde(default)]
     pub undo_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -211,8 +214,14 @@ impl CompletedGitTurnSnapshot {
             turn_id: self.before.turn_id.clone(),
             prompt_id: self.before.prompt_id.clone(),
             provider_run_id: self.before.provider_run_id.clone(),
+            agent_id: self.before.agent_id.clone(),
             completed_at_ms: self.completed_at_ms,
             duration_ms: self.duration_ms,
+            changed_paths: self
+                .change
+                .as_ref()
+                .map(|change| change.changed_paths.clone())
+                .unwrap_or_default(),
             undo_available: undo_unavailable_reason.is_none(),
             undo_unavailable_reason,
         }
@@ -250,6 +259,14 @@ impl GitTurnSnapshotStore {
             .remove(&Self::key(provider_run_id, prompt_id))
     }
 
+    pub(crate) fn get(&self, provider_run_id: &str, prompt_id: &str) -> Option<GitTurnSnapshot> {
+        self.inner
+            .lock()
+            .expect("git turn snapshot mutex poisoned")
+            .get(&Self::key(provider_run_id, prompt_id))
+            .cloned()
+    }
+
     pub(crate) fn remove_for_provider_run(&self, provider_run_id: &str) -> Option<GitTurnSnapshot> {
         let mut guard = self.inner.lock().expect("git turn snapshot mutex poisoned");
         let key = guard
@@ -257,6 +274,14 @@ impl GitTurnSnapshotStore {
             .find(|key| key.starts_with(&format!("{provider_run_id}:")))
             .cloned()?;
         guard.remove(&key)
+    }
+
+    pub(crate) fn get_for_provider_run(&self, provider_run_id: &str) -> Option<GitTurnSnapshot> {
+        let guard = self.inner.lock().expect("git turn snapshot mutex poisoned");
+        let key = guard
+            .keys()
+            .find(|key| key.starts_with(&format!("{provider_run_id}:")))?;
+        guard.get(key).cloned()
     }
 
     pub(crate) fn provider_run_ids_for_session(&self, session_id: &str) -> BTreeSet<String> {
@@ -1835,6 +1860,27 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn pending_turn_snapshot_lookup_does_not_consume_snapshot() {
+        let snapshots = GitTurnSnapshotStore::default();
+        let snapshot = tracked_snapshot(false, "");
+        snapshots.insert(snapshot.clone());
+
+        assert_eq!(
+            snapshots.get("provider-run-1", "prompt-1"),
+            Some(snapshot.clone())
+        );
+        assert_eq!(
+            snapshots.get_for_provider_run("provider-run-1"),
+            Some(snapshot.clone())
+        );
+        assert_eq!(
+            snapshots.remove("provider-run-1", "prompt-1"),
+            Some(snapshot)
+        );
+        assert_eq!(snapshots.get_for_provider_run("provider-run-1"), None);
     }
 
     fn workspace_live_sync_test_change(session_id: &str) -> WorkspaceLiveSyncChange {
