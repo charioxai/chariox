@@ -33,7 +33,7 @@ const defaultModels = {
 }
 const requiredAssistantMarkers = Array.from({ length: 20 }, (_, index) => `ASSISTANT_STEP_${String(index + 1).padStart(2, "0")}`)
 const requiredToolMarkers = Array.from({ length: 20 }, (_, index) => `TOOL_STEP_${String(index + 1).padStart(2, "0")}`)
-const finalMarker = "FINAL_EXTERNAL_PARITY_SUMMARY"
+const finalMarkerPrefix = "FINAL_EXTERNAL_PARITY_SUMMARY"
 
 function parseArgs(argv) {
   const options = {
@@ -157,20 +157,23 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     "Requirements:",
     "1. Before emitting any ASSISTANT_STEP_NN, TOOL_STEP_NN, or FINAL_EXTERNAL_PARITY_SUMMARY marker, create the observer gate directory, write the ready file, and wait until the go file exists.",
     "2. The observer gate setup/wait can use provider tools, but it must not include TOOL_STEP_NN markers and it does not count toward the 20 marked tool calls.",
-    "3. After the go file exists, produce exactly 20 separate assistant progress messages, one for each ASSISTANT_STEP_01 through ASSISTANT_STEP_20.",
-    "4. After the go file exists, run exactly 20 observable marked tool calls, one for each TOOL_STEP_01 through TOOL_STEP_20.",
-    "5. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
-    "6. Each marked tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
-    "7. Use only the observer gate directory for temporary drill files.",
-    "8. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
-    "9. Delete the temporary directory before finishing.",
-    `10. End with the exact final summary marker ${finalMarker} and include the drill marker.`,
-    "11. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
-    "",
-    `Assistant markers: ${requiredAssistantMarkers.join(", ")}.`,
-    `Tool markers: ${requiredToolMarkers.join(", ")}.`,
+    "3. After the go file exists, produce exactly 20 separate assistant progress messages, each with an assistant step marker.",
+    "4. Assistant step markers must be built from prefix ASSISTANT_STEP_ plus two-digit numbers from 01 to 20.",
+    "5. After the go file exists, run exactly 20 observable marked tool calls, each with a tool step marker.",
+    "6. Tool step markers must be built from prefix TOOL_STEP_ plus two-digit numbers from 01 to 20.",
+    "7. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
+    "8. Each marked tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
+    "9. Use only the observer gate directory for temporary drill files.",
+    "10. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
+    "11. Delete the temporary directory before finishing.",
+    `12. End with the exact final summary marker formed by joining prefix ${finalMarkerPrefix}, an underscore, and the drill marker.`,
+    "13. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
   ].join("\n")
   return { text, promptMarker }
+}
+
+function finalMarkerFor(marker) {
+  return `${finalMarkerPrefix}_${marker}`
 }
 
 function observerGate(marker, workspace) {
@@ -279,6 +282,7 @@ async function runProviderDrill(provider, options) {
   const model = providerModel(options, provider)
   const providerRoot = path.join(options.artifactRoot, provider)
   const gate = observerGate(marker, options.workspace)
+  const finalMarker = finalMarkerFor(marker)
   const prompt = buildPrompt(provider, marker, options.workspace, gate)
   const command = providerCommand(provider, model, prompt.text, options.workspace)
   await mkdir(providerRoot, { recursive: true })
@@ -296,6 +300,7 @@ async function runProviderDrill(provider, options) {
     provider,
     model,
     marker,
+    finalMarker,
     promptMarker: prompt.promptMarker,
     artifactDir: providerRoot,
     durationMs: 0,
@@ -362,12 +367,12 @@ async function runProviderDrill(provider, options) {
     result.assertions.push(pass("external provider session imported into Arroba session"))
 
     const monitors = []
-    monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, promptMarker: prompt.promptMarker, options }))
+    monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options }))
     if (!options.skipTui) {
       const tui = await startTuiObserver({ sessionId: result.arrobaSessionId, options, providerRoot })
       tuiProcess = tui.process
       tuiSocketPath = tui.socketPath
-      monitors.push(startTuiMonitor({ socketPath: tui.socketPath, provider, marker, promptMarker: prompt.promptMarker, options }))
+      monitors.push(startTuiMonitor({ socketPath: tui.socketPath, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options }))
       result.evidence.tuiSocketPath = tui.socketPath
     }
     if (!options.skipWeb) {
@@ -375,7 +380,7 @@ async function runProviderDrill(provider, options) {
       browser = web.browser
       context = web.context
       page = web.page
-      monitors.push(startWebMonitor({ page, provider, marker, promptMarker: prompt.promptMarker, providerRoot, options }))
+      monitors.push(startWebMonitor({ page, provider, marker, finalMarker, promptMarker: prompt.promptMarker, providerRoot, options }))
     }
 
     await releaseObserverGate(gate, marker)
@@ -383,18 +388,18 @@ async function runProviderDrill(provider, options) {
 
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
     result.evidence.providerExit = providerExit
-    await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, promptMarker: prompt.promptMarker, options })
+    await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options })
     if (page) {
       await waitForSurfaceFinalIdle({
         surface: "web",
-        sample: () => webSample(page, provider, marker, prompt.promptMarker),
+        sample: () => webSample(page, provider, marker, finalMarker, prompt.promptMarker),
         options,
       })
     }
     if (tuiSocketPath) {
       await waitForSurfaceFinalIdle({
         surface: "tui",
-        sample: () => tuiSample(tuiSocketPath, provider, marker, prompt.promptMarker),
+        sample: () => tuiSample(tuiSocketPath, provider, marker, finalMarker, prompt.promptMarker),
         options,
       })
     }
@@ -402,6 +407,7 @@ async function runProviderDrill(provider, options) {
       provider,
       providerSessionId: result.providerSessionId,
       providerRoot,
+      finalMarker,
       promptMarker: prompt.promptMarker,
     })
     result.evidence.providerTranscript = providerTranscript
@@ -526,12 +532,12 @@ async function waitForNewExternalSession({ client, provider, before, marker, tim
   throw new Error(`timed out waiting for new ${provider} external session; last=${JSON.stringify(last.slice(0, 5), null, 2)}`)
 }
 
-function startKernelMonitor({ client, sessionId, agentId, provider, marker, promptMarker, options }) {
+function startKernelMonitor({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
   const samples = []
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }).catch((error) => ({
+      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -542,14 +548,14 @@ function startKernelMonitor({ client, sessionId, agentId, provider, marker, prom
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }).catch((error) => ({ error: String(error?.message ?? error) }))
+      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }).catch((error) => ({ error: String(error?.message ?? error) }))
       samples.push(finalSample)
-      return summarizeSamples("kernel", samples)
+      return summarizeSamples("kernel", samples, finalMarker)
     },
   }
 }
 
-async function kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }) {
+async function kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }) {
   const stateResponse = await client.send(getSessionStateRequest(sessionId))
   const sessionState = stateResponse.SessionState ?? stateResponse.SessionStateLoaded ?? {}
   const session = sessionState.session
@@ -573,11 +579,11 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, prom
   }
 }
 
-async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, marker, promptMarker, options }) {
+async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
   const deadline = Date.now() + Math.min(120_000, Math.max(15_000, options.timeoutMs))
   let lastSample = null
   while (Date.now() < deadline) {
-    lastSample = await kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }).catch((error) => ({
+    lastSample = await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }).catch((error) => ({
       error: String(error?.message ?? error),
     }))
     if (!lastSample.error && lastSample.finalSeen && String(lastSample.status).toUpperCase() !== "WORKING") {
@@ -650,12 +656,12 @@ async function startTuiObserver({ sessionId, options, providerRoot }) {
   return { process: child, socketPath }
 }
 
-function startTuiMonitor({ socketPath, provider, marker, promptMarker, options }) {
+function startTuiMonitor({ socketPath, provider, marker, finalMarker, promptMarker, options }) {
   const samples = []
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await tuiSample(socketPath, provider, marker, promptMarker).catch((error) => ({
+      samples.push(await tuiSample(socketPath, provider, marker, finalMarker, promptMarker).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -666,13 +672,13 @@ function startTuiMonitor({ socketPath, provider, marker, promptMarker, options }
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      samples.push(await tuiSample(socketPath, provider, marker, promptMarker).catch((error) => ({ error: String(error?.message ?? error) })))
-      return summarizeSamples("tui", samples)
+      samples.push(await tuiSample(socketPath, provider, marker, finalMarker, promptMarker).catch((error) => ({ error: String(error?.message ?? error) })))
+      return summarizeSamples("tui", samples, finalMarker)
     },
   }
 }
 
-async function tuiSample(socketPath, provider, marker, promptMarker) {
+async function tuiSample(socketPath, provider, marker, finalMarker, promptMarker) {
   const snapshot = await automationRequest(socketPath, { action: "snapshot" })
   const transcriptEntries = (snapshot.transcript?.entries ?? []).filter(Boolean)
   const paneEntries = Object.values(snapshot.agentPanes ?? {})
@@ -788,12 +794,12 @@ function cssAttributeValue(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 }
 
-function startWebMonitor({ page, provider, marker, promptMarker, providerRoot, options }) {
+function startWebMonitor({ page, provider, marker, finalMarker, promptMarker, providerRoot, options }) {
   const samples = []
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await webSample(page, provider, marker, promptMarker).catch((error) => ({
+      samples.push(await webSample(page, provider, marker, finalMarker, promptMarker).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -804,14 +810,14 @@ function startWebMonitor({ page, provider, marker, promptMarker, providerRoot, o
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      samples.push(await webSample(page, provider, marker, promptMarker).catch((error) => ({ error: String(error?.message ?? error) })))
+      samples.push(await webSample(page, provider, marker, finalMarker, promptMarker).catch((error) => ({ error: String(error?.message ?? error) })))
       await page.screenshot({ path: path.join(providerRoot, "web-final.png"), fullPage: true }).catch(() => {})
-      return summarizeSamples("web", samples)
+      return summarizeSamples("web", samples, finalMarker)
     },
   }
 }
 
-async function webSample(page, provider, marker, promptMarker) {
+async function webSample(page, provider, marker, finalMarker, promptMarker) {
   return await page.evaluate(({ provider, marker, promptMarker, requiredAssistantMarkers, requiredToolMarkers, finalMarker }) => {
     const output = document.querySelector("[data-terminal-output]") ?? document.body
     const text = output.textContent ?? ""
@@ -841,7 +847,7 @@ async function webSample(page, provider, marker, promptMarker) {
   }, { provider, marker, promptMarker, requiredAssistantMarkers, requiredToolMarkers, finalMarker })
 }
 
-function summarizeSamples(surface, samples) {
+function summarizeSamples(surface, samples, finalMarker) {
   const valid = samples.filter((sample) => !sample.error)
   const text = valid.map((sample) => sample.text ?? "").join("\n")
   const firstFinalSampleIndex = valid.findIndex((sample) => sample.finalSeen)
@@ -872,12 +878,12 @@ function summarizeSamples(surface, samples) {
   }
 }
 
-async function snapshotProviderTranscript({ provider, providerSessionId, providerRoot, promptMarker }) {
+async function snapshotProviderTranscript({ provider, providerSessionId, providerRoot, finalMarker, promptMarker }) {
   if (!providerSessionId) {
     return { surface: "provider", found: false, reason: "provider session id unavailable" }
   }
   if (provider === "opencode") {
-    const sqliteSnapshot = await snapshotOpenCodeSqliteTranscript({ providerSessionId, providerRoot, promptMarker })
+    const sqliteSnapshot = await snapshotOpenCodeSqliteTranscript({ providerSessionId, providerRoot, finalMarker, promptMarker })
     if (sqliteSnapshot.found) return sqliteSnapshot
   }
   const path = await findProviderTranscriptPath(provider, providerSessionId)
@@ -906,7 +912,7 @@ async function snapshotProviderTranscript({ provider, providerSessionId, provide
   }
 }
 
-async function snapshotOpenCodeSqliteTranscript({ providerSessionId, providerRoot, promptMarker }) {
+async function snapshotOpenCodeSqliteTranscript({ providerSessionId, providerRoot, finalMarker, promptMarker }) {
   for (const root of providerTranscriptRoots("opencode")) {
     const dbPath = path.join(root, "opencode.db")
     if (!(await stat(dbPath).catch(() => null))) continue
