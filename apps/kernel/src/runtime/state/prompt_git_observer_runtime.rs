@@ -1311,6 +1311,105 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider_completion() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-git-turn-finalizer-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        init_repo_with_file(&root, "src/lib.rs", "seed\n");
+
+        let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            ))
+            .expect("session should be created");
+        let provider_run = app
+            .providers
+            .start_run_provider_only(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "codex",
+                    "default",
+                    "gpt-5",
+                )
+                .with_agent_id(agent.id())
+                .with_working_directory(root.clone()),
+            )
+            .expect("provider should start")
+            .into_run();
+        app.update_provider_run_projection(provider_run.clone());
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let before =
+            crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                provider: provider_run.provider().to_string(),
+                model: provider_run.model().to_string(),
+                provider_run_id: provider_run.id().to_string(),
+                provider_session_id: None,
+                prompt_id: "prompt-1".to_string(),
+                turn_id: "prompt-1".to_string(),
+                started_at_ms: Some(crate::session::unix_epoch_ms()),
+                worktree_path: root.clone(),
+                workspace_live_sync_tracked: true,
+                machine_id: None,
+                prompt_summary: "edit src/lib.rs".to_string(),
+            })
+            .expect("pre-turn snapshot should be captured");
+        runtime.owned.git_turn_snapshots.insert(before);
+
+        std::fs::write(root.join("src/lib.rs"), "seed\nagent change\n")
+            .expect("source should change");
+
+        runtime
+            .observe_git_after_provider_activity_if_pending(provider_run.id())
+            .await;
+
+        assert_eq!(
+            runtime
+                .owned
+                .git_turn_snapshots
+                .get_for_provider_run(provider_run.id()),
+            None,
+            "successful finalization should consume the pending snapshot"
+        );
+        let projection = runtime
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(session.id(), agent.id())
+            .expect("completed turn projection should be recorded");
+        assert_eq!(projection.agent_id, agent.id());
+        assert_eq!(projection.provider_run_id, provider_run.id());
+        assert_eq!(projection.prompt_id, "prompt-1");
+        assert!(projection.undo_available);
+        assert_eq!(projection.changed_paths, vec!["src/lib.rs".to_string()]);
+
+        let activity = runtime.agent_activity_for_session(
+            &runtime
+                .owned
+                .session_snapshot(session.id())
+                .expect("session snapshot should exist"),
+        );
+        assert_eq!(
+            activity
+                .get(agent.id())
+                .and_then(|agent| agent.last_completed_turn.as_ref())
+                .map(|turn| turn.turn_id.as_str()),
+            Some("prompt-1"),
+            "session activity should expose the completed turn"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn workspace_live_sync_text_change(
         session_id: &str,
         agent_id: &str,
