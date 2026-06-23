@@ -180,7 +180,7 @@ function finalMarkerFor(marker) {
 }
 
 function observerGate(marker, workspace) {
-  const dir = path.join(workspace, ".arroba-external-parity-drill", marker)
+  const dir = path.join(workspace, "external-provider-live-parity-drill", marker)
   return {
     dir,
     readyFile: path.join(dir, "observer-ready.txt"),
