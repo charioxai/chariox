@@ -123,7 +123,7 @@ test("waiting room inventory row patch merges changes and removals", () => {
   })
 })
 
-test("waiting room refresh still hydrates orphan agents after a row patch set the inventory version", async () => {
+test("waiting room refresh still hydrates unattached agents after a row patch set the inventory version", async () => {
   const harness = createHarness({
     snapshots: [inventory("v2", {
       externalProviderSessions: [externalProviderSession("opencode:thread-1")],

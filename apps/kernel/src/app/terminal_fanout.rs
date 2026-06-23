@@ -320,12 +320,17 @@ impl DaemonApp {
             })
         });
         let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+        let external_turn_id = (entry.source
+            == Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved))
+        .then(|| entry.external_provider_turn_id.clone())
+        .flatten();
+        let turn_id = external_turn_id.clone().or_else(|| prompt_id.clone());
         HistoryEventTurnContext {
             session_id: Some(entry.session_id.clone()),
             agent_id,
             provider: provider_run.as_ref().map(|run| run.provider().to_string()),
             model: provider_run.as_ref().map(|run| run.model().to_string()),
-            turn_id: prompt_id.clone(),
+            turn_id,
             prompt_id,
             provider_run_id: entry.provider_run_id.clone(),
             provider_session_id: provider_run

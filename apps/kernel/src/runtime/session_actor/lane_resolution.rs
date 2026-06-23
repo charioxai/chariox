@@ -69,6 +69,12 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::SpawnAgent(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
+        LocalDaemonRequest::UndoTurn(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::ForkAgent(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::DestroyAgent(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

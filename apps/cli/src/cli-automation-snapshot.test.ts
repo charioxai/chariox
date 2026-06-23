@@ -211,7 +211,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
   })
 })
 
-test("buildCliAutomationSnapshot exposes waiting room orphan agent rows", () => {
+test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", () => {
   const catalog = fallbackProviderCatalog()
   const snapshot = buildCliAutomationSnapshot({
     workspaceScreenMode: () => "agents",
@@ -249,9 +249,7 @@ test("buildCliAutomationSnapshot exposes waiting room orphan agent rows", () => 
       provider_session_id: "thread-1",
       title: "External OpenCode thread",
       first_prompt_preview: "external prompt",
-      mode: "observed",
       last_modified_at_ms: 1_700_000_000_000,
-      already_imported: false,
     }],
     externalProviderSessionsPageState: () => ({ hasMore: false, nextCursor: null }),
     slicesState: () => [],

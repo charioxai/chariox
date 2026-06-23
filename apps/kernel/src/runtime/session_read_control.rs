@@ -201,6 +201,7 @@ pub(crate) fn projected_agent_activity(
         &prompt_activity,
         &active_turns,
         unread_for_user_id,
+        |_| None,
     )
 }
 

@@ -56,6 +56,8 @@ export type CliInputRoutingCompositionDeps = {
   handleModelCommand: AnyFn
   handleVariantCommand: AnyFn
   handleViewCommand: AnyFn
+  handleUndoCommand: AnyFn
+  handleForkCommand: AnyFn
   handleAgentCommand: AnyFn
   handleKernelCommand: AnyFn
   handleMachineCommand: AnyFn
@@ -201,6 +203,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleModelCommand: deps.handleModelCommand,
     handleVariantCommand: deps.handleVariantCommand,
     handleViewCommand: deps.handleViewCommand,
+    handleUndoCommand: deps.handleUndoCommand,
+    handleForkCommand: deps.handleForkCommand,
     handleAgentCommand: deps.handleAgentCommand,
     handleKernelCommand: deps.handleKernelCommand,
     handleMachineCommand: deps.handleMachineCommand,

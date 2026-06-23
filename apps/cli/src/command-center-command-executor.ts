@@ -17,6 +17,8 @@ type CommandCenterCommandExecutorDeps = {
   onModel: CommandHandler<"model">
   onVariant: CommandHandler<"variant">
   onView: CommandHandler<"view">
+  onUndo: CommandHandler<"undo">
+  onFork: CommandHandler<"fork">
   onAgent: CommandHandler<"agent">
   onKernel: CommandHandler<"kernel">
   onMachine: CommandHandler<"machine">
@@ -62,6 +64,8 @@ export function createCommandCenterCommandExecutor(
       onModel: deps.onModel,
       onVariant: deps.onVariant,
       onView: deps.onView,
+      onUndo: contained(deps.onUndo),
+      onFork: contained(deps.onFork),
       onAgent: contained(deps.onAgent),
       onKernel: contained(deps.onKernel),
       onMachine: contained(deps.onMachine),

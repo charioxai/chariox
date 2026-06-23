@@ -64,8 +64,33 @@ test("parseSlashCommand parses collab commands and args", () => {
   })
 })
 
+test("parseSlashCommand parses undo and fork commands with optional refs", () => {
+  assert.deepEqual(parseSlashCommand("/undo"), {
+    kind: "undo",
+    raw: "/undo",
+    args: [],
+  })
+  assert.deepEqual(parseSlashCommand("/undo agent-1"), {
+    kind: "undo",
+    raw: "/undo agent-1",
+    args: ["agent-1"],
+  })
+  assert.deepEqual(parseSlashCommand("/fork qa"), {
+    kind: "fork",
+    raw: "/fork qa",
+    args: ["qa"],
+  })
+  assert.deepEqual(parseSlashCommand("/agent fork qa"), {
+    kind: "agent",
+    raw: "/agent fork qa",
+    args: ["fork", "qa"],
+  })
+})
+
 test("shouldClearCommandCenterForSlashCommand only clears selector-backed commands", () => {
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/undo")!), true)
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/fork agent-1")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/session list")!), false)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/stop")!), false)
 })
@@ -82,6 +107,8 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onModel: () => calls.push("model"),
     onVariant: () => calls.push("variant"),
     onView: () => calls.push("view"),
+    onUndo: () => calls.push("undo"),
+    onFork: () => calls.push("fork"),
     onAgent: () => calls.push("agent"),
     onKernel: () => calls.push("kernel"),
     onMachine: () => calls.push("machine"),
@@ -121,6 +148,8 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onModel: () => undefined,
     onVariant: () => undefined,
     onView: () => undefined,
+    onUndo: () => undefined,
+    onFork: () => undefined,
     onAgent: () => undefined,
     onKernel: () => undefined,
     onMachine: () => undefined,

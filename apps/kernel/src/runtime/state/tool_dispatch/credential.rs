@@ -791,6 +791,17 @@ impl KernelRuntimeState {
         injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
     ) -> Result<(String, String), DaemonError> {
         let agent = self.authorize_home_credential_context(&context)?;
+        let service = self.home_runtime_secret_service()?;
+        match &injection {
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
+                target_url,
+            } => {
+                service.validate_browser_secret_input_for_target_url(&credential_id, target_url)?
+            }
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
+                service.validate_terminal_secret_input(&credential_id)?
+            }
+        };
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -798,7 +809,6 @@ impl KernelRuntimeState {
                 "home_credential_secret_resolve",
             )
             .await?;
-        let service = self.home_runtime_secret_service()?;
         let secret_input = match injection {
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                 target_url,

@@ -16,6 +16,8 @@ export type ParsedSlashCommand =
   | { kind: "model"; raw: string; value: string }
   | { kind: "variant"; raw: string; value: string }
   | { kind: "view"; raw: string; value: string }
+  | { kind: "undo"; raw: string; args: string[] }
+  | { kind: "fork"; raw: string; args: string[] }
   | { kind: "agent"; raw: string; args: string[] }
   | { kind: "kernel"; raw: string; args: string[] }
   | { kind: "machine"; raw: string; args: string[] }
@@ -45,6 +47,8 @@ export type SlashCommandHandlers = {
   onModel: (command: Extract<ParsedSlashCommand, { kind: "model" }>) => Promise<unknown> | unknown
   onVariant: (command: Extract<ParsedSlashCommand, { kind: "variant" }>) => Promise<unknown> | unknown
   onView: (command: Extract<ParsedSlashCommand, { kind: "view" }>) => Promise<unknown> | unknown
+  onUndo: (command: Extract<ParsedSlashCommand, { kind: "undo" }>) => Promise<unknown> | unknown
+  onFork: (command: Extract<ParsedSlashCommand, { kind: "fork" }>) => Promise<unknown> | unknown
   onAgent: (command: Extract<ParsedSlashCommand, { kind: "agent" }>) => Promise<unknown> | unknown
   onKernel: (command: Extract<ParsedSlashCommand, { kind: "kernel" }>) => Promise<unknown> | unknown
   onMachine: (command: Extract<ParsedSlashCommand, { kind: "machine" }>) => Promise<unknown> | unknown
@@ -118,6 +122,20 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "view",
       raw: trimmed,
       value: trimmed.replace(/^\/view\s*/, "").trim(),
+    }
+  }
+  if (trimmed.startsWith("/undo")) {
+    return {
+      kind: "undo",
+      raw: trimmed,
+      args: trimmed.replace(/^\/undo\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed.startsWith("/fork")) {
+    return {
+      kind: "fork",
+      raw: trimmed,
+      args: trimmed.replace(/^\/fork\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/agent")) {
@@ -286,6 +304,12 @@ export async function executeSlashCommand(
     case "view":
       await handlers.onView(command)
       break
+    case "undo":
+      await handlers.onUndo(command)
+      break
+    case "fork":
+      await handlers.onFork(command)
+      break
     case "agent":
       await handlers.onAgent(command)
       break
@@ -350,6 +374,8 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "model":
     case "variant":
     case "view":
+    case "undo":
+    case "fork":
     case "agent":
     case "kernel":
     case "machine":

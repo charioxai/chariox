@@ -53,6 +53,45 @@ test("agent variant command clears agent effort override", async () => {
   assert.equal(flashedMessage, "agent-1 variant: <none>")
 })
 
+test("agent provider command updates the targeted agent profile", async () => {
+  const currentAgent = agent()
+  const updatedAgent = agent({ provider: "claude-headless" })
+  const updatedSession = session({ agents: [updatedAgent] })
+  let updateOptions: Record<string, unknown> | null = null
+  let appliedSession: RuntimeSession | null = null
+
+  await handleAgentProfileCommand({
+    ...deps(currentAgent),
+    applySessionState: (nextSession) => { appliedSession = nextSession },
+    updateAgentProfile: async (_sessionId, _agentId, options) => {
+      updateOptions = options
+      return { agent: updatedAgent, session: updatedSession }
+    },
+  }, ["provider", "agent-1", "claude-headless"], "provider")
+
+  assert.deepEqual(updateOptions, { provider: "claude-headless" })
+  assert.equal(appliedSession, updatedSession)
+})
+
+test("agent model command updates the targeted agent profile", async () => {
+  const currentAgent = agent()
+  const updatedAgent = agent({ model: "gpt-5.4" })
+  let updateOptions: Record<string, unknown> | null = null
+  let panesRefreshed = false
+
+  await handleAgentProfileCommand({
+    ...deps(currentAgent),
+    refreshAgentPanes: async () => { panesRefreshed = true },
+    updateAgentProfile: async (_sessionId, _agentId, options) => {
+      updateOptions = options
+      return { agent: updatedAgent, session: session({ agents: [updatedAgent] }) }
+    },
+  }, ["model", "agent-1", "gpt-5.4"], "model")
+
+  assert.deepEqual(updateOptions, { model: "gpt-5.4" })
+  assert.equal(panesRefreshed, true)
+})
+
 function deps(currentAgent: AgentInstance) {
   const currentSession = session({ agents: [currentAgent] })
   return {

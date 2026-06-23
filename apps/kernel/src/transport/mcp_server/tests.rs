@@ -13,6 +13,27 @@ use crate::{DaemonApp, DaemonConfig};
 
 use super::handle_json_rpc_value;
 
+fn run_mcp_server_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
+where
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(64 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("mcp server test runtime should build")
+                .block_on(test());
+        })
+        .expect("mcp server test thread should spawn")
+        .join()
+        .expect("mcp server test thread should not panic");
+}
+
 #[tokio::test]
 async fn mcp_initialize_and_tools_list_return_runtime_tools() {
     let app = Arc::new(Mutex::new(
@@ -85,46 +106,33 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "workflow_console_clear"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "arroba.read_artifact"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "arroba.edit_artifact"));
-    assert!(tools.iter().any(|tool| tool["name"] == "patch_artifact"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "arroba.delete_artifact"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "arroba.move_artifact"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "arroba.write_artifact"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "arroba.list_extensions"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "arroba.request_extension"));
     assert!(!tools.iter().any(|tool| tool["name"] == "list_extensions"));
     assert!(!tools.iter().any(|tool| tool["name"] == "request_extension"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "arroba.list_credential_handles"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "list_credential_handles"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "arroba.http_request_with_credential"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "http_request_with_credential"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "arroba.send_secret_to_terminal"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "send_secret_to_terminal"));
     assert!(!tools
@@ -493,8 +501,15 @@ async fn mcp_http_tools_call_acknowledges_active_workflow_turn() {
     );
 }
 
-#[tokio::test]
-async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact() {
+#[test]
+fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact() {
+    run_mcp_server_large_stack_test(
+        "mcp-http-tools-call-reads-and-edits-workspace-live-sync-artifact",
+        mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner,
+    );
+}
+
+async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner() {
     let root = std::env::temp_dir().join(format!(
         "arroba-workspace-live-sync-mcp-test-{}",
         std::time::SystemTime::now()

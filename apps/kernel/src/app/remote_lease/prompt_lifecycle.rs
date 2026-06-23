@@ -151,6 +151,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &prompt,
             materialized_attachments,
         )?;
+        if matches!(outcome, PromptSubmissionOutcome::Started { .. }) {
+            crate::transport::flow_control::note_prompt_started(self.app, &provider_run_id);
+        }
         if let Some(context) = workflow_context {
             self.app.leased_workflow_turns.insert(
                 provider_run_id.clone(),

@@ -33,22 +33,46 @@ impl KernelRuntimeState {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), owned.session_snapshot(&session_id).ok()),
                 };
+                let dev_stub_workflow_run_id = match &outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        ..
+                    } if self.workflow_dispatches_start_only_dev_stub_providers(&dispatches) => {
+                        Some(workflow_run.id().to_string())
+                    }
+                    _ => None,
+                };
                 self.spawn_workflow_prompt_dispatches(dispatches);
+                let refreshed_workflow_run = match dev_stub_workflow_run_id.as_deref() {
+                    Some(workflow_run_id) => {
+                        self.wait_for_dev_stub_workflow_run_start(
+                            &request.session_id,
+                            workflow_run_id,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
                 let session = match owned.session_snapshot(&request.session_id) {
                     Ok(session) => session,
                     Err(error) => return (Err(error), None),
                 };
                 match outcome {
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
-                        workflow_run,
+                        mut workflow_run,
                         workflow,
                         endpoint,
-                    } => Ok(LocalDaemonResponse::WorkflowRunInvoked {
-                        workflow_run,
-                        workflow,
-                        endpoint,
-                        session,
-                    }),
+                    } => {
+                        if let Some(refreshed) = refreshed_workflow_run {
+                            workflow_run = refreshed;
+                        }
+                        Ok(LocalDaemonResponse::WorkflowRunInvoked {
+                            workflow_run,
+                            workflow,
+                            endpoint,
+                            session,
+                        })
+                    }
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
                         queued_prompt,
                         workflow,
@@ -69,6 +93,44 @@ impl KernelRuntimeState {
             .and_then(workflow_response_session)
             .or_else(|| owned.session_snapshot(&session_id).ok());
         (result, session)
+    }
+
+    fn workflow_dispatches_start_only_dev_stub_providers(
+        &self,
+        dispatches: &WorkflowPromptDispatches,
+    ) -> bool {
+        !dispatches.starting_provider_runs.is_empty()
+            && dispatches.starting_provider_runs.iter().all(|run_id| {
+                self.owned
+                    .provider_store
+                    .get_run(run_id)
+                    .is_ok_and(|run| run.adapter_key() == "dev-stub")
+            })
+    }
+
+    async fn wait_for_dev_stub_workflow_run_start(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Option<crate::session::WorkflowRun> {
+        for _ in 0..50 {
+            if let Ok(workflow_run) = self
+                .owned
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(session_id, workflow_run_id)
+            {
+                if workflow_run.status() == crate::session::WorkflowRunStatus::Running {
+                    return Some(workflow_run);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        self.owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .ok()
     }
 
     pub(super) fn execute_workflow_cancel_run_request(

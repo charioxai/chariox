@@ -97,20 +97,6 @@ impl ProviderResumeState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExternalProviderImportMode {
-    #[default]
-    ObservedHistory,
-    ResumeOnly,
-}
-
-impl ExternalProviderImportMode {
-    pub fn is_observed_history(&self) -> bool {
-        matches!(self, Self::ObservedHistory)
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalProviderObservedCursor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,8 +132,6 @@ pub struct ExternalProviderImportMetadata {
     pub external_provider_session_id: String,
     pub external_provider: String,
     pub external_provider_session_provider_id: String,
-    #[serde(default)]
-    pub import_mode: ExternalProviderImportMode,
     #[serde(
         default,
         skip_serializing_if = "ExternalProviderObservedCursor::is_empty"
@@ -170,7 +154,6 @@ impl ExternalProviderImportMetadata {
             external_provider_session_id: external_provider_session_id.into(),
             external_provider: external_provider.into(),
             external_provider_session_provider_id: external_provider_session_provider_id.into(),
-            import_mode: ExternalProviderImportMode::ObservedHistory,
             observed_cursor: ExternalProviderObservedCursor::default(),
             last_observed_turn_id: None,
             last_observed_at_ms: None,

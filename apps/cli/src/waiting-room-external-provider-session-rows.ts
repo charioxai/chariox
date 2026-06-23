@@ -19,7 +19,7 @@ export function waitingRoomExternalProviderSessionRows(
   if (sessions.length === 0 && options.inventoryLoading) {
     return [{
       id: "external-provider-sessions-loading",
-      title: "Orphan agents",
+      title: "Unattached agents",
       value: options.loadingText,
       titleWidth: options.titleWidth,
       indent: 1,
@@ -41,7 +41,7 @@ export function waitingRoomExternalProviderSessionRows(
   )
   const rows: WaitingRoomRow[] = [{
     id: "external-provider-session-header",
-    title: "Orphan agent",
+    title: "Unattached agent",
     value: "",
     titleWidth: options.titleWidth,
     columns: [
@@ -74,7 +74,7 @@ export function waitingRoomExternalProviderSessionRows(
   if (remote.externalProviderSessionsHasMore) {
     rows.push({
       id: "external-provider-session-more",
-      title: "Load older orphan agents",
+      title: "Load older unattached agents",
       value: "",
       titleWidth: options.titleWidth,
       indent: 1,
@@ -102,10 +102,7 @@ function formatTitle(session: ExternalProviderSessionRecord) {
 }
 
 function formatMode(session: ExternalProviderSessionRecord) {
-  if (session.already_imported) {
-    return "Imported"
-  }
-  return (session.mode ?? "observed").replace(/_/g, " ")
+  return "observed"
 }
 
 function formatTimestamp(value: number | null | undefined) {

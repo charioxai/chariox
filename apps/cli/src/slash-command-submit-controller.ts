@@ -28,6 +28,8 @@ export type SlashCommandSubmitControllerDeps = {
   handleModelCommand: (command: SlashCommand<"model">) => Promise<unknown> | unknown
   handleVariantCommand: (command: SlashCommand<"variant">) => Promise<unknown> | unknown
   handleViewCommand: (command: SlashCommand<"view">) => Promise<unknown> | unknown
+  handleUndoCommand: (command: SlashCommand<"undo">) => Promise<unknown> | unknown
+  handleForkCommand: (command: SlashCommand<"fork">) => Promise<unknown> | unknown
   handleAgentCommand: (command: SlashCommand<"agent">) => Promise<unknown> | unknown
   handleKernelCommand: (command: SlashCommand<"kernel">) => Promise<unknown> | unknown
   handleMachineCommand: (command: SlashCommand<"machine">) => Promise<unknown> | unknown
@@ -121,6 +123,8 @@ export function createSlashCommandSubmitController(
         onModel: (command) => runWithFooterError(deps.handleModelCommand, command),
         onVariant: (command) => runWithFooterError(deps.handleVariantCommand, command),
         onView: (command) => runWithFooterError(deps.handleViewCommand, command),
+        onUndo: (command) => runWithFooterError(deps.handleUndoCommand, command),
+        onFork: (command) => runWithFooterError(deps.handleForkCommand, command),
         onAgent: (command) => runWithFooterError(deps.handleAgentCommand, command),
         onKernel: (command) => runWithFooterError(deps.handleKernelCommand, command),
         onMachine: (command) => runWithFooterError(deps.handleMachineCommand, command),

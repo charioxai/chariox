@@ -82,7 +82,15 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request() {
 
 #[test]
 fn local_request_api_accepts_managed_workspace_live_sync_config_policy() {
-    let harness = LocalRouterTestHarness::new();
+    let mut config = DaemonConfig::for_tests();
+    config.user_config_path = std::env::temp_dir().join(format!(
+        "arroba-tests/user-config-workspace-live-sync-{}.toml",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos()
+    ));
+    let harness = LocalRouterTestHarness::with_config(config);
 
     let updated = match harness
         .dispatch(LocalDaemonRequest::SetUserConfigValue(

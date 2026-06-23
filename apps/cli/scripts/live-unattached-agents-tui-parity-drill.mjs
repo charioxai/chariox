@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import net from "node:net"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -243,7 +244,7 @@ async function seedCodexSession(home, id, title, marker, workspace) {
 }
 
 async function seedClaudeSession(home, id, title, marker, workspace) {
-  const file = path.join(home, "projects", "orphan-tui", `${id}.jsonl`)
+  const file = path.join(home, "projects", "unattached-tui", `${id}.jsonl`)
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, [
     JSON.stringify({
@@ -375,9 +376,9 @@ async function renderTerminalScreenshot(artifactsDir, fileName, title, lines) {
 
 async function main() {
   const stamp = nowStamp()
-  const marker = `ARROBA_ORPHAN_TUI_${stamp}_${process.pid}`
-  const artifactRoot = path.join(repoRoot, ".artifacts", "orphan-agents-tui-parity", stamp)
-  const runtimeRoot = path.join(os.tmpdir(), `arroba-orphan-tui-${process.pid}-${Date.now()}`)
+  const marker = `ARROBA_UNATTACHED_TUI_${stamp}_${process.pid}`
+  const artifactRoot = path.join(repoRoot, ".artifacts", "unattached-agents-tui-parity", stamp)
+  const runtimeRoot = path.join(os.tmpdir(), `arroba-unattached-tui-${process.pid}-${Date.now()}`)
   const workspace = repoRoot
   const automationSocket = path.join(runtimeRoot, "automation.sock")
   const ports = makePorts()
@@ -388,7 +389,7 @@ async function main() {
   const waitingProviderSessionId = `opencode-waiting-${marker}`
   const attachProviderSessionId = `opencode-attach-${marker}`
   const codexProviderSessionId = `codex-attach-${marker}`
-  const claudeProviderSessionId = `claude-attach-${marker}`
+  const claudeProviderSessionId = randomUUID()
   const waitingExternalSessionId = `opencode:${waitingProviderSessionId}`
   const attachExternalSessionId = `opencode:${attachProviderSessionId}`
   const codexExternalSessionId = `codex:${codexProviderSessionId}`
@@ -407,10 +408,10 @@ async function main() {
     await prepareDrillArtifacts(artifactRoot)
     await mkdir(runtimeRoot, { recursive: true })
     const { kernelBinary, cliDist } = await ensureBuilt()
-    const waitingFile = await seedOpenCodeSession(opencodeHome, waitingProviderSessionId, "OpenCode waiting-room orphan", marker, workspace)
-    const attachFile = await seedOpenCodeSession(opencodeHome, attachProviderSessionId, "OpenCode attach orphan", marker, workspace)
-    const codexFile = await seedCodexSession(codexHome, codexProviderSessionId, "Codex attach orphan", marker, workspace)
-    const claudeFile = await seedClaudeSession(claudeHome, claudeProviderSessionId, "Claude attach orphan", marker, workspace)
+    const waitingFile = await seedOpenCodeSession(opencodeHome, waitingProviderSessionId, "OpenCode waiting-room external", marker, workspace)
+    const attachFile = await seedOpenCodeSession(opencodeHome, attachProviderSessionId, "OpenCode attach external", marker, workspace)
+    const codexFile = await seedCodexSession(codexHome, codexProviderSessionId, "Codex attach external", marker, workspace)
+    const claudeFile = await seedClaudeSession(claudeHome, claudeProviderSessionId, "Claude attach external", marker, workspace)
     assert.ok(waitingFile && attachFile && codexFile && claudeFile)
 
     const env = {
@@ -425,7 +426,7 @@ async function main() {
       ARROBA_MCP_PORT: String(ports.mcpPort),
       ARROBA_OPENCODE_PORT: String(ports.opencodePort),
       ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `orphan-tui-drill-${process.pid}`,
+      ARROBA_DAEMON_ID: `unattached-tui-drill-${process.pid}`,
       ARROBA_DAEMON_SOCKET: path.join(runtimeRoot, "daemon.sock"),
       ARROBA_SESSION_HISTORY_DIR: path.join(runtimeRoot, "history"),
     }
@@ -459,7 +460,7 @@ async function main() {
         && publicIds.includes(attachExternalSessionId)
         && publicIds.includes(codexExternalSessionId)
         && publicIds.includes(claudeExternalSessionId),
-      `kernel waiting-room public snapshot did not include refreshed orphan agents: ${publicIds.join(", ")}`,
+      `kernel waiting-room public snapshot did not include refreshed unattached agents: ${publicIds.join(", ")}`,
     )
 
     const cliArgs = [
@@ -474,8 +475,8 @@ async function main() {
       "--workspace", workspace,
       "--worktree", workspace,
       "--provider", "dev-stub",
-      "--model", "orphan-tui-drill-model",
-      "--client-id", `orphan-tui-drill-${process.pid}`,
+      "--model", "unattached-tui-drill-model",
+      "--client-id", `unattached-tui-drill-${process.pid}`,
     ]
     cli = spawn("script", cliArgs, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] })
     cli.stdout.on("data", (chunk) => { cliStdout += chunk.toString() })
@@ -504,10 +505,10 @@ async function main() {
           && rows.some((row) => row.externalSessionId === codexExternalSessionId)
           && rows.some((row) => row.externalSessionId === claudeExternalSessionId)
       },
-      "detached TUI waiting room orphan rows",
+      "detached TUI waiting room external rows",
       60_000,
     )
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "01-tui-waiting-room-orphan-agents.png", "TUI Waiting Room Orphan Agents", [
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "01-tui-waiting-room-external-agents.png", "TUI Waiting Room External Agents", [
       `PASS waiting-room row visible: ${waitingExternalSessionId}`,
       `PASS attach row visible: ${attachExternalSessionId}`,
       `PASS codex row visible: ${codexExternalSessionId}`,
@@ -515,65 +516,65 @@ async function main() {
       `rows=${(waitingRoomSnapshot.waitingRoom?.rows ?? []).filter((row) => row.externalSessionId).map((row) => row.externalSessionId).join(", ")}`,
     ])))
 
-    const importedSnapshot = await automation.send("activate_orphan_agent", { externalSessionId: waitingExternalSessionId })
+    const importedSnapshot = await automation.send("activate_unattached_agent", { externalSessionId: waitingExternalSessionId })
     const waitingSessionId = importedSnapshot?.session?.id
-    assert.ok(waitingSessionId, "TUI should attach to a new session after activating an orphan agent")
+    assert.ok(waitingSessionId, "TUI should attach to a new session after activating an unattached agent")
     await waitForSnapshot(
       automation,
-      (snapshot) => entriesForText(snapshot, `OpenCode waiting-room orphan observed reply ${marker}.`).length > 0,
-      "waiting-room imported orphan history",
+      (snapshot) => entriesForText(snapshot, `OpenCode waiting-room external observed reply ${marker}.`).length > 0,
+      "waiting-room imported external history",
       60_000,
     )
     let waitingSession = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
     const waitingAgent = agentForExternal(waitingSession, waitingExternalSessionId)
     assert.ok(waitingAgent, "waiting-room imported session should include external-provider import metadata")
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "02-tui-waiting-room-orphan-imported.png", "TUI Orphan Imported As Session", [
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "02-tui-waiting-room-external-imported.png", "TUI External Imported As Session", [
       `PASS session=${waitingSessionId}`,
       `PASS imported agent=${waitingAgent.id}`,
       `PASS external import=${waitingExternalSessionId}`,
       `PASS observed history visible in TUI snapshot`,
     ])))
 
-    await automation.send("submit_prompt", { prompt: `/agent spawn --orphan-agent ${attachExternalSessionId}` })
+    await automation.send("submit_prompt", { prompt: `/agent spawn --unattached-agent ${attachExternalSessionId}` })
     const attachedSnapshot = await waitForSnapshot(
       automation,
       (snapshot) => Number(snapshot?.session?.agentCount ?? 0) >= 2
-        && entriesForText(snapshot, `OpenCode attach orphan observed reply ${marker}.`).length > 0,
-      "attached orphan agent through TUI slash command",
+        && entriesForText(snapshot, `OpenCode attach external observed reply ${marker}.`).length > 0,
+      "attached agent through TUI slash command",
       60_000,
     )
     waitingSession = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
     const attachAgent = agentForExternal(waitingSession, attachExternalSessionId)
-    assert.ok(attachAgent, "spawned orphan should attach to the existing Arroba session")
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "03-tui-spawn-orphan-agent.png", "TUI Spawn Orphan Agent", [
+    assert.ok(attachAgent, "spawned unattached agent should attach to the existing Arroba session")
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "03-tui-spawn-external-agent.png", "TUI Spawn External Agent", [
       `PASS session agent count=${attachedSnapshot.session?.agentCount}`,
       `PASS attached agent=${attachAgent.id}`,
       `PASS external import=${attachExternalSessionId}`,
       `PASS observed attach history visible`,
     ])))
 
-    await automation.send("submit_prompt", { prompt: `/agent spawn --orphan-agent ${codexExternalSessionId}` })
+    await automation.send("submit_prompt", { prompt: `/agent spawn --unattached-agent ${codexExternalSessionId}` })
     await waitForSnapshot(
       automation,
       (snapshot) => Number(snapshot?.session?.agentCount ?? 0) >= 3
-        && entriesForText(snapshot, `Codex attach orphan observed reply ${marker}.`).length > 0,
-      "attached Codex orphan agent through TUI slash command",
+        && entriesForText(snapshot, `Codex attach external observed reply ${marker}.`).length > 0,
+      "attached Codex agent through TUI slash command",
       60_000,
     )
-    await automation.send("submit_prompt", { prompt: `/agent spawn --orphan-agent ${claudeExternalSessionId}` })
+    await automation.send("submit_prompt", { prompt: `/agent spawn --unattached-agent ${claudeExternalSessionId}` })
     const providerMatrixAttachedSnapshot = await waitForSnapshot(
       automation,
       (snapshot) => Number(snapshot?.session?.agentCount ?? 0) >= 4
-        && entriesForText(snapshot, `Claude attach orphan observed reply ${marker}.`).length > 0,
-      "attached Claude orphan agent through TUI slash command",
+        && entriesForText(snapshot, `Claude attach external observed reply ${marker}.`).length > 0,
+      "attached Claude agent through TUI slash command",
       60_000,
     )
     waitingSession = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
     const codexAgent = agentForExternal(waitingSession, codexExternalSessionId)
     const claudeAgent = agentForExternal(waitingSession, claudeExternalSessionId)
-    assert.ok(codexAgent, "Codex orphan should attach to the existing Arroba session")
-    assert.ok(claudeAgent, "Claude orphan should attach to the existing Arroba session")
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "04-tui-provider-matrix-orphans-attached.png", "TUI Provider Matrix Orphans Attached", [
+    assert.ok(codexAgent, "Codex unattached agent should attach to the existing Arroba session")
+    assert.ok(claudeAgent, "Claude unattached agent should attach to the existing Arroba session")
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "04-tui-provider-matrix-external-agents-attached.png", "TUI Provider Matrix External Agents Attached", [
       `PASS session agent count=${providerMatrixAttachedSnapshot.session?.agentCount}`,
       `PASS opencode agent=${attachAgent.id}`,
       `PASS codex agent=${codexAgent.id}`,
@@ -606,26 +607,12 @@ async function main() {
       return active?.prompt_origin === "external" && String(active.id ?? "").includes(userTurn.providerTurnId)
         ? active
         : false
-    }, "kernel external active prompt for TUI attached orphan", 30_000)
+    }, "kernel external active prompt for TUI attached agent", 30_000)
     evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "05-tui-opencode-external-live-metadata.png", "TUI OpenCode External Turn Metadata", [
       `PASS source=external_provider_observed`,
       `PASS provider=opencode`,
       `PASS providerTurnId=${userTurn.providerTurnId}`,
       `PASS observedAtMs=${entriesForText(userMetadataSnapshot, userTurn.text)[0]?.observedAtMs ?? "recorded"}`,
-    ])))
-
-    const queuedPromptText = `arroba prompt queued behind external TUI turn ${marker}`
-    await automation.send("submit_prompt", { prompt: queuedPromptText })
-    const queuedSnapshot = await waitForSnapshot(
-      automation,
-      (snapshot) => hasQueuedPromptSteerDisabled(snapshot),
-      "TUI queued prompt with steering disabled",
-      30_000,
-    )
-    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "06-tui-external-active-queued-steer-disabled.png", "TUI External Active Queue Guard", [
-      `PASS queued prompt=${queuedPromptText}`,
-      `PASS queuedPrompt.steerDisabled=true`,
-      `PASS queued entries=${allTranscriptEntries(queuedSnapshot).filter((entry) => entry?.queuedPrompt).length}`,
     ])))
 
     const assistantTurn = await appendOpenCodeTurn(
@@ -641,6 +628,49 @@ async function main() {
       "external assistant turn metadata in TUI",
       30_000,
     )
+
+    const queuedGuardUserTurn = await appendOpenCodeTurn(
+      attachFile,
+      "opencode-user-3",
+      "user",
+      `opencode external prompt queues arroba input in TUI ${marker}`,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
+    await waitForCondition(async () => {
+      const session = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
+      const active = promptStateForAgent(session, attachAgent.id)?.active_prompt
+      return active?.prompt_origin === "external" && String(active.id ?? "").includes(queuedGuardUserTurn.providerTurnId)
+        ? active
+        : false
+    }, "kernel external active prompt for TUI queue guard", 30_000)
+
+    const queuedPromptText = `arroba prompt queued behind external TUI turn ${marker}`
+    await automation.send("submit_prompt", { prompt: queuedPromptText })
+    const queuedSnapshot = await waitForSnapshot(
+      automation,
+      (snapshot) => hasQueuedPromptSteerDisabled(snapshot),
+      "TUI queued prompt with steering disabled",
+      30_000,
+    )
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "06-tui-external-active-queued-steer-disabled.png", "TUI External Active Queue Guard", [
+      `PASS queued prompt=${queuedPromptText}`,
+      `PASS queuedPrompt.steerDisabled=true`,
+      `PASS queued entries=${allTranscriptEntries(queuedSnapshot).filter((entry) => entry?.queuedPrompt).length}`,
+    ])))
+
+    const settlingAssistantTurn = await appendOpenCodeTurn(
+      attachFile,
+      "opencode-assistant-3",
+      "assistant",
+      `opencode external output releases queued prompt in TUI ${marker}`,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
+    await waitForSnapshot(
+      automation,
+      (snapshot) => entriesForText(snapshot, settlingAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "opencode", settlingAssistantTurn.providerTurnId),
+      "external assistant settling turn metadata in TUI",
+      30_000,
+    )
     await waitForCondition(async () => {
       const session = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
       const state = promptStateForAgent(session, attachAgent.id)
@@ -652,7 +682,7 @@ async function main() {
     }, "TUI queued prompt drained after external turn settled", 60_000)
     const finalSnapshot = await automation.send("snapshot")
     evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "07-tui-opencode-external-output-queue-drained.png", "TUI OpenCode External Output And Queue Drain", [
-      `PASS providerTurnId=${assistantTurn.providerTurnId}`,
+      `PASS providerTurnId=${settlingAssistantTurn.providerTurnId}`,
       `PASS external assistant output visible`,
       `PASS queued prompt drained`,
       `PASS total transcript entries=${allTranscriptEntries(finalSnapshot).length}`,
@@ -732,7 +762,7 @@ async function main() {
 
     const manifest = {
       ok: true,
-      drill: "orphan-agents-tui-parity",
+      drill: "unattached-agents-tui-parity",
       marker,
       kernelUrl,
       waitingExternalSessionId,
@@ -765,7 +795,7 @@ async function main() {
         preserveOnFailure: true,
         failure,
         metadata: {
-          drill: "orphan-agents-tui-parity",
+          drill: "unattached-agents-tui-parity",
           marker,
           kernelUrl,
           runtimeRoot,

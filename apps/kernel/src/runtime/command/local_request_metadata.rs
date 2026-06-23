@@ -241,6 +241,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::SpawnAgent(request) => {
             LocalRequestMetadata::new("agent.spawn", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::UndoTurn(request) => {
+            LocalRequestMetadata::new("turn.undo", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::ForkAgent(request) => {
+            LocalRequestMetadata::new("agent.fork", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::DestroyAgent(request) => {
             LocalRequestMetadata::new("agent.destroy", Interactive)
                 .session(&request.session_id)
@@ -472,9 +478,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ImportExternalProviderAgent(_) => {
             "external_provider_session.import_agent"
         }
-        LocalDaemonRequest::WatchExternalProviderSessionStatus(_) => {
-            "external_provider_session.watch_status"
-        }
         LocalDaemonRequest::SearchWorkspaceDirectories(_) => "workspace.directory.search",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
         LocalDaemonRequest::ListWorkspaceWorktrees(_) => "workspace.worktree.list",
@@ -534,6 +537,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
         LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
+        LocalDaemonRequest::UndoTurn(_) => "turn.undo",
+        LocalDaemonRequest::ForkAgent(_) => "agent.fork",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::MoveAgentToLocal(_) => "agent.move_local",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",

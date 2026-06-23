@@ -351,6 +351,7 @@ impl<'a> KernelAgentService<'a> {
             &prompt_activity,
             &active_turns,
             None,
+            |_| None,
         );
         self.app
             .agents

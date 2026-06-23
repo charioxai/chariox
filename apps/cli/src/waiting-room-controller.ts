@@ -274,7 +274,7 @@ export function deriveWaitingRoomActivationDecision(options: {
   if (options.state.focus === "external-session") {
     clearStagedWaitingRoomWorktreeSelection()
     if (!choice.externalProviderSession) {
-      return { action: "error", message: "no orphan agent available to open" }
+      return { action: "error", message: "no unattached agent available to open" }
     }
     return {
       action: "import-external-session",

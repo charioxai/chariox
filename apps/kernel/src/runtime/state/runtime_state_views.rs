@@ -45,6 +45,11 @@ impl KernelRuntimeState {
             &prompt_activity,
             &active_turns,
             None,
+            |agent_id| {
+                self.owned
+                    .completed_git_turn_snapshots
+                    .latest_projection_for_agent(session.id(), agent_id)
+            },
         )
     }
 

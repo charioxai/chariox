@@ -48,6 +48,8 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onModel: (command) => calls.push(`model:${command.value}`),
     onVariant: (command) => calls.push(`variant:${command.value}`),
     onView: (command) => calls.push(`view:${command.value}`),
+    onUndo: (command) => calls.push(`undo:${command.args.join(" ")}`),
+    onFork: (command) => calls.push(`fork:${command.args.join(" ")}`),
     onAgent: (command) => calls.push(`agent:${command.args.join(" ")}`),
     onKernel: (command) => calls.push(`kernel:${command.args.join(" ")}`),
     onMachine: (command) => calls.push(`machine:${command.args.join(" ")}`),

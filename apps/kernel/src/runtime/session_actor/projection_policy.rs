@@ -44,6 +44,7 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::AgentAliased { session, .. }
         | LocalDaemonResponse::AgentConfigUpdated { session, .. }
         | LocalDaemonResponse::AgentProfileUpdated { session, .. }
+        | LocalDaemonResponse::AgentForked { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session } => {
@@ -184,6 +185,8 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,
         LocalDaemonRequest::AliasSession(request) => &request.session_id,
         LocalDaemonRequest::AliasAgent(request) => &request.session_id,
+        LocalDaemonRequest::UndoTurn(request) => &request.session_id,
+        LocalDaemonRequest::ForkAgent(request) => &request.session_id,
         LocalDaemonRequest::UpdateAgentProfile(request) => &request.session_id,
         LocalDaemonRequest::EndSession(request) => &request.session_id,
         _ => return None,
@@ -234,6 +237,8 @@ pub(super) fn session_id_for_projection_refresh(
         | Ok(LocalDaemonResponse::AgentConfigUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentProfileUpdated { agent, .. })
         | Ok(LocalDaemonResponse::AgentDestroyed { agent }) => Some(agent.session_id().to_string()),
+        Ok(LocalDaemonResponse::TurnUndone { result }) => Some(result.session_id.clone()),
+        Ok(LocalDaemonResponse::AgentForked { session, .. }) => Some(session.id().to_string()),
         Ok(LocalDaemonResponse::AgentFocusCycled { agent: Some(agent) }) => {
             Some(agent.session_id().to_string())
         }

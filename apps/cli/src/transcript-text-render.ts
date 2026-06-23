@@ -12,7 +12,6 @@ import { transcriptInlineCodeColor } from "./transcript-render-theme.js"
 
 export function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
   text.clear()
-  appendExternalProviderObservedLabel(text, entry)
   if (entry.role === "tool") {
     applyToolTranscriptTextContent(text, entry)
     return
@@ -22,31 +21,6 @@ export function applyTranscriptTextContent(text: TextRenderable, entry: Transcri
     return
   }
   appendTranscriptSpans(text, entry, entry.text)
-}
-
-function appendExternalProviderObservedLabel(text: TextRenderable, entry: TranscriptEntry) {
-  if (entry.source !== "external_provider_observed") {
-    return
-  }
-  const provider = entry.externalProvider?.trim() || "provider"
-  const metadata = [
-    "external",
-    provider,
-    entry.externalProviderSessionId ? `session=${entry.externalProviderSessionId}` : null,
-    entry.externalProviderTurnId ? `turn=${entry.externalProviderTurnId}` : null,
-    typeof entry.observedAtMs === "number" ? `observed=${formatObservedAt(entry.observedAtMs)}` : null,
-  ].filter(Boolean)
-  text.add(TextNodeRenderable.fromString(`[${metadata.join(" ")}] `, {
-    fg: theme.secondary,
-    attributes: TextAttributes.BOLD,
-  }))
-}
-
-function formatObservedAt(value: number): string {
-  if (!Number.isFinite(value)) {
-    return "unknown"
-  }
-  return new Date(value).toISOString()
 }
 
 function applyPromptTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {

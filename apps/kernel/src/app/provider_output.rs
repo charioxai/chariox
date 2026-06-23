@@ -942,6 +942,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         self.persist_resolved_resume_state(&provider_run, &poll_result)?;
+        self.mark_resolved_external_provider_session_attached(&provider_run);
         self.app
             .update_provider_run_projection(provider_run.clone());
         let terminal_sink = ProviderOutputFanout::new(self.app);
@@ -1101,6 +1102,28 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let _ = crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(provider_run.session_id())?;
         Ok(())
+    }
+
+    fn mark_resolved_external_provider_session_attached(&self, provider_run: &RuntimeProviderRun) {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return;
+        };
+        mark_resume_state_external_provider_sessions_attached(
+            &self.app.external_provider_sessions,
+            provider_run.resume_state(),
+            provider_run.session_id(),
+            agent_id,
+        );
+        if let Some(provider_session_id) = provider_run.provider_session_id() {
+            self.app
+                .external_provider_sessions
+                .mark_provider_session_attached(
+                    provider_run.adapter_key(),
+                    provider_session_id,
+                    provider_run.session_id(),
+                    agent_id,
+                );
+        }
     }
 
     fn trace_structured_poll_batch(
@@ -1272,6 +1295,24 @@ impl<'a> ProviderOutputPumpContext<'a> {
             recipient_attachment_ids,
             bytes,
         )
+    }
+}
+
+pub(crate) fn mark_resume_state_external_provider_sessions_attached(
+    store: &crate::app::ExternalProviderSessionIndexStore,
+    resume_state: &crate::provider::ProviderResumeState,
+    session_id: &str,
+    agent_id: &str,
+) {
+    for (provider, provider_session_id) in [
+        ("codex", resume_state.codex_thread_id()),
+        ("opencode", resume_state.opencode_session_id()),
+        ("claude", resume_state.claude_session_id()),
+    ] {
+        let Some(provider_session_id) = provider_session_id else {
+            continue;
+        };
+        store.mark_provider_session_attached(provider, provider_session_id, session_id, agent_id);
     }
 }
 

@@ -452,8 +452,7 @@ fn deleted_sessions_cannot_be_reattached() {
 fn terminal_flow_writes_input_resizes_and_fans_out_output() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
-    let session = app
-        .sessions_mut()
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
 
@@ -473,21 +472,31 @@ fn terminal_flow_writes_input_resizes_and_fans_out_output() {
         .expect("observer should attach");
 
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "dev-stub",
-            "claude-code",
-            "default",
-            "sonnet",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
         .expect("provider run should launch");
 
     crate::app::KernelSessionService::new(&mut app)
         .resize_terminal(session.id(), 90, 24)
         .expect("terminal resize should succeed");
-    crate::app::terminal_input::ProviderTerminalInput::new(&mut app)
-        .send_provider_input(session.id(), run.id(), source.id(), b"fanout test\n")
+    let outcome = app
+        .submit_prompt(
+            session.id(),
+            source.id(),
+            Some(agent.id()),
+            "fanout test\n",
+            Vec::new(),
+        )
         .expect("attachment input should reach provider PTY");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
 
     let records = wait_for_terminal_output(&mut app, session.id(), source.id());
 
@@ -496,13 +505,15 @@ fn terminal_flow_writes_input_resizes_and_fans_out_output() {
     assert!(records
         .iter()
         .all(|record| record.provider_run_id == run.id()));
-    assert!(records.iter().all(|record| {
+    let provider_records = records
+        .iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderOutput)
+        .collect::<Vec<_>>();
+    assert!(!provider_records.is_empty());
+    assert!(provider_records.iter().all(|record| {
         record
             .recipient_attachment_ids
             .contains(&source.id().to_string())
-            && record
-                .recipient_attachment_ids
-                .contains(&observer.id().to_string())
     }));
     let combined = records
         .into_iter()
@@ -510,6 +521,16 @@ fn terminal_flow_writes_input_resizes_and_fans_out_output() {
         .collect::<Vec<u8>>();
     let combined = String::from_utf8_lossy(&combined);
     assert!(combined.contains("fanout test"));
+
+    let observer_records = app
+        .terminal()
+        .drain_output_records(session.id(), observer.id());
+    let observer_combined = observer_records
+        .into_iter()
+        .flat_map(|record| record.bytes)
+        .collect::<Vec<u8>>();
+    let observer_combined = String::from_utf8_lossy(&observer_combined);
+    assert!(observer_combined.contains("fanout test"));
 }
 
 #[test]

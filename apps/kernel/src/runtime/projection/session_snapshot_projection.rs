@@ -53,6 +53,8 @@ pub struct AgentRuntimeActivity {
     pub unread_idle_output: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<AgentActiveTurnProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed_turn: Option<crate::git_observer::CompletedGitTurnActionProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +90,7 @@ impl SessionSnapshotProjection {
             &prompt_activity,
             &active_turns,
             None,
+            |_| None,
         );
         Ok(Self {
             metadata: ProjectionMetadata::new(3, last_event_id),
@@ -104,6 +107,10 @@ pub(crate) fn agent_activity_for_session_projection(
     prompt_activity: &BTreeMap<String, ActivePromptState>,
     active_turns: &BTreeMap<String, ActiveTurnState>,
     unread_for_user_id: Option<&str>,
+    completed_turn_for_agent: impl Fn(
+        &str,
+    )
+        -> Option<crate::git_observer::CompletedGitTurnActionProjection>,
 ) -> BTreeMap<String, AgentRuntimeActivity> {
     let mut activity = BTreeMap::new();
 
@@ -194,6 +201,7 @@ pub(crate) fn agent_activity_for_session_projection(
                 status,
                 prompt_status,
                 active_turn,
+                last_completed_turn: completed_turn_for_agent(agent.id()),
             },
         );
     }

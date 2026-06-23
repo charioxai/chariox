@@ -115,7 +115,7 @@ test("automation prompt submit does not relaunch when the session has an active 
   assert.deepEqual(result, { promptText: "hello", submitted: true })
 })
 
-test("automation action handler activates a selected orphan agent", async () => {
+test("automation action handler activates a selected unattached agent", async () => {
   let waitingRoomState: WaitingRoomState = waitingRoomFixture()
   let activated = false
   const handler = createCliAutomationActionHandler({
@@ -137,7 +137,7 @@ test("automation action handler activates a selected orphan agent", async () => 
     }),
   })
 
-  const result = await handler({ action: "activate_orphan_agent", externalSessionId: "codex:second" })
+  const result = await handler({ action: "activate_unattached_agent", externalSessionId: "codex:second" })
 
   assert.equal(activated, true)
   assert.deepEqual(result, {

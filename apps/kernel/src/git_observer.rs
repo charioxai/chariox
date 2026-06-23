@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -28,6 +28,7 @@ pub(crate) struct GitTurnContext {
     pub provider_session_id: Option<String>,
     pub prompt_id: String,
     pub turn_id: String,
+    pub started_at_ms: Option<u64>,
     pub worktree_path: PathBuf,
     pub workspace_live_sync_tracked: bool,
     pub machine_id: Option<String>,
@@ -44,6 +45,8 @@ pub(crate) struct GitTurnSnapshot {
     pub provider_session_id: Option<String>,
     pub prompt_id: String,
     pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
     pub machine_id: Option<String>,
     pub prompt_summary: String,
     pub repo_root: String,
@@ -65,6 +68,155 @@ pub(crate) struct WorkspaceLiveSyncTrackedFileSnapshot {
     pub content_base64: Option<String>,
     #[serde(default)]
     pub binary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CompletedGitTurnSnapshot {
+    pub before: GitTurnSnapshot,
+    pub after: GitTurnSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<WorkspaceLiveSyncChange>,
+    pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub undone: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletedGitTurnActionProjection {
+    pub turn_id: String,
+    pub prompt_id: String,
+    pub provider_run_id: String,
+    pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub undo_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CompletedGitTurnSnapshotStore {
+    inner: Arc<Mutex<BTreeMap<String, VecDeque<CompletedGitTurnSnapshot>>>>,
+}
+
+impl CompletedGitTurnSnapshotStore {
+    const MAX_TURNS_PER_AGENT: usize = 20;
+
+    pub(crate) fn record(&self, snapshot: CompletedGitTurnSnapshot) {
+        let key = completed_turn_agent_key(&snapshot.before.session_id, &snapshot.before.agent_id);
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("completed git turn snapshot mutex poisoned");
+        let turns = guard.entry(key).or_default();
+        turns.retain(|existing| existing.before.turn_id != snapshot.before.turn_id);
+        turns.push_back(snapshot);
+        while turns.len() > Self::MAX_TURNS_PER_AGENT {
+            turns.pop_front();
+        }
+    }
+
+    pub(crate) fn latest_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<CompletedGitTurnSnapshot> {
+        self.inner
+            .lock()
+            .expect("completed git turn snapshot mutex poisoned")
+            .get(&completed_turn_agent_key(session_id, agent_id))
+            .and_then(|turns| turns.back().cloned())
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        turn_ref: Option<&str>,
+    ) -> Option<CompletedGitTurnSnapshot> {
+        let guard = self
+            .inner
+            .lock()
+            .expect("completed git turn snapshot mutex poisoned");
+        let turns = guard.get(&completed_turn_agent_key(session_id, agent_id))?;
+        match turn_ref.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(reference) => turns
+                .iter()
+                .rev()
+                .find(|turn| {
+                    turn.before.turn_id == reference
+                        || turn.before.prompt_id == reference
+                        || turn.before.turn_id.starts_with(reference)
+                        || turn.before.prompt_id.starts_with(reference)
+                })
+                .cloned(),
+            None => turns.back().cloned(),
+        }
+    }
+
+    pub(crate) fn mark_undone(&self, session_id: &str, agent_id: &str, turn_id: &str) {
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("completed git turn snapshot mutex poisoned");
+        if let Some(turns) = guard.get_mut(&completed_turn_agent_key(session_id, agent_id)) {
+            if let Some(turn) = turns.iter_mut().find(|turn| turn.before.turn_id == turn_id) {
+                turn.undone = true;
+            }
+        }
+    }
+
+    pub(crate) fn latest_projection_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<CompletedGitTurnActionProjection> {
+        self.latest_for_agent(session_id, agent_id)
+            .map(|turn| turn.action_projection())
+    }
+}
+
+impl CompletedGitTurnSnapshot {
+    pub(crate) fn new(
+        before: GitTurnSnapshot,
+        after: GitTurnSnapshot,
+        change: Option<WorkspaceLiveSyncChange>,
+        completed_at_ms: u64,
+    ) -> Self {
+        let duration_ms = before
+            .started_at_ms
+            .map(|started_at_ms| completed_at_ms.saturating_sub(started_at_ms));
+        Self {
+            before,
+            after,
+            change,
+            completed_at_ms,
+            duration_ms,
+            undone: false,
+        }
+    }
+
+    pub(crate) fn action_projection(&self) -> CompletedGitTurnActionProjection {
+        let undo_unavailable_reason = if self.undone {
+            Some("turn already undone".to_string())
+        } else if self.change.is_none() {
+            Some("turn did not record reversible workspace changes".to_string())
+        } else {
+            None
+        };
+        CompletedGitTurnActionProjection {
+            turn_id: self.before.turn_id.clone(),
+            prompt_id: self.before.prompt_id.clone(),
+            provider_run_id: self.before.provider_run_id.clone(),
+            completed_at_ms: self.completed_at_ms,
+            duration_ms: self.duration_ms,
+            undo_available: undo_unavailable_reason.is_none(),
+            undo_unavailable_reason,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -213,14 +365,10 @@ pub(crate) fn capture_turn_snapshot(context: GitTurnContext) -> Option<GitTurnSn
         .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n");
-    let workspace_live_sync_file_snapshots = if context.workspace_live_sync_tracked {
-        workspace_live_sync_tracked::dirty_file_snapshots(
-            &context.worktree_path,
-            &status_fingerprint,
-        )
-    } else {
-        BTreeMap::new()
-    };
+    let workspace_live_sync_file_snapshots = workspace_live_sync_tracked::dirty_file_snapshots(
+        &context.worktree_path,
+        &status_fingerprint,
+    );
     Some(GitTurnSnapshot {
         session_id: context.session_id,
         agent_id: context.agent_id,
@@ -230,6 +378,7 @@ pub(crate) fn capture_turn_snapshot(context: GitTurnContext) -> Option<GitTurnSn
         provider_session_id: context.provider_session_id,
         prompt_id: context.prompt_id,
         turn_id: context.turn_id,
+        started_at_ms: context.started_at_ms,
         machine_id: context.machine_id,
         prompt_summary: truncate_for_metadata(&context.prompt_summary, 500),
         repo_root,
@@ -335,9 +484,14 @@ pub(crate) fn tracked_workspace_live_sync_change_after_turn(
 }
 
 pub(crate) use workspace_live_sync_apply::apply_workspace_live_sync_change_to_target;
+pub(crate) use workspace_live_sync_apply::apply_workspace_live_sync_undo_to_target;
 
 mod workspace_live_sync_apply;
 mod workspace_live_sync_tracked;
+
+fn completed_turn_agent_key(session_id: &str, agent_id: &str) -> String {
+    format!("{session_id}\n{agent_id}")
+}
 
 pub(crate) fn append_observations(
     history: &OperationalHistoryStore,
@@ -771,6 +925,7 @@ mod tests {
             provider_session_id: Some("provider-session-1".to_string()),
             prompt_id: prompt_id.to_string(),
             turn_id: prompt_id.to_string(),
+            started_at_ms: None,
             worktree_path: root.to_path_buf(),
             workspace_live_sync_tracked: false,
             machine_id: None,
@@ -1707,6 +1862,7 @@ mod tests {
             provider_session_id: Some("provider-session-1".to_string()),
             prompt_id: "prompt-1".to_string(),
             turn_id: "prompt-1".to_string(),
+            started_at_ms: None,
             machine_id: None,
             prompt_summary: "make a searchable feature".to_string(),
             repo_root: "/tmp/repo".to_string(),

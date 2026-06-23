@@ -38,6 +38,31 @@ impl PromptIdAllocator {
         let next = self.next_prompt_number.fetch_add(1, Ordering::SeqCst) + 1;
         format!("prompt-{next}")
     }
+
+    pub(crate) fn observe_prompt_id(&self, prompt_id: &str) {
+        if let Some(number) = prompt_id_number(prompt_id) {
+            self.advance_to_at_least(number);
+        }
+    }
+
+    pub(crate) fn advance_to_at_least(&self, number: u64) {
+        let mut current = self.next_prompt_number.load(Ordering::SeqCst);
+        while current < number {
+            match self.next_prompt_number.compare_exchange(
+                current,
+                number,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+pub(crate) fn prompt_id_number(prompt_id: &str) -> Option<u64> {
+    prompt_id.strip_prefix("prompt-")?.parse::<u64>().ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

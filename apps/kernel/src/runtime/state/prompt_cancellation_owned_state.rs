@@ -123,6 +123,7 @@ impl KernelRuntimeOwnedState {
                     session_id,
                     agent_id,
                     started_next.source_attachment_id(),
+                    &provider_run,
                     started_next.prompt(),
                 );
                 let granted_skill_context =
@@ -147,6 +148,7 @@ impl KernelRuntimeOwnedState {
                     mode,
                     false,
                 )?;
+                self.consume_pending_context_handoff(session_id, agent_id, &provider_run);
                 self.note_prompt_started(provider_run_id);
                 None
             } else {

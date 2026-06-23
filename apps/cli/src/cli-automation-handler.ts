@@ -132,9 +132,9 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         await deps.activateWaitingRoom()
         return deps.snapshot()
       }
-      case "activate_orphan_agent": {
+      case "activate_unattached_agent": {
         if (deps.isAttached()) {
-          throw new Error("cannot activate orphan agent while attached")
+          throw new Error("cannot activate unattached agent while attached")
         }
         const sessions = deps.externalProviderSessionsState()
         const externalSessionId = typeof request.externalSessionId === "string" ? request.externalSessionId : ""
@@ -148,7 +148,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           || candidateIndex < 0
           || candidateIndex >= sessions.length
         ) {
-          throw new Error("usage: activate_orphan_agent externalSessionId=<id> or externalSessionIndex=<index>")
+          throw new Error("usage: activate_unattached_agent externalSessionId=<id> or externalSessionIndex=<index>")
         }
         deps.setWaitingRoomState({
           ...deps.waitingRoomState(),

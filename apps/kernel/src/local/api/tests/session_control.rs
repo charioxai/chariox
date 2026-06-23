@@ -495,6 +495,57 @@ fn local_request_api_spawns_and_focuses_agents() {
 }
 
 #[test]
+fn same_agent_profile_update_keeps_active_provider_run() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-1", "worktree-1"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    let active_run_id = harness.with_app_mut(|app| {
+        app.launch_provider(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "codex", "default", "gpt-5.4")
+                .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should succeed")
+        .id()
+        .to_string()
+    });
+
+    let updated_session = match harness
+        .dispatch(LocalDaemonRequest::UpdateAgentProfile(
+            UpdateAgentProfileRequest {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                provider: Some("codex".to_string()),
+                model: Some("gpt-5.4".to_string()),
+                effort: None,
+                clear_effort: false,
+            },
+        ))
+        .expect("same profile update should succeed")
+    {
+        LocalDaemonResponse::AgentProfileUpdated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    assert_eq!(
+        updated_session.active_provider_run_id(),
+        Some(active_run_id.as_str())
+    );
+    let run = harness.with_app(|app| {
+        app.providers()
+            .get_run(&active_run_id)
+            .expect("active provider run should remain")
+    });
+    assert_eq!(run.state(), crate::provider::ProviderRunState::Running);
+}
+
+#[test]
 fn detaching_one_attachment_keeps_the_session_open_for_others() {
     let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness

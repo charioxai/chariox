@@ -4,8 +4,9 @@ use crate::agent::AgentRole;
 use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
 use crate::local::{
-    AliasAgentRequest, DestroyAgentRequest, LocalDaemonResponse, SpawnAgentRequest,
-    UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
+    AliasAgentRequest, DestroyAgentRequest, ForkAgentRequest, LocalDaemonResponse,
+    SpawnAgentRequest, UndoTurnRequest, UpdateAgentConfigRequest, UpdateAgentProfileRequest,
+    UpdateAgentSubstitutesRequest,
 };
 
 use super::super::projection_policy::SessionProjectionAction;
@@ -329,6 +330,41 @@ impl SessionRuntimeStore {
             }
             Err(error) => Err(error),
         };
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(in crate::runtime::session_actor) async fn undo_turn(
+        &self,
+        request: UndoTurnRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .undo_turn(request, &caller_user_id)
+            .await
+            .map(|result| LocalDaemonResponse::TurnUndone { result });
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(in crate::runtime::session_actor) async fn fork_agent(
+        &self,
+        request: ForkAgentRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self.state.fork_agent(request, caller_user_id).await.map(
+            |(source_agent_id, agent, provider_run, session)| LocalDaemonResponse::AgentForked {
+                source_agent_id,
+                agent,
+                provider_run,
+                session,
+            },
+        );
         self.with_session_projection_action_result(result).await
     }
 

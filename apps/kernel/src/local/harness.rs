@@ -207,12 +207,20 @@ mod tests {
 
     #[test]
     fn local_harness_exercises_managed_session_flow() {
-        let app = DaemonApp::bootstrap(DaemonConfig::for_tests())
-            .expect("daemon bootstrap should succeed");
+        std::thread::Builder::new()
+            .name("local-harness-managed-session-flow".to_string())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+                    .expect("daemon bootstrap should succeed");
 
-        let report = run_local_harness(app).expect("local harness should succeed");
+                let report = run_local_harness(app).expect("local harness should succeed");
 
-        assert!(!report.output_preview.is_empty());
-        assert!(report.output_preview.contains("harness smoke"));
+                assert!(!report.output_preview.is_empty());
+                assert!(report.output_preview.contains("harness smoke"));
+            })
+            .expect("local harness test thread should spawn")
+            .join()
+            .expect("local harness test thread should complete");
     }
 }

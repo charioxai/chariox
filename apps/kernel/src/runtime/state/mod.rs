@@ -15,8 +15,8 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::agent::AgentServiceStore;
 use crate::app::{
-    ActiveTurnStore, DaemonApp, PromptActivityStore, PromptWorkspaceClaimStore,
-    ProviderProcessTrackingStore, WorkflowDesignEventStore,
+    ActiveTurnStore, DaemonApp, ExternalProviderSessionIndexStore, PromptActivityStore,
+    PromptWorkspaceClaimStore, ProviderProcessTrackingStore, WorkflowDesignEventStore,
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
@@ -57,6 +57,7 @@ struct KernelRuntimeOwnedState {
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
     provider_process_tracking: ProviderProcessTrackingStore,
+    external_provider_sessions: ExternalProviderSessionIndexStore,
     slice_store: crate::slice::SliceStore,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -85,6 +86,7 @@ struct KernelRuntimeOwnedState {
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
+    completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal,
     remote_workspace_live_sync_invocations:
         Arc<Mutex<BTreeMap<String, RemoteWorkspaceLiveSyncInvocationState>>>,
@@ -129,6 +131,7 @@ mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
 mod agent_profile_owned_state;
+mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
 mod capability_owned_state;
@@ -247,6 +250,7 @@ impl KernelRuntimeState {
             attachment_store,
             provider_store,
             provider_process_tracking,
+            ExternalProviderSessionIndexStore::default(),
             slice_store,
             session_projection,
             provider_run_projection,
@@ -276,6 +280,7 @@ impl KernelRuntimeState {
         attachment_store: AttachmentServiceStore,
         provider_store: ProviderProcessServiceStore,
         provider_process_tracking: ProviderProcessTrackingStore,
+        external_provider_sessions: ExternalProviderSessionIndexStore,
         slice_store: crate::slice::SliceStore,
         session_projection: crate::runtime::projection::SessionStateProjectionStore,
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
@@ -321,6 +326,7 @@ impl KernelRuntimeState {
                 attachment_store,
                 provider_store,
                 provider_process_tracking,
+                external_provider_sessions,
                 slice_store,
                 session_projection,
                 provider_run_projection,
@@ -353,6 +359,8 @@ impl KernelRuntimeState {
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
+                completed_git_turn_snapshots:
+                    crate::git_observer::CompletedGitTurnSnapshotStore::default(),
                 workspace_live_sync_journal,
                 remote_workspace_live_sync_invocations: Arc::new(Mutex::new(BTreeMap::new())),
                 remote_extension_invocations: Arc::new(Mutex::new(BTreeMap::new())),

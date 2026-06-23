@@ -188,8 +188,6 @@ export type MetaagentTask = {
   completion_summary?: string | null
 }
 
-export type ExternalProviderImportMode = "observed_history" | "resume_only"
-
 export type ExternalProviderObservedCursor = {
   last_observed_turn_id?: string | null
   last_observed_at_ms?: number | null
@@ -200,7 +198,6 @@ export type ExternalProviderImportMetadata = {
   external_provider_session_id: string
   external_provider: string
   external_provider_session_provider_id: string
-  import_mode: ExternalProviderImportMode
   observed_cursor: ExternalProviderObservedCursor
   last_observed_turn_id?: string | null
   last_observed_at_ms?: number | null
@@ -751,6 +748,7 @@ export type AgentRuntimeActivity = {
   busy: boolean
   unread_idle_output?: boolean
   active_turn?: AgentActiveTurn | null
+  last_completed_turn?: CompletedGitTurnActionProjection | null
 }
 
 export type AgentActiveTurn = {
@@ -759,6 +757,43 @@ export type AgentActiveTurn = {
   status: "none" | "queued" | "running" | "cancelling" | "settling"
   phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
   started_at_ms?: number | null
+}
+
+export type CompletedGitTurnActionProjection = {
+  turn_id: string
+  prompt_id: string
+  provider_run_id: string
+  agent_id: string
+  completed_at_ms: number
+  duration_ms?: number | null
+  changed_paths: string[]
+  undo_available: boolean
+  undo_unavailable_reason?: string | null
+}
+
+export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
+
+export type WorkspaceLiveSyncPathApplyResult = {
+  path: string
+  status: WorkspaceLiveSyncApplyStatus
+  message: string
+}
+
+export type TurnUndoResult = {
+  session_id: string
+  agent_id: string
+  turn_id: string
+  prompt_id: string
+  provider_run_id: string
+  reverted_paths: string[]
+  path_results: WorkspaceLiveSyncPathApplyResult[]
+}
+
+export type AgentForkPayload = {
+  source_agent_id: string
+  agent: AgentInstance
+  provider_run: RuntimeProviderRun
+  session: RuntimeSession
 }
 
 export type RuntimeInteraction = {
@@ -1424,7 +1459,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 161
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 164
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

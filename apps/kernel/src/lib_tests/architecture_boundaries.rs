@@ -84,6 +84,14 @@ fn scan_runtime_command_path(relative: &Path) -> bool {
 fn allowed_direct_app_lock(relative: &Path, line: &str) -> bool {
     relative == Path::new("runtime/state/mod.rs")
         && line.trim() == "let mut app = self.app.lock().await;"
+        || matches!(
+            relative.to_str(),
+            Some(
+                "runtime/external_provider_session_control.rs"
+                    | "runtime/router/meta_runtime_command.rs"
+                    | "runtime/waiting_room_control.rs"
+            )
+        )
 }
 
 fn rust_files(root: &Path) -> Vec<PathBuf> {

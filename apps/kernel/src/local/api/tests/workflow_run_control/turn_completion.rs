@@ -2,6 +2,33 @@ use super::*;
 
 #[test]
 fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes() {
+    run_workflow_turn_completion_large_stack_test(
+        "local-request-api-acks-workflow-turn",
+        local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes_inner,
+    );
+}
+
+#[test]
+fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns() {
+    run_workflow_turn_completion_large_stack_test(
+        "local-request-api-inlines-mailbox-content",
+        local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns_inner,
+    );
+}
+
+fn run_workflow_turn_completion_large_stack_test(name: &str, test: fn()) {
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(test)
+        .expect("workflow turn completion large-stack test thread should spawn");
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes_inner(
+) {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -307,8 +334,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     assert!(completed.messages().is_empty());
 }
 
-#[test]
-fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns() {
+fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

@@ -188,6 +188,12 @@ impl SessionRuntimeCommandExecutor {
                     .spawn_agent(request, caller_user_id, caller_metaagent_id)
                     .await
             }
+            LocalDaemonRequest::UndoTurn(request) => {
+                self.store.undo_turn(request, caller_user_id).await
+            }
+            LocalDaemonRequest::ForkAgent(request) => {
+                self.store.fork_agent(request, caller_user_id).await
+            }
             LocalDaemonRequest::DestroyAgent(request) => {
                 self.store
                     .destroy_agent(request, caller_user_id, caller_metaagent_id.is_some())

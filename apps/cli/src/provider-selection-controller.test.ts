@@ -59,6 +59,26 @@ test("provider selection controller updates attached agent variants", async () =
   })
 })
 
+test("provider selection controller updates attached agent models through profile API", async () => {
+  const harness = createHarness({
+    attached: true,
+    currentSelection: { provider: "opencode", model: "opencode/gpt-5.3", effort: "medium" },
+  })
+
+  await harness.controller.applyModelSelection("opencode/gpt-5.4")
+
+  assert.deepEqual(harness.profileUpdates().at(-1), {
+    sessionId: "session-1",
+    agentId: "agent-1",
+    profile: {
+      provider: "opencode",
+      model: "opencode/gpt-5.4",
+      effort: "medium",
+    },
+  })
+  assert.equal(harness.providerRunCleared(), true)
+})
+
 test("provider selection controller marks attached profile updates from local provider fallback", async () => {
   const harness = createHarness({
     attached: true,

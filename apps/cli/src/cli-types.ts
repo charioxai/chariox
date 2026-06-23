@@ -163,8 +163,6 @@ export type MetaagentTask = {
   completion_summary?: string | null
 }
 
-export type ExternalProviderImportMode = "observed_history" | "resume_only"
-
 export type ExternalProviderObservedCursor = {
   last_observed_turn_id?: string | null
   last_observed_at_ms?: number | null
@@ -175,7 +173,6 @@ export type ExternalProviderImportMetadata = {
   external_provider_session_id: string
   external_provider: string
   external_provider_session_provider_id: string
-  import_mode: ExternalProviderImportMode
   observed_cursor: ExternalProviderObservedCursor
   last_observed_turn_id?: string | null
   last_observed_at_ms?: number | null
@@ -349,13 +346,7 @@ export type WaitingRoomTerminalView = {
 }
 
 export type ExternalProviderSessionCapabilities = {
-  can_resume?: boolean
   can_read_history?: boolean
-  can_watch_history?: boolean
-  can_attach_live?: boolean
-  can_proxy_permissions?: boolean
-  can_receive_hidden_context?: boolean
-  supports_workspace_live_sync?: boolean
 }
 
 export type ExternalProviderSessionRecord = {
@@ -369,12 +360,7 @@ export type ExternalProviderSessionRecord = {
   last_modified_at_ms: number
   worktree_path?: string | null
   account_profile?: string | null
-  running_state?: string | null
   capabilities?: ExternalProviderSessionCapabilities
-  mode?: "live" | "observed" | "resume_only" | "imported" | "unavailable"
-  already_imported?: boolean
-  imported_session_ids?: string[]
-  imported_agent_ids?: string[]
 }
 
 export type WaitingRoomPublicSnapshot = {
@@ -471,6 +457,7 @@ export type AgentRuntimeActivity = {
   status: "idle" | "working" | "error"
   prompt_status: "none" | "queued" | "running" | "cancelling" | "settling"
   busy: boolean
+  unread_idle_output?: boolean
   active_turn?: {
     prompt_id: string
     provider_run_id?: string | null
@@ -478,6 +465,44 @@ export type AgentRuntimeActivity = {
     phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
     started_at_ms?: number | null
   } | null
+  last_completed_turn?: CompletedGitTurnActionProjection | null
+}
+
+export type CompletedGitTurnActionProjection = {
+  turn_id: string
+  prompt_id: string
+  provider_run_id: string
+  agent_id: string
+  completed_at_ms: number
+  duration_ms?: number | null
+  changed_paths: string[]
+  undo_available: boolean
+  undo_unavailable_reason?: string | null
+}
+
+export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
+
+export type WorkspaceLiveSyncPathApplyResult = {
+  path: string
+  status: WorkspaceLiveSyncApplyStatus
+  message: string
+}
+
+export type TurnUndoResult = {
+  session_id: string
+  agent_id: string
+  turn_id: string
+  prompt_id: string
+  provider_run_id: string
+  reverted_paths: string[]
+  path_results: WorkspaceLiveSyncPathApplyResult[]
+}
+
+export type AgentForkPayload = {
+  source_agent_id: string
+  agent: AgentInstance
+  provider_run: RuntimeProviderRun
+  session: RuntimeSession
 }
 
 export type RuntimeInteraction = {

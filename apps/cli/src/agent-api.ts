@@ -9,12 +9,15 @@ import {
   cycleAgentFocusRequest,
   destroyAgentRequest,
   focusAgentRequest,
+  forkAgentRequest,
   spawnAgentRequest,
   updateAgentConfigRequest,
   updateAgentProfileRequest,
   updateAgentSubstitutesRequest,
+  undoTurnRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
+import type { AgentForkPayload, TurnUndoResult } from "./cli-types.js"
 
 export type UpdateAgentConfigOptions = {
   executionMode?: "build" | "plan" | null
@@ -88,6 +91,31 @@ export async function spawnAgent(
   )
   const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
   return payload.agent
+}
+
+export async function undoTurn(
+  client: LocalIpcClient,
+  sessionId: string,
+  agentRef?: string | null,
+  turnRef?: string | null,
+): Promise<TurnUndoResult> {
+  const response = await client.send<Record<string, unknown>>(undoTurnRequest(sessionId, agentRef, turnRef))
+  const payload = expectVariant<{ result: TurnUndoResult }>(response, "TurnUndone")
+  return payload.result
+}
+
+export async function forkAgent(
+  client: LocalIpcClient,
+  sessionId: string,
+  sourceAgentRef?: string | null,
+  alias?: string | null,
+): Promise<AgentForkPayload> {
+  const response = await client.send<Record<string, unknown>>(forkAgentRequest(sessionId, sourceAgentRef, alias))
+  const payload = expectVariant<AgentForkPayload>(response, "AgentForked")
+  return {
+    ...payload,
+    session: normalizeRuntimeSession(payload.session),
+  }
 }
 
 export async function destroyAgent(

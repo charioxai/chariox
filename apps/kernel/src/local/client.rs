@@ -12,6 +12,8 @@ use crate::session::unix_epoch_ms;
 
 use super::{LocalDaemonRequest, LocalDaemonResponse};
 
+const LOCAL_CLIENT_RUNTIME_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
+
 /// In-process local request client for tests and smoke harnesses.
 ///
 /// This keeps local request callers on the same `CommandRouter` boundary as IPC
@@ -28,6 +30,7 @@ impl LocalDaemonClient {
         let app = Arc::new(Mutex::new(app));
         let runtime = Builder::new_multi_thread()
             .enable_all()
+            .thread_stack_size(LOCAL_CLIENT_RUNTIME_THREAD_STACK_SIZE)
             .build()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "create local daemon client runtime",

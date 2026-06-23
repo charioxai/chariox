@@ -292,14 +292,7 @@ impl RuntimeSecretService {
     }
 
     pub fn terminal_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
-        let credential = self.credential(credential_id)?;
-        self.ensure_use_allowed(credential, UserCredentialUse::Pty)?;
-        if !matches!(credential.injection, UserCredentialInjectionConfig::Pty) {
-            return Err(secret_error(
-                "credential_policy",
-                format!("credential `{credential_id}` is not configured for terminal input"),
-            ));
-        }
+        let credential = self.validate_terminal_secret_input(credential_id)?;
         self.resolve_secret(credential)
     }
 
@@ -320,6 +313,31 @@ impl RuntimeSecretService {
         credential_id: &str,
         target_url: &str,
     ) -> Result<String, DaemonError> {
+        let credential =
+            self.validate_browser_secret_input_for_target_url(credential_id, target_url)?;
+        self.resolve_secret(credential)
+    }
+
+    pub fn validate_terminal_secret_input(
+        &self,
+        credential_id: &str,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Pty)?;
+        if !matches!(credential.injection, UserCredentialInjectionConfig::Pty) {
+            return Err(secret_error(
+                "credential_policy",
+                format!("credential `{credential_id}` is not configured for terminal input"),
+            ));
+        }
+        Ok(credential)
+    }
+
+    pub fn validate_browser_secret_input_for_target_url(
+        &self,
+        credential_id: &str,
+        target_url: &str,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
         let credential = self.credential(credential_id)?;
         self.ensure_use_allowed(credential, UserCredentialUse::Browser)?;
         if !matches!(credential.injection, UserCredentialInjectionConfig::Browser) {
@@ -335,7 +353,7 @@ impl RuntimeSecretService {
             )
         })?;
         self.ensure_host_allowed(credential, &target)?;
-        self.resolve_secret(credential)
+        Ok(credential)
     }
 
     pub fn resolve_connector_secret(

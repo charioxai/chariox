@@ -135,6 +135,8 @@ function createHarness(options: {
     handleModelCommand: (command) => calls.push(`model:${command.value}`),
     handleVariantCommand: (command) => calls.push(`variant:${command.value}`),
     handleViewCommand: (command) => calls.push(`view:${command.value}`),
+    handleUndoCommand: (command) => calls.push(`undo:${command.args.join(" ")}`),
+    handleForkCommand: (command) => calls.push(`fork:${command.args.join(" ")}`),
     handleAgentCommand: (command) => calls.push(`agent:${command.args.join(" ")}`),
     handleKernelCommand: (command) => calls.push(`kernel:${command.args.join(" ")}`),
     handleMachineCommand: (command) => calls.push(`machine:${command.args.join(" ")}`),

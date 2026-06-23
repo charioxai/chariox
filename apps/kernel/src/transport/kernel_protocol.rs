@@ -891,6 +891,7 @@ mod tests {
                     phase: crate::runtime::projection::AgentTurnRuntimePhase::Accepted,
                     started_at_ms: None,
                 }),
+                last_completed_turn: None,
             },
         );
 
@@ -1025,6 +1026,7 @@ mod tests {
                 busy: false,
                 unread_idle_output: false,
                 active_turn: None,
+                last_completed_turn: None,
             },
         );
         SessionSnapshotProjection {

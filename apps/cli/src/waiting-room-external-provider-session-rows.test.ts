@@ -5,7 +5,7 @@ import type { ExternalProviderSessionRecord } from "./cli-types.js"
 import { waitingRoomExternalProviderSessionRows } from "./waiting-room-external-provider-session-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
-test("orphan agents render as selectable waiting-room rows with load older action", () => {
+test("unattached agents render as selectable waiting-room rows with load older action", () => {
   const rows = waitingRoomExternalProviderSessionRows(
     waitingRoomState({ focus: "external-session", externalSessionIndex: 0 }),
     {
@@ -35,25 +35,25 @@ test("orphan agents render as selectable waiting-room rows with load older actio
   assert.equal(rows[1]?.title, "Review payment flow")
   assert.equal(rows[1]?.selectable, true)
   assert.equal(rows[1]?.focused, true)
-  assert.equal(rows[2]?.title, "Load older orphan agents")
+  assert.equal(rows[2]?.title, "Load older unattached agents")
   assert.equal(rows[2]?.selectable, true)
 })
 
-test("orphan agents show a loading row while inventory is pending", () => {
+test("unattached agents show a loading row while inventory is pending", () => {
   const rows = waitingRoomExternalProviderSessionRows(
     waitingRoomState(),
     {},
     {
       inventoryLoading: true,
-      loadingText: "loading orphan agents",
+      loadingText: "loading unattached agents",
       titleWidth: 28,
     },
   )
 
   assert.deepEqual(rows, [{
     id: "external-provider-sessions-loading",
-    title: "Orphan agents",
-    value: "loading orphan agents",
+    title: "Unattached agents",
+    value: "loading unattached agents",
     titleWidth: 28,
     indent: 1,
     focused: false,
@@ -92,18 +92,8 @@ function externalSession(overrides: Partial<ExternalProviderSessionRecord> = {})
     created_at_ms: 1,
     last_modified_at_ms: 2,
     capabilities: {
-      can_resume: true,
       can_read_history: true,
-      can_watch_history: false,
-      can_attach_live: false,
-      can_proxy_permissions: false,
-      can_receive_hidden_context: false,
-      supports_workspace_live_sync: false,
     },
-    mode: "resume_only",
-    already_imported: false,
-    imported_session_ids: [],
-    imported_agent_ids: [],
     ...overrides,
   }
 }

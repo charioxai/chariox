@@ -208,7 +208,7 @@ test("waiting room activation attaches selected sessions", async () => {
   ])
 })
 
-test("waiting room activation opens orphan agents as arroba sessions", async () => {
+test("waiting room activation opens unattached agents as arroba sessions", async () => {
   const harness = createHarness({
     controlDecision: { action: "none" },
     activationDecision: {
@@ -242,11 +242,11 @@ test("waiting room activation opens orphan agents as arroba sessions", async () 
   assert.deepEqual(harness.calls.slice(-3), [
     "importExternalProviderSession:codex:thread-1",
     "attachBinding",
-    "flash:info:opened orphan agent codex:thread-1",
+    "flash:info:opened unattached agent codex:thread-1",
   ])
 })
 
-test("waiting room activation loads older orphan agent pages", async () => {
+test("waiting room activation loads older unattached agent pages", async () => {
   const harness = createHarness({
     controlDecision: { action: "load-older-external-sessions" },
     loadOlderExternalProviderSessions: async () => 2,
@@ -256,7 +256,7 @@ test("waiting room activation loads older orphan agent pages", async () => {
 
   assert.deepEqual(harness.calls, [
     "loadOlderExternalProviderSessions",
-    "flash:info:loaded 2 older orphan agents",
+    "flash:info:loaded 2 older unattached agents",
   ])
 })
 

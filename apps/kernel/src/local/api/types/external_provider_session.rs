@@ -1,32 +1,9 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExternalProviderSessionMode {
-    Live,
-    Observed,
-    #[default]
-    ResumeOnly,
-    Imported,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalProviderSessionCapabilities {
     #[serde(default)]
-    pub can_resume: bool,
-    #[serde(default)]
     pub can_read_history: bool,
-    #[serde(default)]
-    pub can_watch_history: bool,
-    #[serde(default)]
-    pub can_attach_live: bool,
-    #[serde(default)]
-    pub can_proxy_permissions: bool,
-    #[serde(default)]
-    pub can_receive_hidden_context: bool,
-    #[serde(default)]
-    pub supports_workspace_live_sync: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,18 +24,14 @@ pub struct ExternalProviderSessionRecord {
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_profile: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub running_state: Option<String>,
     #[serde(default)]
     pub capabilities: ExternalProviderSessionCapabilities,
-    #[serde(default)]
-    pub mode: ExternalProviderSessionMode,
-    #[serde(default)]
-    pub already_imported: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub imported_session_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub imported_agent_ids: Vec<String>,
+    #[serde(default, skip)]
+    pub attached_to_arroba: bool,
+    #[serde(default, skip)]
+    pub attached_session_ids: Vec<String>,
+    #[serde(default, skip)]
+    pub attached_agent_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,9 +89,4 @@ pub struct ImportExternalProviderAgentRequest {
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WatchExternalProviderSessionStatusRequest {
-    pub external_session_id: String,
 }

@@ -53,12 +53,36 @@ impl KernelRuntimeOwnedState {
             agent_id,
             "update agent profile",
         )?;
+        let target_provider = provider
+            .as_deref()
+            .unwrap_or_else(|| agent.provider())
+            .to_string();
+        let target_model = model
+            .as_deref()
+            .or_else(|| agent.model())
+            .map(str::to_string);
+        let target_effort = match effort.as_ref() {
+            Some(value) => value.as_deref(),
+            None => agent.effort(),
+        };
+        let provider_or_model_changed =
+            target_provider != agent.provider() || target_model.as_deref() != agent.model();
+        if !provider_or_model_changed && target_effort == agent.effort() {
+            return Ok((agent, Vec::new()));
+        }
         let mut terminated_run_ids = Vec::new();
         if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
             match run.state() {
                 crate::provider::ProviderRunState::Starting
                 | crate::provider::ProviderRunState::Running
                 | crate::provider::ProviderRunState::Parked => {
+                    if provider_or_model_changed {
+                        self.prepare_agent_profile_context_handoff(
+                            &run,
+                            &target_provider,
+                            target_model.as_deref(),
+                        );
+                    }
                     let outcome = self
                         .provider_store
                         .terminate_run_provider_only(session_id, run.id())?;

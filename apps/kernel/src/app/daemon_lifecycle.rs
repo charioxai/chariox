@@ -136,6 +136,7 @@ impl DaemonApp {
         let external_provider_discovery_task = tokio::spawn(
             crate::runtime::external_provider_session_control::run_external_provider_session_discovery_poller(
                 Arc::clone(&app),
+                runtime_state.clone(),
                 shutdown_tx.subscribe(),
             ),
         );

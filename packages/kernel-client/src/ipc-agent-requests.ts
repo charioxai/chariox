@@ -40,6 +40,26 @@ export function spawnAgentRequest(
   }
 }
 
+export function undoTurnRequest(sessionId: string, agentRef?: string | null, turnRef?: string | null) {
+  return {
+    UndoTurn: {
+      session_id: sessionId,
+      agent_ref: agentRef ?? null,
+      turn_ref: turnRef ?? null,
+    },
+  }
+}
+
+export function forkAgentRequest(sessionId: string, sourceAgentRef?: string | null, alias?: string | null) {
+  return {
+    ForkAgent: {
+      session_id: sessionId,
+      source_agent_ref: sourceAgentRef ?? null,
+      alias: alias ?? null,
+    },
+  }
+}
+
 export function updateAgentConfigRequest(options: {
   sessionId: string
   agentId: string

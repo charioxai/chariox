@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, RwLock};
 
-use crate::app::{DaemonApp, PromptActivityStore, WorkflowDesignEventStore};
+use crate::app::{
+    DaemonApp, ExternalProviderSessionIndexStore, PromptActivityStore, WorkflowDesignEventStore,
+};
 use crate::history::{OperationalHistoryStore, SessionHistoryStore};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
@@ -129,6 +131,7 @@ pub(super) struct RouterProjectionStores {
     pub(super) attachment_store: crate::attachment::AttachmentServiceStore,
     pub(super) provider_store: crate::provider::ProviderProcessServiceStore,
     pub(super) provider_process_tracking: crate::app::ProviderProcessTrackingStore,
+    pub(super) external_provider_sessions: ExternalProviderSessionIndexStore,
     pub(super) slice_store: crate::slice::SliceStore,
     pub(super) active_turns: crate::app::ActiveTurnStore,
     pub(super) prompt_activity: PromptActivityStore,
@@ -174,6 +177,7 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         attachment_store: app.attachments().clone(),
         provider_store: app.providers().clone(),
         provider_process_tracking: app.provider_process_tracking_store(),
+        external_provider_sessions: app.external_provider_session_index_store(),
         slice_store: app.slices(),
         active_turns: app.active_turn_store(),
         prompt_activity: app.prompt_activity_store(),
@@ -215,6 +219,7 @@ pub(super) fn compose_command_router(
         attachment_store,
         provider_store,
         provider_process_tracking,
+        external_provider_sessions,
         slice_store,
         active_turns,
         prompt_activity,
@@ -240,6 +245,7 @@ pub(super) fn compose_command_router(
         attachment_store.clone(),
         provider_store.clone(),
         provider_process_tracking.clone(),
+        external_provider_sessions.clone(),
         slice_store.clone(),
         session_projection.clone(),
         provider_run_projection.clone(),

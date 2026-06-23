@@ -1,12 +1,13 @@
 use crate::agent::AgentInstance;
 use crate::app::DaemonApp;
 use crate::durable_snapshot::{DurableKernelSnapshotPayload, DurableSnapshotScheduler};
-use crate::durable_state::DurableStateEvent;
+use crate::durable_state::{DurableKernelStateStore, DurableStateEvent};
 use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventSnapshot, MetaagentEventSubscription,
 };
 use crate::session::RuntimeSession;
+use std::path::{Path, PathBuf};
 
 fn decode_durable_payload_field<T>(
     event: &DurableStateEvent,
@@ -51,6 +52,7 @@ impl DaemonApp {
         {
             self.restore_durable_state_event(event)?;
         }
+        self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_runtime_state_after_restart()?;
         Ok(())
     }
@@ -90,6 +92,7 @@ impl DaemonApp {
                 continue;
             }
             restored_agent_ids.insert(agent.id().to_string());
+            self.mark_agent_external_provider_sessions_attached(&agent);
             self.agents.restore_agent(agent);
         }
         self.metaagent_events
@@ -111,6 +114,162 @@ impl DaemonApp {
 
     fn session_belongs_to_current_kernel(&self, session: &RuntimeSession) -> bool {
         session.host_daemon_id() == self.config.daemon_id
+    }
+
+    fn mark_agent_external_provider_sessions_attached(&self, agent: &AgentInstance) {
+        if let Some(import) = agent.external_provider_import() {
+            self.external_provider_sessions.mark_attached(
+                &import.external_provider_session_id,
+                agent.session_id(),
+                agent.id(),
+            );
+        }
+        let resume_state = agent.provider_resume_state();
+        for (provider, provider_session_id) in [
+            ("codex", resume_state.codex_thread_id()),
+            ("opencode", resume_state.opencode_session_id()),
+            ("claude", resume_state.claude_session_id()),
+        ] {
+            let Some(provider_session_id) = provider_session_id else {
+                continue;
+            };
+            self.external_provider_sessions
+                .mark_provider_session_attached(
+                    provider,
+                    provider_session_id,
+                    agent.session_id(),
+                    agent.id(),
+                );
+        }
+    }
+
+    fn restore_local_kernel_external_provider_attachments(&self) {
+        let Some(root) = self.local_kernel_state_root() else {
+            return;
+        };
+        let mut state_db_count = 0usize;
+        let mut marker_count = 0usize;
+        let mut error_count = 0usize;
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let state_path = entry.path().join("state.db");
+            if !state_path.is_file() {
+                continue;
+            }
+            state_db_count += 1;
+            match self.restore_external_provider_attachments_from_state_db(&state_path) {
+                Ok(count) => marker_count += count,
+                Err(error) => {
+                    error_count += 1;
+                    crate::logging::warn_with_fields(
+                        "durable_state.restore",
+                        "failed to scan local kernel state for external provider attachments",
+                        serde_json::json!({
+                            "state_path": state_path.display().to_string(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
+        crate::logging::info_with_fields(
+            "durable_state.restore",
+            "scanned local kernel state for external provider attachments",
+            serde_json::json!({
+                "state_root": root.display().to_string(),
+                "state_db_count": state_db_count,
+                "attachment_marker_count": marker_count,
+                "error_count": error_count,
+            }),
+        );
+    }
+
+    fn local_kernel_state_root(&self) -> Option<PathBuf> {
+        let state_path = self.config.durable_state_path();
+        if state_path.file_name()?.to_str()? != "state.db" {
+            return None;
+        }
+        let daemon_dir = state_path.parent()?;
+        let kernels_dir = daemon_dir.parent()?;
+        (kernels_dir.file_name()?.to_str()? == "kernels").then(|| kernels_dir.to_path_buf())
+    }
+
+    fn restore_external_provider_attachments_from_state_db(
+        &self,
+        state_path: &Path,
+    ) -> Result<usize, DaemonError> {
+        let store = DurableKernelStateStore::open(state_path.to_path_buf())?;
+        let mut marker_count = 0usize;
+        for event in store.load_events_after(0)? {
+            marker_count += self.mark_external_provider_attachments_from_event(&event);
+        }
+        Ok(marker_count)
+    }
+
+    fn mark_external_provider_attachments_from_event(&self, event: &DurableStateEvent) -> usize {
+        match event.kind.as_str() {
+            "session.created" => decode_durable_payload_field::<AgentInstance>(
+                event,
+                "default_agent",
+                "durable_state.restore_external_provider_attachment",
+            )
+            .ok()
+            .map(|agent| self.mark_agent_external_provider_sessions_attached_counted(&agent))
+            .unwrap_or(0),
+            "agent.created"
+            | "agent.mcp_granted"
+            | "agent.mcp_revoked"
+            | "agent.skill_granted"
+            | "agent.skill_revoked"
+            | "agent.extension_granted"
+            | "agent.extension_revoked"
+            | "agent.runtime_profile_updated"
+            | "agent.updated" => decode_durable_payload_field::<AgentInstance>(
+                event,
+                "agent",
+                "durable_state.restore_external_provider_attachment",
+            )
+            .ok()
+            .map(|agent| self.mark_agent_external_provider_sessions_attached_counted(&agent))
+            .unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    fn mark_agent_external_provider_sessions_attached_counted(
+        &self,
+        agent: &AgentInstance,
+    ) -> usize {
+        let mut count = 0usize;
+        if let Some(import) = agent.external_provider_import() {
+            self.external_provider_sessions.mark_attached(
+                &import.external_provider_session_id,
+                agent.session_id(),
+                agent.id(),
+            );
+            count += 1;
+        }
+        let resume_state = agent.provider_resume_state();
+        for (provider, provider_session_id) in [
+            ("codex", resume_state.codex_thread_id()),
+            ("opencode", resume_state.opencode_session_id()),
+            ("claude", resume_state.claude_session_id()),
+        ] {
+            let Some(provider_session_id) = provider_session_id else {
+                continue;
+            };
+            self.external_provider_sessions
+                .mark_provider_session_attached(
+                    provider,
+                    provider_session_id,
+                    agent.session_id(),
+                    agent.id(),
+                );
+            count += 1;
+        }
+        count
     }
 
     fn refresh_restored_session_projections(&self) -> Result<(), DaemonError> {
@@ -226,6 +385,7 @@ impl DaemonApp {
                     "default_agent",
                     "durable_state.restore_default_agent",
                 )?;
+                self.mark_agent_external_provider_sessions_attached(&default_agent);
                 self.sessions.restore_session(session.clone());
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
@@ -249,6 +409,7 @@ impl DaemonApp {
                 if self.sessions.get_session(&session_id).is_err() {
                     return Ok(());
                 }
+                self.mark_agent_external_provider_sessions_attached(&agent);
                 self.agents.restore_agent(agent);
                 self.refresh_restored_agent_session_projection(&session_id)?;
             }
@@ -269,6 +430,7 @@ impl DaemonApp {
                 if self.sessions.get_session(&session_id).is_err() {
                     return Ok(());
                 }
+                self.mark_agent_external_provider_sessions_attached(&agent);
                 self.agents.restore_agent(agent);
                 self.refresh_restored_agent_session_projection(&session_id)?;
             }

@@ -978,6 +978,48 @@ mod tests {
     }
 
     #[test]
+    fn operational_history_store_reports_max_prompt_number() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-max-prompt-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        for (sequence, prompt_id) in [(1, "prompt-2"), (2, "manual-99"), (3, "prompt-17")] {
+            let entry =
+                SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hi");
+            let event = HistoryEvent::transcript(
+                sequence,
+                &entry,
+                HistoryEventTurnContext {
+                    prompt_id: Some(prompt_id.to_string()),
+                    ..HistoryEventTurnContext::default()
+                },
+            );
+            store
+                .append(&event)
+                .expect("event should append to operational history");
+        }
+
+        assert_eq!(
+            store
+                .max_prompt_number()
+                .expect("max prompt number should load"),
+            17
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
     fn operational_history_store_appends_and_loads_events_idempotently() {
         let path = std::env::temp_dir().join(format!(
             "arroba-operational-history-{}-{}.db",

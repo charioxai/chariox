@@ -27,6 +27,8 @@ export function createCliAppCommandRoutingComposition(
     onModel: commandHandlers.handleModelCommand,
     onVariant: commandHandlers.handleVariantCommand,
     onView: commandHandlers.handleViewCommand,
+    onUndo: commandHandlers.handleUndoCommand,
+    onFork: commandHandlers.handleForkCommand,
     onAgent: commandHandlers.handleAgentCommand,
     onKernel: commandHandlers.handleKernelCommand,
     onMachine: commandHandlers.handleMachineCommand,

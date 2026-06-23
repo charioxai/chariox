@@ -1,6 +1,27 @@
 use super::*;
 use crate::local::UpdateWorkflowNodeInstructionsRequest;
 
+fn run_remote_authorization_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
+where
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(64 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("remote authorization test runtime should build")
+                .block_on(test());
+        })
+        .expect("remote authorization test thread should spawn")
+        .join()
+        .expect("remote authorization test thread should not panic");
+}
+
 fn home_extension_script_workspace(label: &str) -> std::path::PathBuf {
     let workspace = std::env::temp_dir().join(format!(
         "arroba-home-extension-{label}-{}",
@@ -490,8 +511,15 @@ async fn remote_created_session_records_caller_as_owner_and_default_agent_owner(
     assert_eq!(agent.owner_user_id(), "user-2");
 }
 
-#[tokio::test]
-async fn remote_user_cannot_control_other_users_agents_or_endpoint() {
+#[test]
+fn remote_user_cannot_control_other_users_agents_or_endpoint() {
+    run_remote_authorization_large_stack_test(
+        "remote-user-cannot-control-other-users-agents-or-endpoint",
+        remote_user_cannot_control_other_users_agents_or_endpoint_inner,
+    );
+}
+
+async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let session = app
         .sessions_mut()
@@ -796,8 +824,15 @@ async fn full_collaboration_invite_allows_prompting_other_users_agents() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
+#[test]
+fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
+    run_remote_authorization_large_stack_test(
+        "home-owner-controls-extension-grants",
+        home_owner_controls_extension_grants_for_collaborator_remote_agent_inner,
+    );
+}
+
+async fn home_owner_controls_extension_grants_for_collaborator_remote_agent_inner() {
     let workspace = std::env::temp_dir().join(format!(
         "arroba-home-extension-authority-{}",
         std::time::SystemTime::now()

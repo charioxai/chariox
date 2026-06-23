@@ -2,6 +2,24 @@ use super::*;
 
 #[test]
 fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
+    run_workflow_run_lifecycle_large_stack_test(
+        "local-request-api-invokes-lists-gets-and-cancels-workflow-runs",
+        local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner,
+    );
+}
+
+fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: fn()) {
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(test)
+        .expect("workflow run lifecycle large-stack test thread should spawn");
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

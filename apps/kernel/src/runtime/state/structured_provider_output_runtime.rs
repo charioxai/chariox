@@ -181,6 +181,24 @@ impl KernelRuntimeState {
                     .await?;
             }
         }
+        if let Some(agent_id) = provider_run.agent_instance_id() {
+            crate::app::provider_output::mark_resume_state_external_provider_sessions_attached(
+                &owned.external_provider_sessions,
+                provider_run.resume_state(),
+                provider_run.session_id(),
+                agent_id,
+            );
+            if let Some(provider_session_id) = provider_run.provider_session_id() {
+                owned
+                    .external_provider_sessions
+                    .mark_provider_session_attached(
+                        provider_run.adapter_key(),
+                        provider_session_id,
+                        provider_run.session_id(),
+                        agent_id,
+                    );
+            }
+        }
         owned.provider_run_projection.update(provider_run);
         let terminal_failure = poll_result
             .terminal_failure

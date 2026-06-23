@@ -181,6 +181,12 @@ async fn external_settlement_dispatches_next_queued_prompt() {
     let fixture =
         queued_prompt_router_fixture_with_origin("external-settle", PromptOrigin::External);
 
+    fixture
+        .router
+        .runtime_state()
+        .complete_agent_prompt(&fixture.session_id, &fixture.agent_id, None)
+        .await
+        .expect("external prompt settlement should complete active prompt");
     let dispatched = fixture
         .router
         .runtime_state()

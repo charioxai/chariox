@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 161;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 164;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -259,7 +259,6 @@ pub enum LocalDaemonRequest {
     RefreshExternalProviderSessions(RefreshExternalProviderSessionsRequest),
     ImportExternalProviderSession(ImportExternalProviderSessionRequest),
     ImportExternalProviderAgent(ImportExternalProviderAgentRequest),
-    WatchExternalProviderSessionStatus(WatchExternalProviderSessionStatusRequest),
     SearchWorkspaceDirectories(SearchWorkspaceDirectoriesRequest),
     CreateWorkspaceDirectory(CreateWorkspaceDirectoryRequest),
     ListWorkspaceWorktrees(ListWorkspaceWorktreesRequest),
@@ -326,6 +325,8 @@ pub enum LocalDaemonRequest {
     AliasSession(AliasSessionRequest),
     AliasAgent(AliasAgentRequest),
     SpawnAgent(SpawnAgentRequest),
+    UndoTurn(UndoTurnRequest),
+    ForkAgent(ForkAgentRequest),
     MoveAgentToRemote(MoveAgentToRemoteRequest),
     MoveAgentToLocal(MoveAgentToLocalRequest),
     SyncRemoteExtensionManifest(SyncRemoteExtensionManifestRequest),
@@ -815,10 +816,6 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_run: Option<RuntimeProviderRun>,
     },
-    ExternalProviderSessionWatchStatus {
-        external_session_id: String,
-        status: String,
-    },
     WorkspaceDirectoriesSearched {
         directories: Vec<String>,
     },
@@ -1035,6 +1032,15 @@ pub enum LocalDaemonResponse {
     },
     AgentSpawned {
         agent: AgentInstance,
+    },
+    TurnUndone {
+        result: TurnUndoResult,
+    },
+    AgentForked {
+        source_agent_id: String,
+        agent: AgentInstance,
+        provider_run: RuntimeProviderRun,
+        session: RuntimeSession,
     },
     AgentMovedToRemote {
         agent: AgentInstance,

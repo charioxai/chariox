@@ -10,7 +10,9 @@ import {
   cycleAgentFocus as cycleAgentFocusApi,
   destroyAgent as destroyAgentApi,
   focusAgent as focusAgentApi,
+  forkAgent as forkAgentApi,
   spawnAgent as spawnAgentApi,
+  undoTurn as undoTurnApi,
   updateAgentConfig,
   updateAgentProfile,
   updateAgentSubstitutes,
@@ -646,6 +648,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       ),
     setProviderRunState,
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
+    undoTurn: (agentRef, turnRef) => undoTurnApi(client, sessionState().id, agentRef, turnRef),
+    forkAgent: (sourceAgentRef, alias) => forkAgentApi(client, sessionState().id, sourceAgentRef, alias),
     spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef, metaagent) => {
       const agent = await spawnAgentApi(
         client,

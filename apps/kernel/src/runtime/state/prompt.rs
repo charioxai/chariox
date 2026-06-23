@@ -171,6 +171,7 @@ impl KernelRuntimeOwnedState {
                 session_id,
                 agent_id,
                 started_next.source_attachment_id(),
+                &provider_run,
                 started_next.prompt(),
             );
             let granted_skill_context =
@@ -197,6 +198,7 @@ impl KernelRuntimeOwnedState {
                 let _ = self.clear_prompt_activity(&provider_run_id);
                 return Err(error);
             }
+            self.consume_pending_context_handoff(session_id, agent_id, &provider_run);
             self.note_prompt_started(&provider_run_id);
             let _ = self.session_snapshot(session_id)?;
             return Ok(Some(OwnedPromptCompletion {

@@ -20,6 +20,190 @@ pub(crate) fn apply_workspace_live_sync_change_to_target(
         .collect()
 }
 
+pub(crate) fn apply_workspace_live_sync_undo_to_target(
+    change: &WorkspaceLiveSyncChange,
+) -> Result<Vec<WorkspaceLiveSyncPathApplyResult>, crate::error::DaemonError> {
+    let target_root = Path::new(&change.worktree_path);
+    let inverse = inverse_workspace_live_sync_change(change);
+    let conflicts = inverse
+        .file_changes
+        .iter()
+        .filter_map(|file_change| preflight_undo_file_change(file_change, target_root).err())
+        .collect::<Vec<_>>();
+    if !conflicts.is_empty() {
+        return Err(crate::error::DaemonError::LocalTransport {
+            operation: "turn undo",
+            message: format!(
+                "cannot undo turn because workspace changed after the turn: {}",
+                conflicts.join("; ")
+            ),
+        });
+    }
+    Ok(apply_workspace_live_sync_change_to_target(
+        &inverse,
+        target_root,
+    ))
+}
+
+fn inverse_workspace_live_sync_change(change: &WorkspaceLiveSyncChange) -> WorkspaceLiveSyncChange {
+    WorkspaceLiveSyncChange {
+        session_id: change.session_id.clone(),
+        agent_id: change.agent_id.clone(),
+        provider_run_id: change.provider_run_id.clone(),
+        prompt_id: change.prompt_id.clone(),
+        repo_root: change.repo_root.clone(),
+        worktree_path: change.worktree_path.clone(),
+        branch: change.branch.clone(),
+        changed_paths: change.changed_paths.clone(),
+        file_changes: change
+            .file_changes
+            .iter()
+            .map(inverse_workspace_live_sync_file_change)
+            .collect(),
+        status_fingerprint: change.status_fingerprint.clone(),
+    }
+}
+
+fn inverse_workspace_live_sync_file_change(
+    file_change: &WorkspaceLiveSyncFileChange,
+) -> WorkspaceLiveSyncFileChange {
+    match file_change.kind {
+        WorkspaceLiveSyncFileChangeKind::Added => WorkspaceLiveSyncFileChange {
+            path: file_change.path.clone(),
+            previous_path: None,
+            kind: WorkspaceLiveSyncFileChangeKind::Deleted,
+            before_content_base64: file_change.after_content_base64.clone(),
+            after_content_base64: None,
+            binary: file_change.binary,
+        },
+        WorkspaceLiveSyncFileChangeKind::Deleted => WorkspaceLiveSyncFileChange {
+            path: file_change.path.clone(),
+            previous_path: None,
+            kind: WorkspaceLiveSyncFileChangeKind::Added,
+            before_content_base64: None,
+            after_content_base64: file_change.before_content_base64.clone(),
+            binary: file_change.binary,
+        },
+        WorkspaceLiveSyncFileChangeKind::Modified => WorkspaceLiveSyncFileChange {
+            path: file_change.path.clone(),
+            previous_path: None,
+            kind: WorkspaceLiveSyncFileChangeKind::Modified,
+            before_content_base64: file_change.after_content_base64.clone(),
+            after_content_base64: file_change.before_content_base64.clone(),
+            binary: file_change.binary,
+        },
+        WorkspaceLiveSyncFileChangeKind::Renamed => {
+            let previous_path = file_change
+                .previous_path
+                .clone()
+                .unwrap_or_else(|| file_change.path.clone());
+            WorkspaceLiveSyncFileChange {
+                path: previous_path,
+                previous_path: Some(file_change.path.clone()),
+                kind: WorkspaceLiveSyncFileChangeKind::Renamed,
+                before_content_base64: file_change.after_content_base64.clone(),
+                after_content_base64: file_change.before_content_base64.clone(),
+                binary: file_change.binary,
+            }
+        }
+    }
+}
+
+fn preflight_undo_file_change(
+    file_change: &WorkspaceLiveSyncFileChange,
+    target_root: &Path,
+) -> Result<(), String> {
+    let target_path = workspace_live_sync_target_path(target_root, &file_change.path)
+        .ok_or_else(|| format!("{} is not a safe relative path", file_change.path))?;
+    let previous_target_path = file_change
+        .previous_path
+        .as_deref()
+        .map(|path| {
+            workspace_live_sync_target_path(target_root, path)
+                .ok_or_else(|| format!("{path} is not a safe relative path"))
+        })
+        .transpose()?;
+    let before_bytes =
+        workspace_live_sync_decode_optional(file_change.before_content_base64.as_deref())
+            .map_err(|message| format!("{}: {message}", file_change.path))?;
+    let after_bytes =
+        workspace_live_sync_decode_optional(file_change.after_content_base64.as_deref())
+            .map_err(|message| format!("{}: {message}", file_change.path))?;
+    match file_change.kind {
+        WorkspaceLiveSyncFileChangeKind::Added => {
+            if target_path.exists() {
+                return Err(format!("{} already exists", file_change.path));
+            }
+            Ok(())
+        }
+        WorkspaceLiveSyncFileChangeKind::Deleted => {
+            let Some(before_bytes) = before_bytes else {
+                return Err(format!(
+                    "{} has no expected current content",
+                    file_change.path
+                ));
+            };
+            assert_path_content(&file_change.path, &target_path, Some(&before_bytes))
+        }
+        WorkspaceLiveSyncFileChangeKind::Modified => {
+            let Some(before_bytes) = before_bytes else {
+                return Err(format!(
+                    "{} has no expected current content",
+                    file_change.path
+                ));
+            };
+            let Some(_after_bytes) = after_bytes else {
+                return Err(format!("{} has no restore content", file_change.path));
+            };
+            assert_path_content(&file_change.path, &target_path, Some(&before_bytes))
+        }
+        WorkspaceLiveSyncFileChangeKind::Renamed => {
+            let Some(previous_target_path) = previous_target_path else {
+                return Err(format!("{} has no current renamed path", file_change.path));
+            };
+            let Some(before_bytes) = before_bytes else {
+                return Err(format!(
+                    "{} has no expected current content",
+                    file_change.path
+                ));
+            };
+            let Some(_after_bytes) = after_bytes else {
+                return Err(format!("{} has no restore content", file_change.path));
+            };
+            assert_path_content(
+                file_change
+                    .previous_path
+                    .as_deref()
+                    .unwrap_or(&file_change.path),
+                &previous_target_path,
+                Some(&before_bytes),
+            )?;
+            if target_path.exists() {
+                return Err(format!("{} already exists", file_change.path));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn assert_path_content(
+    path: &str,
+    target_path: &Path,
+    expected: Option<&[u8]>,
+) -> Result<(), String> {
+    match (std::fs::read(target_path), expected) {
+        (Ok(current), Some(expected)) if current == expected => Ok(()),
+        (Ok(_), Some(_)) => Err(format!("{path} content changed")),
+        (Err(error), Some(_)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("{path} is missing"))
+        }
+        (Err(error), Some(_)) => Err(format!("failed to read {path}: {error}")),
+        (Ok(_), None) => Err(format!("{path} exists")),
+        (Err(error), None) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        (Err(error), None) => Err(format!("failed to read {path}: {error}")),
+    }
+}
+
 fn apply_workspace_live_sync_file_change_to_target(
     file_change: &WorkspaceLiveSyncFileChange,
     target_root: &Path,

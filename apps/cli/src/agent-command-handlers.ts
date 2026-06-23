@@ -26,6 +26,7 @@ import {
   handleCycleAgentFocus,
   type AgentLifecycleCommandHandlerDeps,
 } from "./agent-lifecycle-command-handlers.js"
+import type { AgentForkPayload, RuntimeSession, TurnUndoResult } from "./cli-types.js"
 
 export type AgentCommandHandlerDeps =
   & AgentConfigCommandHandlerDeps
@@ -33,6 +34,14 @@ export type AgentCommandHandlerDeps =
   & AgentSpawnCommandHandlerDeps
   & AgentSubstituteCommandHandlerDeps
   & AgentTaskCommandHandlerDeps
+  & {
+    undoTurn?: (agentRef?: string | null, turnRef?: string | null) => Promise<TurnUndoResult>
+    forkAgent?: (sourceAgentRef?: string | null, alias?: string | null) => Promise<AgentForkPayload>
+    refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
+    applySessionState: (session: RuntimeSession) => void
+    refreshAgentPanes: (session: RuntimeSession) => Promise<void>
+    rebuildTranscript: () => void
+  }
 
 export {
   formatAgentInspectSummary,
@@ -55,6 +64,10 @@ export async function handleAgentSlashCommand(
   switch (subcommand) {
     case "spawn": {
       await handleAgentSpawnCommand(deps, args.slice(1))
+      return
+    }
+    case "fork": {
+      await handleAgentForkCommand(deps, args.slice(1))
       return
     }
     case "delete":
@@ -147,8 +160,61 @@ export async function handleAgentSlashCommand(
     }
     default:
       deps.flashFooter(
-        "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | task [show|edit|plan|pause|resume|abort] | substitute ...",
+        "usage: /agent spawn [alias] [model] [--meta] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | fork [agent-ref] | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | task [show|edit|plan|pause|resume|abort] | substitute ...",
         "error",
       )
   }
+}
+
+export async function handleTurnUndoCommand(
+  deps: AgentCommandHandlerDeps,
+  args: string[],
+): Promise<void> {
+  if (!deps.isAttached()) {
+    deps.flashFooter("must be attached to a session to undo a turn", "error")
+    return
+  }
+  if (args.length > 1) {
+    deps.flashFooter("usage: /undo [agent-ref]", "error")
+    return
+  }
+  if (!deps.undoTurn) {
+    deps.flashFooter("turn undo is unavailable in this client", "error")
+    return
+  }
+
+  const sessionId = deps.sessionState().id
+  const result = await deps.undoTurn(args[0] ?? null, null)
+  const session = await deps.refreshSessionState(sessionId)
+  deps.applySessionState(session)
+  await deps.refreshAgentPanes(session)
+  deps.rebuildTranscript()
+  deps.appendNotice(`undid turn ${result.turn_id} for ${result.agent_id}; reverted ${result.reverted_paths.length} path${result.reverted_paths.length === 1 ? "" : "s"}`)
+  deps.flashFooter(`undid turn for ${result.agent_id}`, "info")
+}
+
+export async function handleAgentForkCommand(
+  deps: AgentCommandHandlerDeps,
+  args: string[],
+): Promise<void> {
+  if (!deps.isAttached()) {
+    deps.flashFooter("must be attached to a session to fork an agent", "error")
+    return
+  }
+  if (args.length > 1) {
+    deps.flashFooter("usage: /fork [agent-ref]", "error")
+    return
+  }
+  if (!deps.forkAgent) {
+    deps.flashFooter("agent fork is unavailable in this client", "error")
+    return
+  }
+
+  const payload = await deps.forkAgent(args[0] ?? null, null)
+  deps.applySessionState(payload.session)
+  await deps.refreshAgentPanes(payload.session)
+  deps.setProviderRunState(payload.provider_run)
+  deps.rebuildTranscript()
+  deps.appendNotice(`forked ${payload.source_agent_id} as ${deps.formatAgentLabel(payload.agent)}`)
+  deps.flashFooter(`forked agent ${deps.formatAgentLabel(payload.agent)}`, "info")
 }

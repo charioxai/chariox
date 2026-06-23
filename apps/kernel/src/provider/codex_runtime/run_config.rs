@@ -33,3 +33,22 @@ pub(super) fn normalize_variant(variant: Option<&str>) -> Option<String> {
         .filter(|value| !value.is_empty() && *value != "default")
         .map(str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_codex_model;
+
+    #[test]
+    fn default_codex_model_omits_resume_override() {
+        assert_eq!(normalize_codex_model("default"), None);
+        assert_eq!(normalize_codex_model("  "), None);
+    }
+
+    #[test]
+    fn explicit_codex_model_is_sent_without_provider_prefix() {
+        assert_eq!(
+            normalize_codex_model("codex/gpt-5.5"),
+            Some("gpt-5.5".to_string())
+        );
+    }
+}

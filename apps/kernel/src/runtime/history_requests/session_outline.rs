@@ -1,5 +1,7 @@
 //! Hierarchical transcript history outline loading.
 
+use std::collections::BTreeSet;
+
 use crate::error::DaemonError;
 use crate::history::{
     HistoryEvent, HistoryEventKind, HistoryEventTurnContext, OperationalHistoryStore,
@@ -106,6 +108,7 @@ fn load_agent_outline(
         return load_promptless_agent_outline(operational_history, session_id, agent_id);
     }
     let mut turns = Vec::new();
+    let mut seen_turn_ids = BTreeSet::new();
     for (index, prompt) in prompts.iter().enumerate() {
         let sequence_end = prompts
             .get(index + 1)
@@ -117,7 +120,8 @@ fn load_agent_outline(
             prompt.sequence,
             sequence_end,
         )?;
-        if let Some(turn) = outline_turn_from_events(prompt, events) {
+        if let Some(mut turn) = outline_turn_from_events(prompt, events) {
+            ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
             turns.push(turn);
         }
     }
@@ -191,6 +195,31 @@ fn load_promptless_agent_outline(
         turns,
         next_cursor: None,
     })
+}
+
+fn ensure_unique_outline_turn_id(
+    turn: &mut SessionHistoryOutlineTurn,
+    seen_turn_ids: &mut BTreeSet<String>,
+) {
+    if seen_turn_ids.insert(turn.turn_id.clone()) {
+        return;
+    }
+    let base = turn.turn_id.clone();
+    let sequence = turn.user_prompt.entry_index;
+    let candidate = format!("{base}:seq-{sequence}");
+    if seen_turn_ids.insert(candidate.clone()) {
+        turn.turn_id = candidate;
+        return;
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{base}:seq-{sequence}-{suffix}");
+        if seen_turn_ids.insert(candidate.clone()) {
+            turn.turn_id = candidate;
+            return;
+        }
+        suffix += 1;
+    }
 }
 
 fn promptless_turn_group_key(event: &HistoryEvent) -> String {
@@ -323,7 +352,24 @@ fn blob_summary(kind: SessionHistoryEntryKind, text: &str) -> String {
             return summary;
         }
     }
+    if kind == SessionHistoryEntryKind::ProviderStatus {
+        return compact_blob_summary(text);
+    }
     first_line(text)
+}
+
+fn compact_blob_summary(text: &str) -> String {
+    const MAX_SUMMARY_CHARS: usize = 240;
+    let mut summary = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if summary.chars().count() <= MAX_SUMMARY_CHARS {
+        return summary;
+    }
+    summary = summary
+        .chars()
+        .take(MAX_SUMMARY_CHARS.saturating_sub(3))
+        .collect();
+    summary.push_str("...");
+    summary
 }
 
 fn tool_title(text: &str) -> String {
@@ -429,8 +475,20 @@ mod tests {
             ),
             context.clone(),
         );
-        let summary = HistoryEvent::transcript(
+        let status = HistoryEvent::transcript(
             13,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderStatus,
+                Some("status-1".to_string()),
+                "codex token_count\n{\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}",
+            ),
+            context.clone(),
+        );
+        let summary = HistoryEvent::transcript(
+            14,
             &SessionHistoryEntry::provider_output(
                 "session-1",
                 "run-1",
@@ -442,9 +500,11 @@ mod tests {
             context,
         );
 
-        let turn =
-            outline_turn_from_events(&prompt, vec![prompt.clone(), assistant, tool, summary])
-                .expect("turn should be outlined");
+        let turn = outline_turn_from_events(
+            &prompt,
+            vec![prompt.clone(), assistant, tool, status, summary],
+        )
+        .expect("turn should be outlined");
 
         assert_eq!(turn.entries.len(), 1);
         assert_eq!(
@@ -452,12 +512,82 @@ mod tests {
             SessionHistoryEntryKind::ProviderOutput
         );
         assert_eq!(turn.entries[0].entry.text, "assistant body before tool");
-        assert_eq!(turn.blobs.len(), 1);
+        assert_eq!(turn.blobs.len(), 2);
         assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderTool);
+        assert_eq!(turn.blobs[1].kind, SessionHistoryEntryKind::ProviderStatus);
+        assert!(
+            turn.blobs[1].summary.contains("total_token_usage"),
+            "{}",
+            turn.blobs[1].summary
+        );
         assert_eq!(
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("final assistant body")
         );
+    }
+
+    #[test]
+    fn agent_outline_makes_legacy_duplicate_turn_ids_unique() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-duplicate-turn-outline-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("prompt-2".to_string()),
+            prompt_id: Some("prompt-2".to_string()),
+            provider_run_id: Some("run-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let first_prompt = HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "first prompt",
+            ),
+            context.clone(),
+        );
+        let second_prompt = HistoryEvent::transcript(
+            20,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-2",
+                "agent-1",
+                "second prompt",
+            ),
+            context,
+        );
+        store
+            .append(&first_prompt)
+            .expect("first prompt should append");
+        store
+            .append(&second_prompt)
+            .expect("second prompt should append");
+
+        let outline =
+            load_agent_outline(&store, "session-1", "agent-1", 2).expect("outline should load");
+
+        assert_eq!(outline.turns.len(), 2);
+        assert_eq!(outline.turns[0].turn_id, "prompt-2");
+        assert_eq!(outline.turns[0].prompt_id.as_deref(), Some("prompt-2"));
+        assert_eq!(outline.turns[0].user_prompt.entry.text, "first prompt");
+        assert_eq!(outline.turns[1].turn_id, "prompt-2:seq-20");
+        assert_eq!(outline.turns[1].prompt_id.as_deref(), Some("prompt-2"));
+        assert_eq!(outline.turns[1].user_prompt.entry.text, "second prompt");
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]

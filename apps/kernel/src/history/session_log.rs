@@ -146,6 +146,34 @@ impl SessionHistoryEntry {
         provider_turn_id: Option<String>,
         observed_at_ms: Option<u64>,
     ) -> Self {
+        Self::external_provider_observed_with_merge_key(
+            session_id,
+            provider_run_id,
+            agent_id,
+            kind,
+            text,
+            provider,
+            provider_session_id,
+            provider_turn_id
+                .as_ref()
+                .map(|turn_id| format!("external:{provider}:{provider_session_id}:{turn_id}")),
+            provider_turn_id,
+            observed_at_ms,
+        )
+    }
+
+    pub fn external_provider_observed_with_merge_key(
+        session_id: &str,
+        provider_run_id: Option<&str>,
+        agent_id: &str,
+        kind: SessionHistoryEntryKind,
+        text: impl Into<String>,
+        provider: &str,
+        provider_session_id: &str,
+        merge_key: Option<String>,
+        provider_turn_id: Option<String>,
+        observed_at_ms: Option<u64>,
+    ) -> Self {
         let observed_at_ms = observed_at_ms.unwrap_or_else(super::unix_epoch_ms);
         Self {
             session_id: session_id.to_string(),
@@ -153,9 +181,7 @@ impl SessionHistoryEntry {
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: None,
             kind,
-            merge_key: provider_turn_id
-                .as_ref()
-                .map(|turn_id| format!("external:{provider}:{provider_session_id}:{turn_id}")),
+            merge_key,
             source: Some(SessionHistoryEntrySource::ExternalProviderObserved),
             external_provider: Some(provider.to_string()),
             external_provider_session_id: Some(provider_session_id.to_string()),

@@ -29,26 +29,14 @@ impl KernelRuntimeState {
             request = prepare_local_session_worktree_placement(request)?;
         }
         if let Some(slice_ref) = slice_ref.as_deref() {
-            let slice = self.resolve_slice(slice_ref)?;
+            let slice = self
+                .ensure_slice_worktree_scope(slice_ref, &request.workspace_id, &request.worktree_id)
+                .await?;
             request = codex_linux_slice_live_sync_request(request, &slice)?;
             self.wait_for_slice_worker_ready(slice_ref, session_request_provider(&request))
                 .await?;
         }
         let response = if let Some(slice_ref) = slice_ref.as_deref() {
-            {
-                let slice_ref = slice_ref.to_string();
-                let workspace_id = request.workspace_id.clone();
-                let worktree_id = request.worktree_id.clone();
-                self.with_app_side_effect(move |app| {
-                    app.slices().ensure_worktree_scope(
-                        &slice_ref,
-                        Some(&workspace_id),
-                        Some(&worktree_id),
-                    )?;
-                    Ok(())
-                })
-                .await?;
-            }
             let worker_kernel_ref = self.resolve_slice_worker_kernel_ref(slice_ref).await?;
             self.create_sliced_session_response(request, worker_kernel_ref)
                 .await?

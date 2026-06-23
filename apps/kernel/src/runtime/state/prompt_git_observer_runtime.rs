@@ -26,6 +26,12 @@ impl KernelRuntimeState {
             provider_session_id: provider_run.provider_session_id().map(str::to_string),
             prompt_id: dispatch.prompt_id.clone(),
             turn_id: dispatch.prompt_id.clone(),
+            started_at_ms: self
+                .owned
+                .active_turns
+                .snapshot()
+                .get(provider_run.id())
+                .map(|turn| turn.started_at_ms),
             worktree_path,
             workspace_live_sync_tracked: provider_run.tracks_workspace_live_sync(),
             machine_id: None,
@@ -161,6 +167,7 @@ impl KernelRuntimeState {
             provider_session_id: before.provider_session_id.clone(),
             prompt_id: before.prompt_id.clone(),
             turn_id: before.turn_id.clone(),
+            started_at_ms: before.started_at_ms,
             worktree_path: std::path::PathBuf::from(before.worktree_path.clone()),
             workspace_live_sync_tracked: before.workspace_live_sync_tracked,
             machine_id: before.machine_id.clone(),
@@ -186,23 +193,37 @@ impl KernelRuntimeState {
                     attempts += 1;
                     continue;
                 };
-                let tracked_change = if before.workspace_live_sync_tracked {
+                let turn_change =
                     crate::git_observer::tracked_workspace_live_sync_change_after_turn(
                         &before, &after,
-                    )
+                    );
+                let tracked_change = if before.workspace_live_sync_tracked {
+                    turn_change.clone()
                 } else {
                     None
                 };
                 let should_retry = before.workspace_live_sync_tracked && tracked_change.is_none();
                 if !should_retry || attempts >= retry_delays_ms.len() {
                     let after_status_fingerprint = after.status_fingerprint.clone();
+                    let completed_turn = crate::git_observer::CompletedGitTurnSnapshot::new(
+                        before.clone(),
+                        after.clone(),
+                        turn_change,
+                        crate::session::unix_epoch_ms(),
+                    );
                     let history_events = if record_history {
                         crate::git_observer::observe_after_turn(before, after, candidates, &history)
                     } else {
                         Ok(Vec::new())
                     };
                     return Some(history_events.map(|events| {
-                        (events, tracked_change, attempts, after_status_fingerprint)
+                        (
+                            events,
+                            tracked_change,
+                            attempts,
+                            after_status_fingerprint,
+                            completed_turn,
+                        )
                     }));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(retry_delays_ms[attempts]));
@@ -211,7 +232,16 @@ impl KernelRuntimeState {
         })
         .await;
         match observation {
-            Ok(Some(Ok((events, tracked_change, retry_attempts, after_status_fingerprint)))) => {
+            Ok(Some(Ok((
+                events,
+                tracked_change,
+                retry_attempts,
+                after_status_fingerprint,
+                completed_turn,
+            )))) => {
+                self.owned
+                    .completed_git_turn_snapshots
+                    .record(completed_turn);
                 if let Some(change) = tracked_change {
                     let changed_path_count = change.changed_paths.len();
                     self.record_and_fanout_workspace_live_sync_change(change, None, None)

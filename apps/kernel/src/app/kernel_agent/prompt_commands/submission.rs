@@ -167,6 +167,7 @@ impl<'a> KernelAgentService<'a> {
             );
             return Err(error);
         }
+        crate::transport::flow_control::note_prompt_started(self.app, &dispatch.provider_run_id);
         Ok(())
     }
 

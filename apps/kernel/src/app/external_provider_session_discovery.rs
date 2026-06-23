@@ -1,15 +1,15 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::local::{
-    ExternalProviderSessionCapabilities, ExternalProviderSessionMode, ExternalProviderSessionRecord,
-};
+use crate::local::{ExternalProviderSessionCapabilities, ExternalProviderSessionRecord};
 use crate::session::unix_epoch_ms;
 
 const MAX_PROVIDER_FILES: usize = 1_000;
@@ -26,6 +26,16 @@ pub(crate) struct ObservedExternalProviderTurn {
     pub(crate) observed_at_ms: Option<u64>,
 }
 
+impl ObservedExternalProviderTurn {
+    pub(crate) fn stable_fallback_id(&self) -> String {
+        let mut hasher = DefaultHasher::new();
+        self.role.hash(&mut hasher);
+        self.text.hash(&mut hasher);
+        self.observed_at_ms.hash(&mut hasher);
+        format!("observed-{}-{:016x}", role_text(self.role), hasher.finish())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExternalProviderSessionDiscoverySignature {
     files: Vec<ExternalProviderSessionFileSignature>,
@@ -39,10 +49,13 @@ struct ExternalProviderSessionFileSignature {
     modified_at_ms: u64,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ObservedExternalProviderTurnRole {
     User,
     Assistant,
+    Reasoning,
+    Tool,
+    Status,
 }
 
 pub(crate) fn discover_external_provider_sessions(
@@ -116,7 +129,7 @@ pub(crate) fn read_external_provider_observed_turns(
             .collect::<Vec<_>>(),
         _ => Vec::new(),
     };
-    turns.into_iter().take(MAX_OBSERVED_TURNS).collect()
+    latest_observed_turns(turns)
 }
 
 fn provider_matches(filter: Option<&str>, provider: &str) -> bool {
@@ -229,6 +242,7 @@ fn provider_session_candidate_paths(provider_filter: Option<&str>) -> Vec<(Strin
 fn codex_candidate_paths(root: &Path) -> Vec<PathBuf> {
     let mut candidates = jsonl_candidates(&root.join("archived_sessions"), 4);
     candidates.extend(jsonl_candidates(&root.join("sessions"), 4));
+    sort_file_candidates_by_recent_modified(&mut candidates);
     candidates.truncate(MAX_PROVIDER_FILES);
     candidates
 }
@@ -242,6 +256,7 @@ fn claude_candidate_paths(root: &Path) -> Vec<PathBuf> {
 fn opencode_candidate_paths(root: &Path) -> Vec<PathBuf> {
     let mut candidates = session_json_candidates(root, 5);
     candidates.extend(opencode_sqlite_signature_paths(root));
+    sort_file_candidates_by_recent_modified(&mut candidates);
     candidates.truncate(MAX_PROVIDER_FILES);
     candidates
 }
@@ -279,12 +294,16 @@ fn session_json_candidates(root: &Path, max_depth: usize) -> Vec<PathBuf> {
 fn file_candidates(root: &Path, max_depth: usize, extensions: &[&str]) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_file_candidates(root, max_depth, extensions, &mut files);
+    sort_file_candidates_by_recent_modified(&mut files);
+    files
+}
+
+fn sort_file_candidates_by_recent_modified(files: &mut [PathBuf]) {
     files.sort_by(|left, right| {
         file_modified_ms(right)
             .cmp(&file_modified_ms(left))
             .then_with(|| left.cmp(right))
     });
-    files
 }
 
 fn collect_file_candidates(
@@ -293,16 +312,13 @@ fn collect_file_candidates(
     extensions: &[&str],
     files: &mut Vec<PathBuf>,
 ) {
-    if depth_remaining == 0 || files.len() >= MAX_PROVIDER_FILES {
+    if depth_remaining == 0 {
         return;
     }
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
-        if files.len() >= MAX_PROVIDER_FILES {
-            return;
-        }
         let path = entry.path();
         if path
             .components()
@@ -355,6 +371,7 @@ fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> 
     }
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
+    let capabilities = observed_capabilities(true);
     Some(record_from_parts(
         "codex",
         provider_session_id,
@@ -363,7 +380,7 @@ fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> 
         created_at_ms,
         file_modified_ms(path),
         account_profile,
-        observed_capabilities(true),
+        capabilities,
     ))
 }
 
@@ -373,6 +390,7 @@ fn read_codex_observed_turns(
 ) -> Vec<ObservedExternalProviderTurn> {
     let mut candidates = jsonl_candidates(&root.join("archived_sessions"), 4);
     candidates.extend(jsonl_candidates(&root.join("sessions"), 4));
+    sort_file_candidates_by_recent_modified(&mut candidates);
     candidates.truncate(MAX_PROVIDER_FILES);
     candidates
         .into_iter()
@@ -384,43 +402,275 @@ fn codex_observed_turns_from_path(
     path: &Path,
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
-    let lines = read_jsonl_values(path);
-    let mut parsed_session_id = None;
+    let parsed_session_id =
+        codex_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
+    if parsed_session_id != provider_session_id {
+        return None;
+    }
+    let lines = read_recent_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
-            if let Some(payload) = value.get("payload") {
-                parsed_session_id = parsed_session_id
-                    .or_else(|| string_field(payload, &["id", "session_id", "sessionId"]));
-            }
             continue;
         }
-        let payload = value.get("payload").unwrap_or(value);
+        if let Some(turn) = codex_observed_turn_from_value(value) {
+            turns.push(turn);
+        }
+    }
+    Some(latest_observed_turns(deduplicate_codex_mirrored_turns(
+        turns,
+    )))
+}
+
+fn codex_observed_turn_from_value(value: &Value) -> Option<ObservedExternalProviderTurn> {
+    let observed_at_ms = string_field(value, &["timestamp"])
+        .and_then(|timestamp| parse_timestamp_millis(&timestamp));
+    match value.get("type").and_then(Value::as_str) {
+        Some("response_item") => {
+            codex_response_item_observed_turn(value.get("payload").unwrap_or(value), observed_at_ms)
+        }
+        Some("event_msg") => {
+            codex_event_message_observed_turn(value.get("payload").unwrap_or(value), observed_at_ms)
+        }
+        Some("session_meta") => None,
+        _ => {
+            codex_response_item_observed_turn(value.get("payload").unwrap_or(value), observed_at_ms)
+        }
+    }
+}
+
+fn codex_response_item_observed_turn(
+    payload: &Value,
+    observed_at_ms: Option<u64>,
+) -> Option<ObservedExternalProviderTurn> {
+    let item_type = payload.get("type").and_then(Value::as_str);
+    if item_type == Some("message") {
         let role = payload.get("role").and_then(Value::as_str);
-        let Some(role) = observed_role(role) else {
-            continue;
-        };
-        let Some(text) = payload
+        let role = observed_role(role)?;
+        let text = payload
             .get("content")
             .and_then(text_from_content)
             .and_then(|text| {
                 clean_observed_turn_text(payload.get("role").and_then(Value::as_str), text)
-            })
-        else {
-            continue;
-        };
-        turns.push(ObservedExternalProviderTurn {
+            })?;
+        return Some(ObservedExternalProviderTurn {
             role,
             text,
-            provider_turn_id: string_field(payload, &["id", "item_id", "message_id"])
-                .or_else(|| string_field(value, &["id", "item_id", "message_id"])),
-            observed_at_ms: string_field(value, &["timestamp"])
-                .or_else(|| string_field(payload, &["timestamp"]))
-                .and_then(|timestamp| parse_timestamp_millis(&timestamp)),
+            provider_turn_id: string_field(payload, &["id", "item_id", "message_id"]),
+            observed_at_ms,
         });
     }
-    let parsed_session_id = parsed_session_id.or_else(|| file_stem(path))?;
-    (parsed_session_id == provider_session_id).then_some(turns)
+    if item_type == Some("agentMessage") {
+        return Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Assistant,
+            text: payload
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| payload.get("content").and_then(text_from_content))?,
+            provider_turn_id: string_field(payload, &["id", "item_id", "message_id"]),
+            observed_at_ms,
+        });
+    }
+    if item_type == Some("reasoning") {
+        let visible_reasoning = payload
+            .get("summary")
+            .and_then(text_from_content)
+            .or_else(|| payload.get("content").and_then(text_from_content))
+            .or_else(|| {
+                payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        return Some(ObservedExternalProviderTurn {
+            role: visible_reasoning
+                .as_ref()
+                .map(|_| ObservedExternalProviderTurnRole::Reasoning)
+                .unwrap_or(ObservedExternalProviderTurnRole::Status),
+            text: visible_reasoning.unwrap_or_else(|| {
+                "codex reasoning item observed; visible summary unavailable".to_string()
+            }),
+            provider_turn_id: string_field(payload, &["id", "item_id", "message_id"])
+                .or_else(|| observed_at_ms.map(|ms| format!("reasoning-{ms}"))),
+            observed_at_ms,
+        });
+    }
+    if matches!(
+        item_type,
+        Some(
+            "function_call"
+                | "function_call_output"
+                | "commandExecution"
+                | "fileChange"
+                | "mcpToolCall"
+                | "dynamicToolCall"
+                | "collabAgentToolCall"
+                | "local_shell_call"
+        )
+    ) {
+        return Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Tool,
+            text: codex_tool_text(payload),
+            provider_turn_id: codex_tool_turn_id(payload),
+            observed_at_ms,
+        });
+    }
+    item_type.map(|item_type| ObservedExternalProviderTurn {
+        role: ObservedExternalProviderTurnRole::Status,
+        text: codex_metadata_text(&format!("codex response item {item_type}"), payload),
+        provider_turn_id: string_field(payload, &["id", "item_id", "message_id"])
+            .or_else(|| observed_at_ms.map(|ms| format!("{item_type}-{ms}"))),
+        observed_at_ms,
+    })
+}
+
+fn codex_event_message_observed_turn(
+    payload: &Value,
+    observed_at_ms: Option<u64>,
+) -> Option<ObservedExternalProviderTurn> {
+    let event_type = payload.get("type").and_then(Value::as_str)?;
+    match event_type {
+        "user_message" => None,
+        "agent_reasoning" => Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Reasoning,
+            text: payload.get("text").and_then(Value::as_str)?.to_string(),
+            provider_turn_id: observed_at_ms.map(|ms| format!("agent-reasoning-{ms}")),
+            observed_at_ms,
+        }),
+        "agent_message" => Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Assistant,
+            text: payload.get("message").and_then(Value::as_str)?.to_string(),
+            provider_turn_id: observed_at_ms.map(|ms| format!("agent-message-{ms}")),
+            observed_at_ms,
+        }),
+        "mcp_tool_call_end" => Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Tool,
+            text: codex_metadata_text("codex mcp tool call ended", payload),
+            provider_turn_id: string_field(payload, &["call_id"])
+                .map(|call_id| format!("mcp-tool-end-{call_id}")),
+            observed_at_ms,
+        }),
+        "token_count" | "task_started" | "task_complete" => Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Status,
+            text: codex_metadata_text(&format!("codex {event_type}"), payload),
+            provider_turn_id: string_field(payload, &["turn_id"])
+                .map(|turn_id| format!("{event_type}-{turn_id}"))
+                .or_else(|| observed_at_ms.map(|ms| format!("{event_type}-{ms}"))),
+            observed_at_ms,
+        }),
+        _ => Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Status,
+            text: codex_metadata_text(&format!("codex event {event_type}"), payload),
+            provider_turn_id: observed_at_ms.map(|ms| format!("{event_type}-{ms}")),
+            observed_at_ms,
+        }),
+    }
+}
+
+fn deduplicate_codex_mirrored_turns(
+    turns: Vec<ObservedExternalProviderTurn>,
+) -> Vec<ObservedExternalProviderTurn> {
+    let mut deduplicated: Vec<ObservedExternalProviderTurn> = Vec::new();
+    for turn in turns {
+        if let Some(existing_index) = deduplicated
+            .iter()
+            .position(|existing| codex_mirrored_visible_message(existing, &turn))
+        {
+            if codex_turn_identity_is_richer(&turn, &deduplicated[existing_index]) {
+                deduplicated[existing_index] = turn;
+            }
+            continue;
+        }
+        deduplicated.push(turn);
+    }
+    deduplicated
+}
+
+fn codex_mirrored_visible_message(
+    left: &ObservedExternalProviderTurn,
+    right: &ObservedExternalProviderTurn,
+) -> bool {
+    matches!(
+        left.role,
+        ObservedExternalProviderTurnRole::User | ObservedExternalProviderTurnRole::Assistant
+    ) && left.role == right.role
+        && left.text == right.text
+        && observed_timestamps_are_close(left.observed_at_ms, right.observed_at_ms)
+}
+
+fn observed_timestamps_are_close(left: Option<u64>, right: Option<u64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.abs_diff(right) <= 2_000,
+        _ => false,
+    }
+}
+
+fn codex_turn_identity_is_richer(
+    candidate: &ObservedExternalProviderTurn,
+    existing: &ObservedExternalProviderTurn,
+) -> bool {
+    candidate
+        .provider_turn_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("msg_"))
+        && !existing
+            .provider_turn_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("msg_"))
+}
+
+fn codex_tool_turn_id(payload: &Value) -> Option<String> {
+    let item_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("tool");
+    string_field(payload, &["id", "item_id", "message_id"])
+        .or_else(|| string_field(payload, &["call_id"]))
+        .map(|id| format!("{item_type}-{id}"))
+}
+
+fn codex_tool_text(payload: &Value) -> String {
+    match payload.get("type").and_then(Value::as_str) {
+        Some("function_call") => {
+            let name =
+                string_field(payload, &["name"]).unwrap_or_else(|| "function_call".to_string());
+            let namespace = string_field(payload, &["namespace"]);
+            let arguments = payload
+                .get("arguments")
+                .and_then(|value| value.as_str().map(parse_json_string_or_raw))
+                .unwrap_or(Value::Null);
+            compact_json_text(serde_json::json!({
+                "tool": name,
+                "namespace": namespace,
+                "status": "called",
+                "arguments": arguments,
+                "call_id": string_field(payload, &["call_id"]),
+            }))
+        }
+        Some("function_call_output") => compact_json_text(serde_json::json!({
+            "tool": "function_call_output",
+            "status": "completed",
+            "call_id": string_field(payload, &["call_id"]),
+            "output": payload.get("output").cloned().unwrap_or(Value::Null),
+        })),
+        _ => codex_metadata_text("codex tool item", payload),
+    }
+}
+
+fn codex_metadata_text(label: &str, payload: &Value) -> String {
+    format!("{label}\n{}", compact_json_text(payload.clone()))
+}
+
+fn codex_session_id_from_values(lines: &[Value]) -> Option<String> {
+    lines.iter().find_map(|value| {
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            return None;
+        }
+        value
+            .get("payload")
+            .and_then(|payload| string_field(payload, &["id", "session_id", "sessionId"]))
+    })
 }
 
 fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> {
@@ -444,6 +694,7 @@ fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSessionRecord>
     }
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
+    let capabilities = observed_capabilities(true);
     Some(record_from_parts(
         "claude",
         provider_session_id,
@@ -452,7 +703,7 @@ fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSessionRecord>
         created_at_ms,
         file_modified_ms(path),
         None,
-        observed_capabilities(true),
+        capabilities,
     ))
 }
 
@@ -472,12 +723,14 @@ fn claude_observed_turns_from_path(
     path: &Path,
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
-    let lines = read_jsonl_values(path);
-    let mut parsed_session_id = None;
+    let parsed_session_id =
+        claude_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
+    if parsed_session_id != provider_session_id {
+        return None;
+    }
+    let lines = read_recent_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
-        parsed_session_id =
-            parsed_session_id.or_else(|| string_field(value, &["sessionId", "session_id"]));
         let role = value.get("type").and_then(Value::as_str);
         let Some(role) = observed_role(role) else {
             continue;
@@ -503,8 +756,13 @@ fn claude_observed_turns_from_path(
                 .and_then(|timestamp| parse_timestamp_millis(&timestamp)),
         });
     }
-    let parsed_session_id = parsed_session_id.or_else(|| file_stem(path))?;
-    (parsed_session_id == provider_session_id).then_some(turns)
+    Some(latest_observed_turns(turns))
+}
+
+fn claude_session_id_from_values(lines: &[Value]) -> Option<String> {
+    lines
+        .iter()
+        .find_map(|value| string_field(value, &["sessionId", "session_id"]))
 }
 
 fn parse_opencode_session_file(path: &Path) -> Option<ExternalProviderSessionRecord> {
@@ -526,6 +784,7 @@ fn parse_opencode_session_file(path: &Path) -> Option<ExternalProviderSessionRec
     let last_modified_at_ms = string_field(&value, &["updated", "updatedAt", "timeUpdated"])
         .and_then(|timestamp| parse_timestamp_millis(&timestamp))
         .unwrap_or_else(|| file_modified_ms(path));
+    let capabilities = observed_capabilities(true);
     Some(record_from_parts(
         "opencode",
         provider_session_id,
@@ -534,7 +793,7 @@ fn parse_opencode_session_file(path: &Path) -> Option<ExternalProviderSessionRec
         created_at_ms,
         last_modified_at_ms,
         None,
-        observed_capabilities(true),
+        capabilities,
     ))
 }
 
@@ -544,7 +803,7 @@ fn read_opencode_observed_turns(
 ) -> Vec<ObservedExternalProviderTurn> {
     let sqlite_turns = read_opencode_sqlite_observed_turns(root, provider_session_id);
     if !sqlite_turns.is_empty() {
-        return sqlite_turns.into_iter().take(MAX_OBSERVED_TURNS).collect();
+        return latest_observed_turns(sqlite_turns);
     }
     let mut candidates = session_json_candidates(root, 5);
     candidates.truncate(MAX_PROVIDER_FILES);
@@ -579,31 +838,37 @@ fn opencode_observed_turns_from_path(
         .or_else(|| value.get("conversation"))
         .or_else(|| value.get("entries"))
         .and_then(Value::as_array)?;
-    Some(
+    Some(latest_observed_turns(
         messages
             .iter()
             .filter_map(opencode_observed_turn_from_value)
-            .take(MAX_OBSERVED_TURNS)
             .collect(),
-    )
+    ))
 }
 
 fn opencode_jsonl_observed_turns_from_path(
     path: &Path,
     provider_session_id: &str,
 ) -> Option<Vec<ObservedExternalProviderTurn>> {
-    let lines = read_jsonl_values(path);
-    let mut parsed_session_id = None;
+    let parsed_session_id =
+        opencode_session_id_from_values(&read_jsonl_values(path)).or_else(|| file_stem(path))?;
+    if parsed_session_id != provider_session_id {
+        return None;
+    }
+    let lines = read_recent_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
-        parsed_session_id =
-            parsed_session_id.or_else(|| string_field(value, &["sessionID", "sessionId", "id"]));
         if let Some(turn) = opencode_observed_turn_from_value(value) {
             turns.push(turn);
         }
     }
-    let parsed_session_id = parsed_session_id.or_else(|| file_stem(path))?;
-    (parsed_session_id == provider_session_id).then_some(turns)
+    Some(latest_observed_turns(turns))
+}
+
+fn opencode_session_id_from_values(lines: &[Value]) -> Option<String> {
+    lines
+        .iter()
+        .find_map(|value| string_field(value, &["sessionID", "sessionId", "id"]))
 }
 
 fn opencode_observed_turn_from_value(value: &Value) -> Option<ObservedExternalProviderTurn> {
@@ -640,6 +905,7 @@ fn parse_opencode_jsonl(path: &Path) -> Option<ExternalProviderSessionRecord> {
     }
 
     let provider_session_id = provider_session_id.or_else(|| file_stem(path))?;
+    let capabilities = observed_capabilities(true);
     Some(record_from_parts(
         "opencode",
         provider_session_id,
@@ -648,7 +914,7 @@ fn parse_opencode_jsonl(path: &Path) -> Option<ExternalProviderSessionRecord> {
         created_at_ms,
         file_modified_ms(path),
         None,
-        observed_capabilities(true),
+        capabilities,
     ))
 }
 
@@ -709,7 +975,7 @@ fn discover_opencode_sqlite_sessions(root: &Path) -> Vec<ExternalProviderSession
                     .or(title);
                 record_from_parts(
                     "opencode",
-                    provider_session_id,
+                    provider_session_id.clone(),
                     first_prompt,
                     directory,
                     created_at_ms,
@@ -731,14 +997,18 @@ fn read_opencode_sqlite_observed_turns(
         return Vec::new();
     };
     let mut statement = match connection.prepare(
-        "select m.id, json_extract(m.data, '$.role') as role, \
-                p.id, json_extract(p.data, '$.type') as part_type, \
-                p.data, p.time_created, p.time_updated \
-           from message m \
-           join part p on p.message_id = m.id \
-          where m.session_id = ?1 \
-          order by p.time_created asc, p.id asc \
-          limit ?2",
+        "select message_id, role, part_id, part_type, part_data, time_created, time_updated \
+           from ( \
+                select m.id as message_id, json_extract(m.data, '$.role') as role, \
+                       p.id as part_id, json_extract(p.data, '$.type') as part_type, \
+                       p.data as part_data, p.time_created as time_created, p.time_updated as time_updated \
+                  from message m \
+                  join part p on p.message_id = m.id \
+                 where m.session_id = ?1 \
+                 order by p.time_created desc, p.id desc \
+                 limit ?2 \
+           ) \
+          order by time_created asc, part_id asc",
     ) {
         Ok(statement) => statement,
         Err(_) => return Vec::new(),
@@ -792,6 +1062,17 @@ fn read_opencode_sqlite_observed_turns(
         .collect()
 }
 
+fn latest_observed_turns(
+    mut turns: Vec<ObservedExternalProviderTurn>,
+) -> Vec<ObservedExternalProviderTurn> {
+    if turns.len() <= MAX_OBSERVED_TURNS {
+        return turns;
+    }
+    let start = turns.len() - MAX_OBSERVED_TURNS;
+    turns.drain(0..start);
+    turns
+}
+
 fn open_opencode_sqlite(path: &Path) -> Option<Connection> {
     if !path.is_file() {
         return None;
@@ -816,6 +1097,9 @@ fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
     match role {
         ObservedExternalProviderTurnRole::User => "user",
         ObservedExternalProviderTurnRole::Assistant => "assistant",
+        ObservedExternalProviderTurnRole::Reasoning => "reasoning",
+        ObservedExternalProviderTurnRole::Tool => "tool",
+        ObservedExternalProviderTurnRole::Status => "status",
     }
 }
 
@@ -830,6 +1114,18 @@ fn read_jsonl_values(path: &Path) -> Vec<Value> {
     payload
         .lines()
         .take(MAX_JSONL_LINES)
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect()
+}
+
+fn read_recent_jsonl_values(path: &Path) -> Vec<Value> {
+    let Ok(payload) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let lines = payload.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(MAX_JSONL_LINES);
+    lines[start..]
+        .iter()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .collect()
 }
@@ -862,6 +1158,9 @@ fn observed_role(role: Option<&str>) -> Option<ObservedExternalProviderTurnRole>
     match role {
         Some("user") => Some(ObservedExternalProviderTurnRole::User),
         Some("assistant") => Some(ObservedExternalProviderTurnRole::Assistant),
+        Some("reasoning") => Some(ObservedExternalProviderTurnRole::Reasoning),
+        Some("tool") => Some(ObservedExternalProviderTurnRole::Tool),
+        Some("status") => Some(ObservedExternalProviderTurnRole::Status),
         _ => None,
     }
 }
@@ -870,6 +1169,12 @@ fn clean_observed_turn_text(role: Option<&str>, text: String) -> Option<String> 
     match observed_role(role)? {
         ObservedExternalProviderTurnRole::User => clean_provider_prompt(text),
         ObservedExternalProviderTurnRole::Assistant => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        ObservedExternalProviderTurnRole::Reasoning
+        | ObservedExternalProviderTurnRole::Tool
+        | ObservedExternalProviderTurnRole::Status => {
             let text = text.trim();
             (!text.is_empty()).then(|| text.to_string())
         }
@@ -899,6 +1204,14 @@ fn text_from_content(value: &Value) -> Option<String> {
             .map(str::to_string),
         _ => None,
     }
+}
+
+fn parse_json_string_or_raw(value: &str) -> Value {
+    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
+}
+
+fn compact_json_text(value: Value) -> String {
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
 }
 
 fn clean_provider_prompt(prompt: String) -> Option<String> {
@@ -950,25 +1263,15 @@ fn record_from_parts(
         last_modified_at_ms,
         worktree_path,
         account_profile,
-        running_state: None,
         capabilities,
-        mode: ExternalProviderSessionMode::Observed,
-        already_imported: false,
-        imported_session_ids: Vec::new(),
-        imported_agent_ids: Vec::new(),
+        attached_to_arroba: false,
+        attached_session_ids: Vec::new(),
+        attached_agent_ids: Vec::new(),
     }
 }
 
 fn observed_capabilities(can_read_history: bool) -> ExternalProviderSessionCapabilities {
-    ExternalProviderSessionCapabilities {
-        can_resume: true,
-        can_read_history,
-        can_watch_history: false,
-        can_attach_live: false,
-        can_proxy_permissions: false,
-        can_receive_hidden_context: false,
-        supports_workspace_live_sync: false,
-    }
+    ExternalProviderSessionCapabilities { can_read_history }
 }
 
 fn first_sentence_title(prompt: &str) -> Option<String> {
@@ -1123,8 +1426,20 @@ mod tests {
         );
         assert_eq!(sessions[0].worktree_path.as_deref(), Some("/repo"));
         assert_eq!(sessions[0].account_profile.as_deref(), Some("openai"));
-        assert!(sessions[0].capabilities.can_resume);
         assert!(sessions[0].capabilities.can_read_history);
+    }
+
+    #[test]
+    fn file_candidate_collection_does_not_cap_before_recent_sort() {
+        let temp = temp_dir("provider-file-cap");
+        let root = temp.path();
+        for index in 0..=MAX_PROVIDER_FILES {
+            fs::write(root.join(format!("session-{index}.jsonl")), "{}\n").unwrap();
+        }
+
+        let candidates = jsonl_candidates(root, 1);
+
+        assert_eq!(candidates.len(), MAX_PROVIDER_FILES + 1);
     }
 
     #[test]
@@ -1215,6 +1530,116 @@ mod tests {
         assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u1"));
         assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
         assert_eq!(turns[1].text, "Use fixture transcripts.");
+    }
+
+    #[test]
+    fn reads_codex_observed_reasoning_tools_and_status_metadata() {
+        let temp = temp_dir("codex-observed-metadata");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("rollout.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"/repo\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\",\"model_context_window\":258400}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Create, inspect, and delete a file.\"}]}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:03.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"r1\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Planning file changes.\"}]}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:04.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"exec_command\",\"arguments\":\"{\\\"cmd\\\":\\\"printf alpha > drill.txt\\\"}\",\"call_id\":\"call-create\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:05.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call-create\",\"output\":\"created\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:06.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"a1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Done.\"}]}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:07.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1,\"output_tokens\":2}}}}\n",
+            ),
+        )
+        .unwrap();
+
+        let turns = read_codex_observed_turns(root, "thread-1");
+        assert_eq!(
+            turns.iter().map(|turn| turn.role).collect::<Vec<_>>(),
+            vec![
+                ObservedExternalProviderTurnRole::Status,
+                ObservedExternalProviderTurnRole::User,
+                ObservedExternalProviderTurnRole::Reasoning,
+                ObservedExternalProviderTurnRole::Tool,
+                ObservedExternalProviderTurnRole::Tool,
+                ObservedExternalProviderTurnRole::Assistant,
+                ObservedExternalProviderTurnRole::Status,
+            ]
+        );
+        assert!(turns[0].text.contains("codex task_started"));
+        assert!(turns[2].text.contains("Planning file changes."));
+        assert!(turns[3].text.contains("exec_command"));
+        assert!(turns[3].text.contains("printf alpha > drill.txt"));
+        assert!(turns[4].text.contains("created"));
+        assert!(turns[6].text.contains("total_token_usage"));
+    }
+
+    #[test]
+    fn reads_codex_observed_turns_from_recent_jsonl_tail() {
+        let temp = temp_dir("codex-observed-tail");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        let mut lines = vec![
+            "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-tail\",\"cwd\":\"/repo\"}}".to_string(),
+        ];
+        for index in 0..320 {
+            lines.push(format!(
+                "{{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{{\"id\":\"noise-{index}\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"noise {index}\"}}]}}}}"
+            ));
+        }
+        lines.push("{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u-tail\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Latest external prompt.\"}]}}".to_string());
+        fs::write(
+            session_dir.join("rollout.jsonl"),
+            format!("{}\n", lines.join("\n")),
+        )
+        .unwrap();
+
+        let turns = read_codex_observed_turns(root, "thread-tail");
+        assert_eq!(turns.len(), MAX_OBSERVED_TURNS);
+        assert_eq!(
+            turns.last().map(|turn| turn.text.as_str()),
+            Some("Latest external prompt.")
+        );
+        assert_eq!(
+            turns
+                .last()
+                .and_then(|turn| turn.provider_turn_id.as_deref()),
+            Some("u-tail")
+        );
+    }
+
+    #[test]
+    fn reads_codex_observed_turns_deduplicates_mirrored_visible_events() {
+        let temp = temp_dir("codex-observed-mirror-dedupe");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("rollout.jsonl"),
+            concat!(
+                "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"/repo\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Run a drill.\"}]}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:01.001Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Run a drill.\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:02.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"The drill passed.\"}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:02.001Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"msg_rich\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The drill passed.\"}]}}\n",
+                "{\"timestamp\":\"2026-01-01T00:00:03.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":42}}}}\n",
+            ),
+        )
+        .unwrap();
+
+        let turns = read_codex_observed_turns(root, "thread-1");
+        assert_eq!(
+            turns.iter().map(|turn| turn.role).collect::<Vec<_>>(),
+            vec![
+                ObservedExternalProviderTurnRole::User,
+                ObservedExternalProviderTurnRole::Assistant,
+                ObservedExternalProviderTurnRole::Status,
+            ]
+        );
+        assert_eq!(turns[1].text, "The drill passed.");
+        assert_eq!(turns[1].provider_turn_id.as_deref(), Some("msg_rich"));
+        assert!(turns[2].text.contains("total_token_usage"));
     }
 
     #[test]

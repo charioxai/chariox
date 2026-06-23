@@ -122,6 +122,9 @@ impl ProviderRunActivationState {
         }
 
         for run in Self::active_arroba_runs_for_target_agent(app, &request) {
+            if previous_active_run_id.as_deref() == Some(run.id()) {
+                continue;
+            }
             let outcome = app
                 .providers
                 .terminate_run_provider_only(&session_id, run.id())?;

@@ -30,6 +30,35 @@ pub struct SpawnAgentRequest {
     pub metaagent: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UndoTurnRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ForkAgentRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnUndoResult {
+    pub session_id: String,
+    pub agent_id: String,
+    pub turn_id: String,
+    pub prompt_id: String,
+    pub provider_run_id: String,
+    pub reverted_paths: Vec<String>,
+    pub path_results: Vec<crate::workspace_live_sync_journal::WorkspaceLiveSyncPathApplyResult>,
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }

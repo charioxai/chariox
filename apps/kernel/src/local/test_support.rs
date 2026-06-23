@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Mutex;
 
 use crate::agent::AgentInstance;
@@ -20,6 +20,7 @@ use super::{
 };
 
 static LOCAL_ROUTER_TEST_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
+const LOCAL_ROUTER_TEST_RUNTIME_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 /// Router-backed in-process fixture for daemon unit tests.
 ///
@@ -47,7 +48,11 @@ impl LocalRouterTestHarness {
             provider_runtime_lanes,
         );
         Self {
-            runtime: Runtime::new().expect("test runtime should start"),
+            runtime: Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(LOCAL_ROUTER_TEST_RUNTIME_THREAD_STACK_SIZE)
+                .build()
+                .expect("test runtime should start"),
             app,
             router,
         }

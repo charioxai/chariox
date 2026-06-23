@@ -384,6 +384,7 @@ async fn provider_output_pump_includes_runs_with_pending_git_snapshots() {
             provider_session_id: None,
             prompt_id: "prompt-1".to_string(),
             turn_id: "prompt-1".to_string(),
+            started_at_ms: None,
             machine_id: None,
             prompt_summary: "test prompt".to_string(),
             repo_root: "/tmp/repo".to_string(),

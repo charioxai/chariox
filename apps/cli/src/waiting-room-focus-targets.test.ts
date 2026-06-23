@@ -72,7 +72,7 @@ test("waiting room focus movement tracks indexed targets", () => {
   assert.equal(state.sliceIndex, 0)
 })
 
-test("waiting room focus targets include orphan agents and pagination", () => {
+test("waiting room focus targets include unattached agents and pagination", () => {
   const sessions = [session({ id: "arroba-session" })]
   const targets = waitingRoomFocusTargets(sessions, {
     externalProviderSessions: [
@@ -185,18 +185,8 @@ function externalSession(overrides: Partial<ExternalProviderSessionRecord> = {})
     created_at_ms: 1,
     last_modified_at_ms: 2,
     capabilities: {
-      can_resume: true,
       can_read_history: true,
-      can_watch_history: false,
-      can_attach_live: false,
-      can_proxy_permissions: false,
-      can_receive_hidden_context: false,
-      supports_workspace_live_sync: false,
     },
-    mode: "resume_only",
-    already_imported: false,
-    imported_session_ids: [],
-    imported_agent_ids: [],
     ...overrides,
   }
 }

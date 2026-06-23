@@ -86,7 +86,7 @@ test("waiting room activation stages existing worktree selections for session cr
   }
 })
 
-test("waiting room activation opens focused orphan agents", () => {
+test("waiting room activation opens focused unattached agents", () => {
   const catalog = fallbackProviderCatalog()
   const decision = deriveWaitingRoomActivationDecision({
     state: waitingRoomState({ focus: "external-session", externalSessionIndex: 1 }),
@@ -820,18 +820,8 @@ function externalSession(id: string): ExternalProviderSessionRecord {
     created_at_ms: 1,
     last_modified_at_ms: 2,
     capabilities: {
-      can_resume: true,
       can_read_history: true,
-      can_watch_history: false,
-      can_attach_live: false,
-      can_proxy_permissions: false,
-      can_receive_hidden_context: false,
-      supports_workspace_live_sync: false,
     },
-    mode: "resume_only",
-    already_imported: false,
-    imported_session_ids: [],
-    imported_agent_ids: [],
   }
 }
 

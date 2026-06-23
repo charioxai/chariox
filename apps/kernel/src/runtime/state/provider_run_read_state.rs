@@ -1,6 +1,12 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn provider_runs_for_external_session_attachment(
+        &self,
+    ) -> Vec<crate::provider::RuntimeProviderRun> {
+        self.owned.provider_store.list_runs()
+    }
+
     pub(crate) fn provider_run_response(
         &self,
         request: crate::local::GetProviderRunRequest,

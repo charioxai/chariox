@@ -295,8 +295,7 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::ListExternalProviderSessions(_)
             | LocalDaemonRequest::RefreshExternalProviderSessions(_)
             | LocalDaemonRequest::ImportExternalProviderSession(_)
-            | LocalDaemonRequest::ImportExternalProviderAgent(_)
-            | LocalDaemonRequest::WatchExternalProviderSessionStatus(_)) => {
+            | LocalDaemonRequest::ImportExternalProviderAgent(_)) => {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_external_provider_session_request(
                     &self.app,

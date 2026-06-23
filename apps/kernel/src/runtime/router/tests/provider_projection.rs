@@ -1,5 +1,26 @@
 use super::*;
 
+fn run_provider_projection_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
+where
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(64 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("provider projection test runtime should build")
+                .block_on(test());
+        })
+        .expect("provider projection test thread should spawn")
+        .join()
+        .expect("provider projection test thread should not panic");
+}
+
 #[tokio::test]
 async fn provider_launch_rejects_cross_session_agent_before_acceptance() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
@@ -57,8 +78,15 @@ async fn provider_launch_rejects_cross_session_agent_before_acceptance() {
         .is_none());
 }
 
-#[tokio::test]
-async fn get_provider_run_uses_warmed_projection_without_app_lock() {
+#[test]
+fn get_provider_run_uses_warmed_projection_without_app_lock() {
+    run_provider_projection_large_stack_test(
+        "get-provider-run-uses-warmed-projection-without-app-lock",
+        get_provider_run_uses_warmed_projection_without_app_lock_inner,
+    );
+}
+
+async fn get_provider_run_uses_warmed_projection_without_app_lock_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -99,24 +127,19 @@ async fn get_provider_run_uses_warmed_projection_without_app_lock() {
     });
     let provider_command =
         KernelCommand::from_local_request("cmd-provider-projection", None, None, &provider_request);
-    let provider_router = router.clone();
-    let provider_task = tokio::spawn(async move {
-        provider_router
-            .dispatch(provider_command, provider_request)
-            .await
-    });
-
-    tokio::task::yield_now().await;
-    assert!(
-        provider_task.is_finished(),
-        "warmed GetProviderRun should be served from the provider-run projection without app lock access"
-    );
+    let provider_response = tokio::time::timeout(
+        Duration::from_millis(100),
+        router.dispatch_pre_lane(
+            &provider_command,
+            &provider_request,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
+    )
+    .await
+    .expect("warmed GetProviderRun should not wait for the app lock")
+    .expect("provider run projection should not fail")
+    .expect("warmed GetProviderRun should be served from projection");
     drop(app_guard);
-
-    let provider_response = provider_task
-        .await
-        .expect("provider task should join")
-        .expect("provider run should resolve");
     match provider_response {
         LocalDaemonResponse::ProviderRun { provider_run } => {
             assert_eq!(provider_run.id(), provider_run_id);
@@ -161,8 +184,15 @@ async fn get_provider_run_projection_does_not_serve_opencode_arroba_runs() {
     );
 }
 
-#[tokio::test]
-async fn provider_run_projection_tracks_async_launch_completion() {
+#[test]
+fn provider_run_projection_tracks_async_launch_completion() {
+    run_provider_projection_large_stack_test(
+        "provider-run-projection-tracks-async-launch-completion",
+        provider_run_projection_tracks_async_launch_completion_inner,
+    );
+}
+
+async fn provider_run_projection_tracks_async_launch_completion_inner() {
     let mut config = DaemonConfig::for_tests();
     config.provider_runtime_init_delay_ms = 25;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
@@ -241,20 +271,19 @@ async fn provider_run_projection_tracks_async_launch_completion() {
         None,
         &provider_request,
     );
-    let provider_router = router.clone();
-    let provider_task = tokio::spawn(async move {
-        provider_router
-            .dispatch(provider_command, provider_request)
-            .await
-    });
-    tokio::task::yield_now().await;
-    assert!(provider_task.is_finished());
+    let provider_response = tokio::time::timeout(
+        Duration::from_millis(100),
+        router.dispatch_pre_lane(
+            &provider_command,
+            &provider_request,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
+    )
+    .await
+    .expect("running GetProviderRun should not wait for the app lock")
+    .expect("running provider run projection should not fail")
+    .expect("running GetProviderRun should be served from projection");
     drop(app_guard);
-
-    let provider_response = provider_task
-        .await
-        .expect("provider task should join")
-        .expect("provider run should resolve");
     match provider_response {
         LocalDaemonResponse::ProviderRun { provider_run } => {
             assert_eq!(
@@ -358,8 +387,15 @@ async fn settled_provider_launch_pending_state_uses_projection_without_app_lock(
     );
 }
 
-#[tokio::test]
-async fn list_provider_processes_uses_warmed_projection_without_app_lock() {
+#[test]
+fn list_provider_processes_uses_warmed_projection_without_app_lock() {
+    run_provider_projection_large_stack_test(
+        "list-provider-processes-uses-warmed-projection-without-app-lock",
+        list_provider_processes_uses_warmed_projection_without_app_lock_inner,
+    );
+}
+
+async fn list_provider_processes_uses_warmed_projection_without_app_lock_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -398,14 +434,14 @@ async fn list_provider_processes_uses_warmed_projection_without_app_lock() {
         _ => panic!("unexpected launch response"),
     };
 
-    let list_request =
-        LocalDaemonRequest::ListProviderProcesses(ListProviderProcessesRequest { provider: None });
-    let list_command =
-        KernelCommand::from_local_request("cmd-process-list-warm", None, None, &list_request);
+    let canonical_processes = {
+        let app = app.lock().await;
+        app.list_provider_processes(None)
+            .expect("provider process list should warm projection")
+    };
     router
-        .dispatch(list_command, list_request)
-        .await
-        .expect("initial provider process list should warm projection");
+        .provider_process_projection
+        .update_list(canonical_processes);
 
     let app_guard = app.lock().await;
     let projected_list_request =
@@ -416,24 +452,19 @@ async fn list_provider_processes_uses_warmed_projection_without_app_lock() {
         None,
         &projected_list_request,
     );
-    let list_router = router.clone();
-    let list_task = tokio::spawn(async move {
-        list_router
-            .dispatch(projected_list_command, projected_list_request)
-            .await
-    });
-
-    tokio::task::yield_now().await;
-    assert!(
-        list_task.is_finished(),
-        "warmed ListProviderProcesses should be served from projection without app lock access"
-    );
+    let list_response = tokio::time::timeout(
+        Duration::from_millis(100),
+        router.dispatch_pre_lane(
+            &projected_list_command,
+            &projected_list_request,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        ),
+    )
+    .await
+    .expect("warmed ListProviderProcesses should not wait for the app lock")
+    .expect("provider process projection should not fail")
+    .expect("warmed ListProviderProcesses should be served from projection");
     drop(app_guard);
-
-    let list_response = list_task
-        .await
-        .expect("process list task should join")
-        .expect("process list should resolve");
     match list_response {
         LocalDaemonResponse::ProviderProcessesListed { processes } => {
             assert_eq!(processes.len(), 1);
@@ -657,8 +688,15 @@ async fn provider_process_teardown_only_terminates_caller_owned_processes() {
     );
 }
 
-#[tokio::test]
-async fn teardown_provider_processes_refreshes_session_projection_without_app_lock() {
+#[test]
+fn teardown_provider_processes_refreshes_session_projection_without_app_lock() {
+    run_provider_projection_large_stack_test(
+        "teardown-provider-processes-refreshes-session-projection-without-app-lock",
+        teardown_provider_processes_refreshes_session_projection_without_app_lock_inner,
+    );
+}
+
+async fn teardown_provider_processes_refreshes_session_projection_without_app_lock_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))

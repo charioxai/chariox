@@ -374,6 +374,21 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
         branch_two_node.id(),
         join_node.id(),
     );
+    match harness
+        .dispatch(LocalDaemonRequest::SetWorkflowNodeWaitForAllInputs(
+            SetWorkflowNodeWaitForAllInputsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                node_id: join_node.id().to_string(),
+                wait_for_all_inputs: true,
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("join node should be configured to wait for all inputs")
+    {
+        LocalDaemonResponse::WorkflowNodeWaitForAllInputsUpdated { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
 
     let endpoint = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(

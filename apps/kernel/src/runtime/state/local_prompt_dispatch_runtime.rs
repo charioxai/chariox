@@ -5,6 +5,26 @@
 
 use super::*;
 
+impl KernelRuntimeOwnedState {
+    fn prompt_dispatch_matches_active_prompt(
+        &self,
+        dispatch: &crate::app::KernelPromptDispatch,
+    ) -> Result<bool, DaemonError> {
+        let session = self.session_store.get_session(&dispatch.session_id)?;
+        let prompt_is_dispatch_prompt = |prompt: &crate::session::PromptQueueItem| {
+            prompt.prompt_origin() != crate::session::PromptOrigin::External
+                && prompt.id() == dispatch.prompt_id
+        };
+        if let Some(active_prompt) = session.active_prompt_for_agent(&dispatch.agent_id) {
+            return Ok(prompt_is_dispatch_prompt(active_prompt));
+        }
+        Ok(self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &dispatch.agent_id)
+            .is_some_and(|prompt| prompt_is_dispatch_prompt(&prompt)))
+    }
+}
+
 impl KernelRuntimeState {
     pub(super) async fn enqueue_prompt_dispatch(
         &self,
@@ -12,6 +32,9 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         {
             let owned = &self.owned;
+            if !owned.prompt_dispatch_matches_active_prompt(dispatch)? {
+                return Ok(());
+            }
             let has_managed_process = owned
                 .provider_process_tracking
                 .read()
@@ -41,6 +64,9 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
     ) -> Result<(), DaemonError> {
+        if !owned.prompt_dispatch_matches_active_prompt(dispatch)? {
+            return Ok(());
+        }
         owned.echo_prompt_to_other_attachments(
             &dispatch.session_id,
             &dispatch.provider_run_id,
@@ -70,6 +96,7 @@ impl KernelRuntimeState {
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &dispatch.source_attachment_id,
+                &provider_run,
                 &dispatch.prompt,
             );
             let granted_skill_context = owned.granted_skill_hidden_context(
@@ -88,7 +115,7 @@ impl KernelRuntimeState {
             } else {
                 crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
             };
-            return owned.provider_store.enqueue_structured_prompt_submit(
+            let result = owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
                 dispatch.agent_id.clone(),
@@ -99,6 +126,14 @@ impl KernelRuntimeState {
                 mode,
                 dispatch.steering,
             );
+            if result.is_ok() {
+                owned.consume_pending_context_handoff(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &provider_run,
+                );
+            }
+            return result;
         }
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(&dispatch.source_attachment_id)
         {
@@ -116,6 +151,7 @@ impl KernelRuntimeState {
             &dispatch.session_id,
             &dispatch.agent_id,
             &dispatch.source_attachment_id,
+            &provider_run,
             &dispatch.prompt,
         );
         let prompt_with_hidden_context =
@@ -168,16 +204,37 @@ impl KernelRuntimeState {
             return Ok(());
         }
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+            let dispatch_with_handoff = crate::app::KernelPromptDispatch {
+                session_id: dispatch.session_id.clone(),
+                provider_run_id: dispatch.provider_run_id.clone(),
+                agent_id: dispatch.agent_id.clone(),
+                prompt_id: dispatch.prompt_id.clone(),
+                source_attachment_id: dispatch.source_attachment_id.clone(),
+                prompt: dispatch.prompt.clone(),
+                hidden_system_context: owned.hidden_context_with_pending_context_handoff(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &provider_run,
+                    &dispatch.hidden_system_context,
+                ),
+                attachments: dispatch.attachments.clone(),
+                steering: dispatch.steering,
+            };
             let provider_run = provider_run.clone();
             self.with_app_side_effect(|app| {
                 app.process_claude_native_prompt_dispatch_for_runtime(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
                     &provider_run,
-                    dispatch,
+                    &dispatch_with_handoff,
                 )
             })
             .await?;
+            owned.consume_pending_context_handoff(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &provider_run,
+            );
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
             }
@@ -190,6 +247,11 @@ impl KernelRuntimeState {
             )
         })
         .await?;
+        owned.consume_pending_context_handoff(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &provider_run,
+        );
         if !dispatch.steering {
             owned.note_prompt_started(&dispatch.provider_run_id);
         }

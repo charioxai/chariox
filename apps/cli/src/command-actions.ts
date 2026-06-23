@@ -54,8 +54,10 @@ import {
   type SessionCommandHandlerDeps,
 } from "./session-command-handlers.js"
 import {
+  handleAgentForkCommand,
   handleAgentSlashCommand,
   handleCycleAgentFocus as cycleAgentFocusCommand,
+  handleTurnUndoCommand,
   type AgentCommandHandlerDeps,
 } from "./agent-command-handlers.js"
 import {
@@ -202,6 +204,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleAgentSlashCommand(agentCommandDeps(), command)
   }
 
+  const handleUndoCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "undo" }>,
+  ): Promise<void> => {
+    await handleTurnUndoCommand(agentCommandDeps(), command.args)
+  }
+
+  const handleForkCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "fork" }>,
+  ): Promise<void> => {
+    await handleAgentForkCommand(agentCommandDeps(), command.args)
+  }
 
   const handleRelayCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "relay" }>,
@@ -307,6 +320,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,
+    handleUndoCommand,
+    handleForkCommand,
     handleKernelCommand,
     handleMachineCommand,
     handleSliceCommand,

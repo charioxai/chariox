@@ -106,6 +106,41 @@ export function makeCommandDeps(overrides: Record<string, unknown> = {}) {
     }),
     setProviderRunState: () => {},
     refreshSessionState: async () => currentSession,
+    undoTurn: async (agentRef?: string | null) => ({
+      session_id: currentSession.id,
+      agent_id: agentRef ?? currentSession.focused_agent_id ?? "agent-1",
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      provider_run_id: "provider-run-1",
+      reverted_paths: ["src/lib.ts"],
+      path_results: [{ path: "src/lib.ts", status: "applied", message: "restored" }],
+    }),
+    forkAgent: async (sourceAgentRef?: string | null) => {
+      const agent = makeAgent({
+        id: "agent-2",
+        agent_ref: "agent-2",
+        alias: "fork",
+        state: "Focused",
+      })
+      currentSession = makeSession({ focused_agent_id: agent.id, agents: [...currentSession.agents, agent] })
+      return {
+        source_agent_id: sourceAgentRef ?? "agent-1",
+        agent,
+        provider_run: {
+          id: "provider-run-2",
+          session_id: "session-1",
+          agent_instance_id: agent.id,
+          adapter_key: agent.provider,
+          provider: agent.provider,
+          account_profile: "default",
+          model: agent.model ?? "openai/gpt-5",
+          variant: "medium",
+          usage_tokens_total: null,
+          state: "running",
+        },
+        session: currentSession,
+      }
+    },
     spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, _machineRef?: string) => {
       const agent = makeAgent({
         id: "agent-2",

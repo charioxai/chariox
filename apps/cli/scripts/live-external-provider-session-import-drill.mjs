@@ -1,4 +1,5 @@
 import { spawn, execFile } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -80,135 +81,158 @@ async function seedProviderHomes(root, marker, workspace) {
   const claudeHome = path.join(root, "provider-homes", "claude")
   const opencodeHome = path.join(root, "provider-homes", "opencode")
   const fixtureUpdatedAt = new Date().toISOString()
+  const fixtures = {
+    codex: {
+      session: { providerSessionId: `codex-${marker}-session`, file: "codex-thread-drill-session.jsonl" },
+      agent: { providerSessionId: `codex-${marker}-agent`, file: "codex-thread-drill-agent.jsonl" },
+    },
+    claude: {
+      session: { providerSessionId: randomUUID(), file: "claude-session-drill-session.jsonl" },
+      agent: { providerSessionId: randomUUID(), file: "claude-session-drill-agent.jsonl" },
+    },
+    opencode: {
+      session: { providerSessionId: `opencode-${marker}-session`, file: "opencode-session-drill-session.json" },
+      agent: { providerSessionId: `opencode-${marker}-agent`, file: "opencode-session-drill-agent.json" },
+    },
+  }
   await mkdir(path.join(codexHome, "sessions"), { recursive: true })
   await mkdir(path.join(claudeHome, "projects", "-repo"), { recursive: true })
   await mkdir(path.join(opencodeHome, "sessions"), { recursive: true })
 
-  await writeFile(
-    path.join(codexHome, "sessions", "codex-thread-drill.jsonl"),
-    [
-      JSON.stringify({
-        timestamp: "2026-06-09T12:00:00.000Z",
-        type: "session_meta",
-        payload: { id: `codex-${marker}`, cwd: workspace, model_provider: "openai" },
-      }),
-      JSON.stringify({
-        timestamp: "2026-06-09T12:00:01.000Z",
-        type: "response_item",
-        payload: {
-          id: "codex-user-1",
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: `Codex external drill prompt ${marker}.` }],
-        },
-      }),
-      JSON.stringify({
-        timestamp: "2026-06-09T12:00:02.000Z",
-        type: "response_item",
-        payload: {
-          id: "codex-assistant-1",
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: `Codex observed reply ${marker}.` }],
-        },
-      }),
-    ].join("\n") + "\n",
-  )
+  for (const [kind, fixture] of Object.entries(fixtures.codex)) {
+    await writeFile(
+      path.join(codexHome, "sessions", fixture.file),
+      [
+        JSON.stringify({
+          timestamp: "2026-06-09T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: fixture.providerSessionId, cwd: workspace, model_provider: "openai" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-06-09T12:00:01.000Z",
+          type: "response_item",
+          payload: {
+            id: `codex-user-1-${kind}`,
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: `Codex ${kind} external drill prompt ${marker}.` }],
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-06-09T12:00:02.000Z",
+          type: "response_item",
+          payload: {
+            id: `codex-assistant-1-${kind}`,
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: `Codex ${kind} observed reply ${marker}.` }],
+          },
+        }),
+      ].join("\n") + "\n",
+    )
+  }
 
-  await writeFile(
-    path.join(claudeHome, "projects", "-repo", "claude-session-drill.jsonl"),
-    [
+  for (const [kind, fixture] of Object.entries(fixtures.claude)) {
+    await writeFile(
+      path.join(claudeHome, "projects", "-repo", fixture.file),
+      [
+        JSON.stringify({
+          type: "user",
+          uuid: `claude-user-1-${kind}`,
+          sessionId: fixture.providerSessionId,
+          cwd: workspace,
+          timestamp: "2026-06-09T12:00:01.000Z",
+          message: { role: "user", content: [{ text: `Claude ${kind} external drill prompt ${marker}.` }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: `claude-assistant-1-${kind}`,
+          sessionId: fixture.providerSessionId,
+          timestamp: "2026-06-09T12:00:02.000Z",
+          message: { role: "assistant", content: [{ text: `Claude ${kind} observed reply ${marker}.` }] },
+        }),
+      ].join("\n") + "\n",
+    )
+  }
+
+  for (const [kind, fixture] of Object.entries(fixtures.opencode)) {
+    await writeFile(
+      path.join(opencodeHome, "sessions", fixture.file),
       JSON.stringify({
-        type: "user",
-        uuid: "claude-user-1",
-        sessionId: `claude-${marker}`,
+        id: fixture.providerSessionId,
+        title: `OpenCode ${kind} external drill ${marker}`,
         cwd: workspace,
-        timestamp: "2026-06-09T12:00:01.000Z",
-        message: { role: "user", content: [{ text: `Claude external drill prompt ${marker}.` }] },
-      }),
-      JSON.stringify({
-        type: "assistant",
-        uuid: "claude-assistant-1",
-        sessionId: `claude-${marker}`,
-        timestamp: "2026-06-09T12:00:02.000Z",
-        message: { role: "assistant", content: [{ text: `Claude observed reply ${marker}.` }] },
-      }),
-    ].join("\n") + "\n",
-  )
+        updatedAt: fixtureUpdatedAt,
+        messages: [
+          {
+            id: `opencode-user-1-${kind}`,
+            role: "user",
+            content: `OpenCode ${kind} external drill prompt ${marker}.`,
+            createdAt: "2026-06-09T12:00:01.000Z",
+          },
+          {
+            id: `opencode-assistant-1-${kind}`,
+            role: "assistant",
+            content: `OpenCode ${kind} observed reply ${marker}.`,
+            createdAt: "2026-06-09T12:00:02.000Z",
+          },
+        ],
+      }, null, 2),
+    )
+  }
 
-  await writeFile(
-    path.join(opencodeHome, "sessions", "opencode-session-drill.json"),
-    JSON.stringify({
-      id: `opencode-${marker}`,
-      title: `OpenCode external drill ${marker}`,
-      cwd: workspace,
-      updatedAt: fixtureUpdatedAt,
-      messages: [
-        {
-          id: "opencode-user-1",
-          role: "user",
-          content: `OpenCode external drill prompt ${marker}.`,
-          createdAt: "2026-06-09T12:00:01.000Z",
-        },
-        {
-          id: "opencode-assistant-1",
-          role: "assistant",
-          content: `OpenCode observed reply ${marker}.`,
-          createdAt: "2026-06-09T12:00:02.000Z",
-        },
-      ],
-    }, null, 2),
-  )
-
-  return { CODEX_HOME: codexHome, CLAUDE_HOME: claudeHome, OPENCODE_DATA_HOME: opencodeHome }
+  return {
+    env: { CODEX_HOME: codexHome, CLAUDE_HOME: claudeHome, OPENCODE_DATA_HOME: opencodeHome },
+    fixtures,
+  }
 }
 
-async function appendProviderNativeTurn(root, provider, marker) {
-  const providerSessionId = `${provider}-${marker}`
+async function appendProviderNativeTurn(root, provider, marker, fixture, kind) {
+  const providerSessionId = fixture.providerSessionId
   if (provider === "codex") {
-    const file = path.join(root, "provider-homes", "codex", "sessions", "codex-thread-drill.jsonl")
+    const file = path.join(root, "provider-homes", "codex", "sessions", fixture.file)
     await writeFile(
       file,
       JSON.stringify({
         timestamp: new Date().toISOString(),
         type: "response_item",
         payload: {
-          id: "codex-assistant-2",
+          id: `codex-assistant-2-${kind}`,
           type: "message",
           role: "assistant",
-          content: [{ type: "output_text", text: `Codex native follow-up observed ${marker}.` }],
+          content: [{ type: "output_text", text: `Codex ${kind} native follow-up observed ${marker}.` }],
         },
       }) + "\n",
       { flag: "a" },
     )
-    return { providerTurnId: "codex-assistant-2", text: `Codex native follow-up observed ${marker}.` }
+    return { providerTurnId: `codex-assistant-2-${kind}`, text: `Codex ${kind} native follow-up observed ${marker}.` }
   }
   if (provider === "claude") {
-    const file = path.join(root, "provider-homes", "claude", "projects", "-repo", "claude-session-drill.jsonl")
+    const file = path.join(root, "provider-homes", "claude", "projects", "-repo", fixture.file)
     await writeFile(
       file,
       JSON.stringify({
         type: "assistant",
-        uuid: "claude-assistant-2",
+        uuid: `claude-assistant-2-${kind}`,
         sessionId: providerSessionId,
         timestamp: new Date().toISOString(),
-        message: { role: "assistant", content: [{ text: `Claude native follow-up observed ${marker}.` }] },
+        message: { role: "assistant", content: [{ text: `Claude ${kind} native follow-up observed ${marker}.` }] },
       }) + "\n",
       { flag: "a" },
     )
-    return { providerTurnId: "claude-assistant-2", text: `Claude native follow-up observed ${marker}.` }
+    return { providerTurnId: `claude-assistant-2-${kind}`, text: `Claude ${kind} native follow-up observed ${marker}.` }
   }
-  const file = path.join(root, "provider-homes", "opencode", "sessions", "opencode-session-drill.json")
+  const file = path.join(root, "provider-homes", "opencode", "sessions", fixture.file)
   const payload = JSON.parse(await readFile(file, "utf8"))
   payload.updatedAt = new Date().toISOString()
   payload.messages.push({
-    id: "opencode-assistant-2",
+    id: `opencode-assistant-2-${kind}`,
     role: "assistant",
-    content: `OpenCode native follow-up observed ${marker}.`,
+    content: `OpenCode ${kind} native follow-up observed ${marker}.`,
     createdAt: new Date().toISOString(),
   })
   await writeFile(file, JSON.stringify(payload, null, 2))
-  return { providerTurnId: "opencode-assistant-2", text: `OpenCode native follow-up observed ${marker}.` }
+  return { providerTurnId: `opencode-assistant-2-${kind}`, text: `OpenCode ${kind} native follow-up observed ${marker}.` }
 }
 
 async function readHistoryEntries(historyRoot, sessionId) {
@@ -237,11 +261,14 @@ async function waitForObservedHistory(historyRoot, sessionId, text, timeoutMs = 
   throw new Error(`timed out waiting for observed turn ${text} in session ${sessionId}`)
 }
 
-async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker) {
+async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker, fixtures) {
   const surfaceRoot = path.join(artifactRoot, provider)
   await mkdir(path.join(surfaceRoot, "tui"), { recursive: true })
   await mkdir(path.join(surfaceRoot, "web"), { recursive: true })
-  const externalSessionId = `${provider}:${provider}-${marker}`
+  const sessionFixture = fixtures[provider].session
+  const agentFixture = fixtures[provider].agent
+  const externalSessionId = `${provider}:${sessionFixture.providerSessionId}`
+  const agentExternalSessionId = `${provider}:${agentFixture.providerSessionId}`
   const refresh = unwrap(
     await client.send(refreshExternalProviderSessionsRequest(provider)),
     "ExternalProviderSessionsRefreshed",
@@ -262,21 +289,24 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
   const history = historyResult.ok ? historyResult.value : []
   const existingResult = await step(`create-host-session-${provider}`, () => client.send(createSessionRequest(repoRoot, repoRoot, `spawn-import-${provider}-${marker}`)))
   const existing = existingResult.ok ? unwrap(existingResult.value, "SessionCreated").session : null
-  const importAgentResult = existing ? await step(`import-agent-${provider}`, () => client.send(importExternalProviderAgentRequest(existing.id, externalSessionId, {
+  const importAgentResult = existing ? await step(`import-agent-${provider}`, () => client.send(importExternalProviderAgentRequest(existing.id, agentExternalSessionId, {
     alias: `${provider} agent ${marker}`,
     provider: "dev-stub",
     model: "default",
     focus: true,
   }))) : { ok: false, error: "host session did not create" }
   const importedAgent = importAgentResult.ok ? unwrap(importAgentResult.value, "ExternalProviderAgentImported") : null
-  const nativeTurnResult = imported && importedAgent
-    ? await step(`append-native-turn-${provider}`, () => appendProviderNativeTurn(runtimeRoot, provider, marker))
+  const nativeTurnResult = imported
+    ? await step(`append-native-session-turn-${provider}`, () => appendProviderNativeTurn(runtimeRoot, provider, marker, sessionFixture, "session"))
     : { ok: false, error: "imports did not complete" }
+  const nativeAgentTurnResult = importedAgent
+    ? await step(`append-native-agent-turn-${provider}`, () => appendProviderNativeTurn(runtimeRoot, provider, marker, agentFixture, "agent"))
+    : { ok: false, error: "agent import did not complete" }
   const observedSessionHistoryResult = nativeTurnResult.ok && imported
     ? await step(`observe-session-native-turn-${provider}`, () => waitForObservedHistory(historyRoot, imported.session.id, nativeTurnResult.value.text))
     : historyResult
-  const observedAgentHistoryResult = nativeTurnResult.ok && existing
-    ? await step(`observe-agent-native-turn-${provider}`, () => waitForObservedHistory(historyRoot, existing.id, nativeTurnResult.value.text))
+  const observedAgentHistoryResult = nativeAgentTurnResult.ok && existing
+    ? await step(`observe-agent-native-turn-${provider}`, () => waitForObservedHistory(historyRoot, existing.id, nativeAgentTurnResult.value.text))
     : { ok: false, value: [], error: "native turn append did not complete" }
   const observedSessionHistory = observedSessionHistoryResult.ok ? observedSessionHistoryResult.value : history
   const observedAgentHistory = observedAgentHistoryResult.ok ? observedAgentHistoryResult.value : []
@@ -285,9 +315,11 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
   const manifest = {
     provider,
     marker,
-    capability_tier: listedRecord?.mode ?? refreshedRecord?.mode ?? "unlisted",
+    session_mode: listedRecord?.mode ?? refreshedRecord?.mode ?? "unlisted",
     external_provider_session_id: externalSessionId,
-    provider_session_id: `${provider}-${marker}`,
+    provider_session_id: sessionFixture.providerSessionId,
+    agent_external_provider_session_id: agentExternalSessionId,
+    agent_provider_session_id: agentFixture.providerSessionId,
     arroba_session_id: imported?.session?.id ?? null,
     agent_id: imported?.agent?.id ?? null,
     imported_agent_session_id: existing?.id ?? null,
@@ -309,8 +341,8 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
       assertion("observed external turns imported", observed.length >= 2),
       assertion("observed turns carry source metadata", observed.every((entry) => entry.source === "external_provider_observed")),
       assertion("new provider-native turn observed in imported Arroba session", nativeTurnResult.ok && observed.some((entry) => entry.text === nativeTurnResult.value.text)),
-      assertion("new provider-native turn observed in imported agent session", nativeTurnResult.ok && observedAgent.some((entry) => entry.text === nativeTurnResult.value.text)),
-      assertion("tier3 unavailable degrades to tier2", listedRecord?.capabilities?.can_attach_live === false),
+      assertion("new provider-native turn observed in imported agent session", nativeAgentTurnResult.ok && observedAgent.some((entry) => entry.text === nativeAgentTurnResult.value.text)),
+      assertion("external history read is advertised", listedRecord?.capabilities?.can_read_history === true),
     ],
     records: {
       refresh,
@@ -319,6 +351,7 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
       observed_history: observed,
       observed_agent_history: observedAgent,
       native_turn: nativeTurnResult,
+      native_agent_turn: nativeAgentTurnResult,
       steps: {
         import_session: importResult,
         read_history: historyResult,
@@ -361,7 +394,7 @@ async function writeEvidence(surfaceRoot, provider, manifest) {
 async function main() {
   const stamp = nowStamp()
   const marker = `ARROBA_EXTERNAL_SESSION_DRILL_${stamp}_${process.pid}`
-  const artifactRoot = path.join(repoRoot, ".artifacts", "external-provider-sessions-tier2", stamp)
+  const artifactRoot = path.join(repoRoot, ".artifacts", "external-provider-sessions", stamp)
   const runtimeRoot = path.join(os.tmpdir(), `arroba-external-provider-session-drill-${process.pid}`)
   const workspace = repoRoot
   let daemon = null
@@ -372,7 +405,7 @@ async function main() {
   await mkdir(artifactRoot, { recursive: true })
   await mkdir(runtimeRoot, { recursive: true })
   await ensureKernelBinary()
-  const providerEnv = await seedProviderHomes(runtimeRoot, marker, workspace)
+  const providerSeed = await seedProviderHomes(runtimeRoot, marker, workspace)
   const kernelPort = makePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const historyRoot = path.join(runtimeRoot, "history")
@@ -380,7 +413,7 @@ async function main() {
     cwd: repoRoot,
     env: {
       ...process.env,
-      ...providerEnv,
+      ...providerSeed.env,
       ARROBA_KERNEL_PORT: String(kernelPort),
       ARROBA_MCP_PORT: String(kernelPort + 1),
       ARROBA_OPENCODE_PORT: String(kernelPort + 2),
@@ -402,7 +435,7 @@ async function main() {
     )
     const manifests = []
     for (const provider of providers) {
-      manifests.push(await runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker))
+      manifests.push(await runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker, providerSeed.fixtures))
     }
     const summary = {
       ok: manifests.every((manifest) => manifest.assertions.every((entry) => entry.passed)),

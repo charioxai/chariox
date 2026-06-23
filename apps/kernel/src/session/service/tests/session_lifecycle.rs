@@ -37,6 +37,17 @@ fn creates_gets_and_lists_sessions() {
 }
 
 #[test]
+fn prompt_id_allocator_advances_past_observed_prompt_ids() {
+    let service = SessionService::new(&test_config());
+
+    service.observe_prompt_id("prompt-41");
+    assert_eq!(service.reserve_prompt_id(), "prompt-42");
+
+    service.observe_prompt_id("prompt-7");
+    assert_eq!(service.reserve_prompt_id(), "prompt-43");
+}
+
+#[test]
 fn create_session_generates_default_aliases_from_workspace_name() {
     let mut service = SessionService::new(&test_config());
     let first = service

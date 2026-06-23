@@ -743,6 +743,9 @@ impl<'a> KernelSessionService<'a> {
 
         if session.status() == SessionStatus::Ended {
             self.app.prompt_owner_remove_session(session_id);
+            self.app
+                .external_provider_session_index_store()
+                .detach_session(session_id);
             let ended =
                 SessionStateOwner::new(self.app.session_state_store()).end_session(session_id)?;
             self.app.durable_state_store().append_event(
@@ -792,6 +795,9 @@ impl<'a> KernelSessionService<'a> {
             }
         }
         self.app.prompt_owner_remove_session(session_id);
+        self.app
+            .external_provider_session_index_store()
+            .detach_session(session_id);
         let mut ended =
             SessionStateOwner::new(self.app.session_state_store()).end_session(session_id)?;
         ended.set_agents(removed_agents);
