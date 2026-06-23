@@ -646,19 +646,19 @@ function startTuiMonitor({ socketPath, provider, marker, promptMarker, options }
 
 async function tuiSample(socketPath, provider, marker, promptMarker) {
   const snapshot = await automationRequest(socketPath, { action: "snapshot" })
-  const transcriptText = (snapshot.transcript?.entries ?? [])
+  const transcriptEntries = (snapshot.transcript?.entries ?? []).filter(Boolean)
+  const paneEntries = Object.values(snapshot.agentPanes ?? {})
+    .flat()
+    .filter(Boolean)
+  const transcriptText = transcriptEntries
     .map((entry) => entry.text ?? "")
     .join("\n")
-  const paneText = Object.values(snapshot.agentPanes ?? {})
-    .flat()
+  const paneText = paneEntries
     .map((entry) => entry.text ?? "")
     .join("\n")
   const text = [transcriptText, paneText].filter(Boolean).join("\n")
   const badge = snapshot.session?.agents?.[0]?.badge ?? null
-  const entries = [
-    ...(snapshot.transcript?.entries ?? []),
-    ...Object.values(snapshot.agentPanes ?? {}).flat(),
-  ]
+  const entries = [...transcriptEntries, ...paneEntries]
   return {
     at: new Date().toISOString(),
     surface: "tui",
