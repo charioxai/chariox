@@ -1,0 +1,787 @@
+#!/usr/bin/env node
+import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import net from "node:net"
+import os from "node:os"
+import path from "node:path"
+import { pathToFileURL } from "node:url"
+import { setTimeout as sleep } from "node:timers/promises"
+
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
+import { historyOutlineRows } from "./lib/drill-history-outline.mjs"
+
+import { LocalIpcClient } from "../dist/ipc.js"
+import {
+  getSessionHistoryOutlineRequest,
+  getSessionStateRequest,
+  importExternalProviderSessionRequest,
+  listExternalProviderSessionsRequest,
+} from "../dist/ipc-requests.js"
+
+const scriptDir = path.dirname(new URL(import.meta.url).pathname)
+const cliRoot = path.resolve(scriptDir, "..")
+const repoRoot = path.resolve(cliRoot, "..", "..")
+const cloudRepo = process.env.ARROBA_CLOUD_REPO ?? path.resolve(repoRoot, "..", "arroba-cloud")
+const defaultKernelUrl = process.env.ARROBA_EXTERNAL_PARITY_KERNEL_URL ?? "ws://127.0.0.1:44120/kernel"
+const defaultWebUrl = process.env.ARROBA_EXTERNAL_PARITY_WEB_URL ?? "http://127.0.0.1:4321"
+const defaultProviders = ["codex", "claude", "opencode"]
+const defaultModels = {
+  codex: process.env.ARROBA_EXTERNAL_PARITY_CODEX_MODEL ?? "gpt-5.5",
+  claude: process.env.ARROBA_EXTERNAL_PARITY_CLAUDE_MODEL ?? "sonnet",
+  opencode: process.env.ARROBA_EXTERNAL_PARITY_OPENCODE_MODEL ?? "opencode/kimi-k2.6",
+}
+const requiredAssistantMarkers = Array.from({ length: 20 }, (_, index) => `ASSISTANT_STEP_${String(index + 1).padStart(2, "0")}`)
+const requiredToolMarkers = Array.from({ length: 20 }, (_, index) => `TOOL_STEP_${String(index + 1).padStart(2, "0")}`)
+const finalMarker = "FINAL_EXTERNAL_PARITY_SUMMARY"
+
+function parseArgs(argv) {
+  const options = {
+    providers: [...defaultProviders],
+    providerModels: new Map(),
+    kernelUrl: defaultKernelUrl,
+    webUrl: defaultWebUrl,
+    workspace: repoRoot,
+    artifactRoot: path.join(repoRoot, ".artifacts", "external-provider-live-parity", nowStamp()),
+    timeoutMs: 900_000,
+    pollMs: 1_000,
+    dryRun: false,
+    skipWeb: false,
+    skipTui: false,
+    keepArtifactsOnSuccess: false,
+  }
+  for (let index = 2; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === "--providers" || arg === "--provider") {
+      options.providers = readValue(argv, ++index, arg).split(",").map((provider) => provider.trim()).filter(Boolean)
+    } else if (arg === "--provider-model") {
+      const value = readValue(argv, ++index, arg)
+      const [provider, model] = value.split("=", 2)
+      if (!provider || !model) throw new Error("--provider-model must be PROVIDER=MODEL")
+      options.providerModels.set(provider.trim(), model.trim())
+    } else if (arg === "--kernel-url") {
+      options.kernelUrl = readValue(argv, ++index, arg)
+    } else if (arg === "--web-url") {
+      options.webUrl = readValue(argv, ++index, arg)
+    } else if (arg === "--workspace") {
+      options.workspace = path.resolve(readValue(argv, ++index, arg))
+    } else if (arg === "--artifact-root") {
+      options.artifactRoot = path.resolve(readValue(argv, ++index, arg))
+    } else if (arg === "--timeout-ms") {
+      options.timeoutMs = Number(readValue(argv, ++index, arg))
+    } else if (arg === "--poll-ms") {
+      options.pollMs = Number(readValue(argv, ++index, arg))
+    } else if (arg === "--dry-run") {
+      options.dryRun = true
+    } else if (arg === "--skip-web") {
+      options.skipWeb = true
+    } else if (arg === "--skip-tui") {
+      options.skipTui = true
+    } else if (arg === "--keep-artifacts-on-success") {
+      options.keepArtifactsOnSuccess = true
+    } else if (arg === "--help" || arg === "-h") {
+      printHelp()
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument: ${arg}`)
+    }
+  }
+  if (options.providers.length === 0) throw new Error("at least one provider is required")
+  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error("--timeout-ms must be positive")
+  if (!Number.isFinite(options.pollMs) || options.pollMs <= 0) throw new Error("--poll-ms must be positive")
+  return options
+}
+
+function readValue(argv, index, flag) {
+  const value = argv[index]
+  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`)
+  return value
+}
+
+function printHelp() {
+  console.log(`Usage: node apps/cli/scripts/live-external-provider-live-parity-drill.mjs [options]
+
+Runs live external-provider parity drills for Codex, Claude, and OpenCode.
+
+Options:
+  --providers codex,claude,opencode
+  --provider-model codex=gpt-5.5
+  --provider-model claude=sonnet
+  --provider-model opencode=opencode/kimi-k2.6
+  --kernel-url ws://127.0.0.1:44120/kernel
+  --web-url http://127.0.0.1:4321
+  --workspace /path/to/workspace
+  --artifact-root .artifacts/external-provider-live-parity/<stamp>
+  --timeout-ms 900000
+  --poll-ms 1000
+  --dry-run
+  --skip-web
+  --skip-tui
+  --keep-artifacts-on-success
+
+Provider command overrides:
+  ARROBA_EXTERNAL_PARITY_CODEX_COMMAND='codex exec --model {model} {prompt}'
+  ARROBA_EXTERNAL_PARITY_CLAUDE_COMMAND='claude -p --model {model} {prompt}'
+  ARROBA_EXTERNAL_PARITY_OPENCODE_COMMAND='opencode run -m {model} {prompt}'
+`)
+}
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
+}
+
+function unwrap(response, variant) {
+  if (!response || !(variant in response)) {
+    throw new Error(`expected ${variant}, got ${JSON.stringify(response)}`)
+  }
+  return response[variant]
+}
+
+function providerModel(options, provider) {
+  return options.providerModels.get(provider) ?? defaultModels[provider] ?? "default"
+}
+
+function buildPrompt(provider, marker, workspace) {
+  return [
+    `You are running the Arroba external provider live parity drill for provider ${provider}.`,
+    `Drill marker: ${marker}.`,
+    `Workspace: ${workspace}.`,
+    "",
+    "Requirements:",
+    "1. Produce exactly 20 separate assistant progress messages, one for each ASSISTANT_STEP_01 through ASSISTANT_STEP_20.",
+    "2. Run exactly 20 observable tool calls, one for each TOOL_STEP_01 through TOOL_STEP_20.",
+    "3. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
+    "4. Each tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
+    "5. Use only a temporary directory named .arroba-external-parity-drill under the workspace.",
+    "6. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
+    "7. Delete the temporary directory before finishing.",
+    `8. End with the exact final summary marker ${finalMarker} and include the drill marker.`,
+    "",
+    `Assistant markers: ${requiredAssistantMarkers.join(", ")}.`,
+    `Tool markers: ${requiredToolMarkers.join(", ")}.`,
+  ].join("\n")
+}
+
+function providerCommand(provider, model, prompt, workspace) {
+  const override = process.env[`ARROBA_EXTERNAL_PARITY_${provider.toUpperCase()}_COMMAND`]
+  if (override?.trim()) {
+    return {
+      command: "sh",
+      args: ["-lc", templateCommand(override, { provider, model, prompt, workspace })],
+      shellTemplate: override,
+    }
+  }
+  if (provider === "codex") {
+    return { command: "codex", args: ["exec", "--model", model, prompt] }
+  }
+  if (provider === "claude") {
+    return { command: "claude", args: ["-p", "--model", model, prompt] }
+  }
+  if (provider === "opencode") {
+    return { command: "opencode", args: ["run", "-m", model, prompt] }
+  }
+  throw new Error(`unsupported provider ${provider}`)
+}
+
+function templateCommand(template, values) {
+  return template.replace(/\{(provider|model|prompt|workspace)\}/g, (_, key) => shellQuote(values[key]))
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+async function main() {
+  const options = parseArgs(process.argv)
+  await prepareDrillArtifacts(options.artifactRoot)
+  const summary = {
+    ok: false,
+    drill: "external-provider-live-parity",
+    createdAt: new Date().toISOString(),
+    artifactRoot: options.artifactRoot,
+    kernelUrl: options.kernelUrl,
+    webUrl: options.webUrl,
+    workspace: options.workspace,
+    dryRun: options.dryRun,
+    providers: options.providers,
+    results: [],
+  }
+  let failure = null
+  try {
+    for (const provider of options.providers) {
+      const result = await runProviderDrill(provider, options)
+      summary.results.push(result)
+      if (!result.ok) break
+    }
+    summary.ok = summary.results.length === options.providers.length && summary.results.every((result) => result.ok)
+    await writeJson(path.join(options.artifactRoot, "manifest.json"), summary)
+    if (!summary.ok) {
+      throw new Error(`external provider live parity drill failed: ${summary.results.filter((result) => !result.ok).map((result) => result.provider).join(", ")}`)
+    }
+  } catch (error) {
+    failure = error
+    summary.ok = false
+    summary.error = String(error?.stack ?? error)
+    await writeJson(path.join(options.artifactRoot, "manifest.json"), summary).catch(() => {})
+    throw error
+  } finally {
+    await finalizeDrillArtifacts({
+      rootDir: options.artifactRoot,
+      passed: summary.ok,
+      preserveOnFailure: true,
+      preserveOnSuccess: options.keepArtifactsOnSuccess || options.dryRun,
+      failure,
+      metadata: {
+        drill: "external-provider-live-parity",
+        providers: options.providers,
+        kernelUrl: options.kernelUrl,
+        webUrl: options.webUrl,
+      },
+      log: (message, details) => {
+        if (details === undefined) console.log(`[external-live-parity] ${message}`)
+        else console.log(`[external-live-parity] ${message}`, JSON.stringify(details))
+      },
+    })
+  }
+  console.log(JSON.stringify(summary, null, 2))
+}
+
+async function runProviderDrill(provider, options) {
+  const startedAt = Date.now()
+  const marker = `ARROBA_EXTERNAL_PARITY_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
+  const model = providerModel(options, provider)
+  const providerRoot = path.join(options.artifactRoot, provider)
+  const prompt = buildPrompt(provider, marker, options.workspace)
+  const command = providerCommand(provider, model, prompt, options.workspace)
+  await mkdir(providerRoot, { recursive: true })
+  await writeFile(path.join(providerRoot, "prompt.txt"), prompt, "utf8")
+  await writeJson(path.join(providerRoot, "provider-command.json"), {
+    provider,
+    model,
+    command: command.command,
+    args: command.args,
+    shellTemplate: command.shellTemplate ?? null,
+  })
+
+  const result = {
+    ok: false,
+    provider,
+    model,
+    marker,
+    artifactDir: providerRoot,
+    durationMs: 0,
+    externalSessionId: null,
+    providerSessionId: null,
+    arrobaSessionId: null,
+    agentId: null,
+    assertions: [],
+    providerLimitations: [],
+    evidence: {},
+  }
+
+  if (options.dryRun) {
+    result.ok = true
+    result.durationMs = Date.now() - startedAt
+    result.assertions.push(pass("dry run generated provider prompt and command"))
+    result.providerLimitations.push("dry run does not validate provider, web, or TUI behavior")
+    await writeJson(path.join(providerRoot, "manifest.json"), result)
+    return result
+  }
+
+  let client = null
+  let providerProcess = null
+  let tuiProcess = null
+  let browser = null
+  let context = null
+  let page = null
+  try {
+    client = new LocalIpcClient(options.kernelUrl)
+    await client.send({ RefreshExternalProviderSessions: { provider } }).catch(() => null)
+    const before = await listExternalProviderSessions(client, provider)
+    providerProcess = spawnProviderProcess(command, providerRoot, options.workspace)
+
+    const external = await waitForNewExternalSession({
+      client,
+      provider,
+      before,
+      marker,
+      timeoutMs: Math.min(options.timeoutMs, 180_000),
+      pollMs: options.pollMs,
+    })
+    result.externalSessionId = external.external_session_id
+    result.providerSessionId = external.provider_session_id ?? null
+    result.assertions.push(pass("external provider session appeared in Arroba unattached inventory"))
+
+    const imported = unwrap(
+      await client.send(importExternalProviderSessionRequest(external.external_session_id, {
+        alias: `${provider}-external-live-${marker.slice(-8).toLowerCase()}`,
+        provider,
+        model,
+      })),
+      "ExternalProviderSessionImported",
+    )
+    result.arrobaSessionId = imported.session.id
+    result.agentId = imported.agent.id
+    result.assertions.push(pass("external provider session imported into Arroba session"))
+
+    const monitors = []
+    monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, options }))
+    if (!options.skipTui) {
+      const tui = await startTuiObserver({ sessionId: result.arrobaSessionId, options, providerRoot })
+      tuiProcess = tui.process
+      monitors.push(startTuiMonitor({ socketPath: tui.socketPath, provider, marker, options }))
+      result.evidence.tuiSocketPath = tui.socketPath
+    }
+    if (!options.skipWeb) {
+      const web = await startWebObserver({ sessionId: result.arrobaSessionId, webUrl: options.webUrl, providerRoot })
+      browser = web.browser
+      context = web.context
+      page = web.page
+      monitors.push(startWebMonitor({ page, provider, marker, providerRoot, options }))
+    }
+
+    const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
+    result.evidence.providerExit = providerExit
+    const monitorResults = []
+    for (const monitor of monitors) {
+      monitorResults.push(await monitor.stop())
+    }
+    result.evidence.monitors = monitorResults
+    const kernel = monitorResults.find((entry) => entry.surface === "kernel")
+    const web = monitorResults.find((entry) => entry.surface === "web")
+    const tui = monitorResults.find((entry) => entry.surface === "tui")
+
+    assertSurface(result, kernel, "kernel history")
+    if (!options.skipWeb) assertSurface(result, web, "product web terminal")
+    if (!options.skipTui) assertSurface(result, tui, "TUI")
+    assertBadgeLifecycle(result, kernel, "kernel")
+    if (web) assertBadgeLifecycle(result, web, "web")
+    if (tui) assertBadgeLifecycle(result, tui, "tui")
+
+    result.providerLimitations = providerLimitations(provider, { kernel, web, tui })
+    result.ok = result.assertions.every((assertion) => assertion.passed)
+  } catch (error) {
+    result.ok = false
+    result.error = String(error?.stack ?? error)
+    result.assertions.push(fail("provider drill completed without exception", result.error))
+  } finally {
+    await closeWithTimeout(context, "browser context")
+    await closeWithTimeout(browser, "browser")
+    stopChild(tuiProcess)
+    stopChild(providerProcess)
+    client?.close?.()
+    result.durationMs = Date.now() - startedAt
+    await writeJson(path.join(providerRoot, "manifest.json"), result)
+  }
+  return result
+}
+
+function spawnProviderProcess(command, artifactDir, workspace) {
+  const stdoutPath = path.join(artifactDir, "provider.stdout.log")
+  const stderrPath = path.join(artifactDir, "provider.stderr.log")
+  const child = spawn(command.command, command.args, {
+    cwd: workspace,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  let stdout = ""
+  let stderr = ""
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8")
+    if (stdout.length > 250_000) stdout = stdout.slice(-250_000)
+    void writeFile(stdoutPath, stdout, "utf8").catch(() => {})
+  })
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8")
+    if (stderr.length > 250_000) stderr = stderr.slice(-250_000)
+    void writeFile(stderrPath, stderr, "utf8").catch(() => {})
+  })
+  child.once("exit", () => {
+    void writeFile(stdoutPath, stdout, "utf8").catch(() => {})
+    void writeFile(stderrPath, stderr, "utf8").catch(() => {})
+  })
+  return child
+}
+
+async function waitForProviderExit(child, timeoutMs) {
+  return await Promise.race([
+    new Promise((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }))
+      child.once("error", (error) => resolve({ code: null, signal: null, error: String(error?.stack ?? error) }))
+    }),
+    sleep(timeoutMs).then(() => {
+      stopChild(child)
+      return { code: null, signal: "timeout" }
+    }),
+  ])
+}
+
+async function listExternalProviderSessions(client, provider) {
+  const response = unwrap(
+    await client.send(listExternalProviderSessionsRequest({ provider, limit: 100 })),
+    "ExternalProviderSessionsListed",
+  )
+  return response.page.sessions ?? []
+}
+
+async function waitForNewExternalSession({ client, provider, before, marker, timeoutMs, pollMs }) {
+  const beforeIds = new Set(before.map((session) => session.external_session_id))
+  const deadline = Date.now() + timeoutMs
+  let last = []
+  while (Date.now() < deadline) {
+    await client.send({ RefreshExternalProviderSessions: { provider } }).catch(() => null)
+    last = await listExternalProviderSessions(client, provider)
+    const candidates = last.filter((session) => !beforeIds.has(session.external_session_id))
+    const marked = candidates.find((session) => JSON.stringify(session).includes(marker))
+    if (marked) return marked
+    if (candidates.length === 1) return candidates[0]
+    if (candidates.length > 1) {
+      candidates.sort((left, right) => String(right.last_modified_at ?? "").localeCompare(String(left.last_modified_at ?? "")))
+      return candidates[0]
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for new ${provider} external session; last=${JSON.stringify(last.slice(0, 5), null, 2)}`)
+}
+
+function startKernelMonitor({ client, sessionId, agentId, provider, marker, options }) {
+  const samples = []
+  let stopped = false
+  const loop = (async () => {
+    while (!stopped) {
+      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker }).catch((error) => ({
+        at: new Date().toISOString(),
+        error: String(error?.message ?? error),
+      })))
+      await sleep(options.pollMs)
+    }
+  })()
+  return {
+    async stop() {
+      stopped = true
+      await loop.catch(() => {})
+      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker }).catch((error) => ({ error: String(error?.message ?? error) }))
+      samples.push(finalSample)
+      return summarizeSamples("kernel", samples)
+    },
+  }
+}
+
+async function kernelSample({ client, sessionId, agentId, provider, marker }) {
+  const stateResponse = await client.send(getSessionStateRequest(sessionId))
+  const session = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded)?.session
+  const agent = (session?.agents ?? []).find((entry) => entry.id === agentId)
+  const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 1)), "SessionHistoryOutline")
+  const text = historyOutlineRows(outline, { includeUserPrompt: true }).map((row) => row.entry?.text ?? "").join("\n")
+  return {
+    at: new Date().toISOString(),
+    surface: "kernel",
+    status: agentStatus(agent),
+    text,
+    assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
+    toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
+    finalSeen: text.includes(finalMarker),
+    promptOccurrences: countOccurrences(text, marker),
+    provider,
+  }
+}
+
+function agentStatus(agent) {
+  if (!agent) return "UNKNOWN"
+  if (agent.is_processing || String(agent.state ?? "").toLowerCase() === "working") return "WORKING"
+  return "IDLE"
+}
+
+async function startTuiObserver({ sessionId, options, providerRoot }) {
+  const socketPath = path.join(os.tmpdir(), `arroba-external-parity-${process.pid}-${sessionId}.sock`)
+  const stdoutPath = path.join(providerRoot, "tui.stdout.log")
+  const stderrPath = path.join(providerRoot, "tui.stderr.log")
+  await rm(socketPath, { force: true }).catch(() => {})
+  const child = spawn(process.execPath, [
+    path.join(cliRoot, "dist/index.js"),
+    "--kernel-url",
+    options.kernelUrl,
+    "--session",
+    sessionId,
+    "--automation-socket",
+    socketPath,
+  ], {
+    cwd: options.workspace,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  pipeChildLogs(child, stdoutPath, stderrPath)
+  await waitForAutomation(socketPath, child)
+  return { process: child, socketPath }
+}
+
+function startTuiMonitor({ socketPath, provider, marker, options }) {
+  const samples = []
+  let stopped = false
+  const loop = (async () => {
+    while (!stopped) {
+      samples.push(await tuiSample(socketPath, provider, marker).catch((error) => ({
+        at: new Date().toISOString(),
+        error: String(error?.message ?? error),
+      })))
+      await sleep(options.pollMs)
+    }
+  })()
+  return {
+    async stop() {
+      stopped = true
+      await loop.catch(() => {})
+      samples.push(await tuiSample(socketPath, provider, marker).catch((error) => ({ error: String(error?.message ?? error) })))
+      return summarizeSamples("tui", samples)
+    },
+  }
+}
+
+async function tuiSample(socketPath, provider, marker) {
+  const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+  const text = [
+    ...(snapshot.transcript?.entries ?? []).map((entry) => entry.text ?? ""),
+    ...Object.values(snapshot.agentPanes ?? {}).flat().map((entry) => entry.text ?? ""),
+  ].join("\n")
+  const badge = snapshot.session?.agents?.[0]?.badge ?? null
+  const entries = [
+    ...(snapshot.transcript?.entries ?? []),
+    ...Object.values(snapshot.agentPanes ?? {}).flat(),
+  ]
+  return {
+    at: new Date().toISOString(),
+    surface: "tui",
+    status: badge?.label ?? badge?.tone ?? "UNKNOWN",
+    text,
+    assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
+    toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
+    finalSeen: text.includes(finalMarker),
+    promptOccurrences: countOccurrences(text, marker),
+    collapsedEntries: entries.filter((entry) => entry.blobCollapsed === true).length,
+    expandedEntries: entries.filter((entry) => entry.blobCollapsed === false).length,
+    provider,
+  }
+}
+
+async function startWebObserver({ sessionId, webUrl, providerRoot }) {
+  const { launchChromiumBrowser } = await import(pathToFileURL(path.join(cloudRepo, "scripts/lib/playwright.mjs")).href)
+  const browser = await launchChromiumBrowser({ headless: process.env.ARROBA_EXTERNAL_PARITY_WEB_HEADFUL !== "1" })
+  const context = await browser.newContext({ baseURL: webUrl, viewport: { width: 1500, height: 980 } })
+  const page = await context.newPage()
+  page.on("pageerror", (error) => console.log(`[web-pageerror] ${error.message}`))
+  await page.goto("/", { waitUntil: "domcontentloaded" })
+  await page.evaluate((targetSessionId) => {
+    window.history.pushState({}, "", `/terminal?session=${encodeURIComponent(targetSessionId)}`)
+    window.dispatchEvent(new PopStateEvent("popstate"))
+  }, sessionId)
+  await page.locator("[data-freeform-pane-grid], .freeform-workspace").first().waitFor({ timeout: 90_000 })
+  await page.screenshot({ path: path.join(providerRoot, "web-opened.png"), fullPage: true }).catch(() => {})
+  return { browser, context, page }
+}
+
+function startWebMonitor({ page, provider, marker, providerRoot, options }) {
+  const samples = []
+  let stopped = false
+  const loop = (async () => {
+    while (!stopped) {
+      samples.push(await webSample(page, provider, marker).catch((error) => ({
+        at: new Date().toISOString(),
+        error: String(error?.message ?? error),
+      })))
+      await sleep(options.pollMs)
+    }
+  })()
+  return {
+    async stop() {
+      stopped = true
+      await loop.catch(() => {})
+      samples.push(await webSample(page, provider, marker).catch((error) => ({ error: String(error?.message ?? error) })))
+      await page.screenshot({ path: path.join(providerRoot, "web-final.png"), fullPage: true }).catch(() => {})
+      return summarizeSamples("web", samples)
+    },
+  }
+}
+
+async function webSample(page, provider, marker) {
+  return await page.evaluate(({ provider, marker, requiredAssistantMarkers, requiredToolMarkers, finalMarker }) => {
+    const output = document.querySelector("[data-terminal-output]") ?? document.body
+    const text = output.textContent ?? ""
+    const scrollElement = output instanceof HTMLElement ? output : document.scrollingElement
+    const bottomDistance = scrollElement
+      ? Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight - scrollElement.scrollTop)
+      : null
+    const badges = [...document.querySelectorAll(".freeform-status-badge")].map((element) => element.textContent?.trim() ?? "")
+    const turnButtons = [...document.querySelectorAll("[data-freeform-turn-toggle]")].map((element) => element.getAttribute("aria-expanded"))
+    const blobButtons = [...document.querySelectorAll(".freeform-blob-header")].map((element) => element.getAttribute("aria-expanded"))
+    return {
+      at: new Date().toISOString(),
+      surface: "web",
+      status: badges.includes("WORKING") ? "WORKING" : badges.includes("IDLE") ? "IDLE" : "UNKNOWN",
+      text,
+      assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
+      toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
+      finalSeen: text.includes(finalMarker),
+      promptOccurrences: text.split(marker).length - 1,
+      bottomDistance,
+      turnExpandedCount: turnButtons.filter((value) => value === "true").length,
+      turnCollapsedCount: turnButtons.filter((value) => value === "false").length,
+      blobExpandedCount: blobButtons.filter((value) => value === "true").length,
+      blobCollapsedCount: blobButtons.filter((value) => value === "false").length,
+      provider,
+    }
+  }, { provider, marker, requiredAssistantMarkers, requiredToolMarkers, finalMarker })
+}
+
+function summarizeSamples(surface, samples) {
+  const valid = samples.filter((sample) => !sample.error)
+  const text = valid.map((sample) => sample.text ?? "").join("\n")
+  return {
+    surface,
+    sampleCount: samples.length,
+    errorCount: samples.length - valid.length,
+    samples,
+    assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => text.includes(marker)),
+    toolMarkersSeen: requiredToolMarkers.filter((marker) => text.includes(marker)),
+    finalSeen: text.includes(finalMarker),
+    statuses: valid.map((sample) => sample.status).filter(Boolean),
+    maxBottomDistance: Math.max(0, ...valid.map((sample) => Number(sample.bottomDistance ?? 0)).filter(Number.isFinite)),
+    promptOccurrenceMax: Math.max(0, ...valid.map((sample) => Number(sample.promptOccurrences ?? 0)).filter(Number.isFinite)),
+  }
+}
+
+function assertSurface(result, surfaceResult, label) {
+  if (!surfaceResult) {
+    result.assertions.push(fail(`${label} monitor ran`, "missing monitor result"))
+    return
+  }
+  result.assertions.push(assertion(`${label} saw all assistant markers`, surfaceResult.assistantMarkersSeen.length === 20, surfaceResult.assistantMarkersSeen))
+  result.assertions.push(assertion(`${label} saw all tool markers`, surfaceResult.toolMarkersSeen.length === 20, surfaceResult.toolMarkersSeen))
+  result.assertions.push(assertion(`${label} saw final summary marker`, surfaceResult.finalSeen, surfaceResult.finalSeen))
+  result.assertions.push(assertion(`${label} did not repeatedly render prompt marker`, surfaceResult.promptOccurrenceMax <= 25, surfaceResult.promptOccurrenceMax))
+  if (label.includes("web")) {
+    result.assertions.push(assertion(`${label} stayed near bottom while tailing`, surfaceResult.maxBottomDistance < 260, surfaceResult.maxBottomDistance))
+  }
+}
+
+function assertBadgeLifecycle(result, surfaceResult, label) {
+  if (!surfaceResult) return
+  const statuses = surfaceResult.statuses.map((status) => String(status).toUpperCase())
+  result.assertions.push(assertion(`${label} observed WORKING`, statuses.includes("WORKING"), statuses))
+  result.assertions.push(assertion(`${label} ended IDLE or unknown-idle-compatible`, statuses.at(-1) === "IDLE" || statuses.at(-1) === "IDLE/DONE" || statuses.at(-1) === "DONE", statuses.at(-1)))
+  const firstWorking = statuses.indexOf("WORKING")
+  const finalIndex = surfaceResult.samples.findIndex((sample) => sample.finalSeen)
+  const prematureIdle = firstWorking >= 0 && finalIndex > firstWorking
+    ? statuses.slice(firstWorking, finalIndex).some((status) => status === "IDLE" || status === "DONE")
+    : false
+  result.assertions.push(assertion(`${label} did not go idle before final summary`, !prematureIdle, statuses))
+}
+
+function providerLimitations(provider, monitorResults) {
+  const limitations = []
+  const kernelText = monitorResults.kernel?.samples?.map((sample) => sample.text ?? "").join("\n") ?? ""
+  for (const field of ["token", "reasoning", "thinking", "model"]) {
+    if (!kernelText.toLowerCase().includes(field)) {
+      limitations.push(`${provider}: ${field} metadata was not observed in imported external history; classify after inspecting the provider raw transcript.`)
+    }
+  }
+  if (!monitorResults.web) limitations.push(`${provider}: web terminal assertions were skipped`)
+  if (!monitorResults.tui) limitations.push(`${provider}: TUI assertions were skipped`)
+  return limitations
+}
+
+async function waitForAutomation(socketPath, child) {
+  const deadline = Date.now() + 90_000
+  let lastError = null
+  while (Date.now() < deadline) {
+    if (child.exitCode != null) throw new Error(`TUI exited before automation socket became ready: ${child.exitCode}`)
+    try {
+      await automationRequest(socketPath, { action: "ping" }, 5_000)
+      return
+    } catch (error) {
+      lastError = error
+      await sleep(250)
+    }
+  }
+  throw new Error(`automation socket did not become ready: ${lastError?.message ?? lastError}`)
+}
+
+async function automationRequest(socketPath, request, timeoutMs = 20_000) {
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath)
+    let buffer = ""
+    socket.setTimeout(timeoutMs)
+    socket.once("error", reject)
+    socket.once("timeout", () => reject(new Error(`automation request timed out: ${JSON.stringify(request)}`)))
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8")
+      const index = buffer.indexOf("\n")
+      if (index < 0) return
+      const line = buffer.slice(0, index)
+      socket.end()
+      const response = JSON.parse(line)
+      if (!response.ok) reject(new Error(response.error ?? "automation request failed"))
+      else resolve(response.data)
+    })
+    socket.once("connect", () => {
+      socket.write(`${JSON.stringify({ id: Date.now(), ...request })}\n`)
+    })
+  })
+}
+
+function pipeChildLogs(child, stdoutPath, stderrPath) {
+  let stdout = ""
+  let stderr = ""
+  child.stdout?.on("data", (chunk) => {
+    stdout += chunk.toString("utf8")
+    if (stdout.length > 250_000) stdout = stdout.slice(-250_000)
+    void writeFile(stdoutPath, stdout, "utf8").catch(() => {})
+  })
+  child.stderr?.on("data", (chunk) => {
+    stderr += chunk.toString("utf8")
+    if (stderr.length > 250_000) stderr = stderr.slice(-250_000)
+    void writeFile(stderrPath, stderr, "utf8").catch(() => {})
+  })
+}
+
+async function closeWithTimeout(target, label) {
+  if (!target?.close) return
+  await Promise.race([
+    target.close(),
+    sleep(3_000).then(() => console.warn(`${label} close timed out`)),
+  ]).catch(() => {})
+}
+
+function stopChild(child) {
+  if (!child || child.exitCode != null) return
+  child.kill("SIGTERM")
+  setTimeout(() => {
+    if (child.exitCode == null) child.kill("SIGKILL")
+  }, 2_000).unref()
+}
+
+function countOccurrences(text, needle) {
+  if (!needle) return 0
+  return String(text).split(needle).length - 1
+}
+
+function pass(name) {
+  return { name, passed: true }
+}
+
+function fail(name, details = null) {
+  return { name, passed: false, details }
+}
+
+function assertion(name, passed, details = null) {
+  return { name, passed: Boolean(passed), details }
+}
+
+async function writeJson(file, value) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8")
+}
+
+main().catch((error) => {
+  console.error(error?.stack ?? String(error))
+  process.exit(1)
+})

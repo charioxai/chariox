@@ -17,6 +17,7 @@
     "metaagent:trace-poll:drill": "pnpm --filter @arroba/shell run build && pnpm --workspace-root run build:kernel-client && node scripts/live-metaagent-trace-poll-drill.mjs",
     "metaagent:provider-capability-import:drill": "pnpm --filter @arroba/shell run build && pnpm --workspace-root run build:kernel-client && node scripts/live-metaagent-provider-capability-import-drill.mjs",
     "external-provider-session:drill": "pnpm run build && node scripts/live-external-provider-session-import-drill.mjs",
+    "external-provider-live-parity:drill": "pnpm run build && node scripts/live-external-provider-live-parity-drill.mjs",
     "prompt-assembly:drill": "node scripts/live-prompt-assembly-drill.mjs --providers codex,opencode,claude-p,claude-headless",
     "remote-popup:drill": "node scripts/live-remote-popup-drill.mjs --providers opencode,codex",
     "remote-skill:drill": "node scripts/live-remote-skill-drill.mjs",

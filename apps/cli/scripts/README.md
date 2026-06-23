@@ -187,6 +187,19 @@ Use `--live-mcp-use` to also require provider-native Playwright tool calls. The 
 
 `live-runtime-mcp-reattach-drill.mjs` is the local regression drill for stale provider servers and CLI rejoin. It warms provider catalog endpoints before launching workspace live sync agents, forcing Codex/OpenCode through the path where a provider server may already be alive without run-specific Arroba MCP config. It then detaches the CLI, reattaches to the same session, submits another prompt to the same agents, and fails unless each agent completes `list_extensions` plus `read_artifact` runtime MCP calls and writes before/after marker files through Arroba workspace live sync.
 
+## External Provider Live Parity Drill
+
+`live-external-provider-live-parity-drill.mjs` validates externally-created provider sessions after they are imported into Arroba. It launches a fresh external provider turn for Codex, Claude, and OpenCode, imports the newly discovered unattached provider session, and monitors kernel history, product web terminal, and TUI automation snapshots while the external turn runs. Each provider prompt requires 20 assistant progress markers and 20 observable tool markers so the drill can verify that the badge remains `WORKING`, transcripts match, scrolling stays pinned, and the completed turn collapses only after the final summary.
+
+```bash
+pnpm --filter @arroba/cli run external-provider-live-parity:drill -- \
+  --provider-model codex=gpt-5.5 \
+  --provider-model claude=sonnet \
+  --provider-model opencode=opencode/kimi-k2.6
+```
+
+Use `--dry-run` to inspect the generated provider prompt and command without launching providers. Use `ARROBA_EXTERNAL_PARITY_<PROVIDER>_COMMAND` when a local provider CLI needs a different invocation shape; the template supports `{provider}`, `{model}`, `{prompt}`, and `{workspace}`. Every completed run must include a provider-by-provider limitations section in its artifact manifest, clarifying which metadata was available live, which metadata was missing, and whether each gap is an Arroba bug, provider persistence limitation, or drill-observation limitation.
+
 `live-script-extension-drill.mjs` validates the v1 script extension control plane. It runs an isolated daemon, registers an external Python environment, validates and registers a realistic vector-lookup script with `run`/`test_run`, lists environments/scripts, creates an agent, grants the script extension with its environment, and verifies the durable `extension_grants` shape. Run it with `pnpm --filter @arroba/cli run script-extension:drill`.
 
 `live-script-extension-agent-drill.mjs` validates script extensions through real provider agents. It registers one Python script and one TypeScript script, grants both to each requested agent, requires the provider to call both tools with fixed inputs, verifies per-run hidden tokens returned by plain `run` return values, and verifies the agent writes those observed values through workspace live sync. Run all local providers with `pnpm --filter @arroba/cli run script-extension-agent:drill -- --providers codex,opencode,claude-p,claude-headless --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --provider-model claude-p=sonnet --provider-model claude-headless=sonnet`.

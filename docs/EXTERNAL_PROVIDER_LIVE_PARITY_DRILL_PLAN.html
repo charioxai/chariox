@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>External Provider Live Parity Drill Plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101211;
+      --panel: #171a18;
+      --ink: #f3eee7;
+      --muted: #aaa39a;
+      --line: #3a342e;
+      --accent: #ff9b62;
+      --good: #79d98c;
+      --warn: #f0c66a;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 48px 24px 72px;
+    }
+    h1, h2, h3 {
+      line-height: 1.15;
+      margin: 0;
+    }
+    h1 {
+      font-size: 38px;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin-top: 36px;
+      font-size: 24px;
+      color: var(--accent);
+    }
+    h3 {
+      margin-top: 24px;
+      font-size: 18px;
+      color: var(--ink);
+    }
+    p {
+      margin: 14px 0 0;
+    }
+    ul, ol {
+      margin: 12px 0 0;
+      padding-left: 24px;
+    }
+    li {
+      margin: 7px 0;
+    }
+    code {
+      color: var(--accent);
+      background: #24201d;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+    }
+    .summary {
+      margin-top: 22px;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 16px;
+    }
+    .card h3 {
+      margin-top: 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    .pass {
+      color: var(--good);
+      font-weight: 700;
+    }
+    .caution {
+      color: var(--warn);
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>External Provider Live Parity Drill Plan</h1>
+    <section class="summary" aria-label="Summary">
+      <p>Validate live external-turn tracking for <code>codex</code>, <code>claude</code>, and <code>opencode</code> through the product web terminal and TUI. Each provider drill creates a fresh provider-owned session outside Arroba, imports it as an unattached agent, then verifies badge lifecycle, transcript parity, scroll behavior, and turn collapse behavior while the external turn is still running.</p>
+    </section>
+
+    <h2>Drill Shape</h2>
+    <div class="grid">
+      <section class="card">
+        <h3>Providers</h3>
+        <ul>
+          <li><code>codex</code>: external Codex session, current configured Codex model.</li>
+          <li><code>claude</code>: Claude Code with Sonnet 4.6.</li>
+          <li><code>opencode</code>: OpenCode with Kimi K2.6.</li>
+        </ul>
+      </section>
+      <section class="card">
+        <h3>Observers</h3>
+        <ul>
+          <li>Product web terminal driven through browser automation.</li>
+          <li>TUI driven through the existing automation socket and snapshots.</li>
+          <li>Provider-native session transcript retained as the source of truth.</li>
+        </ul>
+      </section>
+      <section class="card">
+        <h3>Prompt</h3>
+        <ul>
+          <li>One external prompt per provider.</li>
+          <li>Exactly 20 assistant progress messages, marked <code>ASSISTANT_STEP_01</code> through <code>ASSISTANT_STEP_20</code>.</li>
+          <li>Exactly 20 observable tool calls against a temporary drill workspace.</li>
+        </ul>
+      </section>
+    </div>
+
+    <h2>Provider Prompt Contract</h2>
+    <p>The drill prompt must force enough activity to prove Arroba keeps a single turn active across many provider updates. The prompt should ask the provider to:</p>
+    <ol>
+      <li>Create a temporary drill directory under the chosen workspace.</li>
+      <li>Run 20 small tool actions, each with a visible marker <code>TOOL_STEP_01</code> through <code>TOOL_STEP_20</code>.</li>
+      <li>Emit 20 separate assistant progress messages, each with one marker <code>ASSISTANT_STEP_01</code> through <code>ASSISTANT_STEP_20</code>.</li>
+      <li>Use file operations that are easy to verify: create, append, read, list, inspect metadata, and delete.</li>
+      <li>End with a final summary marker <code>FINAL_EXTERNAL_PARITY_SUMMARY</code>.</li>
+    </ol>
+    <p>The drill should keep all files inside a generated temp directory and remove them before completion.</p>
+
+    <h2>Execution Flow</h2>
+    <ol>
+      <li>Preflight the local dev kernel on <code>44120</code>, the product frontend, provider auth, and provider CLI availability.</li>
+      <li>For each provider, launch the external session outside Arroba and submit the provider prompt.</li>
+      <li>Refresh Arroba's unattached-agent inventory until the new provider session appears.</li>
+      <li>Import the unattached provider session into a new Arroba session.</li>
+      <li>Open that Arroba session in the web terminal and in TUI automation.</li>
+      <li>Poll provider transcript, Arroba operational history, web DOM state, and TUI automation snapshots until final completion.</li>
+      <li>Capture before, during, and after evidence for every provider and observer.</li>
+    </ol>
+
+    <h2>Required Assertions</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Assertion</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Badge lifecycle</td>
+          <td>Badge starts as <code>IDLE</code>, changes to <code>WORKING</code> after the external prompt/first observed update, remains <code>WORKING</code> across all 20 assistant messages and 20 tool calls, and returns to <code>IDLE</code> only after provider completion.</td>
+        </tr>
+        <tr>
+          <td>Transcript parity</td>
+          <td>Provider transcript, web transcript, and TUI transcript all contain the single external prompt, all <code>ASSISTANT_STEP_01..20</code> markers, all <code>TOOL_STEP_01..20</code> markers or equivalent provider tool metadata, and the final summary marker.</td>
+        </tr>
+        <tr>
+          <td>Prompt dedupe</td>
+          <td>Arroba shows the external prompt once. It must not repeat the prompt as new blobs arrive.</td>
+        </tr>
+        <tr>
+          <td>Live updates</td>
+          <td>New assistant/tool blobs appear in web and TUI while the provider-native session is still generating, not only after joining or after provider completion.</td>
+        </tr>
+        <tr>
+          <td>Scroll behavior</td>
+          <td>Web and TUI stay pinned to the bottom during live updates unless the drill intentionally scrolls away. No output update should jump the viewport upward.</td>
+        </tr>
+        <tr>
+          <td>Turn expansion</td>
+          <td>The active turn must not collapse before provider completion. After the final assistant summary and <code>IDLE</code> transition, the completed turn should collapse according to the normal transcript rules.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Artifacts</h2>
+    <ul>
+      <li>One artifact directory per provider under the existing live-drill artifact convention.</li>
+      <li>Provider-native raw transcript/session file snapshot.</li>
+      <li>Arroba operational-history excerpt for the imported session and agent.</li>
+      <li>Web screenshots before, during, after, and after expanding the completed turn.</li>
+      <li>TUI automation snapshots before, during, after, and after expanding the completed turn.</li>
+      <li>Badge transition timeline with timestamps and source events.</li>
+      <li>Transcript parity report showing matched and missing markers for provider, web, and TUI.</li>
+      <li>Scroll/collapse timeline report showing viewport bottom distance and expanded/collapsed state over time.</li>
+    </ul>
+
+    <h2>Implementation Notes</h2>
+    <ul>
+      <li>Add a new live matrix script rather than overloading the fixture-based external import drill.</li>
+      <li>Run providers sequentially by default to avoid provider auth, CPU, and model-output contention.</li>
+      <li>Keep the provider-native session open and observable until Arroba has verified the final idle state.</li>
+      <li>Use existing kernel IPC helpers for unattached-agent refresh/import and session history reads.</li>
+      <li>Use existing TUI automation socket helpers for snapshots and badge assertions.</li>
+      <li>Use product frontend browser automation for DOM, screenshot, scroll, and collapse assertions.</li>
+      <li>Fail the provider drill when transcript parity or badge lifecycle fails; preserve artifacts on failure.</li>
+    </ul>
+
+    <h2>Success Criteria</h2>
+    <ul>
+      <li><span class="pass">Pass:</span> all three providers satisfy badge lifecycle, transcript parity, live-update, scroll, and collapse assertions in both web terminal and TUI.</li>
+      <li><span class="caution">Investigate:</span> any provider that lacks optional metadata must still pass visible transcript and tool-call parity, but the missing metadata must be explicitly documented.</li>
+      <li><span class="caution">Fail:</span> duplicated prompts, stale history after joining, premature <code>IDLE</code>, premature collapse, missing final collapse, missing tool/assistant markers, or scroll jumps while pinned to bottom.</li>
+    </ul>
+
+    <h2>Provider Limitations Report</h2>
+    <p>At the end of the drill, the report must include a provider-by-provider limitations section. It should clarify what each provider persists and exposes live, what Arroba can display, and what is unavailable because the provider does not write it to its session files or event stream.</p>
+    <ul>
+      <li>For each provider, list available live metadata: status/running state, assistant text, tool calls, tool results, reasoning/thinking summaries, timestamps, token usage, model identity, and final completion/error state.</li>
+      <li>For each missing metadata category, state whether it is an Arroba bug, a provider persistence limitation, or a drill-observation limitation.</li>
+      <li>Do not imply parity for traces or hidden reasoning that the provider does not expose.</li>
+      <li>Include exact provider session IDs and Arroba session/agent IDs so limitations can be reproduced.</li>
+    </ul>
+  </main>
+</body>
+</html>
