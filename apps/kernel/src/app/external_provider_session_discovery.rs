@@ -982,14 +982,14 @@ fn claude_tool_result_text(item: &Value) -> Option<String> {
         return None;
     }
     Some(compact_json_text(serde_json::json!({
+        "id": string_field(item, &["tool_use_id", "toolUseId"]),
         "tool": "tool_result",
         "status": if item.get("is_error").and_then(Value::as_bool) == Some(true) {
-            "error"
+            "failed"
         } else {
             "completed"
         },
-        "tool_use_id": string_field(item, &["tool_use_id", "toolUseId"]),
-        "content": content,
+        "output": content,
     })))
 }
 
