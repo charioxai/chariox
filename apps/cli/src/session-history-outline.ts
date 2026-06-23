@@ -50,11 +50,20 @@ export function replaceHistoryBlobPlaceholder(
     return entries
   }
   const turnId = placeholder.turnId
-  const hydrated = hydratePageEntries(content.entries, turnId).map((entry) => ({
-    ...entry,
-    blobCollapsed: false,
-    historyBlobLoaded: true,
-  }))
+  const hydrated = hydratePageEntries(content.entries, turnId).map((entry) => {
+    const next: TranscriptEntry = {
+      ...entry,
+      blobCollapsed: false,
+      historyBlobLoaded: true,
+    }
+    if (placeholder.historyBlobId) {
+      next.historyBlobSourceId = placeholder.historyBlobId
+    }
+    if (placeholder.historyBlobAgentId) {
+      next.historyBlobSourceAgentId = placeholder.historyBlobAgentId
+    }
+    return next
+  })
   const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
   return applyTranscriptDisplayState(reindexTranscriptEntries(replaced, 0), expandedTurnIds)
 }

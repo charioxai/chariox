@@ -105,7 +105,16 @@ export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: s
 export async function refreshAgentPaneState<
   TAgent extends { id: string },
   THistoryEntry,
-  TEntry extends { role: string; text: string; turnId?: number },
+  TEntry extends {
+    role: string
+    text: string
+    turnId?: number
+    historyBlobId?: string
+    historyBlobAgentId?: string
+    historyBlobSourceId?: string
+    historyBlobSourceAgentId?: string
+    historyBlobLoaded?: boolean
+  },
   TCursor,
 >(options: {
   session: AgentPaneSession<TAgent>
@@ -168,6 +177,13 @@ export async function refreshAgentPaneState<
       ),
       0,
     )
+    nextPaneEntries = preserveLoadedHistoryBlobs({
+      refreshedEntries: nextPaneEntries,
+      currentEntries: currentPaneEntries,
+      expandedTurnIds,
+      applyExpandedTurns: options.applyExpandedTurns,
+      reindexEntries: options.reindexEntries,
+    })
     if (options.hasPromptWork && shouldPreferCurrentPaneEntries(currentPaneEntries, nextPaneEntries)) {
       nextPaneEntries = currentPaneEntries.map((entry) => ({ ...entry }))
     }
@@ -188,6 +204,61 @@ export async function refreshAgentPaneState<
     visibleEntries,
     visibleCursor,
   }
+}
+
+function preserveLoadedHistoryBlobs<TEntry extends {
+  text: string
+  role: string
+  turnId?: number
+  historyBlobId?: string
+  historyBlobAgentId?: string
+  historyBlobSourceId?: string
+  historyBlobSourceAgentId?: string
+  historyBlobLoaded?: boolean
+}>(options: {
+  refreshedEntries: TEntry[]
+  currentEntries: readonly TEntry[]
+  expandedTurnIds: readonly number[]
+  applyExpandedTurns: (entries: TEntry[], expandedTurnIds: readonly number[]) => TEntry[]
+  reindexEntries: (entries: TEntry[], startingId: number) => TEntry[]
+}) {
+  const loadedByBlob = new Map<string, TEntry[]>()
+  for (const entry of options.currentEntries) {
+    if (!entry.historyBlobLoaded || !entry.historyBlobSourceId) {
+      continue
+    }
+    const key = historyBlobSourceKey(entry.historyBlobSourceAgentId, entry.historyBlobSourceId, entry.turnId)
+    const entries = loadedByBlob.get(key) ?? []
+    entries.push({ ...entry })
+    loadedByBlob.set(key, entries)
+  }
+  if (loadedByBlob.size === 0) {
+    return options.refreshedEntries
+  }
+
+  let replaced = false
+  const nextEntries = options.refreshedEntries.flatMap((entry) => {
+    if (!entry.historyBlobId) {
+      return [entry]
+    }
+    const loadedEntries = loadedByBlob.get(historyBlobSourceKey(entry.historyBlobAgentId, entry.historyBlobId, entry.turnId))
+    if (!loadedEntries?.length) {
+      return [entry]
+    }
+    replaced = true
+    return loadedEntries.map((loadedEntry) => ({ ...loadedEntry }))
+  })
+  if (!replaced) {
+    return options.refreshedEntries
+  }
+  return options.reindexEntries(
+    options.applyExpandedTurns(nextEntries, options.expandedTurnIds),
+    0,
+  )
+}
+
+function historyBlobSourceKey(agentId: string | null | undefined, blobId: string, turnId: number | undefined) {
+  return `${agentId ?? ""}:${blobId}:${turnId ?? ""}`
 }
 
 function focusedAgentIdForAgentPaneSession<TAgent extends { id: string }>(

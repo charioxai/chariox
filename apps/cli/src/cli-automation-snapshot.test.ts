@@ -199,6 +199,8 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
     blobSummary: null,
     historyBlobId: null,
     historyBlobAgentId: null,
+    historyBlobSourceId: null,
+    historyBlobSourceAgentId: null,
     historyBlobLoaded: null,
     historyBlobLoading: null,
     historyBlobError: null,

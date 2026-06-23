@@ -213,6 +213,8 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
     blobSummary: entry.blobSummary ?? null,
     historyBlobId: entry.historyBlobId ?? null,
     historyBlobAgentId: entry.historyBlobAgentId ?? null,
+    historyBlobSourceId: entry.historyBlobSourceId ?? null,
+    historyBlobSourceAgentId: entry.historyBlobSourceAgentId ?? null,
     historyBlobLoaded: entry.historyBlobLoaded ?? null,
     historyBlobLoading: entry.historyBlobLoading ?? null,
     historyBlobError: entry.historyBlobError ?? null,

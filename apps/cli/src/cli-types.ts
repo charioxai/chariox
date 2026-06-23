@@ -1018,6 +1018,8 @@ export type TranscriptEntry = {
   blobSummary?: string
   historyBlobId?: string
   historyBlobAgentId?: string
+  historyBlobSourceId?: string
+  historyBlobSourceAgentId?: string
   historyBlobLoaded?: boolean
   historyBlobLoading?: boolean
   historyBlobError?: string

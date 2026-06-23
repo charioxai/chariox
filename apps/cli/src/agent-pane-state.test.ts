@@ -185,6 +185,79 @@ test("refreshAgentPaneState can preserve expanded turn ids during refresh", asyn
   assert.deepEqual(result.expandedTurnIdsByAgent, { "agent-a": [2, 999] })
 })
 
+test("refreshAgentPaneState preserves loaded history blob content across refresh", async () => {
+  const result = await refreshAgentPaneState<
+    { id: string },
+    {
+      role: string
+      turnId?: number
+      text: string
+      historyBlobId?: string
+      historyBlobAgentId?: string
+    },
+    {
+      id?: number
+      role: string
+      turnId?: number
+      text: string
+      historyBlobId?: string
+      historyBlobAgentId?: string
+      historyBlobSourceId?: string
+      historyBlobSourceAgentId?: string
+      historyBlobLoaded?: boolean
+    },
+    string
+  >({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: false,
+    expandedTurnIdsByAgent: { "agent-a": [1] },
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        { role: "user", turnId: 1, text: "question" },
+        {
+          role: "tool",
+          turnId: 1,
+          text: "TOOL_STEP_01 loaded output",
+          historyBlobSourceId: "blob-1",
+          historyBlobSourceAgentId: "agent-a",
+          historyBlobLoaded: true,
+        },
+        { role: "assistant", turnId: 1, text: "answer" },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        { role: "user", turnId: 1, text: "question" },
+        {
+          role: "tool",
+          turnId: 1,
+          text: "",
+          historyBlobId: "blob-1",
+          historyBlobAgentId: "agent-a",
+        },
+        { role: "assistant", turnId: 1, text: "answer" },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(
+    result.visibleEntries.map((entry) => entry.text),
+    ["question", "TOOL_STEP_01 loaded output", "answer"],
+  )
+  assert.equal(result.visibleEntries[1]?.historyBlobLoaded, true)
+})
+
 test("refreshAgentPaneState preserves completed turns when collapse is disabled", async () => {
   const result = await refreshAgentPaneState({
     session: {
