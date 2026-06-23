@@ -52,7 +52,9 @@ function parseArgs(argv) {
   }
   for (let index = 2; index < argv.length; index += 1) {
     const arg = argv[index]
-    if (arg === "--providers" || arg === "--provider") {
+    if (arg === "--") {
+      continue
+    } else if (arg === "--providers" || arg === "--provider") {
       options.providers = readValue(argv, ++index, arg).split(",").map((provider) => provider.trim()).filter(Boolean)
     } else if (arg === "--provider-model") {
       const value = readValue(argv, ++index, arg)
@@ -142,9 +144,11 @@ function providerModel(options, provider) {
 }
 
 function buildPrompt(provider, marker, workspace) {
-  return [
+  const promptMarker = `EXTERNAL_PARITY_USER_PROMPT_${marker}`
+  const text = [
     `You are running the Arroba external provider live parity drill for provider ${provider}.`,
     `Drill marker: ${marker}.`,
+    `User prompt marker: ${promptMarker}.`,
     `Workspace: ${workspace}.`,
     "",
     "Requirements:",
@@ -156,10 +160,12 @@ function buildPrompt(provider, marker, workspace) {
     "6. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
     "7. Delete the temporary directory before finishing.",
     `8. End with the exact final summary marker ${finalMarker} and include the drill marker.`,
+    "9. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
     "",
     `Assistant markers: ${requiredAssistantMarkers.join(", ")}.`,
     `Tool markers: ${requiredToolMarkers.join(", ")}.`,
   ].join("\n")
+  return { text, promptMarker }
 }
 
 function providerCommand(provider, model, prompt, workspace) {
@@ -252,9 +258,9 @@ async function runProviderDrill(provider, options) {
   const model = providerModel(options, provider)
   const providerRoot = path.join(options.artifactRoot, provider)
   const prompt = buildPrompt(provider, marker, options.workspace)
-  const command = providerCommand(provider, model, prompt, options.workspace)
+  const command = providerCommand(provider, model, prompt.text, options.workspace)
   await mkdir(providerRoot, { recursive: true })
-  await writeFile(path.join(providerRoot, "prompt.txt"), prompt, "utf8")
+  await writeFile(path.join(providerRoot, "prompt.txt"), prompt.text, "utf8")
   await writeJson(path.join(providerRoot, "provider-command.json"), {
     provider,
     model,
@@ -268,6 +274,7 @@ async function runProviderDrill(provider, options) {
     provider,
     model,
     marker,
+    promptMarker: prompt.promptMarker,
     artifactDir: providerRoot,
     durationMs: 0,
     externalSessionId: null,
@@ -283,7 +290,13 @@ async function runProviderDrill(provider, options) {
     result.ok = true
     result.durationMs = Date.now() - startedAt
     result.assertions.push(pass("dry run generated provider prompt and command"))
-    result.providerLimitations.push("dry run does not validate provider, web, or TUI behavior")
+    result.providerLimitations.push({
+      provider,
+      surface: "all",
+      status: "skipped",
+      classification: "dry_run",
+      note: "dry run does not validate provider, web, or TUI behavior",
+    })
     await writeJson(path.join(providerRoot, "manifest.json"), result)
     return result
   }
@@ -325,11 +338,11 @@ async function runProviderDrill(provider, options) {
     result.assertions.push(pass("external provider session imported into Arroba session"))
 
     const monitors = []
-    monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, options }))
+    monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, promptMarker: prompt.promptMarker, options }))
     if (!options.skipTui) {
       const tui = await startTuiObserver({ sessionId: result.arrobaSessionId, options, providerRoot })
       tuiProcess = tui.process
-      monitors.push(startTuiMonitor({ socketPath: tui.socketPath, provider, marker, options }))
+      monitors.push(startTuiMonitor({ socketPath: tui.socketPath, provider, marker, promptMarker: prompt.promptMarker, options }))
       result.evidence.tuiSocketPath = tui.socketPath
     }
     if (!options.skipWeb) {
@@ -337,7 +350,7 @@ async function runProviderDrill(provider, options) {
       browser = web.browser
       context = web.context
       page = web.page
-      monitors.push(startWebMonitor({ page, provider, marker, providerRoot, options }))
+      monitors.push(startWebMonitor({ page, provider, marker, promptMarker: prompt.promptMarker, providerRoot, options }))
     }
 
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
@@ -444,12 +457,12 @@ async function waitForNewExternalSession({ client, provider, before, marker, tim
   throw new Error(`timed out waiting for new ${provider} external session; last=${JSON.stringify(last.slice(0, 5), null, 2)}`)
 }
 
-function startKernelMonitor({ client, sessionId, agentId, provider, marker, options }) {
+function startKernelMonitor({ client, sessionId, agentId, provider, marker, promptMarker, options }) {
   const samples = []
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker }).catch((error) => ({
+      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -460,14 +473,14 @@ function startKernelMonitor({ client, sessionId, agentId, provider, marker, opti
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker }).catch((error) => ({ error: String(error?.message ?? error) }))
+      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }).catch((error) => ({ error: String(error?.message ?? error) }))
       samples.push(finalSample)
       return summarizeSamples("kernel", samples)
     },
   }
 }
 
-async function kernelSample({ client, sessionId, agentId, provider, marker }) {
+async function kernelSample({ client, sessionId, agentId, provider, marker, promptMarker }) {
   const stateResponse = await client.send(getSessionStateRequest(sessionId))
   const session = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded)?.session
   const agent = (session?.agents ?? []).find((entry) => entry.id === agentId)
@@ -481,7 +494,7 @@ async function kernelSample({ client, sessionId, agentId, provider, marker }) {
     assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
     toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
     finalSeen: text.includes(finalMarker),
-    promptOccurrences: countOccurrences(text, marker),
+    promptOccurrences: countOccurrences(text, promptMarker),
     provider,
   }
 }
@@ -515,12 +528,12 @@ async function startTuiObserver({ sessionId, options, providerRoot }) {
   return { process: child, socketPath }
 }
 
-function startTuiMonitor({ socketPath, provider, marker, options }) {
+function startTuiMonitor({ socketPath, provider, marker, promptMarker, options }) {
   const samples = []
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await tuiSample(socketPath, provider, marker).catch((error) => ({
+      samples.push(await tuiSample(socketPath, provider, marker, promptMarker).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -531,13 +544,13 @@ function startTuiMonitor({ socketPath, provider, marker, options }) {
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      samples.push(await tuiSample(socketPath, provider, marker).catch((error) => ({ error: String(error?.message ?? error) })))
+      samples.push(await tuiSample(socketPath, provider, marker, promptMarker).catch((error) => ({ error: String(error?.message ?? error) })))
       return summarizeSamples("tui", samples)
     },
   }
 }
 
-async function tuiSample(socketPath, provider, marker) {
+async function tuiSample(socketPath, provider, marker, promptMarker) {
   const snapshot = await automationRequest(socketPath, { action: "snapshot" })
   const text = [
     ...(snapshot.transcript?.entries ?? []).map((entry) => entry.text ?? ""),
@@ -556,7 +569,7 @@ async function tuiSample(socketPath, provider, marker) {
     assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
     toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
     finalSeen: text.includes(finalMarker),
-    promptOccurrences: countOccurrences(text, marker),
+    promptOccurrences: countOccurrences(text, promptMarker),
     collapsedEntries: entries.filter((entry) => entry.blobCollapsed === true).length,
     expandedEntries: entries.filter((entry) => entry.blobCollapsed === false).length,
     provider,
@@ -579,12 +592,12 @@ async function startWebObserver({ sessionId, webUrl, providerRoot }) {
   return { browser, context, page }
 }
 
-function startWebMonitor({ page, provider, marker, providerRoot, options }) {
+function startWebMonitor({ page, provider, marker, promptMarker, providerRoot, options }) {
   const samples = []
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await webSample(page, provider, marker).catch((error) => ({
+      samples.push(await webSample(page, provider, marker, promptMarker).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -595,15 +608,15 @@ function startWebMonitor({ page, provider, marker, providerRoot, options }) {
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      samples.push(await webSample(page, provider, marker).catch((error) => ({ error: String(error?.message ?? error) })))
+      samples.push(await webSample(page, provider, marker, promptMarker).catch((error) => ({ error: String(error?.message ?? error) })))
       await page.screenshot({ path: path.join(providerRoot, "web-final.png"), fullPage: true }).catch(() => {})
       return summarizeSamples("web", samples)
     },
   }
 }
 
-async function webSample(page, provider, marker) {
-  return await page.evaluate(({ provider, marker, requiredAssistantMarkers, requiredToolMarkers, finalMarker }) => {
+async function webSample(page, provider, marker, promptMarker) {
+  return await page.evaluate(({ provider, marker, promptMarker, requiredAssistantMarkers, requiredToolMarkers, finalMarker }) => {
     const output = document.querySelector("[data-terminal-output]") ?? document.body
     const text = output.textContent ?? ""
     const scrollElement = output instanceof HTMLElement ? output : document.scrollingElement
@@ -621,7 +634,7 @@ async function webSample(page, provider, marker) {
       assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
       toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
       finalSeen: text.includes(finalMarker),
-      promptOccurrences: text.split(marker).length - 1,
+      promptOccurrences: text.split(promptMarker).length - 1,
       bottomDistance,
       turnExpandedCount: turnButtons.filter((value) => value === "true").length,
       turnCollapsedCount: turnButtons.filter((value) => value === "false").length,
@@ -629,7 +642,7 @@ async function webSample(page, provider, marker) {
       blobCollapsedCount: blobButtons.filter((value) => value === "false").length,
       provider,
     }
-  }, { provider, marker, requiredAssistantMarkers, requiredToolMarkers, finalMarker })
+  }, { provider, marker, promptMarker, requiredAssistantMarkers, requiredToolMarkers, finalMarker })
 }
 
 function summarizeSamples(surface, samples) {
@@ -657,7 +670,7 @@ function assertSurface(result, surfaceResult, label) {
   result.assertions.push(assertion(`${label} saw all assistant markers`, surfaceResult.assistantMarkersSeen.length === 20, surfaceResult.assistantMarkersSeen))
   result.assertions.push(assertion(`${label} saw all tool markers`, surfaceResult.toolMarkersSeen.length === 20, surfaceResult.toolMarkersSeen))
   result.assertions.push(assertion(`${label} saw final summary marker`, surfaceResult.finalSeen, surfaceResult.finalSeen))
-  result.assertions.push(assertion(`${label} did not repeatedly render prompt marker`, surfaceResult.promptOccurrenceMax <= 25, surfaceResult.promptOccurrenceMax))
+  result.assertions.push(assertion(`${label} rendered external prompt marker exactly once`, surfaceResult.promptOccurrenceMax === 1, surfaceResult.promptOccurrenceMax))
   if (label.includes("web")) {
     result.assertions.push(assertion(`${label} stayed near bottom while tailing`, surfaceResult.maxBottomDistance < 260, surfaceResult.maxBottomDistance))
   }
@@ -681,11 +694,17 @@ function providerLimitations(provider, monitorResults) {
   const kernelText = monitorResults.kernel?.samples?.map((sample) => sample.text ?? "").join("\n") ?? ""
   for (const field of ["token", "reasoning", "thinking", "model"]) {
     if (!kernelText.toLowerCase().includes(field)) {
-      limitations.push(`${provider}: ${field} metadata was not observed in imported external history; classify after inspecting the provider raw transcript.`)
+      limitations.push({
+        provider,
+        metadata: field,
+        status: "not_observed",
+        classification: "requires_raw_provider_transcript_review",
+        note: `${field} metadata was not observed in imported external history`,
+      })
     }
   }
-  if (!monitorResults.web) limitations.push(`${provider}: web terminal assertions were skipped`)
-  if (!monitorResults.tui) limitations.push(`${provider}: TUI assertions were skipped`)
+  if (!monitorResults.web) limitations.push({ provider, surface: "web", status: "skipped", classification: "drill_observation_limitation" })
+  if (!monitorResults.tui) limitations.push({ provider, surface: "tui", status: "skipped", classification: "drill_observation_limitation" })
   return limitations
 }
 
