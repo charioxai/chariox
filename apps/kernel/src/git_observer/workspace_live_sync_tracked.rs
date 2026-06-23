@@ -19,13 +19,24 @@ pub(super) fn change_after_turn(
     if before.is_dirty {
         return dirty_change_after_turn(before, after);
     }
-    if before.status_fingerprint == after.status_fingerprint {
+    if before.status_fingerprint == after.status_fingerprint
+        && committed_path_changes(before, after).is_empty()
+    {
         return None;
     }
     let worktree_path = PathBuf::from(&before.worktree_path);
     let changed_status_fingerprint =
         status_delta(&before.status_fingerprint, &after.status_fingerprint);
-    let path_changes = path_changes(&changed_status_fingerprint, &worktree_path);
+    let mut path_changes = committed_path_changes(before, after)
+        .into_iter()
+        .map(|change| (change.path.clone(), change))
+        .collect::<BTreeMap<_, _>>();
+    path_changes.extend(
+        path_changes_from_status(&changed_status_fingerprint, &worktree_path)
+            .into_iter()
+            .map(|change| (change.path.clone(), change)),
+    );
+    let path_changes = path_changes.into_values().collect::<Vec<_>>();
     let changed_paths = path_changes
         .iter()
         .map(|change| change.path.clone())
@@ -55,10 +66,12 @@ fn dirty_change_after_turn(
     let repo_root = PathBuf::from(&before.repo_root);
     let worktree_path = PathBuf::from(&after.worktree_path);
     let revision = before.head_sha.as_deref().unwrap_or("HEAD");
+    let committed_changes = committed_path_changes(before, after);
     let paths = before
         .workspace_live_sync_file_snapshots
         .keys()
         .chain(after.workspace_live_sync_file_snapshots.keys())
+        .chain(committed_changes.iter().map(|change| &change.path))
         .cloned()
         .collect::<BTreeSet<_>>();
     let mut file_changes = Vec::new();
@@ -140,7 +153,10 @@ fn status_delta(before_status: &str, after_status: &str) -> String {
         .join("\n")
 }
 
-fn path_changes(status_fingerprint: &str, worktree_path: &Path) -> Vec<TrackedPathChange> {
+fn path_changes_from_status(
+    status_fingerprint: &str,
+    worktree_path: &Path,
+) -> Vec<TrackedPathChange> {
     let ignore_patterns = ignore_patterns(worktree_path);
     let mut paths = BTreeMap::new();
     for line in status_fingerprint.lines() {
@@ -184,11 +200,84 @@ fn path_changes(status_fingerprint: &str, worktree_path: &Path) -> Vec<TrackedPa
     paths.into_values().collect()
 }
 
+fn committed_path_changes(
+    before: &GitTurnSnapshot,
+    after: &GitTurnSnapshot,
+) -> Vec<TrackedPathChange> {
+    let (Some(before_head), Some(after_head)) =
+        (before.head_sha.as_deref(), after.head_sha.as_deref())
+    else {
+        return Vec::new();
+    };
+    if before_head == after_head {
+        return Vec::new();
+    }
+    let worktree_path = PathBuf::from(&after.worktree_path);
+    let ignore_patterns = ignore_patterns(&worktree_path);
+    let output = Command::new("git")
+        .args([
+            "diff",
+            "--name-status",
+            "--find-renames",
+            before_head,
+            after_head,
+        ])
+        .current_dir(&worktree_path)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| committed_path_change_from_name_status(line, &ignore_patterns))
+        .collect()
+}
+
+fn committed_path_change_from_name_status(
+    line: &str,
+    ignore_patterns: &[String],
+) -> Option<TrackedPathChange> {
+    let mut parts = line.split('\t');
+    let status = parts.next()?.trim();
+    let first_path = parts.next().map(unquote_path)?;
+    let (previous_path, path, kind) = if status.starts_with('R') {
+        let next_path = parts.next().map(unquote_path)?;
+        (
+            Some(first_path),
+            next_path,
+            WorkspaceLiveSyncFileChangeKind::Renamed,
+        )
+    } else {
+        let kind = match status.chars().next()? {
+            'A' => WorkspaceLiveSyncFileChangeKind::Added,
+            'D' => WorkspaceLiveSyncFileChangeKind::Deleted,
+            _ => WorkspaceLiveSyncFileChangeKind::Modified,
+        };
+        (None, first_path, kind)
+    };
+    if path.is_empty()
+        || excluded_path(&path, ignore_patterns)
+        || previous_path
+            .as_deref()
+            .is_some_and(|path| excluded_path(path, ignore_patterns))
+    {
+        return None;
+    }
+    Some(TrackedPathChange {
+        path,
+        previous_path,
+        kind,
+    })
+}
+
 pub(super) fn dirty_file_snapshots(
     worktree_path: &Path,
     status_fingerprint: &str,
 ) -> BTreeMap<String, WorkspaceLiveSyncTrackedFileSnapshot> {
-    path_changes(status_fingerprint, worktree_path)
+    path_changes_from_status(status_fingerprint, worktree_path)
         .into_iter()
         .map(|change| {
             let snapshot = worktree_snapshot(worktree_path, &change.path);

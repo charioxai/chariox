@@ -118,6 +118,7 @@ impl super::KernelRuntimeOwnedState {
             source_run,
             target_run.session_id(),
             agent_id,
+            agent_id,
             Some(target_run.id()),
             target_run.provider(),
             Some(target_run.model()),
@@ -142,6 +143,7 @@ impl super::KernelRuntimeOwnedState {
             source_run,
             source_run.session_id(),
             agent_id,
+            agent_id,
             None,
             target_provider,
             target_model,
@@ -157,9 +159,11 @@ impl super::KernelRuntimeOwnedState {
         if source_run.session_id() != target_run.session_id() {
             return;
         }
+        let source_agent_id = source_run.agent_instance_id().unwrap_or(target_agent_id);
         self.prepare_provider_switch_context_handoff_for_target(
             source_run,
             target_run.session_id(),
+            source_agent_id,
             target_agent_id,
             Some(target_run.id()),
             target_run.provider(),
@@ -171,6 +175,7 @@ impl super::KernelRuntimeOwnedState {
         &self,
         source_run: &RuntimeProviderRun,
         session_id: &str,
+        source_history_agent_id: &str,
         agent_id: &str,
         target_provider_run_id: Option<&str>,
         target_provider: &str,
@@ -181,7 +186,7 @@ impl super::KernelRuntimeOwnedState {
         match build_agent_context_handoff_from_history(
             &self.operational_history_store,
             session_id,
-            agent_id,
+            source_history_agent_id,
         ) {
             Ok(Some(context)) => {
                 self.pending_agent_context_handoffs.set(
@@ -206,6 +211,7 @@ impl super::KernelRuntimeOwnedState {
                     serde_json::json!({
                         "session_id": session_id,
                         "agent_id": agent_id,
+                        "source_history_agent_id": source_history_agent_id,
                         "source_provider_run_id": source_run.id(),
                         "target_provider_run_id": target_provider_run_id,
                         "target_provider": target_provider,
@@ -308,6 +314,87 @@ fn model_label(model: Option<&str>) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::state::KernelRuntimeState;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn owned_runtime_state(app: &Arc<Mutex<crate::DaemonApp>>) -> KernelRuntimeState {
+        let (
+            config_projection,
+            session_state,
+            agents,
+            attachments,
+            providers,
+            provider_process_tracking,
+            slices,
+            session_state_projection,
+            provider_run_projection,
+            history,
+            operational_history,
+            durable_state,
+            session_history_projection,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        ) = {
+            let app_locked = app.lock().await;
+            (
+                app_locked.config_projection_store(),
+                app_locked.session_state_store(),
+                app_locked.agents().clone(),
+                app_locked.attachments().clone(),
+                app_locked.providers().clone(),
+                app_locked.provider_process_tracking_store(),
+                app_locked.slices(),
+                app_locked.session_state_projection_store(),
+                app_locked.provider_run_projection_store(),
+                app_locked.history_store(),
+                app_locked.operational_history_store(),
+                app_locked.durable_state_store(),
+                app_locked.session_history_projection_store(),
+                app_locked.prompt_state_owner(),
+                app_locked.active_turn_store(),
+                app_locked.prompt_activity_store(),
+                app_locked.prompt_workspace_claim_store(),
+                app_locked.structured_output_record_store(),
+                app_locked.terminal_stream_store(),
+                app_locked.workflow_design_event_store(),
+                app_locked.metaagent_event_store(),
+                app_locked.workspace_coordinator(),
+            )
+        };
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            config_projection,
+            session_state,
+            agents,
+            attachments,
+            providers,
+            provider_process_tracking,
+            slices,
+            session_state_projection,
+            provider_run_projection,
+            history,
+            operational_history,
+            durable_state,
+            session_history_projection,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
 
     #[test]
     fn pending_handoff_is_consumed_once() {
@@ -338,6 +425,121 @@ mod tests {
         let injected = inject_context_handoff("next request", &first.unwrap());
         assert!(injected.contains("prior context"));
         assert!(injected.contains("<user_request>\nnext request\n</user_request>"));
+    }
+
+    #[tokio::test]
+    async fn fork_context_handoff_uses_source_agent_history_for_target_agent() {
+        let mut app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, source_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-fork-handoff",
+                "worktree-fork-handoff",
+            ))
+            .expect("session should be created");
+        let forked_agent = app
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("forked"),
+            )
+            .expect("fork target should spawn");
+        let source_run = app
+            .providers
+            .start_run_provider_only(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "model-source",
+                )
+                .with_agent_id(source_agent.id()),
+            )
+            .expect("source provider should start")
+            .into_run();
+        let target_run = app
+            .providers
+            .start_run_provider_only(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "model-source",
+                )
+                .with_agent_id(forked_agent.id()),
+            )
+            .expect("target provider should start")
+            .into_run();
+        let history = app.operational_history_store();
+        let prompt_entry = crate::history::SessionHistoryEntry::user_prompt(
+            session.id(),
+            "attachment-1",
+            source_agent.id(),
+            "remember source context",
+        );
+        history
+            .append(&crate::history::HistoryEvent::transcript(
+                1,
+                &prompt_entry,
+                crate::history::HistoryEventTurnContext {
+                    provider: Some(source_run.provider().to_string()),
+                    model: Some(source_run.model().to_string()),
+                    provider_run_id: Some(source_run.id().to_string()),
+                    prompt_id: Some("prompt-1".to_string()),
+                    turn_id: Some("turn-1".to_string()),
+                    ..crate::history::HistoryEventTurnContext::default()
+                },
+            ))
+            .expect("source prompt history should append");
+        let output_entry = crate::history::SessionHistoryEntry::provider_output(
+            session.id(),
+            source_run.id(),
+            Some(source_agent.id()),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            "source answer for fork handoff",
+        );
+        history
+            .append(&crate::history::HistoryEvent::transcript(
+                2,
+                &output_entry,
+                crate::history::HistoryEventTurnContext {
+                    provider: Some(source_run.provider().to_string()),
+                    model: Some(source_run.model().to_string()),
+                    provider_run_id: Some(source_run.id().to_string()),
+                    prompt_id: Some("prompt-1".to_string()),
+                    turn_id: Some("turn-1".to_string()),
+                    ..crate::history::HistoryEventTurnContext::default()
+                },
+            ))
+            .expect("source output history should append");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        runtime.owned.prepare_agent_fork_context_handoff(
+            &source_run,
+            forked_agent.id(),
+            &target_run,
+        );
+
+        let handoff = runtime
+            .owned
+            .pending_agent_context_handoffs
+            .peek_matching(session.id(), forked_agent.id(), &target_run)
+            .expect("fork target should receive pending source context handoff");
+        assert_eq!(handoff.source_provider_run_id, source_run.id());
+        assert_eq!(
+            handoff.target_provider_run_id.as_deref(),
+            Some(target_run.id())
+        );
+        assert!(handoff.context.contains("remember source context"));
+        assert!(handoff.context.contains("source answer for fork handoff"));
+        assert!(runtime
+            .owned
+            .pending_agent_context_handoffs
+            .peek_matching(session.id(), source_agent.id(), &target_run)
+            .is_none());
     }
 
     #[test]

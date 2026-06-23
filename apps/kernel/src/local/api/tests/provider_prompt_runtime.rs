@@ -780,6 +780,494 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch() {
 }
 
 #[test]
+fn undo_turn_request_restores_workspace_states_and_preserves_head() {
+    let root = temp_git_repo("turn-undo-restores-workspace");
+    fs::create_dir_all(root.join("src")).expect("src directory should be created");
+    fs::write(root.join("src/existing.txt"), "existing before\n")
+        .expect("existing file should be written");
+    fs::write(root.join("src/delete.txt"), "delete before\n")
+        .expect("deleted file seed should be written");
+    run_git(&root, &["add", "."]);
+    run_git(&root, &["commit", "-m", "seed undo files"]);
+    fs::write(root.join("src/dirty.txt"), "dirty before turn\n")
+        .expect("pre-existing dirty file should be written");
+
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let before = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        provider: "dev-stub".to_string(),
+        model: "default".to_string(),
+        provider_run_id: "provider-run-undo".to_string(),
+        provider_session_id: None,
+        prompt_id: "prompt-undo".to_string(),
+        turn_id: "turn-undo".to_string(),
+        started_at_ms: Some(crate::session::unix_epoch_ms()),
+        worktree_path: root.clone(),
+        workspace_live_sync_tracked: true,
+        machine_id: None,
+        prompt_summary: "make committed and dirty changes".to_string(),
+    })
+    .expect("pre-turn snapshot should capture");
+
+    fs::write(root.join("src/existing.txt"), "existing after\n")
+        .expect("existing file should change");
+    fs::write(root.join("src/added.txt"), "added after\n").expect("added file should be written");
+    fs::remove_file(root.join("src/delete.txt")).expect("file should be deleted");
+    fs::write(root.join("src/dirty.txt"), "dirty after turn\n").expect("dirty file should change");
+    run_git(&root, &["add", "."]);
+    run_git(&root, &["commit", "-m", "agent committed turn"]);
+    let head_after_turn = git_output(&root, &["rev-parse", "HEAD"]);
+    let after = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        provider: "dev-stub".to_string(),
+        model: "default".to_string(),
+        provider_run_id: "provider-run-undo".to_string(),
+        provider_session_id: None,
+        prompt_id: "prompt-undo".to_string(),
+        turn_id: "turn-undo".to_string(),
+        started_at_ms: before.started_at_ms,
+        worktree_path: root.clone(),
+        workspace_live_sync_tracked: true,
+        machine_id: None,
+        prompt_summary: "make committed and dirty changes".to_string(),
+    })
+    .expect("post-turn snapshot should capture");
+    let change =
+        crate::git_observer::tracked_workspace_live_sync_change_after_turn(&before, &after)
+            .expect("committed turn should produce reversible changes");
+    harness.with_app_mut(|app| {
+        app.completed_git_turn_snapshot_store().record(
+            crate::git_observer::CompletedGitTurnSnapshot::new(
+                before,
+                after,
+                Some(change),
+                crate::session::unix_epoch_ms(),
+            ),
+        );
+    });
+
+    let completed_turn = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { agent_activity, .. } => agent_activity
+            .get(agent.id())
+            .and_then(|activity| activity.last_completed_turn.clone())
+            .expect("completed turn should project"),
+        other => panic!("unexpected session state response: {other:?}"),
+    };
+    assert!(completed_turn.undo_available);
+    assert_eq!(
+        completed_turn.changed_paths,
+        vec![
+            "src/added.txt".to_string(),
+            "src/delete.txt".to_string(),
+            "src/dirty.txt".to_string(),
+            "src/existing.txt".to_string(),
+        ]
+    );
+
+    let undo = match harness
+        .dispatch(LocalDaemonRequest::UndoTurn(
+            crate::local::UndoTurnRequest {
+                session_id: session.id().to_string(),
+                agent_ref: None,
+                turn_ref: None,
+            },
+        ))
+        .expect("focused agent undo should succeed")
+    {
+        LocalDaemonResponse::TurnUndone { result } => result,
+        other => panic!("unexpected undo response: {other:?}"),
+    };
+
+    assert_eq!(undo.agent_id, agent.id());
+    assert_eq!(undo.turn_id, completed_turn.turn_id);
+    assert_eq!(git_output(&root, &["rev-parse", "HEAD"]), head_after_turn);
+    assert_eq!(
+        fs::read_to_string(root.join("src/existing.txt")).expect("existing file should read"),
+        "existing before\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("src/delete.txt")).expect("deleted file should be restored"),
+        "delete before\n"
+    );
+    assert!(!root.join("src/added.txt").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("src/dirty.txt")).expect("dirty file should read"),
+        "dirty before turn\n"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn undo_turn_request_conflict_fails_without_partial_writes() {
+    let root = temp_git_repo("turn-undo-conflict");
+    fs::create_dir_all(root.join("src")).expect("src directory should be created");
+    fs::write(root.join("src/conflict.txt"), "before\n").expect("conflict seed should write");
+    run_git(&root, &["add", "."]);
+    run_git(&root, &["commit", "-m", "seed conflict file"]);
+
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "turn-undo-conflict-client".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let provider_run = match harness
+        .dispatch(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: true,
+            },
+        ))
+        .expect("provider launch should succeed")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
+        other => panic!("unexpected provider launch response: {other:?}"),
+    };
+    harness.with_app_mut(|app| {
+        if app
+            .providers()
+            .get_run(provider_run.id())
+            .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
+        {
+            app.providers_mut()
+                .mark_run_running(provider_run.id())
+                .expect("provider run should be marked running");
+        }
+    });
+
+    match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(agent.id().to_string()),
+            prompt: "make conflicting changes".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("prompt submit should start")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { .. },
+            ..
+        } => {}
+        other => panic!("unexpected prompt submit response: {other:?}"),
+    };
+    fs::write(root.join("src/conflict.txt"), "after\n").expect("conflict file should change");
+    fs::write(root.join("src/added.txt"), "added\n").expect("added file should write");
+    match harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("prompt completion should succeed")
+    {
+        LocalDaemonResponse::PromptCompleted { .. } => {}
+        other => panic!("unexpected completion response: {other:?}"),
+    }
+    fs::write(root.join("src/conflict.txt"), "post-turn user edit\n")
+        .expect("post-turn conflict should write");
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::UndoTurn(
+            crate::local::UndoTurnRequest {
+                session_id: session.id().to_string(),
+                agent_ref: Some(agent.id().to_string()),
+                turn_ref: None,
+            },
+        ))
+        .expect_err("post-turn edit should block undo");
+    match error {
+        DaemonError::LocalTransport { operation, message } => {
+            assert_eq!(operation, "turn undo");
+            assert!(message.contains("workspace changed after the turn"));
+            assert!(message.contains("src/conflict.txt"));
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("src/conflict.txt")).expect("conflict file should read"),
+        "post-turn user edit\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("src/added.txt")).expect("added file should remain"),
+        "added\n"
+    );
+
+    let completed_turn = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { agent_activity, .. } => agent_activity
+            .get(agent.id())
+            .and_then(|activity| activity.last_completed_turn.clone())
+            .expect("completed turn should still project"),
+        other => panic!("unexpected session state response: {other:?}"),
+    };
+    assert!(
+        completed_turn.undo_available,
+        "failed undo must not mark the turn undone"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn turn_actions_without_agent_ref_require_focused_agent() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, _agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-no-focus", "worktree-no-focus"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness.with_app_mut(|app| {
+        app.sessions_mut()
+            .set_focused_agent(session.id(), None)
+            .expect("focus should clear");
+    });
+
+    for request in [
+        LocalDaemonRequest::UndoTurn(crate::local::UndoTurnRequest {
+            session_id: session.id().to_string(),
+            agent_ref: None,
+            turn_ref: None,
+        }),
+        LocalDaemonRequest::ForkAgent(crate::local::ForkAgentRequest {
+            session_id: session.id().to_string(),
+            source_agent_ref: None,
+            alias: None,
+        }),
+    ] {
+        let error = harness
+            .dispatch(request)
+            .expect_err("omitted agent ref should require focus");
+        match error {
+            DaemonError::LocalTransport { message, .. } => {
+                assert!(message.contains("agent reference is required because no agent is focused"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+}
+
+#[test]
+fn fork_agent_clones_config_and_launches_provider() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(fork_agent_clones_config_and_launches_provider_inner)
+        .expect("fork test thread should spawn")
+        .join()
+        .expect("fork test thread should complete");
+}
+
+fn fork_agent_clones_config_and_launches_provider_inner() {
+    let root = temp_git_repo("agent-fork-handoff");
+    let harness = LocalRouterTestHarness::new();
+    let (session, _default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy()),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let source = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("source".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: Some("model-source".to_string()),
+            effort: Some("high".to_string()),
+            execution_mode: Some(AgentExecutionMode::Plan),
+            permission_level: Some(AgentPermissionLevel::Required),
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }))
+        .expect("source agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        other => panic!("unexpected spawn response: {other:?}"),
+    };
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "fork-handoff-client".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let source_run = match harness
+        .dispatch(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: Some(source.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "dev-stub".to_string(),
+                account_profile: "default".to_string(),
+                model: "model-source".to_string(),
+                variant: Some("high".to_string()),
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+            },
+        ))
+        .expect("source provider should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
+        other => panic!("unexpected provider launch response: {other:?}"),
+    };
+    harness.with_app_mut(|app| {
+        if app
+            .providers()
+            .get_run(source_run.id())
+            .is_ok_and(|run| run.state() != crate::provider::ProviderRunState::Running)
+        {
+            app.providers_mut()
+                .mark_run_running(source_run.id())
+                .expect("source provider run should be running");
+        }
+    });
+
+    match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            target_agent_id: Some(source.id().to_string()),
+            prompt: "remember source context".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("source prompt should submit")
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { .. },
+            ..
+        } => {}
+        other => panic!("unexpected source prompt response: {other:?}"),
+    }
+    match harness
+        .dispatch(LocalDaemonRequest::AppendNativeProviderOutput(
+            AppendNativeProviderOutputRequest {
+                session_id: session.id().to_string(),
+                attachment_id: attachment.id().to_string(),
+                provider_run_id: source_run.id().to_string(),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: None,
+                text: "source answer for fork handoff\n".to_string(),
+            },
+        ))
+        .expect("source output should append")
+    {
+        LocalDaemonResponse::TerminalOutput { .. } => {}
+        other => panic!("unexpected source output response: {other:?}"),
+    }
+    let (forked, forked_run) = match harness
+        .dispatch(LocalDaemonRequest::ForkAgent(
+            crate::local::ForkAgentRequest {
+                session_id: session.id().to_string(),
+                source_agent_ref: Some("source".to_string()),
+                alias: Some("forked".to_string()),
+            },
+        ))
+        .expect("agent fork should succeed")
+    {
+        LocalDaemonResponse::AgentForked {
+            source_agent_id,
+            agent,
+            provider_run,
+            session: forked_session,
+        } => {
+            assert_eq!(source_agent_id, source.id());
+            assert!(forked_session
+                .agents()
+                .iter()
+                .any(|session_agent| session_agent.id() == agent.id()));
+            (agent, provider_run)
+        }
+        other => panic!("unexpected fork response: {other:?}"),
+    };
+    assert_eq!(forked.alias(), Some("forked"));
+    assert_eq!(forked.provider(), "dev-stub");
+    assert_eq!(forked.model(), Some("model-source"));
+    assert_eq!(forked.effort(), Some("high"));
+    assert_eq!(
+        forked.execution_mode_override(),
+        Some(AgentExecutionMode::Plan)
+    );
+    assert_eq!(
+        forked.permission_level_override(),
+        Some(AgentPermissionLevel::Required)
+    );
+    assert_eq!(forked_run.agent_instance_id(), Some(forked.id()));
+    assert_eq!(forked_run.provider(), source_run.provider());
+    assert_eq!(forked_run.model(), source_run.model());
+    assert_eq!(forked_run.variant(), source_run.variant());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
@@ -1144,4 +1632,19 @@ fn run_git(cwd: &std::path::Path, args: &[&str]) {
         args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
