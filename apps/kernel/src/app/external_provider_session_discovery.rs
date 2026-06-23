@@ -1107,7 +1107,7 @@ fn opencode_observed_turns_from_path(
     Some(latest_observed_turns(
         messages
             .iter()
-            .filter_map(opencode_observed_turn_from_value)
+            .flat_map(opencode_observed_turns_from_value)
             .collect(),
     ))
 }
@@ -1124,9 +1124,7 @@ fn opencode_jsonl_observed_turns_from_path(
     let lines = read_recent_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
-        if let Some(turn) = opencode_observed_turn_from_value(value) {
-            turns.push(turn);
-        }
+        turns.extend(opencode_observed_turns_from_value(value));
     }
     Some(latest_observed_turns(turns))
 }
@@ -1148,6 +1146,194 @@ fn opencode_observed_turn_from_value(value: &Value) -> Option<ObservedExternalPr
         observed_at_ms: string_field(value, &["created", "createdAt", "timestamp"])
             .and_then(|timestamp| parse_timestamp_millis(&timestamp)),
     })
+}
+
+fn opencode_observed_turns_from_value(value: &Value) -> Vec<ObservedExternalProviderTurn> {
+    if value.get("parts").and_then(Value::as_array).is_some() {
+        return opencode_message_observed_turns(value);
+    }
+    if value.get("info").and_then(|info| info.get("parts")).is_some() {
+        return opencode_message_observed_turns(value);
+    }
+    opencode_observed_turn_from_value(value)
+        .into_iter()
+        .collect()
+}
+
+fn opencode_message_observed_turns(value: &Value) -> Vec<ObservedExternalProviderTurn> {
+    let info = value.get("info").unwrap_or(value);
+    let role = string_field(info, &["role"]).or_else(|| string_field(value, &["role", "type"]));
+    let observed_at_ms = string_field(value, &["created", "createdAt", "timestamp"])
+        .or_else(|| string_field(info, &["created", "createdAt", "timestamp"]))
+        .and_then(|timestamp| parse_timestamp_millis(&timestamp));
+    let message_id = string_field(info, &["id", "messageID", "messageId", "message_id"])
+        .or_else(|| string_field(value, &["id", "messageID", "messageId", "message_id"]));
+    let parts = value
+        .get("parts")
+        .or_else(|| info.get("parts"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    let mut turns = Vec::new();
+    let mut user_parts = Vec::new();
+    for (index, part) in parts.enumerate() {
+        let part_type = part.get("type").and_then(Value::as_str).unwrap_or("text");
+        match (role.as_deref(), part_type) {
+            (Some("user"), "text") => {
+                if let Some(text) = part
+                    .get("text")
+                    .or_else(|| part.get("content"))
+                    .and_then(Value::as_str)
+                {
+                    user_parts.push(text.to_string());
+                }
+            }
+            (Some("assistant"), "reasoning") => {
+                if let Some(text) = part
+                    .get("text")
+                    .or_else(|| part.get("content"))
+                    .and_then(Value::as_str)
+                    .and_then(|text| clean_observed_turn_text(Some("reasoning"), text.to_string()))
+                {
+                    turns.push(ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::Reasoning,
+                        text,
+                        provider_turn_id: opencode_part_turn_id(
+                            part,
+                            message_id.as_deref(),
+                            "reasoning",
+                            index,
+                        ),
+                        observed_at_ms,
+                    });
+                }
+            }
+            (Some("assistant"), "tool") => {
+                turns.push(ObservedExternalProviderTurn {
+                    role: ObservedExternalProviderTurnRole::Tool,
+                    text: opencode_tool_text(part),
+                    provider_turn_id: opencode_part_turn_id(part, message_id.as_deref(), "tool", index),
+                    observed_at_ms,
+                });
+            }
+            (Some("assistant"), "text") => {
+                if let Some(text) = part
+                    .get("text")
+                    .or_else(|| part.get("content"))
+                    .and_then(Value::as_str)
+                    .and_then(|text| clean_observed_turn_text(Some("assistant"), text.to_string()))
+                {
+                    turns.push(ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::Assistant,
+                        text,
+                        provider_turn_id: opencode_part_turn_id(
+                            part,
+                            message_id.as_deref(),
+                            "assistant",
+                            index,
+                        ),
+                        observed_at_ms,
+                    });
+                }
+            }
+            (Some("assistant"), _) => {
+                turns.push(ObservedExternalProviderTurn {
+                    role: ObservedExternalProviderTurnRole::Status,
+                    text: opencode_metadata_text(&format!("opencode part {part_type}"), part),
+                    provider_turn_id: opencode_part_turn_id(
+                        part,
+                        message_id.as_deref(),
+                        part_type,
+                        index,
+                    ),
+                    observed_at_ms,
+                });
+            }
+            _ => {}
+        }
+    }
+    let user_text = user_parts.join("\n");
+    if let Some(text) = clean_observed_turn_text(Some("user"), user_text) {
+        turns.insert(
+            0,
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text,
+                provider_turn_id: message_id.clone(),
+                observed_at_ms,
+            },
+        );
+    }
+    if let Some(status) = opencode_message_status_turn(info, message_id.as_deref(), observed_at_ms) {
+        turns.push(status);
+    }
+    turns
+}
+
+fn opencode_tool_text(part: &Value) -> String {
+    let state = part.get("state").unwrap_or(&Value::Null);
+    let status = string_field(state, &["status"]).unwrap_or_else(|| "updated".to_string());
+    compact_json_text(serde_json::json!({
+        "id": string_field(part, &["id"]),
+        "tool": string_field(part, &["tool"]).unwrap_or_else(|| "tool".to_string()),
+        "status": status,
+        "title": string_field(state, &["title"]),
+        "text": string_field(part, &["text"]),
+        "input": state.get("input").cloned().unwrap_or(Value::Null),
+        "output": string_field(state, &["output"])
+            .or_else(|| state.get("metadata").and_then(|metadata| string_field(metadata, &["output", "stdout"]))),
+        "error": string_field(state, &["error"]),
+        "raw": string_field(state, &["raw"]),
+    }))
+}
+
+fn opencode_message_status_turn(
+    info: &Value,
+    message_id: Option<&str>,
+    observed_at_ms: Option<u64>,
+) -> Option<ObservedExternalProviderTurn> {
+    if info.get("tokens").is_none()
+        && info.get("model").is_none()
+        && info.get("modelID").is_none()
+        && info.pointer("/time/completed").is_none()
+        && info.get("finish").is_none()
+    {
+        return None;
+    }
+    let completed = info.pointer("/time/completed").is_some()
+        && info
+            .get("finish")
+            .and_then(Value::as_str)
+            .is_some_and(|finish| finish != "tool-calls" && finish != "unknown");
+    Some(ObservedExternalProviderTurn {
+        role: ObservedExternalProviderTurnRole::Status,
+        text: opencode_metadata_text(
+            if completed {
+                "opencode message completed"
+            } else {
+                "opencode message metadata"
+            },
+            info,
+        ),
+        provider_turn_id: message_id
+            .map(|id| format!("message-status-{id}"))
+            .or_else(|| observed_at_ms.map(|ms| format!("message-status-{ms}"))),
+        observed_at_ms,
+    })
+}
+
+fn opencode_part_turn_id(
+    part: &Value,
+    message_id: Option<&str>,
+    label: &str,
+    index: usize,
+) -> Option<String> {
+    string_field(part, &["id", "partID", "partId", "part_id"])
+        .or_else(|| message_id.map(|id| format!("{label}-{id}-{index}")))
+}
+
+fn opencode_metadata_text(label: &str, payload: &Value) -> String {
+    format!("{label}\n{}", compact_json_text(payload.clone()))
 }
 
 fn parse_opencode_jsonl(path: &Path) -> Option<ExternalProviderSessionRecord> {
@@ -2000,6 +2186,73 @@ mod tests {
         assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u1"));
         assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
         assert_eq!(turns[1].text, "Capture the waiting-room evidence.");
+    }
+
+    #[test]
+    fn reads_opencode_observed_message_parts_and_completion_metadata() {
+        let temp = temp_dir("opencode-observed-parts");
+        let root = temp.path();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("session-1.json"),
+            r#"{
+              "id": "open-1",
+              "messages": [
+                {
+                  "info": { "id": "msg-user", "sessionID": "open-1", "role": "user" },
+                  "parts": [{ "id": "part-user", "type": "text", "text": "Create, inspect, and delete a file." }]
+                },
+                {
+                  "info": {
+                    "id": "msg-assistant",
+                    "sessionID": "open-1",
+                    "role": "assistant",
+                    "providerID": "moonshot",
+                    "modelID": "kimi-k2-6",
+                    "finish": "stop",
+                    "tokens": { "input": 10, "output": 5, "reasoning": 2 },
+                    "time": { "completed": 1782113000000 }
+                  },
+                  "parts": [
+                    { "id": "part-reasoning", "type": "reasoning", "text": "Planning file changes." },
+                    {
+                      "id": "part-tool",
+                      "type": "tool",
+                      "tool": "bash",
+                      "state": {
+                        "status": "completed",
+                        "input": { "command": "printf alpha > drill.txt" },
+                        "output": "created"
+                      }
+                    },
+                    { "id": "part-answer", "type": "text", "text": "Done." }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let turns = read_opencode_observed_turns(root, "open-1");
+        assert_eq!(
+            turns.iter().map(|turn| turn.role).collect::<Vec<_>>(),
+            vec![
+                ObservedExternalProviderTurnRole::User,
+                ObservedExternalProviderTurnRole::Reasoning,
+                ObservedExternalProviderTurnRole::Tool,
+                ObservedExternalProviderTurnRole::Assistant,
+                ObservedExternalProviderTurnRole::Status,
+            ]
+        );
+        assert_eq!(turns[0].text, "Create, inspect, and delete a file.");
+        assert_eq!(turns[1].text, "Planning file changes.");
+        assert!(turns[2].text.contains("bash"));
+        assert!(turns[2].text.contains("printf alpha > drill.txt"));
+        assert!(turns[2].text.contains("created"));
+        assert_eq!(turns[3].text, "Done.");
+        assert!(turns[4].text.contains("opencode message completed"));
+        assert!(turns[4].text.contains("kimi-k2-6"));
     }
 
     #[test]

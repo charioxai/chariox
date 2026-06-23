@@ -974,7 +974,9 @@ fn external_active_prompt_from_turns(
 }
 
 fn external_status_turn_settles(text: &str) -> bool {
-    text.starts_with("codex task_complete") || text.starts_with("codex token_count")
+    text.starts_with("codex task_complete")
+        || text.starts_with("codex token_count")
+        || text.starts_with("opencode message completed")
 }
 
 fn latest_observed_user_turn_id(
@@ -1944,6 +1946,70 @@ mod tests {
                 .expect("active prompt should load")
                 .is_some(),
             "tool output alone should not settle the external turn"
+        );
+    }
+
+    #[test]
+    fn append_observed_external_opencode_completion_status_settles_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "opencode:thread-observed".to_string(),
+            "opencode".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import,
+        };
+        let prompt = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("user-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            observed_at_ms: Some(42),
+        };
+        let status = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("message-status-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            text: "opencode message completed\n{\"finish\":\"stop\"}".to_string(),
+            observed_at_ms: Some(84),
+        };
+
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone(), status.clone()],
+            },
+        )
+        .expect("observed prompt and status should append");
+
+        let stable_status_outcome = append_observed_external_turns_for_import_with_options(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![prompt, status],
+            },
+            ImportedExternalObserverAppendOptions {
+                allow_external_active_prompt_settlement: true,
+            },
+        )
+        .expect("stable completion status should settle");
+
+        assert_eq!(stable_status_outcome.changed_count, 0);
+        assert!(stable_status_outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_none(),
+            "OpenCode completion metadata should settle the external turn"
         );
     }
 
