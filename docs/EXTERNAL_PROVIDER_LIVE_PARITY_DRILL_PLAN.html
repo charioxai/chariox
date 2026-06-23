@@ -153,13 +153,13 @@
     <h2>Provider Prompt Contract</h2>
     <p>The drill prompt must force enough activity to prove Arroba keeps a single turn active across many provider updates. The prompt should ask the provider to:</p>
     <ol>
-      <li>Create a temporary drill directory under the chosen workspace.</li>
+      <li>Create temporary drill files under the chosen workspace. Prefer a temporary drill directory when the provider allows it; use a unique workspace-root scratch-file prefix when a provider blocks subdirectory writes, and report that as a provider limitation.</li>
       <li>Run 20 small tool actions, each with a visible marker <code>TOOL_STEP_01</code> through <code>TOOL_STEP_20</code>.</li>
       <li>Emit 20 separate assistant progress messages, each with one marker <code>ASSISTANT_STEP_01</code> through <code>ASSISTANT_STEP_20</code>.</li>
       <li>Use file operations that are easy to verify: create, append, read, list, inspect metadata, and delete.</li>
       <li>End with a final summary marker <code>FINAL_EXTERNAL_PARITY_SUMMARY</code>.</li>
     </ol>
-    <p>The drill should keep all files inside a generated temp directory and remove them before completion.</p>
+    <p>The drill should keep all scratch files under a generated provider-specific path or filename prefix and remove them before completion.</p>
 
     <h2>Execution Flow</h2>
     <ol>

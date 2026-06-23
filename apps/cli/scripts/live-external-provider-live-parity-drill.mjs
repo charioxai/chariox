@@ -151,22 +151,21 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     `Drill marker: ${marker}.`,
     `User prompt marker: ${promptMarker}.`,
     `Workspace: ${workspace}.`,
-    `Observer gate directory: ${observerGate.dir}.`,
-    `Observer gate ready file: ${observerGate.readyFile}.`,
+    `Scratch file prefix: ${observerGate.scratchFilePrefix}.`,
     `Observer gate go file: ${observerGate.goFile}.`,
     "",
     "Requirements:",
     "1. Before emitting any ASSISTANT_STEP_NN, TOOL_STEP_NN, or FINAL_EXTERNAL_PARITY_SUMMARY marker, wait until the observer gate go file exists.",
-    "2. The observer gate setup/wait can use provider tools, but it must not include TOOL_STEP_NN markers and it does not count toward the 20 marked tool calls.",
+    "2. The observer gate setup/wait can use provider tools, but it must not write files, must not include TOOL_STEP_NN markers, and it does not count toward the 20 marked tool calls.",
     "3. After the go file exists, produce exactly 20 separate assistant progress messages, each with an assistant step marker.",
     "4. Assistant step markers must be built from prefix ASSISTANT_STEP_ plus two-digit numbers from 01 to 20.",
     "5. After the go file exists, run exactly 20 observable marked tool calls, each with a tool step marker.",
     "6. Tool step markers must be built from prefix TOOL_STEP_ plus two-digit numbers from 01 to 20.",
     "7. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
     "8. Each marked tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
-    "9. Use only the observer gate directory for temporary drill files; it will exist when the go file appears.",
-    "10. Create, append, read, list, inspect metadata, and delete small text files inside that temporary directory.",
-    "11. Delete the temporary directory before finishing.",
+    "9. Use only workspace-root temporary drill files whose paths begin with the scratch file prefix.",
+    "10. Create, append, read, list, inspect metadata, and delete small text files with that scratch file prefix.",
+    "11. Delete the temporary scratch files before finishing, but do not delete the observer gate go file.",
     `12. End with the exact final summary marker formed by joining prefix ${finalMarkerPrefix}, an underscore, and the drill marker.`,
     "13. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
     "14. Use only low-risk shell commands: printf, cat, ls, wc, stat, find, test, touch, rm, rmdir, and sleep.",
@@ -180,11 +179,12 @@ function finalMarkerFor(marker) {
 }
 
 function observerGate(marker, workspace) {
-  const dir = path.join(workspace, "external-provider-live-parity-drill", marker)
+  const dir = workspace
+  const scratchFilePrefix = path.join(workspace, `external-provider-live-parity-drill-${marker}`)
   return {
     dir,
-    readyFile: path.join(dir, "observer-ready.txt"),
-    goFile: path.join(dir, "observer-go.txt"),
+    scratchFilePrefix,
+    goFile: path.join(workspace, `external-provider-live-parity-go-${marker}.txt`),
   }
 }
 
@@ -464,6 +464,7 @@ async function runProviderDrill(provider, options) {
     await closeWithTimeout(browser, "browser")
     stopChild(tuiProcess)
     stopChild(providerProcess)
+    await cleanupObserverGate(gate)
     client?.close?.()
     result.durationMs = Date.now() - startedAt
     await writeJson(path.join(providerRoot, "manifest.json"), result)
@@ -474,6 +475,17 @@ async function runProviderDrill(provider, options) {
 async function releaseObserverGate(gate, marker) {
   await mkdir(gate.dir, { recursive: true })
   await writeFile(gate.goFile, `arroba observers attached for ${marker}\n`, "utf8")
+}
+
+async function cleanupObserverGate(gate) {
+  await rm(gate.goFile, { force: true }).catch(() => {})
+  const scratchPrefix = path.basename(gate.scratchFilePrefix ?? "")
+  if (!scratchPrefix) return
+  const entries = await readdir(gate.dir, { withFileTypes: true }).catch(() => [])
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.name.startsWith(scratchPrefix)) return
+    await rm(path.join(gate.dir, entry.name), { recursive: true, force: true }).catch(() => {})
+  }))
 }
 
 function spawnProviderProcess(command, artifactDir, workspace) {
