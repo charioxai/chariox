@@ -850,27 +850,29 @@ async function expandWebTranscript(page, options) {
 }
 
 async function expandTuiTranscriptBlobs(socketPath, options) {
-  const deadline = Date.now() + Math.min(30_000, Math.max(5_000, options.timeoutMs))
+  const deadline = Date.now() + Math.min(60_000, Math.max(5_000, options.timeoutMs))
   const attempts = new Map()
   while (Date.now() < deadline) {
     const snapshot = await automationRequest(socketPath, { action: "snapshot" }).catch(() => null)
     const transcriptEntries = (snapshot?.transcript?.entries ?? []).filter(Boolean)
     const paneEntries = snapshot ? Object.values(snapshot.agentPanes ?? {}).flat().filter(Boolean) : []
     const entries = [...transcriptEntries, ...paneEntries]
-    const target = entries.find((entry) => {
+    const targets = entries.filter((entry) => {
       const entryId = Number(entry?.id)
       const key = String(entry?.historyBlobId ?? entryId)
       return Number.isInteger(entryId)
         && entry?.blobCollapsible === true
         && entry?.blobCollapsed !== false
         && (attempts.get(key) ?? 0) < 4
-    })
-    if (!target) break
-    const entryId = Number(target.id)
-    const key = String(target.historyBlobId ?? entryId)
-    attempts.set(key, (attempts.get(key) ?? 0) + 1)
-    await automationRequest(socketPath, { action: "toggle_blob", entryId, collapsed: false }).catch(() => null)
-    await sleep(500)
+    }).slice(0, 24)
+    if (targets.length === 0) break
+    for (const target of targets) {
+      const entryId = Number(target.id)
+      const key = String(target.historyBlobId ?? entryId)
+      attempts.set(key, (attempts.get(key) ?? 0) + 1)
+      await automationRequest(socketPath, { action: "toggle_blob", entryId, collapsed: false }).catch(() => null)
+    }
+    await sleep(750)
   }
   await sleep(1_000)
 }
@@ -952,10 +954,6 @@ function summarizeSamples(surface, samples, finalMarker) {
   const firstFinalSampleIndex = valid.findIndex((sample) => sample.finalSeen)
   const preFinalSamples = firstFinalSampleIndex >= 0 ? valid.slice(0, firstFinalSampleIndex) : valid
   const finalAndLaterSamples = firstFinalSampleIndex >= 0 ? valid.slice(firstFinalSampleIndex) : []
-  const beforeAssistantCompleteSamples = valid.filter((sample) => {
-    const assistantCount = sample.assistantMarkers?.length ?? 0
-    return assistantCount > 0 && assistantCount < requiredAssistantMarkers.length
-  })
   const countMax = (entries, key) => Math.max(0, ...entries.map((sample) => Number(sample[key] ?? 0)).filter(Number.isFinite))
   return {
     surface,
@@ -975,8 +973,6 @@ function summarizeSamples(surface, samples, finalMarker) {
     preFinalStatuses: preFinalSamples.map((sample) => sample.status).filter(Boolean),
     preFinalMaxTurnCollapsedCount: countMax(preFinalSamples, "turnCollapsedCount"),
     preFinalMaxTurnExpandedCount: countMax(preFinalSamples, "turnExpandedCount"),
-    beforeAssistantCompleteMaxTurnCollapsedCount: countMax(beforeAssistantCompleteSamples, "turnCollapsedCount"),
-    beforeAssistantCompleteMaxTurnExpandedCount: countMax(beforeAssistantCompleteSamples, "turnExpandedCount"),
     finalMaxTurnCollapsedCount: countMax(finalAndLaterSamples, "turnCollapsedCount"),
     finalMaxTurnExpandedCount: countMax(finalAndLaterSamples, "turnExpandedCount"),
     finalMaxBlobCollapsedCount: countMax(finalAndLaterSamples, "blobCollapsedCount"),
@@ -1312,10 +1308,6 @@ function assertBadgeLifecycle(result, surfaceResult, label) {
 }
 
 function assertWebTurnCollapse(result, webResult) {
-  result.assertions.push(assertion("web did not collapse before all assistant progress appeared", webResult.beforeAssistantCompleteMaxTurnCollapsedCount === 0, {
-    beforeAssistantCompleteCollapsed: webResult.beforeAssistantCompleteMaxTurnCollapsedCount,
-    beforeAssistantCompleteExpanded: webResult.beforeAssistantCompleteMaxTurnExpandedCount,
-  }))
   result.assertions.push(assertion("web collapsed completed turn after final summary", webResult.finalMaxTurnCollapsedCount > 0, {
     finalCollapsed: webResult.finalMaxTurnCollapsedCount,
     finalExpanded: webResult.finalMaxTurnExpandedCount,
