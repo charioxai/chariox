@@ -1037,6 +1037,13 @@ fn claude_record_turn_id(
 ) -> Option<String> {
     string_field(value, &["uuid", "id", "message_id"])
         .map(|id| format!("{label}-{id}"))
+        .or_else(|| {
+            string_field(value, &["leafUuid", "leaf_uuid"]).map(|id| format!("{label}-leaf-{id}"))
+        })
+        .or_else(|| {
+            string_field(value, &["sessionId", "session_id"])
+                .map(|id| format!("{label}-session-{id}"))
+        })
         .or_else(|| observed_at_ms.map(|ms| format!("{label}-{ms}")))
 }
 
@@ -2425,6 +2432,10 @@ mod tests {
         assert!(turns[2].text.starts_with("claude message completed"));
         assert!(turns[2].text.contains("stop_reason"));
         assert!(turns[2].text.contains("end_turn"));
+        assert_eq!(
+            turns[3].provider_turn_id.as_deref(),
+            Some("last-prompt-leaf-a1")
+        );
         assert!(turns[3].text.starts_with("claude last-prompt"));
     }
 
