@@ -193,6 +193,8 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
     id: entry.id,
     role: entry.role,
     text: entry.text,
+    promptId: entry.promptId ?? null,
+    sourceAttachmentId: entry.sourceAttachmentId ?? null,
     queuedPrompt: entry.queuedPrompt
       ? {
         promptId: entry.queuedPrompt.promptId,
@@ -206,6 +208,7 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
     externalProviderSessionId: entry.externalProviderSessionId ?? null,
     externalProviderTurnId: entry.externalProviderTurnId ?? null,
     observedAtMs: entry.observedAtMs ?? null,
+    externalObservation: entry.externalObservation ?? null,
     turnId: entry.turnId ?? null,
     hidden: entry.hidden ?? false,
     blobCollapsible: entry.blobCollapsible ?? false,
