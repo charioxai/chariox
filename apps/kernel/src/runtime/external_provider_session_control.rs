@@ -957,8 +957,7 @@ fn external_observed_history_entry_matches(
     existing: &SessionHistoryEntry,
     next: &SessionHistoryEntry,
 ) -> bool {
-    existing.provider_run_id == next.provider_run_id
-        && existing.agent_id == next.agent_id
+    existing.agent_id == next.agent_id
         && existing.kind == next.kind
         && existing.merge_key == next.merge_key
         && existing.source == next.source
@@ -3058,6 +3057,64 @@ mod tests {
             .load_session_history_entries(&session, Some(agent.id()))
             .expect("history should load");
         assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "complete external reply");
+    }
+
+    #[test]
+    fn append_observed_external_turns_ignores_provider_run_id_only_changes() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "claude:thread-observed".to_string(),
+            "claude".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let turn = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("assistant-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+            text: "complete external reply".to_string(),
+            observed_at_ms: Some(84),
+        };
+
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: ImportedExternalObserverTarget {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    provider_run_id: None,
+                    import: import.clone(),
+                },
+                turns: vec![turn.clone()],
+            },
+        )
+        .expect("initial observed assistant turn should append");
+
+        let stable = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: ImportedExternalObserverTarget {
+                    session_id: session.id().to_string(),
+                    agent_id: agent.id().to_string(),
+                    provider_run_id: Some("provider-run-2".to_string()),
+                    import,
+                },
+                turns: vec![turn],
+            },
+        )
+        .expect("provider-run-only change should not churn external history");
+
+        assert_eq!(stable.changed_count, 0);
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].provider_run_id, None);
         assert_eq!(entries[0].text, "complete external reply");
     }
 
