@@ -279,6 +279,7 @@ async function main() {
     })
   }
   console.log(JSON.stringify(drillConsoleSummary(summary), null, 2))
+  process.exit(0)
 }
 
 function collectProviderLimitations(results) {
