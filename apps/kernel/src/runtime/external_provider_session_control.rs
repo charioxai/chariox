@@ -152,17 +152,12 @@ async fn poll_imported_external_provider_transcripts(
         .map(imported_observer_target_key)
         .collect::<BTreeSet<_>>();
     schedule.retain(|key, _| target_keys.contains(key));
-    let due = targets
-        .into_iter()
-        .filter(|target| {
-            let key = imported_observer_target_key(target);
-            let state = schedule
-                .entry(key)
-                .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
-            state.next_due_at <= now
-        })
-        .take(EXTERNAL_PROVIDER_IMPORTED_MAX_POLLS_PER_TICK)
-        .collect::<Vec<_>>();
+    let due = due_imported_external_observer_targets(
+        targets,
+        schedule,
+        now,
+        EXTERNAL_PROVIDER_IMPORTED_MAX_POLLS_PER_TICK,
+    );
     if due.is_empty() {
         return;
     }
@@ -256,6 +251,29 @@ async fn poll_imported_external_provider_transcripts(
             }
         }
     }
+}
+
+fn due_imported_external_observer_targets(
+    targets: Vec<ImportedExternalObserverTarget>,
+    schedule: &mut BTreeMap<String, ImportedExternalObserverSchedule>,
+    now: tokio::time::Instant,
+    max_polls: usize,
+) -> Vec<ImportedExternalObserverTarget> {
+    let mut due = targets
+        .into_iter()
+        .filter_map(|target| {
+            let key = imported_observer_target_key(&target);
+            let state = schedule
+                .entry(key.clone())
+                .or_insert_with(|| ImportedExternalObserverSchedule::due_now(now));
+            (state.next_due_at <= now).then_some((state.next_due_at, key, target))
+        })
+        .collect::<Vec<_>>();
+    due.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    due.into_iter()
+        .take(max_polls)
+        .map(|(_, _, target)| target)
+        .collect()
 }
 
 async fn refresh_external_provider_session_index(
@@ -1418,6 +1436,64 @@ mod tests {
         ImportExternalProviderSessionRequest,
     };
     use std::sync::Arc;
+
+    fn observer_target(agent_id: &str) -> ImportedExternalObserverTarget {
+        ImportedExternalObserverTarget {
+            session_id: format!("session-{agent_id}"),
+            agent_id: agent_id.to_string(),
+            provider_run_id: None,
+            import: ExternalProviderImportMetadata::observed_history(
+                format!("codex:thread-{agent_id}"),
+                "codex".to_string(),
+                format!("thread-{agent_id}"),
+            ),
+        }
+    }
+
+    #[test]
+    fn due_imported_external_observer_targets_prioritizes_overdue_targets() {
+        let now = tokio::time::Instant::now();
+        let mut schedule = BTreeMap::new();
+        for agent in ["a", "b"] {
+            schedule.insert(
+                imported_observer_target_key(&observer_target(agent)),
+                ImportedExternalObserverSchedule {
+                    next_due_at: now,
+                    active_until: Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW),
+                    last_changed_at: None,
+                    consecutive_errors: 0,
+                },
+            );
+        }
+        for agent in ["c", "d"] {
+            schedule.insert(
+                imported_observer_target_key(&observer_target(agent)),
+                ImportedExternalObserverSchedule {
+                    next_due_at: now - Duration::from_secs(10),
+                    active_until: Some(now + EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW),
+                    last_changed_at: None,
+                    consecutive_errors: 0,
+                },
+            );
+        }
+
+        let due = due_imported_external_observer_targets(
+            ["a", "b", "c", "d"]
+                .into_iter()
+                .map(observer_target)
+                .collect(),
+            &mut schedule,
+            now,
+            2,
+        );
+
+        assert_eq!(
+            due.iter()
+                .map(|target| target.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c", "d"]
+        );
+    }
 
     #[test]
     fn import_external_provider_session_creates_session_agent_and_run() {
