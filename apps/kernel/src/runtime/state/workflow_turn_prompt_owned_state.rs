@@ -53,12 +53,25 @@ impl KernelRuntimeOwnedState {
             .iter()
             .filter(|edge| edge.from_node_id() == node_id)
             .map(|edge| {
-                let mut line = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
+                let target_label = workflow
+                    .node(edge.to_node_id())
+                    .map(|node| node.public_label())
+                    .filter(|label| !label.trim().is_empty());
+                let mut line = match target_label {
+                    Some(label) => {
+                        format!("- edge {} -> {} ({label})", edge.id(), edge.to_node_id())
+                    }
+                    None => format!("- edge {} -> {}", edge.id(), edge.to_node_id()),
+                };
                 if let Some(schema_ref) = edge.handoff_schema_ref() {
                     line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));
                 }
                 if let Some(validation_policy) = edge.validation_policy() {
-                    line.push_str(&format!(", validation_policy: {validation_policy:?}"));
+                    let validation_policy = match validation_policy {
+                        crate::session::WorkflowHandoffValidationPolicy::Warn => "warn",
+                        crate::session::WorkflowHandoffValidationPolicy::Halt => "halt",
+                    };
+                    line.push_str(&format!(", validation_policy: {validation_policy}"));
                 }
                 line
             })
