@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  applyWorkflowCodeRequest,
   createWorkflowCodeArtifactRequest,
   deleteWorkflowCodeArtifactRequest,
   exportWorkflowCodeArtifactRequest,
@@ -67,6 +68,29 @@ test("workflow-code artifact requests match kernel shape", () => {
     },
     exported_at_ms: 1_000,
   }
+  assert.deepEqual(
+    applyWorkflowCodeRequest("session-1", "/usr/local/bin/node", "workflow.define({})", [
+      {
+        node: "planner",
+        provider: "opencode",
+        model: "qwen3-coder",
+      },
+    ]),
+    {
+      ApplyWorkflowCode: {
+        session_id: "session-1",
+        node_path: "/usr/local/bin/node",
+        source: "workflow.define({})",
+        provider_rebindings: [
+          {
+            node: "planner",
+            provider: "opencode",
+            model: "qwen3-coder",
+          },
+        ],
+      },
+    },
+  )
   assert.deepEqual(
     createWorkflowCodeArtifactRequest("session-1", "toy-flow", "/usr/local/bin/node", "workflow.define({})"),
     {

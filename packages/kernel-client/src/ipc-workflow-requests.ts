@@ -1,6 +1,7 @@
 import type {
   WorkflowCodeArtifactPackage,
   WorkflowCodeLanguage,
+  WorkflowCodeProviderRebinding,
   WorkflowDesignOp,
   WorkflowPublicationSnapshot,
 } from "./kernel-types.js"
@@ -41,6 +42,7 @@ export type ApplyWorkflowCodeRequest = {
     session_id: string
     node_path: string
     source: string
+    provider_rebindings?: WorkflowCodeProviderRebinding[]
   }
 }
 
@@ -48,12 +50,14 @@ export function applyWorkflowCodeRequest(
   sessionId: string,
   nodePath: string,
   source: string,
+  providerRebindings: WorkflowCodeProviderRebinding[] = [],
 ): ApplyWorkflowCodeRequest {
   return {
     ApplyWorkflowCode: {
       session_id: sessionId,
       node_path: nodePath,
       source,
+      ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
     },
   }
 }

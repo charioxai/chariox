@@ -567,6 +567,8 @@ pub struct MetaWorkflowCodeApplyArgs {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -582,6 +584,8 @@ pub struct MetaWorkflowCodeRunArgs {
     pub queue: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1435,7 +1439,21 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "node_path": {"type": "string"}
+                    "node_path": {"type": "string"},
+                    "provider_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "provider"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "provider": {"type": "string"},
+                                "model": {"type": "string"},
+                                "effort": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    }
                 },
                 "additionalProperties": false
             }),
@@ -1465,7 +1483,21 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "prompt": {"type": "string"},
                     "endpoint": {"type": "string"},
                     "queue": {"type": "string"},
-                    "node_path": {"type": "string"}
+                    "node_path": {"type": "string"},
+                    "provider_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "provider"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "provider": {"type": "string"},
+                                "model": {"type": "string"},
+                                "effort": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    }
                 },
                 "additionalProperties": false
             }),

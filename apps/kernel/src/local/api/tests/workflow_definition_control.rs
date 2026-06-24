@@ -93,6 +93,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                provider_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code should apply");

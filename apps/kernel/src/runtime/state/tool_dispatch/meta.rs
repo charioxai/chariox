@@ -765,7 +765,13 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let source = meta_workflow_code_source(session, args.name, args.source)?;
         let response = self
-            .meta_workflow_code_apply_response(session, agent, source, args.node_path)
+            .meta_workflow_code_apply_response(
+                session,
+                agent,
+                source,
+                args.node_path,
+                args.provider_rebindings,
+            )
             .await?;
         if let crate::local::LocalDaemonResponse::WorkflowCodeApplied { result, .. } = &response {
             self.persist_metaagent_workflow_code_event(
@@ -786,7 +792,13 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let source = meta_workflow_code_source(session, args.name, args.source)?;
         let apply_response = self
-            .meta_workflow_code_apply_response(session, agent, source, args.node_path)
+            .meta_workflow_code_apply_response(
+                session,
+                agent,
+                source,
+                args.node_path,
+                args.provider_rebindings,
+            )
             .await?;
         let apply_report = match &apply_response {
             crate::local::LocalDaemonResponse::WorkflowCodeApplied { result, .. } => {
@@ -843,6 +855,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         source: String,
         node_path: Option<String>,
+        provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
         self.meta_execute_workflow_request(
             crate::local::LocalDaemonRequest::ApplyWorkflowCode(
@@ -852,6 +865,7 @@ impl KernelRuntimeState {
                         .display()
                         .to_string(),
                     source,
+                    provider_rebindings,
                 },
             ),
             agent,

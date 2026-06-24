@@ -212,7 +212,7 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code(
 workflow.define({ alias: "meta_scripted_flow", maxConcurrent: 2 })
 const planner = workflow.node({
   handle: "planner",
-  agent: workflow.newAgent({ alias: "planner", provider: "dev-stub", model: "default" }),
+  agent: workflow.newAgent({ alias: "planner", provider: "codex", model: "gpt-5" }),
   instructions: "Plan and complete.",
   canCompleteWorkflowRun: true,
   canvas: { x: 40, y: 80 }
@@ -267,11 +267,23 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             session.id(),
             metaagent.id(),
             crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
-            serde_json::json!({ "name": "meta-flow" }),
+            serde_json::json!({
+                "name": "meta-flow",
+                "provider_rebindings": [
+                    { "node": "planner", "provider": "dev-stub", "model": "default" }
+                ]
+            }),
         )
         .await
         .expect("metaagent should apply saved workflow-code artifact");
     assert!(applied.ok, "{:?}", applied.payload);
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/nodes/0/agent/provider")
+            .and_then(serde_json::Value::as_str),
+        Some("dev-stub")
+    );
     let workflow_id = applied
         .payload
         .pointer("/WorkflowCodeApplied/result/apply/workflow_id")
@@ -301,7 +313,10 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             serde_json::json!({
                 "name": "meta-flow",
                 "endpoint": "entry",
-                "prompt": "Plan this tiny scripted workflow run."
+                "prompt": "Plan this tiny scripted workflow run.",
+                "provider_rebindings": [
+                    { "node": "planner", "provider": "dev-stub", "model": "default" }
+                ]
             }),
         )
         .await

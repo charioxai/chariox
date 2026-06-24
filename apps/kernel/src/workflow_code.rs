@@ -227,6 +227,17 @@ pub struct WorkflowCodeCompileAndApplyResult {
     pub apply: WorkflowCodeApplyReport,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowCodeProviderRebinding {
+    pub node: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct WorkflowCodeCompilerInput<'a> {
     source: &'a str,
@@ -1219,6 +1230,67 @@ impl WorkflowCodeArtifactPackage {
         }
         Ok(())
     }
+}
+
+pub fn apply_workflow_code_provider_rebindings(
+    definition: &mut WorkflowCodeDefinition,
+    rebindings: &[WorkflowCodeProviderRebinding],
+) -> Result<(), crate::DaemonError> {
+    if rebindings.is_empty() {
+        return Ok(());
+    }
+    let mut seen = BTreeSet::new();
+    for rebinding in rebindings {
+        let node_handle = rebinding.node.trim();
+        if node_handle.is_empty() {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: "provider rebinding node handle must not be empty".to_string(),
+            });
+        }
+        if !seen.insert(node_handle.to_string()) {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: format!("duplicate provider rebinding for node `{node_handle}`"),
+            });
+        }
+        if rebinding.provider.trim().is_empty() {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: format!(
+                    "provider rebinding for node `{node_handle}` must include provider"
+                ),
+            });
+        }
+        let node = definition
+            .nodes
+            .iter_mut()
+            .find(|node| node.handle == node_handle)
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.rebind",
+                message: format!("provider rebinding references unknown node `{node_handle}`"),
+            })?;
+        match &mut node.agent {
+            WorkflowCodeAgentBinding::Create(agent) => {
+                agent.provider = rebinding.provider.trim().to_string();
+                if let Some(model) = rebinding.model.as_deref() {
+                    agent.model = Some(model.to_string());
+                }
+                if let Some(effort) = rebinding.effort.as_deref() {
+                    agent.effort = Some(effort.to_string());
+                }
+            }
+            WorkflowCodeAgentBinding::Existing(_) => {
+                return Err(crate::DaemonError::LocalTransport {
+                    operation: "workflow_code.rebind",
+                    message: format!(
+                        "provider rebinding for node `{node_handle}` targets an existing-agent binding"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 impl StoredWorkflowCodeArtifact {

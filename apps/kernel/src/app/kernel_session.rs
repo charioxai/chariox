@@ -33,7 +33,7 @@ mod tests {
     use crate::workflow_code::{
         WorkflowCodeAgentBinding, WorkflowCodeAgentCreate, WorkflowCodeDefinition,
         WorkflowCodeEndpointDefinition, WorkflowCodeExistingAgent, WorkflowCodeNodeDefinition,
-        WorkflowCodeWorkflow, WORKFLOW_CODE_SCHEMA_VERSION,
+        WorkflowCodeProviderRebinding, WorkflowCodeWorkflow, WORKFLOW_CODE_SCHEMA_VERSION,
     };
     use crate::{DaemonApp, DaemonConfig};
     use std::path::PathBuf;
@@ -227,6 +227,40 @@ mod tests {
             .iter()
             .any(|event| event.kind == "workflow_code.applied"
                 && event.subject_id.as_deref() == Some(report.workflow_id.as_str())));
+    }
+
+    #[test]
+    fn workflow_code_apply_rebinds_generated_agent_provider() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        let definition = generated_workflow_code_definition();
+        let report = app
+            .apply_workflow_code_definition_with_rebindings(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+                &[WorkflowCodeProviderRebinding {
+                    node: "planner".to_string(),
+                    provider: "opencode".to_string(),
+                    model: Some("qwen3-coder".to_string()),
+                    effort: Some("medium".to_string()),
+                }],
+            )
+            .expect("workflow-code should apply with provider rebinding");
+
+        let planner_agent_id = report.agent_ids.get("planner").expect("planner agent id");
+        let planner = app
+            .agents()
+            .get_agent(planner_agent_id)
+            .expect("planner agent should exist");
+        assert_eq!(planner.provider(), "opencode");
+        assert_eq!(planner.model(), Some("qwen3-coder"));
+        assert_eq!(planner.effort(), Some("medium"));
     }
 
     #[test]
@@ -853,6 +887,25 @@ impl<'a> KernelSessionService<'a> {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        self.apply_workflow_code_definition_with_rebindings(
+            session_id,
+            definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            &[],
+        )
+    }
+
+    pub(crate) fn apply_workflow_code_definition_with_rebindings(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         let validation = definition.validate_with_limits(limits);
         if !validation.ok {
             return Err(DaemonError::LocalTransport {
@@ -868,6 +921,11 @@ impl<'a> KernelSessionService<'a> {
                 ),
             });
         }
+        let mut definition = definition.clone();
+        crate::workflow_code::apply_workflow_code_provider_rebindings(
+            &mut definition,
+            provider_rebindings,
+        )?;
 
         let mut node_agent_ids = BTreeMap::new();
         for node in &definition.nodes {
@@ -935,7 +993,7 @@ impl<'a> KernelSessionService<'a> {
         let mut sessions = session_store.write();
         let report = sessions.apply_workflow_code_definition(
             session_id,
-            definition,
+            &definition,
             &node_agent_ids,
             limits,
             created_by_user_id.clone(),
@@ -1021,15 +1079,49 @@ impl<'a> KernelSessionService<'a> {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
-        let compile = compile_workflow_code_javascript(node_path, source, limits)?;
-        let apply = self.apply_workflow_code_definition(
+        self.compile_and_apply_workflow_code_javascript_with_rebindings(
             session_id,
-            &compile.definition,
+            node_path,
+            source,
             limits,
             created_by_user_id,
             controlled_by_metaagent_id,
+            &[],
+        )
+    }
+
+    pub(crate) fn compile_and_apply_workflow_code_javascript_with_rebindings(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        let compile = compile_workflow_code_javascript(node_path, source, limits)?;
+        let mut rebound_definition = compile.definition.clone();
+        crate::workflow_code::apply_workflow_code_provider_rebindings(
+            &mut rebound_definition,
+            provider_rebindings,
         )?;
-        Ok(WorkflowCodeCompileAndApplyResult { compile, apply })
+        let apply = self.apply_workflow_code_definition_with_rebindings(
+            session_id,
+            &rebound_definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            &[],
+        )?;
+        Ok(WorkflowCodeCompileAndApplyResult {
+            compile: crate::workflow_code::WorkflowCodeCompileResult {
+                definition: rebound_definition,
+                validation: compile.validation,
+                logs: compile.logs,
+            },
+            apply,
+        })
     }
 
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {

@@ -346,13 +346,14 @@ impl KernelRuntimeState {
         let result = self
             .with_app_side_effect(move |app| {
                 let limits = app.config().workflow_code_limits();
-                let result = app.compile_and_apply_workflow_code_javascript(
+                let result = app.compile_and_apply_workflow_code_javascript_with_rebindings(
                     &request.session_id,
                     &request.node_path,
                     &request.source,
                     &limits,
                     caller_user_id,
                     controlled_by_metaagent_id,
+                    &request.provider_rebindings,
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
