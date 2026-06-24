@@ -99,6 +99,31 @@ test("syncQueuedPromptEntriesForAgent removes stale queued prompts when projecte
   assert.deepEqual(synced.entries, [])
 })
 
+test("syncQueuedPromptEntriesForAgent preserves queued prompts when projected busy omits queue state", () => {
+  const existing: TranscriptEntry[] = [{
+    id: 1,
+    role: "user",
+    text: "new queued",
+    queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
+  }]
+
+  const session = sessionWithQueuedPrompt({}, {
+    prompt_states: {},
+    queued_prompts: [],
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+      },
+    },
+  })
+  const synced = syncQueuedPromptEntriesForAgent(existing, session, "agent-1")
+
+  assert.equal(synced.changed, false)
+  assert.deepEqual(synced.entries, existing)
+})
+
 function sessionWithQueuedPrompt(
   overrides: Partial<NonNullable<RuntimeSession["prompt_states"]>[string]> = {},
   sessionOverrides: Partial<RuntimeSession> = {},

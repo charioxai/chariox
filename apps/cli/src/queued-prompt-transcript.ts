@@ -11,15 +11,19 @@ export type QueuedPromptTranscriptSyncResult = {
   changed: boolean
 }
 
-export function queuedPromptsForAgent(session: RuntimeSession, agentId: string): PromptQueueItem[] {
-  if (!projectedActivityAllowsPromptQueue(session, agentId)) {
+export function queuedPromptsForAgent(session: RuntimeSession, agentId: string): PromptQueueItem[] | null {
+  if (session.agent_activity && !projectedActivityAllowsPromptQueue(session, agentId)) {
     return []
   }
   const statePrompts = session.prompt_states?.[agentId]?.queued_prompts
   if (statePrompts) {
     return statePrompts
   }
-  return session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
+  const topLevelPrompts = session.queued_prompts.filter((prompt) => prompt.target_agent_id === agentId)
+  if (!session.agent_activity) {
+    return topLevelPrompts
+  }
+  return topLevelPrompts.length ? topLevelPrompts : null
 }
 
 export function syncQueuedPromptEntriesForAgent(
@@ -28,6 +32,9 @@ export function syncQueuedPromptEntriesForAgent(
   agentId: string,
 ): QueuedPromptTranscriptSyncResult {
   const queuedPrompts = queuedPromptsForAgent(session, agentId)
+  if (queuedPrompts === null) {
+    return { entries: entries.map((entry) => ({ ...entry })), changed: false }
+  }
   const queuedIds = new Set(queuedPrompts.map((prompt) => prompt.id))
   const steerDisabled = activePromptOrigin(session, agentId) === "external"
   let changed = false
