@@ -5,7 +5,9 @@ use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
-use crate::app::{external_session_id_for_provider_session, DaemonApp};
+use crate::app::{
+    external_session_id_for_provider_session, DaemonApp, ExternalProviderObservationPolicy,
+};
 use crate::error::DaemonError;
 use crate::history::{ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::local::{
@@ -875,7 +877,9 @@ fn append_observed_external_turns_for_import_with_options(
                 &entry,
             );
             appended += 1;
-            if !external_observed_turn_is_passive_telemetry(&provider, turn) {
+            if !ExternalProviderObservationPolicy::for_provider(&provider)
+                .turn_is_passive_telemetry(turn)
+            {
                 active_relevant_appended += 1;
             }
         }
@@ -894,8 +898,8 @@ fn append_observed_external_turns_for_import_with_options(
         active_relevant_appended > 0,
         &arroba_owned_prompt_texts,
     );
-    let latest_observation_settles =
-        latest_effective_observed_turn_settles(&provider, &candidate_turns);
+    let latest_observation_settles = ExternalProviderObservationPolicy::for_provider(&provider)
+        .latest_effective_turn_settles(&candidate_turns);
     let should_sync_active_prompt = latest_active_prompt.is_some()
         || latest_observation_settles
         || (changed == 0 && options.allow_external_active_prompt_settlement);
@@ -990,7 +994,8 @@ fn external_active_prompt_from_turns(
     has_new_observations: bool,
     arroba_owned_prompt_texts: &BTreeSet<String>,
 ) -> Option<PromptQueueItem> {
-    if latest_effective_observed_turn_settles(&target.import.external_provider, turns) {
+    let policy = ExternalProviderObservationPolicy::for_provider(&target.import.external_provider);
+    if policy.latest_effective_turn_settles(turns) {
         return None;
     }
     let latest = if has_new_observations {
@@ -1002,23 +1007,16 @@ fn external_active_prompt_from_turns(
         let latest = turns
             .iter()
             .rev()
-            .find(|turn| {
-                !external_status_turn_is_passive_telemetry(
-                    &target.import.external_provider,
-                    &turn.text,
-                )
-            })
+            .find(|turn| !policy.status_is_passive_telemetry(&turn.text))
             .or_else(|| turns.last())?;
         match latest.role {
             crate::app::ObservedExternalProviderTurnRole::Assistant
-                if !external_provider_uses_explicit_completion(
-                    &target.import.external_provider,
-                ) =>
+                if !policy.uses_explicit_completion() =>
             {
                 return None;
             }
             crate::app::ObservedExternalProviderTurnRole::Status
-                if external_status_turn_settles(&latest.text) =>
+                if policy.status_settles(&latest.text) =>
             {
                 return None;
             }
@@ -1056,55 +1054,6 @@ fn external_active_prompt_from_turns(
         )
         .with_prompt_origin(PromptOrigin::External),
     )
-}
-
-fn latest_effective_observed_turn_settles(
-    provider: &str,
-    turns: &[crate::app::ObservedExternalProviderTurn],
-) -> bool {
-    let Some(latest) = turns
-        .iter()
-        .rev()
-        .find(|turn| !external_observed_turn_is_passive_telemetry(provider, turn))
-        .or_else(|| turns.last())
-    else {
-        return false;
-    };
-    match latest.role {
-        crate::app::ObservedExternalProviderTurnRole::Status => {
-            external_status_turn_settles(&latest.text)
-        }
-        crate::app::ObservedExternalProviderTurnRole::Assistant
-        | crate::app::ObservedExternalProviderTurnRole::User
-        | crate::app::ObservedExternalProviderTurnRole::Reasoning
-        | crate::app::ObservedExternalProviderTurnRole::Tool => false,
-    }
-}
-
-fn external_status_turn_settles(text: &str) -> bool {
-    text.starts_with("codex task_complete")
-        || text.starts_with("codex event turn_aborted")
-        || text.contains("\"type\":\"turn_aborted\"")
-        || text.contains("\"type\": \"turn_aborted\"")
-        || text.starts_with("claude message completed")
-        || text.starts_with("opencode message completed")
-}
-
-fn external_status_turn_is_passive_telemetry(provider: &str, text: &str) -> bool {
-    provider == "claude"
-        && (text.starts_with("claude last-prompt") || text.starts_with("claude ai-title"))
-}
-
-fn external_observed_turn_is_passive_telemetry(
-    provider: &str,
-    turn: &crate::app::ObservedExternalProviderTurn,
-) -> bool {
-    turn.role == crate::app::ObservedExternalProviderTurnRole::Status
-        && external_status_turn_is_passive_telemetry(provider, &turn.text)
-}
-
-fn external_provider_uses_explicit_completion(provider: &str) -> bool {
-    matches!(provider, "codex" | "opencode")
 }
 
 fn latest_observed_user_turn_id(
