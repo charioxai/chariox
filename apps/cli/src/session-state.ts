@@ -228,6 +228,13 @@ export function sessionResponseLayout(
     ?? "individual"
 }
 
+export function projectedStreamingAgentIdForSession(session: RuntimeSession): string | null {
+  if (session.agent_activity) {
+    return session.agents.find((agent) => session.agent_activity?.[agent.id]?.busy === true)?.id ?? null
+  }
+  return session.active_prompt?.target_agent_id ?? null
+}
+
 export function deriveSessionTransitionState(
   options: SessionTransitionOptions,
 ): SessionTransitionState {
@@ -239,7 +246,7 @@ export function deriveSessionTransitionState(
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
   const resolvedStreamingAgentId = resolveStreamingAgentId(
     options.nextSession.agents,
-    options.nextSession.active_prompt?.target_agent_id ?? null,
+    projectedStreamingAgentIdForSession(options.nextSession),
     nextHasPromptWork,
     options.currentWorking,
     options.currentStreamingAgentId,
@@ -357,7 +364,28 @@ function normalizeMultiAgentResponseLayout(
   return value === "split" || value === "individual" ? value : null
 }
 
-function collectActivePromptRecords(session: RuntimeSession) {
+type ActivePromptLifecycleRecord = {
+  id: string
+  status?: string
+  target_agent_id?: string | null
+}
+
+function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecycleRecord[] {
+  if (session.agent_activity) {
+    return Object.entries(session.agent_activity)
+      .map(([agentId, activity]) => {
+        const activeTurn = activity.active_turn
+        return activeTurn
+          ? {
+              id: activeTurn.prompt_id,
+              status: activeTurn.status,
+              target_agent_id: agentId,
+            }
+          : null
+      })
+      .filter((prompt): prompt is ActivePromptLifecycleRecord => Boolean(prompt))
+      .sort((left, right) => left.id.localeCompare(right.id))
+  }
   if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
     return Object.values(session.prompt_states)
       .map((state) => state.active_prompt)

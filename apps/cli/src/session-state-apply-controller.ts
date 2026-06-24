@@ -7,6 +7,7 @@ import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
   derivePromptLifecycleTransition,
   deriveSessionTransitionState,
+  projectedStreamingAgentIdForSession,
   shouldConfirmIdleTurnCompletion,
 } from "./session-state.js"
 
@@ -111,7 +112,7 @@ export function createSessionStateApplyController(
     if (promptLifecycle.cancelledPromptSettled) {
       deps.clearActiveToolLabels()
       deps.setAgentActivityLabels({})
-      deps.setStreamingAgentId(nextSession.active_prompt?.target_agent_id ?? null)
+      deps.setStreamingAgentId(projectedStreamingAgentIdForSession(nextSession))
       deps.setProviderActivityLabel(null)
       deps.setActiveStatusLabel(null)
       if (deps.getStatusLine() === "Cancellation requested.") {

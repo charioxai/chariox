@@ -369,6 +369,38 @@ test("deriveSessionTransitionState clears stale streaming state once prompt work
   assert.equal(transition.nextWorking, true)
 })
 
+test("deriveSessionTransitionState ignores stale active prompt target when projected activity is idle", () => {
+  const nextSession = session({
+    focused_agent_id: "agent-a",
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale",
+      status: "running",
+    },
+    agent_activity: {},
+    agents: [agent("agent-a")],
+  })
+
+  const transition = deriveSessionTransitionState({
+    currentSession: session({ agents: [agent("agent-a")] }),
+    nextSession,
+    currentWorking: false,
+    currentStreamingAgentId: null,
+    currentAgentActivityLabels: {
+      "agent-a": "thinking",
+    },
+    layoutPreference: "individual",
+  })
+
+  assert.equal(transition.nextHasPromptWork, false)
+  assert.equal(transition.nextStreamingAgentId, null)
+  assert.deepEqual(transition.nextAgentActivityLabels, {
+    "agent-a": null,
+  })
+})
+
 test("derivePromptLifecycleTransition detects when a cancelling prompt settles", () => {
   const transition = derivePromptLifecycleTransition(
     session({
@@ -381,6 +413,34 @@ test("derivePromptLifecycleTransition detects when a cancelling prompt settles",
       },
     }),
     session(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
+})
+
+test("derivePromptLifecycleTransition treats projected idle activity as prompt settlement", () => {
+  const transition = derivePromptLifecycleTransition(
+    session({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
+        prompt: "hello",
+        status: "cancelling",
+      },
+    }),
+    session({
+      active_prompt: {
+        id: "prompt-1",
+        source_attachment_id: "attachment-1",
+        target_agent_id: "agent-a",
+        prompt: "stale",
+        status: "cancelling",
+      },
+      agent_activity: {},
+    }),
   )
 
   assert.equal(transition.activePromptChanged, true)
