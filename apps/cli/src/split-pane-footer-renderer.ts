@@ -71,6 +71,7 @@ export type SplitPaneFooterRenderOptions = {
   hasPromptWorkByAgent: Record<string, boolean>
   streamingAgentId: string | null
   agentBusyLatch: (agentId: string) => boolean
+  hasProjectedAgentActivity: boolean
   sessionConfigValues: Record<string, string> | undefined
   agentLocationLabel: (agent: AgentInstance | null | undefined) => string | null
   badgeWidth: number
@@ -250,6 +251,7 @@ function renderFooter(
     agent ? options.hasPromptWorkByAgent[agent.id] ?? false : false,
     agent?.id === options.streamingAgentId,
     agent ? options.agentBusyLatch(agent.id) : false,
+    !options.hasProjectedAgentActivity,
   )
   const focused = agent?.id === options.focusedAgentId
   const task = agent?.role === "meta"

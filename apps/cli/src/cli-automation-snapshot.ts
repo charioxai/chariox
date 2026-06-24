@@ -86,6 +86,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           deps.hasPromptWorkByAgent()[agent.id] ?? false,
           agent.id === deps.streamingAgentId(),
           deps.agentBusyLatch(agent.id),
+          !session.agent_activity,
         )
         return {
           id: agent.id,

@@ -147,6 +147,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     hasPromptWorkByAgent: deps.hasPromptWorkByAgent,
     streamingAgentId: deps.streamingAgentId,
     agentBusyLatch: deps.agentBusyLatch,
+    hasProjectedAgentActivity: () => Boolean(deps.sessionState().agent_activity),
     sessionConfigValues: () => deps.sessionState().config_state?.values,
     agentLocationLabel: deps.agentLocationLabel,
     badgeWidth: STATUS_BADGE_WIDTH,

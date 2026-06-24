@@ -21,6 +21,7 @@ export type SplitPaneFooterRenderControllerDeps = {
   hasPromptWorkByAgent: () => SplitPaneFooterRenderOptions["hasPromptWorkByAgent"]
   streamingAgentId: () => string | null
   agentBusyLatch: SplitPaneFooterRenderOptions["agentBusyLatch"]
+  hasProjectedAgentActivity: () => boolean
   sessionConfigValues: () => SplitPaneFooterRenderOptions["sessionConfigValues"]
   agentLocationLabel: SplitPaneFooterRenderOptions["agentLocationLabel"]
   badgeWidth: number
@@ -50,6 +51,7 @@ export function createSplitPaneFooterRenderController(
         hasPromptWorkByAgent: deps.hasPromptWorkByAgent(),
         streamingAgentId: deps.streamingAgentId(),
         agentBusyLatch: deps.agentBusyLatch,
+        hasProjectedAgentActivity: deps.hasProjectedAgentActivity(),
         sessionConfigValues: deps.sessionConfigValues(),
         agentLocationLabel: deps.agentLocationLabel,
         badgeWidth: deps.badgeWidth,
