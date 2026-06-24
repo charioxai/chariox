@@ -353,6 +353,8 @@ async function runProviderDrill(provider, options) {
       provider,
       before,
       marker,
+      providerProcess,
+      providerRoot,
       timeoutMs: Math.min(options.timeoutMs, 180_000),
       pollMs: options.pollMs,
     })
@@ -547,7 +549,7 @@ async function listExternalProviderSessions(client, provider) {
   return response.page.sessions ?? []
 }
 
-async function waitForNewExternalSession({ client, provider, before, marker, timeoutMs, pollMs }) {
+async function waitForNewExternalSession({ client, provider, before, marker, providerProcess, providerRoot, timeoutMs, pollMs }) {
   const beforeIds = new Set(before.map((session) => session.external_session_id))
   const deadline = Date.now() + timeoutMs
   let last = []
@@ -562,9 +564,19 @@ async function waitForNewExternalSession({ client, provider, before, marker, tim
       candidates.sort((left, right) => String(right.last_modified_at ?? "").localeCompare(String(left.last_modified_at ?? "")))
       return candidates[0]
     }
+    if (providerProcess && (providerProcess.exitCode !== null || providerProcess.signalCode !== null)) {
+      const stdout = await readLogTail(path.join(providerRoot, "provider.stdout.log"))
+      const stderr = await readLogTail(path.join(providerRoot, "provider.stderr.log"))
+      throw new Error(`provider ${provider} exited before a new external session appeared; code=${providerProcess.exitCode} signal=${providerProcess.signalCode ?? "none"} stdout=${stdout} stderr=${stderr}`)
+    }
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for new ${provider} external session; last=${JSON.stringify(last.slice(0, 5), null, 2)}`)
+}
+
+async function readLogTail(file) {
+  const text = await readFile(file, "utf8").catch(() => "")
+  return JSON.stringify(text.slice(-2000))
 }
 
 function startKernelMonitor({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
