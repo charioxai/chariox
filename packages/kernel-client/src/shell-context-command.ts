@@ -12,6 +12,8 @@ import {
   parseExecutionMode,
   parsePermissionLevel,
 } from "./shell-agent-policy.js"
+import { sessionAgentIsBusy } from "./shell-agent-activity.js"
+import { expectSessionState } from "./shell-session-attachment.js"
 import { formatWorkspaceLiveSyncModeLabel } from "./workspace-live-sync-mode.js"
 import { providerRunRecoveryActions } from "./provider-run-recovery.js"
 
@@ -72,13 +74,7 @@ function formatShellContext(
 ): string {
   const currentAgent = findCurrentAgent(context, session)
   const currentAgentId = currentAgent?.id ?? context.agentId ?? null
-  const currentAgentBusy = currentAgentId
-    ? Boolean(session?.prompt_states?.[currentAgentId]?.active_prompt)
-      || Boolean(session?.prompt_states?.[currentAgentId]?.queued_prompts?.length)
-      || Boolean(session?.active_prompt?.target_agent_id === currentAgentId)
-      || Boolean(session?.queued_prompts?.some((prompt) => prompt.target_agent_id === currentAgentId))
-      || Boolean(currentAgent?.is_processing)
-    : false
+  const currentAgentBusy = sessionAgentIsBusy(session, currentAgentId) || Boolean(currentAgent?.is_processing)
   const agentLabel = currentAgent
     ? `${currentAgent.agent_ref}${currentAgent.alias ? ` (${currentAgent.alias})` : ""}${currentAgentBusy ? " (busy)" : ""}`
     : `${context.agentId ?? "-"}${currentAgentBusy ? " (busy)" : ""}`
@@ -254,13 +250,6 @@ function sliceForRemoteAgent(agent: AgentInstance, slices: readonly SliceRecord[
       || slice.worker_kernel_ref === remote.worker_kernel_id
       || slice.worker_machine_id === remote.worker_machine_id,
     ) ?? null
-}
-
-function expectSessionState(response: Record<string, unknown>): RuntimeSession {
-  if ("SessionState" in response) {
-    return (response.SessionState as { session: RuntimeSession }).session
-  }
-  return expectVariant<{ session: RuntimeSession }>(response, "SessionStateLoaded").session
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

@@ -43,9 +43,21 @@ export async function attachShellSession(sessionId: string, deps: ShellSessionAt
 
 export function expectSessionState(response: Record<string, unknown>): RuntimeSession {
   if ("SessionState" in response) {
-    return (response.SessionState as { session: RuntimeSession }).session
+    const payload = response.SessionState as {
+      session: RuntimeSession
+      agent_activity?: RuntimeSession["agent_activity"] | null
+    }
+    return payload.agent_activity
+      ? { ...payload.session, agent_activity: payload.agent_activity }
+      : payload.session
   }
-  return expectVariant<{ session: RuntimeSession }>(response, "SessionStateLoaded").session
+  const payload = expectVariant<{
+    session: RuntimeSession
+    agent_activity?: RuntimeSession["agent_activity"] | null
+  }>(response, "SessionStateLoaded")
+  return payload.agent_activity
+    ? { ...payload.session, agent_activity: payload.agent_activity }
+    : payload.session
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

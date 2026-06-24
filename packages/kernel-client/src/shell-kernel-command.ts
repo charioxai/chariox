@@ -1,6 +1,7 @@
 import type { DaemonHealthProjection, RuntimeSession } from "./kernel-types.js"
 import { deleteKernelRequest, exportDebugBundleRequest, getDaemonHealthRequest, getSessionStateRequest } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
+import { expectSessionState } from "./shell-session-attachment.js"
 import {
   formatKernelHealth,
   formatKernelRemoteRuntimeHealth,
@@ -100,13 +101,6 @@ async function kernelHealthRuntimeContext(
       `  lookup: ${message || "failed"}`,
     ].join("\n")
   }
-}
-
-function expectSessionState(response: Record<string, unknown>): RuntimeSession {
-  if ("SessionState" in response) {
-    return (response.SessionState as { session: RuntimeSession }).session
-  }
-  return expectVariant<{ session: RuntimeSession }>(response, "SessionStateLoaded").session
 }
 
 function formatHomeKernel(session: RuntimeSession): string {

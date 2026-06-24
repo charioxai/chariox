@@ -28,6 +28,7 @@ import {
   expectSessionState,
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
+import { sessionHasActivePrompt } from "./shell-agent-activity.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -190,7 +191,7 @@ async function waitForPromptCompletion(
     await deps.client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => ({}))
     const response = await deps.client.send(getSessionStateRequest(sessionId))
     latest = expectSessionState(response)
-    if (!sessionHasPrompt(latest, agentId, promptId)) {
+    if (!sessionHasActivePrompt(latest, agentId, promptId)) {
       return latest
     }
     await sleep(250)
@@ -224,14 +225,6 @@ async function readPromptHistory(
     entries.push(turn.summary)
   }
   return entries.sort((left, right) => left.entry_index - right.entry_index)
-}
-
-function sessionHasPrompt(session: RuntimeSession, agentId: string, promptId: string): boolean {
-  const state = session.prompt_states?.[agentId]
-  return state?.active_prompt?.id === promptId
-    || Boolean(state?.queued_prompts?.some((prompt) => prompt.id === promptId))
-    || session.active_prompt?.id === promptId
-    || session.queued_prompts.some((prompt) => prompt.id === promptId)
 }
 
 function sleep(ms: number): Promise<void> {

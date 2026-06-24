@@ -504,7 +504,13 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
               },
             },
           }),
-          agent_activity: {},
+          agent_activity: {
+            "agent-1": {
+              status: "working",
+              prompt_status: "running",
+              busy: true,
+            },
+          },
         },
       }
     }
@@ -557,6 +563,53 @@ test("executeShellCommand renders shell-local context and pwd", async () => {
   assert.match(contextResult.message ?? "", /\$wf = workflow-1/)
   assert.equal(pwdResult.message, "/repo/worktree")
   assert.equal(fake.requests.length, 3)
+})
+
+test("executeShellCommand context uses projected idle over stale legacy prompt state", async () => {
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    attachmentId: "attach-1",
+    agentId: "agent-1",
+  })
+  const fake = fakeClient((request) => {
+    if ("GetSessionState" in request) {
+      return {
+        SessionState: {
+          session: makeSession({
+            agents: [makeAgent({ id: "agent-1", agent_ref: "agent-1" })],
+            prompt_states: {
+              "agent-1": {
+                active_prompt: {
+                  id: "prompt-1",
+                  source_attachment_id: "attach-1",
+                  target_agent_id: "agent-1",
+                  prompt: "stale",
+                  status: "Running",
+                },
+                queued_prompts: [],
+              },
+            },
+          }),
+          agent_activity: {
+            "agent-1": {
+              status: "idle",
+              prompt_status: "none",
+              busy: false,
+            },
+          },
+        },
+      }
+    }
+    return {}
+  })
+
+  const result = await executeShellCommand(parseShellCommand("context"), context, { client: fake.client })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /agent: agent-1/)
+  assert.doesNotMatch(result.message ?? "", /agent: agent-1 \(busy\)/)
 })
 
 test("executeShellCommand context keeps final revokes visible after grants are gone", async () => {
