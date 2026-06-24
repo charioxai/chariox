@@ -275,11 +275,32 @@ async function main() {
       },
     })
   }
-  console.log(JSON.stringify(summary, null, 2))
+  console.log(JSON.stringify(drillConsoleSummary(summary), null, 2))
 }
 
 function collectProviderLimitations(results) {
   return results.flatMap((result) => result.providerLimitations ?? [])
+}
+
+function drillConsoleSummary(summary) {
+  return {
+    ok: summary.ok,
+    createdAt: summary.createdAt,
+    artifactRoot: summary.artifactRoot,
+    finalReport: path.join(summary.artifactRoot, "final-report.md"),
+    results: summary.results.map((result) => ({
+      provider: result.provider,
+      ok: result.ok,
+      providerSessionId: result.providerSessionId,
+      externalSessionId: result.externalSessionId,
+      arrobaSessionId: result.arrobaSessionId,
+      agentId: result.agentId,
+      artifactDir: result.artifactDir,
+      failedAssertions: (result.assertions ?? [])
+        .filter((assertion) => !assertion.passed)
+        .map((assertion) => assertion.name),
+    })),
+  }
 }
 
 async function runProviderDrill(provider, options) {
