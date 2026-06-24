@@ -22,6 +22,81 @@ pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
 
+#[derive(Debug, Clone, Copy)]
+pub struct WorkflowCodePatternExample {
+    pub slug: &'static str,
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub path: &'static str,
+    pub source: &'static str,
+}
+
+pub const WORKFLOW_CODE_PATTERN_EXAMPLES: &[WorkflowCodePatternExample] = &[
+    WorkflowCodePatternExample {
+        slug: "prompt-chaining",
+        title: "Prompt chaining",
+        summary: "Two nodes: a drafter hands a structured draft to a refiner.",
+        path: "examples/workflow-code/prompt-chaining.js",
+        source: include_str!("../../../examples/workflow-code/prompt-chaining.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "routing",
+        title: "Classify and act / routing",
+        summary: "A classifier routes work to one of two specialist nodes.",
+        path: "examples/workflow-code/routing.js",
+        source: include_str!("../../../examples/workflow-code/routing.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "fan-out-synthesize",
+        title: "Fan-out and synthesize",
+        summary: "A planner fans out to two workers, then a synthesizer waits for both inputs.",
+        path: "examples/workflow-code/fan-out-synthesize.js",
+        source: include_str!("../../../examples/workflow-code/fan-out-synthesize.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "adversarial-verification",
+        title: "Adversarial verification",
+        summary: "A proposer, critic, and judge collaborate with a critique loop.",
+        path: "examples/workflow-code/adversarial-verification.js",
+        source: include_str!("../../../examples/workflow-code/adversarial-verification.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "generate-filter",
+        title: "Generate and filter",
+        summary: "A generator creates candidates, a filter selects them, and a finisher completes.",
+        path: "examples/workflow-code/generate-filter.js",
+        source: include_str!("../../../examples/workflow-code/generate-filter.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "tournament",
+        title: "Tournament",
+        summary: "A seeder fans out to two contestants, then a judge selects a winner.",
+        path: "examples/workflow-code/tournament.js",
+        source: include_str!("../../../examples/workflow-code/tournament.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "loop-until-done",
+        title: "Loop until done",
+        summary: "A worker and checker loop until the checker accepts final output.",
+        path: "examples/workflow-code/loop-until-done.js",
+        source: include_str!("../../../examples/workflow-code/loop-until-done.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "orchestrator-workers",
+        title: "Orchestrator-workers",
+        summary: "An orchestrator delegates to a worker and a synthesizer produces final output.",
+        path: "examples/workflow-code/orchestrator-workers.js",
+        source: include_str!("../../../examples/workflow-code/orchestrator-workers.js"),
+    },
+    WorkflowCodePatternExample {
+        slug: "evaluator-optimizer",
+        title: "Evaluator-optimizer",
+        summary: "An optimizer produces candidates and an evaluator loops back or accepts.",
+        path: "examples/workflow-code/evaluator-optimizer.js",
+        source: include_str!("../../../examples/workflow-code/evaluator-optimizer.js"),
+    },
+];
+
 const NODE_WORKFLOW_CODE_COMPILER: &str = r#"
 import vm from "node:vm"
 
@@ -1611,6 +1686,59 @@ workflow.endpoint(planner, { alias: "entry" })
         assert_eq!(result.definition.nodes.len(), 1);
         assert_eq!(result.definition.endpoints.len(), 1);
         assert_eq!(result.definition.schemas.len(), 1);
+    }
+
+    #[test]
+    fn canonical_pattern_examples_compile() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code pattern examples because node is not available");
+            return;
+        };
+
+        for example in WORKFLOW_CODE_PATTERN_EXAMPLES {
+            let result = compile_workflow_code_javascript(
+                &node,
+                example.source,
+                &WorkflowCodeLimitsConfig::default(),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "workflow-code pattern example `{}` at `{}` should compile: {error}",
+                    example.slug, example.path
+                )
+            });
+
+            assert!(
+                result.validation.ok,
+                "workflow-code pattern example `{}` should validate: {:?}",
+                example.slug, result.validation.diagnostics
+            );
+            assert!(
+                result.definition.workflow.alias.is_some(),
+                "workflow-code pattern example `{}` should name the workflow",
+                example.slug
+            );
+            assert!(
+                result.definition.workflow.run_output_schema.is_some(),
+                "workflow-code pattern example `{}` should define final output schema",
+                example.slug
+            );
+            assert!(
+                !result.definition.schemas.is_empty(),
+                "workflow-code pattern example `{}` should define schemas",
+                example.slug
+            );
+            assert!(
+                !result.definition.nodes.is_empty(),
+                "workflow-code pattern example `{}` should define nodes",
+                example.slug
+            );
+            assert!(
+                !result.definition.endpoints.is_empty(),
+                "workflow-code pattern example `{}` should define endpoints",
+                example.slug
+            );
+        }
     }
 
     #[test]

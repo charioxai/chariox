@@ -109,6 +109,20 @@ pub(crate) const METAAGENT_GUIDES: &[MetaagentGuide] = &[
         body: include_str!("metaagent_guides/workflows/workflow-code-authoring.md"),
     },
     MetaagentGuide {
+        id: "workflows/workflow-code-patterns",
+        title: "Workflow-code pattern examples",
+        summary: "Canonical, kernel-compiled workflow-code scripts for the dynamic workflow pattern suite.",
+        tags: &["workflow", "workflow-code", "examples", "patterns"],
+        commands: &[
+            "arroba.meta.workflow_code.validate",
+            "arroba.meta.workflow_code.apply",
+            "arroba.meta.workflow_code.run",
+            "arroba.meta.workflow_code.export",
+            "arroba.meta.workflow_code.import",
+        ],
+        body: include_str!("metaagent_guides/workflows/workflow-code-patterns.md"),
+    },
+    MetaagentGuide {
         id: "agent-apps/generate-app",
         title: "Generate an agent app",
         summary: "Recipe for building an app by planning, delegating to regular agents, and validating through workers.",
@@ -197,9 +211,29 @@ fn guide_summary(guide: &MetaagentGuide, include_body: bool) -> serde_json::Valu
         "commands": guide.commands,
     });
     if include_body {
-        payload["body"] = serde_json::Value::String(guide.body.to_string());
+        payload["body"] = serde_json::Value::String(guide_body(guide));
     }
     payload
+}
+
+fn guide_body(guide: &MetaagentGuide) -> String {
+    if guide.id == "workflows/workflow-code-patterns" {
+        let mut body = guide.body.to_string();
+        for example in crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES {
+            body.push_str("\n\n## ");
+            body.push_str(example.title);
+            body.push('\n');
+            body.push_str(example.summary);
+            body.push_str("\n\nSource: `");
+            body.push_str(example.path);
+            body.push_str("`\n\n```js\n");
+            body.push_str(example.source.trim());
+            body.push_str("\n```");
+        }
+        body
+    } else {
+        guide.body.to_string()
+    }
 }
 
 fn score_guide(query: &str, guide: &MetaagentGuide) -> usize {
@@ -297,6 +331,27 @@ mod tests {
             "workflow.watchdog",
         ] {
             assert!(body.contains(expected), "missing `{expected}` from guide");
+        }
+    }
+
+    #[test]
+    fn workflow_code_pattern_guide_embeds_canonical_examples() {
+        let guide = read_guide("workflows/workflow-code-patterns").expect("guide should exist");
+        let body = guide
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .expect("guide body should be markdown");
+        for example in crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES {
+            assert!(
+                body.contains(example.path),
+                "missing path `{}` from guide",
+                example.path
+            );
+            assert!(
+                body.contains(example.source.trim()),
+                "missing source for `{}` from guide",
+                example.slug
+            );
         }
     }
 }
