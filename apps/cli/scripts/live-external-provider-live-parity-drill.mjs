@@ -396,6 +396,17 @@ async function runProviderDrill(provider, options) {
 
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
     result.evidence.providerExit = providerExit
+    const providerExitIssue = await providerExitWithoutFinalMarker({
+      provider,
+      providerRoot,
+      providerExit,
+      finalMarker,
+      result,
+    })
+    if (providerExitIssue) {
+      result.providerLimitations.push(providerExitIssue)
+      throw new Error(providerExitIssue.note)
+    }
     await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options })
     if (page) {
       await waitForSurfaceFinalIdle({
@@ -577,6 +588,38 @@ async function waitForNewExternalSession({ client, provider, before, marker, pro
 async function readLogTail(file) {
   const text = await readFile(file, "utf8").catch(() => "")
   return JSON.stringify(text.slice(-2000))
+}
+
+async function providerExitWithoutFinalMarker({ provider, providerRoot, providerExit, finalMarker, result }) {
+  const stdout = await readFile(path.join(providerRoot, "provider.stdout.log"), "utf8").catch(() => "")
+  const stderr = await readFile(path.join(providerRoot, "provider.stderr.log"), "utf8").catch(() => "")
+  if (stdout.includes(finalMarker) || stderr.includes(finalMarker)) return null
+  const combined = `${stdout}\n${stderr}`.trim()
+  const tail = combined.slice(-2000)
+  const providerLimitPattern = /\b(session limit|rate limit|quota|usage limit|limit reached|resets? at|resets?\s+\d|too many requests)\b/i
+  const providerLimit = providerLimitPattern.test(combined)
+  const abnormalExit = Boolean(providerExit?.error || providerExit?.signal || (providerExit?.code != null && providerExit.code !== 0))
+  if (!providerLimit && !abnormalExit) return null
+  const classification = providerLimit
+    ? "provider_runtime_limitation"
+    : "provider_execution_failure"
+  const note = [
+    `${provider} provider process exited before emitting the final marker.`,
+    `exit=${JSON.stringify(providerExit)}`,
+    tail ? `output_tail=${JSON.stringify(tail)}` : "output_tail=<empty>",
+  ].join(" ")
+  return {
+    provider,
+    providerSessionId: result.providerSessionId ?? null,
+    externalSessionId: result.externalSessionId ?? null,
+    arrobaSessionId: result.arrobaSessionId ?? null,
+    agentId: result.agentId ?? null,
+    metadata: "provider_execution",
+    status: "not_observed",
+    classification,
+    surfaces: ["provider_process", "provider_stdout", "provider_stderr"],
+    note,
+  }
 }
 
 function startKernelMonitor({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
