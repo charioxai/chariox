@@ -280,6 +280,13 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_SUBSCRIBE_EVENTS_TOOL
                     | crate::transport::runtime_tools::META_UNSUBSCRIBE_EVENTS_TOOL
                     | crate::transport::runtime_tools::META_LIST_SUBSCRIPTIONS_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_LIST_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_UPDATE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL
                     | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
             ) {
                 if let Some(result) = self

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -568,6 +569,41 @@ pub fn compile_workflow_code_javascript(
         validation,
         logs,
     })
+}
+
+pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError> {
+    let mut candidates = Vec::new();
+    if let Some(path) = env::var_os("NODE") {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/node"),
+        PathBuf::from("/usr/local/bin/node"),
+        PathBuf::from("/usr/bin/node"),
+    ]);
+    if let Some(path) = env::var_os("PATH") {
+        for dir in env::split_paths(&path) {
+            candidates.push(dir.join("node"));
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+        .into_iter()
+        .find(|candidate| {
+            Command::new(candidate)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .ok_or_else(|| crate::DaemonError::LocalTransport {
+            operation: "workflow_code.compile",
+            message:
+                "could not find Node.js for workflow-code compilation; pass node_path or set NODE"
+                    .to_string(),
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

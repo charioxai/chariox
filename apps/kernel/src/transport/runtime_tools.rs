@@ -108,6 +108,13 @@ pub const META_READ_PLAN_TOOL: &str = "arroba.meta.read_plan";
 pub const META_UPDATE_PLAN_TOOL: &str = "arroba.meta.update_plan";
 pub const META_COMPLETE_TASK_TOOL: &str = "arroba.meta.complete_task";
 pub const META_MARK_BLOCKED_TOOL: &str = "arroba.meta.mark_blocked";
+pub const META_WORKFLOW_CODE_CREATE_TOOL: &str = "arroba.meta.workflow_code.create";
+pub const META_WORKFLOW_CODE_READ_TOOL: &str = "arroba.meta.workflow_code.read";
+pub const META_WORKFLOW_CODE_LIST_TOOL: &str = "arroba.meta.workflow_code.list";
+pub const META_WORKFLOW_CODE_UPDATE_TOOL: &str = "arroba.meta.workflow_code.update";
+pub const META_WORKFLOW_CODE_DELETE_TOOL: &str = "arroba.meta.workflow_code.delete";
+pub const META_WORKFLOW_CODE_VALIDATE_TOOL: &str = "arroba.meta.workflow_code.validate";
+pub const META_WORKFLOW_CODE_APPLY_TOOL: &str = "arroba.meta.workflow_code.apply";
 
 pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
 pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
@@ -504,6 +511,59 @@ pub struct MetaCompleteTaskArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaMarkBlockedArgs {
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowCodeCreateArgs {
+    pub name: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowCodeReadArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowCodeListArgs {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowCodeUpdateArgs {
+    pub name: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowCodeDeleteArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowCodeValidateArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowCodeApplyArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1275,6 +1335,91 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_CREATE_TOOL.to_string(),
+            description: "Create a saved workflow-code artifact in this session from JS/TS source after kernel compilation and validation. node_path is optional; the kernel discovers Node.js when omitted.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name", "source"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "source": {"type": "string"},
+                    "language": {"type": "string", "enum": ["java_script", "type_script"]},
+                    "node_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_READ_TOOL.to_string(),
+            description: "Read one saved workflow-code artifact, including source, compiled workflow definition, and validation metadata.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_LIST_TOOL.to_string(),
+            description: "List saved workflow-code artifacts visible to this session.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_UPDATE_TOOL.to_string(),
+            description: "Update a saved workflow-code artifact after recompiling and validating the supplied JS/TS source.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name", "source"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "source": {"type": "string"},
+                    "language": {"type": "string", "enum": ["java_script", "type_script"]},
+                    "node_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_DELETE_TOOL.to_string(),
+            description: "Delete one saved workflow-code artifact visible to this session.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_VALIDATE_TOOL.to_string(),
+            description: "Validate workflow-code without mutating session workflow state. Pass either saved artifact name or inline source; node_path is optional for inline source.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "source": {"type": "string"},
+                    "node_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_APPLY_TOOL.to_string(),
+            description: "Apply saved or inline workflow-code into the current session. Applying creates a new workflow with fresh kernel ids and generated agents as needed.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "source": {"type": "string"},
+                    "node_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
             description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
@@ -1411,6 +1556,36 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_meta_mark_blocked"
         | "mcp__arroba__meta_mark_blocked"
         | "mcp__arroba__arroba_meta_mark_blocked" => Some(META_MARK_BLOCKED_TOOL),
+        META_WORKFLOW_CODE_CREATE_TOOL
+        | "arroba_meta_workflow_code_create"
+        | "mcp__arroba__meta_workflow_code_create"
+        | "mcp__arroba__arroba_meta_workflow_code_create" => Some(META_WORKFLOW_CODE_CREATE_TOOL),
+        META_WORKFLOW_CODE_READ_TOOL
+        | "arroba_meta_workflow_code_read"
+        | "mcp__arroba__meta_workflow_code_read"
+        | "mcp__arroba__arroba_meta_workflow_code_read" => Some(META_WORKFLOW_CODE_READ_TOOL),
+        META_WORKFLOW_CODE_LIST_TOOL
+        | "arroba_meta_workflow_code_list"
+        | "mcp__arroba__meta_workflow_code_list"
+        | "mcp__arroba__arroba_meta_workflow_code_list" => Some(META_WORKFLOW_CODE_LIST_TOOL),
+        META_WORKFLOW_CODE_UPDATE_TOOL
+        | "arroba_meta_workflow_code_update"
+        | "mcp__arroba__meta_workflow_code_update"
+        | "mcp__arroba__arroba_meta_workflow_code_update" => Some(META_WORKFLOW_CODE_UPDATE_TOOL),
+        META_WORKFLOW_CODE_DELETE_TOOL
+        | "arroba_meta_workflow_code_delete"
+        | "mcp__arroba__meta_workflow_code_delete"
+        | "mcp__arroba__arroba_meta_workflow_code_delete" => Some(META_WORKFLOW_CODE_DELETE_TOOL),
+        META_WORKFLOW_CODE_VALIDATE_TOOL
+        | "arroba_meta_workflow_code_validate"
+        | "mcp__arroba__meta_workflow_code_validate"
+        | "mcp__arroba__arroba_meta_workflow_code_validate" => {
+            Some(META_WORKFLOW_CODE_VALIDATE_TOOL)
+        }
+        META_WORKFLOW_CODE_APPLY_TOOL
+        | "arroba_meta_workflow_code_apply"
+        | "mcp__arroba__meta_workflow_code_apply"
+        | "mcp__arroba__arroba_meta_workflow_code_apply" => Some(META_WORKFLOW_CODE_APPLY_TOOL),
         META_RESOLVE_RUNTIME_INTERACTION_TOOL
         | "arroba_meta_resolve_runtime_interaction"
         | "mcp__arroba__meta_resolve_runtime_interaction"

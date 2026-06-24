@@ -6,16 +6,20 @@ use crate::transport::runtime_tools::{
     MetaPollTraceArgs, MetaReadEventArgs, MetaReadGuideArgs, MetaReadPlanArgs, MetaReadTaskArgs,
     MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
     MetaSubscribeTraceArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
-    MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, RuntimeToolResult,
-    META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_COMPLETE_TASK_TOOL, META_EVENT_KINDS,
-    META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_GUIDES_TOOL,
+    MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs,
+    MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs, MetaWorkflowCodeListArgs,
+    MetaWorkflowCodeReadArgs, MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs,
+    RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_COMPLETE_TASK_TOOL,
+    META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_GUIDES_TOOL,
     META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_POLL_TRACE_TOOL,
     META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL, META_READ_TASK_TOOL,
     META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
     META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
     META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
     META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL,
-    META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
+    META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL, META_WORKFLOW_CODE_APPLY_TOOL,
+    META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_LIST_TOOL,
+    META_WORKFLOW_CODE_READ_TOOL, META_WORKFLOW_CODE_UPDATE_TOOL, META_WORKFLOW_CODE_VALIDATE_TOOL,
 };
 
 const META_TRACE_WAIT_DEFAULT_MS: u64 = 30_000;
@@ -103,6 +107,8 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        let tool_name = crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
+            .unwrap_or(tool_name);
         match tool_name {
             META_SESSION_OVERVIEW_TOOL => {
                 let args = serde_json::from_value::<MetaSessionOverviewArgs>(arguments)
@@ -449,6 +455,41 @@ impl KernelRuntimeState {
                     payload: metaagent_task_payload(&projected, agent),
                 })
             }
+            META_WORKFLOW_CODE_CREATE_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeCreateArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_create(session, agent, args).await
+            }
+            META_WORKFLOW_CODE_READ_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeReadArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_read(session, agent, args).await
+            }
+            META_WORKFLOW_CODE_LIST_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeListArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_list(session, agent, args).await
+            }
+            META_WORKFLOW_CODE_UPDATE_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeUpdateArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_update(session, agent, args).await
+            }
+            META_WORKFLOW_CODE_DELETE_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeDeleteArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_delete(session, agent, args).await
+            }
+            META_WORKFLOW_CODE_VALIDATE_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeValidateArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_validate(session, agent, args).await
+            }
+            META_WORKFLOW_CODE_APPLY_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeApplyArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_apply(session, agent, args).await
+            }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
                 let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
                     .map_err(invalid_meta_args)?;
@@ -459,6 +500,251 @@ impl KernelRuntimeState {
                 operation: "runtime_tool_meta",
                 message: format!("unsupported metaagent tool `{tool_name}`"),
             }),
+        }
+    }
+
+    async fn meta_workflow_code_create(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeCreateArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::CreateWorkflowCodeArtifact(
+                    crate::local::CreateWorkflowCodeArtifactRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                        language: args
+                            .language
+                            .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
+                        node_path: meta_workflow_code_node_path(args.node_path)?
+                            .display()
+                            .to_string(),
+                        source: args.source,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact } =
+            &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_code.created",
+                session,
+                agent,
+                serde_json::json!({ "artifact": &artifact.metadata }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_read(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeReadArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::GetWorkflowCodeArtifact(
+                    crate::local::GetWorkflowCodeArtifactRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_list(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        _args: MetaWorkflowCodeListArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::ListWorkflowCodeArtifacts(
+                    crate::local::ListWorkflowCodeArtifactsRequest {
+                        session_id: session.id().to_string(),
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_update(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeUpdateArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::UpdateWorkflowCodeArtifact(
+                    crate::local::UpdateWorkflowCodeArtifactRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                        language: args
+                            .language
+                            .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
+                        node_path: meta_workflow_code_node_path(args.node_path)?
+                            .display()
+                            .to_string(),
+                        source: args.source,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowCodeArtifactUpdated { artifact } =
+            &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_code.updated",
+                session,
+                agent,
+                serde_json::json!({ "artifact": &artifact.metadata }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_delete(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeDeleteArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::DeleteWorkflowCodeArtifact(
+                    crate::local::DeleteWorkflowCodeArtifactRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowCodeArtifactDeleted { name, path } =
+            &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_code.deleted",
+                session,
+                agent,
+                serde_json::json!({ "name": name, "path": path }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_validate(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeValidateArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let source = meta_workflow_code_source(session, args.name, args.source)?;
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::ValidateWorkflowCode(
+                    crate::local::ValidateWorkflowCodeRequest {
+                        session_id: session.id().to_string(),
+                        node_path: meta_workflow_code_node_path(args.node_path)?
+                            .display()
+                            .to_string(),
+                        source,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_apply(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeApplyArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let source = meta_workflow_code_source(session, args.name, args.source)?;
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::ApplyWorkflowCode(
+                    crate::local::ApplyWorkflowCodeRequest {
+                        session_id: session.id().to_string(),
+                        node_path: meta_workflow_code_node_path(args.node_path)?
+                            .display()
+                            .to_string(),
+                        source,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowCodeApplied { result, .. } = &response {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_code.applied",
+                session,
+                agent,
+                serde_json::json!({ "apply": &result.apply }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_execute_workflow_request(
+        &self,
+        request: crate::local::LocalDaemonRequest,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        let (response, _) = self
+            .execute_workflow_request(
+                request,
+                agent.owner_user_id().to_string(),
+                Some(agent.id().to_string()),
+            )
+            .await;
+        response
+    }
+
+    fn persist_metaagent_workflow_code_event(
+        &self,
+        kind: &'static str,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        payload: serde_json::Value,
+    ) {
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            kind,
+            Some(metaagent.id().to_string()),
+            serde_json::json!({
+                "session_id": session.id(),
+                "metaagent_id": metaagent.id(),
+                "owner_user_id": metaagent.owner_user_id(),
+                "payload": payload,
+                "timestamp_ms": crate::session::unix_epoch_ms(),
+            }),
+        ) {
+            crate::logging::warn_with_fields(
+                "metaagent.workflow_code",
+                "failed to persist metaagent workflow-code audit",
+                serde_json::json!({
+                    "kind": kind,
+                    "session_id": session.id(),
+                    "metaagent_id": metaagent.id(),
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 
@@ -1380,6 +1666,71 @@ fn metaagent_plan_payload(
             "task": null,
         }),
     }
+}
+
+fn meta_workflow_code_node_path(
+    node_path: Option<String>,
+) -> Result<std::path::PathBuf, DaemonError> {
+    node_path
+        .map(std::path::PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(crate::workflow_code::discover_workflow_code_node_path)
+}
+
+fn meta_workflow_code_source(
+    session: &crate::session::RuntimeSession,
+    name: Option<String>,
+    source: Option<String>,
+) -> Result<String, DaemonError> {
+    match (name, source) {
+        (None, Some(source)) => Ok(source),
+        (Some(name), None) => meta_workflow_code_artifact_registry(session)?
+            .get(&name)?
+            .map(|artifact| artifact.source)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "meta.workflow_code",
+                message: format!("workflow-code artifact `{name}` is not saved"),
+            }),
+        (Some(_), Some(_)) => Err(DaemonError::LocalTransport {
+            operation: "meta.workflow_code",
+            message: "pass either name or source, not both".to_string(),
+        }),
+        (None, None) => Err(DaemonError::LocalTransport {
+            operation: "meta.workflow_code",
+            message: "pass either name or source".to_string(),
+        }),
+    }
+}
+
+fn meta_workflow_code_artifact_registry(
+    session: &crate::session::RuntimeSession,
+) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
+    let mut roots = Vec::new();
+    if !session.workspace_id().trim().is_empty() {
+        roots.push(
+            crate::workflow_code::WorkflowCodeArtifactRegistry::project_root(
+                session.workspace_id(),
+            ),
+        );
+    }
+    if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
+        roots.push(root);
+    }
+    Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
+        roots,
+    ))
+}
+
+fn runtime_tool_result_from_local_response(
+    response: crate::local::LocalDaemonResponse,
+) -> Result<RuntimeToolResult, DaemonError> {
+    Ok(RuntimeToolResult {
+        ok: true,
+        payload: serde_json::to_value(response).map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_meta",
+            message: format!("failed to serialize workflow-code response: {error}"),
+        })?,
+    })
 }
 
 fn required_metaagent_subscriptions(metaagent_id: &str) -> Vec<serde_json::Value> {

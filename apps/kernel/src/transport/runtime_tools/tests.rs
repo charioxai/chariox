@@ -106,6 +106,34 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
+    fn meta_specs_expose_workflow_code_tools() {
+        let specs = meta_runtime_tool_specs();
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_CREATE_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_READ_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_UPDATE_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_VALIDATE_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_APPLY_TOOL));
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__arroba_meta_workflow_code_create"),
+            Some(META_WORKFLOW_CODE_CREATE_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_apply"),
+            Some(META_WORKFLOW_CODE_APPLY_TOOL)
+        );
+    }
+
+    #[test]
     fn slice_specs_expose_screen_input_and_ocr_tools() {
         let specs = slice_runtime_tool_specs();
         assert!(specs

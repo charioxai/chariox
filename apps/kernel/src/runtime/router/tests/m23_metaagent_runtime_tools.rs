@@ -119,6 +119,12 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
         "metaagents should see the metaagent runtime MCP tools"
     );
     assert!(
+        meta_specs.iter().any(
+            |spec| spec.name == crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL
+        ),
+        "metaagents should see workflow-code construction tools"
+    );
+    assert!(
         meta_specs
             .iter()
             .any(|spec| spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL),
@@ -174,6 +180,153 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
             .to_string()
             .contains("exactly one active metaagent provider run"),
         "{denied:?}"
+    );
+}
+
+#[tokio::test]
+async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code() {
+    if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
+        eprintln!("skipping meta workflow-code tool test because Node.js is unavailable: {error}");
+        return;
+    }
+
+    let env = TestMetaRuntimeEnv::new("workflow-code");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let source = r#"
+workflow.define({ alias: "meta_scripted_flow", maxConcurrent: 2 })
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "planner", provider: "dev-stub", model: "default" }),
+  instructions: "Plan and complete.",
+  canCompleteWorkflowRun: true,
+  canvas: { x: 40, y: 80 }
+})
+workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+"#;
+
+    let created = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL,
+            serde_json::json!({
+                "name": "meta-flow",
+                "source": source
+            }),
+        )
+        .await
+        .expect("metaagent should create workflow-code artifact");
+    assert!(created.ok, "{:?}", created.payload);
+    assert_eq!(
+        created
+            .payload
+            .pointer("/WorkflowCodeArtifactCreated/artifact/metadata/name")
+            .and_then(serde_json::Value::as_str),
+        Some("meta-flow")
+    );
+
+    let validated = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+            serde_json::json!({ "name": "meta-flow" }),
+        )
+        .await
+        .expect("metaagent should validate saved workflow-code artifact");
+    assert!(validated.ok, "{:?}", validated.payload);
+    assert_eq!(
+        validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/ok")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let applied = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
+            serde_json::json!({ "name": "meta-flow" }),
+        )
+        .await
+        .expect("metaagent should apply saved workflow-code artifact");
+    assert!(applied.ok, "{:?}", applied.payload);
+    let workflow_id = applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/workflow_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("apply should return workflow id");
+    assert!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/session/workflows")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|workflows| workflows.iter().any(|workflow| {
+                workflow.get("id").and_then(serde_json::Value::as_str) == Some(workflow_id)
+                    && workflow
+                        .get("controlled_by_metaagent_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(metaagent.id())
+            })),
+        "applied workflow should be controlled by the metaagent"
+    );
+
+    let read = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL,
+            serde_json::json!({ "name": "meta-flow" }),
+        )
+        .await
+        .expect("metaagent should read workflow-code artifact");
+    assert!(read.ok, "{:?}", read.payload);
+    assert_eq!(
+        read.payload
+            .pointer("/WorkflowCodeArtifact/artifact/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("meta_scripted_flow")
+    );
+
+    let deleted = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL,
+            serde_json::json!({ "name": "meta-flow" }),
+        )
+        .await
+        .expect("metaagent should delete workflow-code artifact");
+    assert!(deleted.ok, "{:?}", deleted.payload);
+    assert_eq!(
+        deleted
+            .payload
+            .pointer("/WorkflowCodeArtifactDeleted/name")
+            .and_then(serde_json::Value::as_str),
+        Some("meta-flow")
     );
 }
 
