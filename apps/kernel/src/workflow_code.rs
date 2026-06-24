@@ -941,6 +941,17 @@ impl<'a> WorkflowCodeValidator<'a> {
             definition.watchdogs.len(),
             self.limits.max_watchdogs,
         );
+        let generated_prompt_bytes = workflow_code_generated_prompt_bytes(definition);
+        if generated_prompt_bytes > self.limits.max_generated_prompt_bytes as usize {
+            self.error(
+                "limit_exceeded",
+                format!(
+                    "workflow generated prompt text uses {generated_prompt_bytes} bytes, exceeding configured limit {}",
+                    self.limits.max_generated_prompt_bytes
+                ),
+                None,
+            );
+        }
 
         if definition.nodes.is_empty() {
             self.error(
@@ -1454,6 +1465,51 @@ fn collect_unique_handles<'a>(
     seen
 }
 
+fn workflow_code_generated_prompt_bytes(definition: &WorkflowCodeDefinition) -> usize {
+    fn add_string(total: &mut usize, value: Option<&str>) {
+        if let Some(value) = value {
+            *total = total.saturating_add(value.len());
+        }
+    }
+
+    let mut total = 0usize;
+    add_string(&mut total, definition.workflow.alias.as_deref());
+    for schema in &definition.schemas {
+        add_string(&mut total, schema.alias.as_deref());
+        add_string(&mut total, schema.description.as_deref());
+    }
+    for node in &definition.nodes {
+        add_string(&mut total, node.public_label.as_deref());
+        add_string(&mut total, node.instructions.as_deref());
+        add_string(&mut total, node.intermediate_output_schema.as_deref());
+        match &node.agent {
+            WorkflowCodeAgentBinding::Create(agent) => {
+                add_string(&mut total, agent.alias.as_deref());
+                add_string(&mut total, Some(&agent.provider));
+                add_string(&mut total, agent.model.as_deref());
+                add_string(&mut total, agent.effort.as_deref());
+                add_string(&mut total, agent.account_profile.as_deref());
+            }
+            WorkflowCodeAgentBinding::Existing(agent) => {
+                add_string(&mut total, Some(&agent.agent_ref));
+            }
+        }
+    }
+    for edge in &definition.edges {
+        add_string(&mut total, edge.handoff_schema.as_deref());
+    }
+    for endpoint in &definition.endpoints {
+        add_string(&mut total, endpoint.alias.as_deref());
+    }
+    for queue in &definition.queues {
+        add_string(&mut total, Some(&queue.alias));
+    }
+    for watchdog in &definition.watchdogs {
+        add_string(&mut total, Some(&watchdog.invocation_prompt));
+    }
+    total
+}
+
 fn default_workflow_code_schema_version() -> u32 {
     WORKFLOW_CODE_SCHEMA_VERSION
 }
@@ -1605,6 +1661,26 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "limit_exceeded"));
+    }
+
+    #[test]
+    fn enforces_generated_prompt_byte_limit() {
+        let mut definition = minimal_definition();
+        definition.nodes[0].instructions = Some("x".repeat(128));
+        let limits = WorkflowCodeLimitsConfig {
+            max_generated_prompt_bytes: 64,
+            ..WorkflowCodeLimitsConfig::default()
+        };
+
+        let report = definition.validate_with_limits(&limits);
+
+        assert!(!report.ok);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "limit_exceeded"
+                && diagnostic
+                    .message
+                    .contains("workflow generated prompt text uses")
+        }));
     }
 
     #[test]
