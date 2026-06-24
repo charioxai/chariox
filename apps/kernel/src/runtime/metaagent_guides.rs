@@ -93,6 +93,22 @@ pub(crate) const METAAGENT_GUIDES: &[MetaagentGuide] = &[
         body: include_str!("metaagent_guides/workflows/common-failures.md"),
     },
     MetaagentGuide {
+        id: "workflows/workflow-code-authoring",
+        title: "Workflow-code authoring",
+        summary: "Exact JavaScript builder API for creating, validating, applying, running, exporting, and importing workflow-code artifacts.",
+        tags: &["workflow", "workflow-code", "script", "metaagent"],
+        commands: &[
+            "arroba.meta.workflow_code.create",
+            "arroba.meta.workflow_code.update",
+            "arroba.meta.workflow_code.validate",
+            "arroba.meta.workflow_code.apply",
+            "arroba.meta.workflow_code.run",
+            "arroba.meta.workflow_code.export",
+            "arroba.meta.workflow_code.import",
+        ],
+        body: include_str!("metaagent_guides/workflows/workflow-code-authoring.md"),
+    },
+    MetaagentGuide {
         id: "agent-apps/generate-app",
         title: "Generate an agent app",
         summary: "Recipe for building an app by planning, delegating to regular agents, and validating through workers.",
@@ -246,5 +262,41 @@ mod tests {
             .get("body")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|body| body.contains("Do not implement directly")));
+    }
+
+    #[test]
+    fn workflow_code_guide_is_searchable_by_meta_tool_command() {
+        let guides = search_guides(MetaagentGuideSearchArgs {
+            query: Some("workflow code javascript builder".to_string()),
+            tag: Some("workflow-code".to_string()),
+            command: Some("arroba.meta.workflow_code.apply".to_string()),
+            limit: Some(5),
+        });
+        assert!(guides.iter().any(|guide| {
+            guide.get("id").and_then(serde_json::Value::as_str)
+                == Some("workflows/workflow-code-authoring")
+        }));
+    }
+
+    #[test]
+    fn workflow_code_guide_documents_real_builder_api() {
+        let guide = read_guide("workflows/workflow-code-authoring").expect("guide should exist");
+        let body = guide
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .expect("guide body should be markdown");
+        for expected in [
+            "workflow.define",
+            "workflow.schema",
+            "workflow.newAgent",
+            "workflow.existingAgent",
+            "workflow.node",
+            "workflow.edge",
+            "workflow.endpoint",
+            "workflow.queue",
+            "workflow.watchdog",
+        ] {
+            assert!(body.contains(expected), "missing `{expected}` from guide");
+        }
     }
 }
