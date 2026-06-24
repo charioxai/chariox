@@ -20,11 +20,12 @@ impl DaemonApp {
     ) {
         self.append_history_entry(
             session_id,
-            SessionHistoryEntry::user_prompt(
+            SessionHistoryEntry::user_prompt_with_attachments(
                 session_id,
                 source_attachment_id,
                 agent_id,
                 render_prompt_transcript(prompt, attachments),
+                attachments,
             ),
         );
     }
@@ -39,11 +40,12 @@ impl DaemonApp {
     ) -> Result<(), crate::error::DaemonError> {
         let session =
             crate::app::KernelSessionReadService::new(self).session_snapshot(session_id)?;
-        let entry = SessionHistoryEntry::user_prompt(
+        let entry = SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
             agent_id,
             render_prompt_transcript(prompt, attachments),
+            attachments,
         );
         self.spawn_history_append(session, entry);
         Ok(())

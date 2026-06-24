@@ -1083,6 +1083,9 @@ fn latest_effective_observed_turn_settles(
 
 fn external_status_turn_settles(text: &str) -> bool {
     text.starts_with("codex task_complete")
+        || text.starts_with("codex event turn_aborted")
+        || text.contains("\"type\":\"turn_aborted\"")
+        || text.contains("\"type\": \"turn_aborted\"")
         || text.starts_with("claude message completed")
         || text.starts_with("opencode message completed")
 }
@@ -2095,6 +2098,155 @@ mod tests {
                 .is_none(),
             "Codex task_complete should clear the external active prompt"
         );
+    }
+
+    #[test]
+    fn append_observed_external_codex_turn_aborted_settles_active_prompt() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import,
+        };
+        let prompt = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("user-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            observed_at_ms: Some(42),
+        };
+        append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: vec![prompt.clone()],
+            },
+        )
+        .expect("observed prompt should append");
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_some(),
+            "observed prompt should create an external active prompt"
+        );
+
+        let abort = crate::app::ObservedExternalProviderTurn {
+            provider_turn_id: Some("turn-aborted-1".to_string()),
+            role: crate::app::ObservedExternalProviderTurnRole::Status,
+            text: "codex event turn_aborted { \"type\": \"turn_aborted\" }".to_string(),
+            observed_at_ms: Some(84),
+        };
+        let outcome = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![prompt, abort],
+            },
+        )
+        .expect("Codex turn_aborted should append and settle");
+
+        assert_eq!(outcome.changed_count, 1);
+        assert!(outcome.external_active_prompt_settled);
+        assert!(
+            app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                .expect("active prompt should load")
+                .is_none(),
+            "Codex turn_aborted should clear the external active prompt"
+        );
+    }
+
+    #[test]
+    fn append_observed_external_provider_abort_completion_statuses_settle_active_prompt() {
+        for (provider, status_text) in [
+            (
+                "claude",
+                "claude message completed\n{\"stop_reason\":\"interrupted\"}",
+            ),
+            (
+                "opencode",
+                "opencode message completed\n{\"finish\":\"cancelled\"}",
+            ),
+        ] {
+            let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            let import = ExternalProviderImportMetadata::observed_history(
+                format!("{provider}:thread-observed"),
+                provider.to_string(),
+                "thread-observed".to_string(),
+            );
+            let agent = persist_external_import_metadata(
+                &mut app,
+                session.id(),
+                agent.id(),
+                import.clone(),
+            )
+            .expect("metadata should persist");
+            let target = ImportedExternalObserverTarget {
+                session_id: session.id().to_string(),
+                agent_id: agent.id().to_string(),
+                provider_run_id: None,
+                import,
+            };
+            let prompt = crate::app::ObservedExternalProviderTurn {
+                provider_turn_id: Some("user-1".to_string()),
+                role: crate::app::ObservedExternalProviderTurnRole::User,
+                text: "external prompt".to_string(),
+                observed_at_ms: Some(42),
+            };
+            append_observed_external_turns_for_import(
+                &mut app,
+                ImportedExternalObserverRead {
+                    target: target.clone(),
+                    turns: vec![prompt.clone()],
+                },
+            )
+            .expect("observed prompt should append");
+            assert!(
+                app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                    .expect("active prompt should load")
+                    .is_some(),
+                "{provider} prompt should mark the external turn running"
+            );
+
+            let abort_status = crate::app::ObservedExternalProviderTurn {
+                provider_turn_id: Some("abort-status-1".to_string()),
+                role: crate::app::ObservedExternalProviderTurnRole::Status,
+                text: status_text.to_string(),
+                observed_at_ms: Some(84),
+            };
+            let outcome = append_observed_external_turns_for_import(
+                &mut app,
+                ImportedExternalObserverRead {
+                    target,
+                    turns: vec![prompt, abort_status],
+                },
+            )
+            .expect("observed abort-like completion status should append and settle");
+
+            assert!(
+                outcome.external_active_prompt_settled,
+                "{provider} abort-like completion status should settle"
+            );
+            assert!(
+                app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+                    .expect("active prompt should load")
+                    .is_none(),
+                "{provider} abort-like completion status should clear the external active prompt"
+            );
+        }
     }
 
     #[test]

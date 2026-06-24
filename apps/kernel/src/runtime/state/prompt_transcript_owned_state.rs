@@ -279,11 +279,12 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let session = self.session_snapshot(session_id)?;
-        let entry = crate::history::SessionHistoryEntry::user_prompt(
+        let entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
             agent_id,
             crate::prompt_transcript::render_prompt_transcript(prompt, attachments),
+            attachments,
         );
         self.history_store.append(&session, &entry)?;
         self.append_operational_history_entry(

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -46,8 +47,93 @@ pub struct SessionHistoryEntry {
     pub external_provider_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<SessionHistoryPromptAttachment>,
     pub text: String,
     pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryPromptAttachment {
+    pub url: String,
+    pub mime: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+}
+
+impl SessionHistoryPromptAttachment {
+    pub fn from_prompt_attachment(attachment: &crate::session::PromptAttachment) -> Self {
+        Self {
+            url: attachment.url().to_string(),
+            mime: attachment.mime().to_string(),
+            filename: attachment.filename().map(str::to_string),
+            preview_url: image_prompt_attachment_preview_url(attachment),
+        }
+    }
+}
+
+fn image_prompt_attachment_preview_url(
+    attachment: &crate::session::PromptAttachment,
+) -> Option<String> {
+    if !attachment.mime().starts_with("image/") {
+        return None;
+    }
+    if let Some(contents_base64) = attachment.contents_base64() {
+        return Some(format!(
+            "data:{};base64,{contents_base64}",
+            attachment.mime()
+        ));
+    }
+    let local_path = local_file_url_path(attachment.url())?;
+    let bytes = fs::read(local_path).ok()?;
+    Some(format!(
+        "data:{};base64,{}",
+        attachment.mime(),
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+fn local_file_url_path(url: &str) -> Option<String> {
+    if url.starts_with('/') {
+        return Some(url.to_string());
+    }
+    let stripped = url
+        .strip_prefix("file://localhost")
+        .or_else(|| url.strip_prefix("file://"))?;
+    stripped
+        .starts_with('/')
+        .then(|| percent_decode_path(stripped))
+}
+
+fn percent_decode_path(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hi = decode_hex_nibble(bytes[index + 1]);
+            let lo = decode_hex_nibble(bytes[index + 2]);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                decoded.push((hi << 4) | lo);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| value.to_string())
+}
+
+fn decode_hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +149,16 @@ impl SessionHistoryEntry {
         agent_id: &str,
         text: impl Into<String>,
     ) -> Self {
+        Self::user_prompt_with_attachments(session_id, source_attachment_id, agent_id, text, &[])
+    }
+
+    pub fn user_prompt_with_attachments(
+        session_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        text: impl Into<String>,
+        attachments: &[crate::session::PromptAttachment],
+    ) -> Self {
         Self {
             session_id: session_id.to_string(),
             provider_run_id: None,
@@ -75,6 +171,10 @@ impl SessionHistoryEntry {
             external_provider_session_id: None,
             external_provider_turn_id: None,
             observed_at_ms: None,
+            attachments: attachments
+                .iter()
+                .map(SessionHistoryPromptAttachment::from_prompt_attachment)
+                .collect(),
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
         }
@@ -107,6 +207,7 @@ impl SessionHistoryEntry {
             external_provider_session_id: None,
             external_provider_turn_id: None,
             observed_at_ms: None,
+            attachments: Vec::new(),
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
         }
@@ -130,6 +231,7 @@ impl SessionHistoryEntry {
             external_provider_session_id: None,
             external_provider_turn_id: None,
             observed_at_ms: None,
+            attachments: Vec::new(),
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
         }
@@ -187,6 +289,7 @@ impl SessionHistoryEntry {
             external_provider_session_id: Some(provider_session_id.to_string()),
             external_provider_turn_id: provider_turn_id,
             observed_at_ms: Some(observed_at_ms),
+            attachments: Vec::new(),
             text: text.into(),
             timestamp_ms: observed_at_ms,
         }

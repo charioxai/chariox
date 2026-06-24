@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_provider_output_does_not_project_unread() {
+    fn focused_provider_output_projects_unread_until_client_acknowledges_seen() {
         let mut session = session_with_agents(vec![agent("agent-1", AgentState::Idle, false)]);
         session.set_focused_agent(Some("agent-1".to_string()));
 
@@ -471,13 +471,20 @@ mod tests {
             .iter()
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
+        assert!(waiting_room_agent_activity_summary(
+            &session,
+            agent,
+            crate::session::DEFAULT_LOCAL_USER_ID
+        )
+        .unread_idle_output);
+        assert_eq!(
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
+                .unread_idle_agent_count,
+            1
+        );
+
         assert!(
-            !waiting_room_agent_activity_summary(
-                &session,
-                agent,
-                crate::session::DEFAULT_LOCAL_USER_ID
-            )
-            .unread_idle_output
+            session.acknowledge_agent_output_seen(crate::session::DEFAULT_LOCAL_USER_ID, "agent-1")
         );
         assert_eq!(
             waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)

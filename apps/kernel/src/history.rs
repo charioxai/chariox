@@ -21,7 +21,8 @@ mod session_log;
 pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
-    SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
+    SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource,
+    SessionHistoryPromptAttachment, SessionHistoryStore,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -240,6 +241,12 @@ impl HistoryEvent {
                 serde_json::Value::Number(observed_at_ms.into()),
             );
         }
+        if !entry.attachments.is_empty() {
+            metadata.insert(
+                "attachments".to_string(),
+                serde_json::to_value(&entry.attachments).unwrap_or(serde_json::Value::Null),
+            );
+        }
         Self {
             event_id,
             sequence,
@@ -320,6 +327,12 @@ impl HistoryEvent {
                 .metadata
                 .get("observed_at_ms")
                 .and_then(|value| value.as_u64()),
+            attachments: self
+                .metadata
+                .get("attachments")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default(),
             text: self.content.clone().unwrap_or_default(),
             timestamp_ms: self.timestamp_ms,
         })
@@ -876,8 +889,10 @@ fn unix_epoch_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+
     use crate::config::DaemonConfig;
-    use crate::session::{CreateSessionRequest, SessionService};
+    use crate::session::{CreateSessionRequest, PromptAttachment, SessionService};
     use crate::terminal::TerminalOutputKind;
 
     use super::{
@@ -976,6 +991,59 @@ mod tests {
         assert_eq!(round_tripped.kind, SessionHistoryEntryKind::ProviderTool);
         assert_eq!(round_tripped.text, "called browser");
         assert_eq!(round_tripped.merge_key.as_deref(), Some("tool:browser"));
+    }
+
+    #[test]
+    fn canonical_history_events_preserve_prompt_attachments() {
+        let image_path = std::env::temp_dir().join(format!(
+            "arroba-history-preview-{}-{}.png",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        std::fs::write(&image_path, b"file-image").expect("fixture image should write");
+        let contents_base64 = base64::engine::general_purpose::STANDARD.encode("image");
+        let inline_attachment = PromptAttachment::new(
+            "arroba-terminal://prompt-attachment/attachment-1/screenshot.png",
+            "image/png",
+            Some("screenshot.png".to_string()),
+        )
+        .with_contents_base64(contents_base64);
+        let file_attachment = PromptAttachment::new(
+            format!("file://{}", image_path.display()),
+            "image/png",
+            Some("file-screenshot.png".to_string()),
+        );
+        let entry = SessionHistoryEntry::user_prompt_with_attachments(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "inspect",
+            &[inline_attachment, file_attachment],
+        );
+        let event = HistoryEvent::transcript(7, &entry, HistoryEventTurnContext::default());
+        let round_tripped = event
+            .to_session_history_entry()
+            .expect("transcript event should convert back");
+        let attachment = round_tripped
+            .attachments
+            .first()
+            .expect("attachment should round-trip through operational history");
+
+        assert_eq!(attachment.filename.as_deref(), Some("screenshot.png"));
+        assert_eq!(attachment.mime, "image/png");
+        assert_eq!(
+            attachment.preview_url.as_deref(),
+            Some("data:image/png;base64,aW1hZ2U=")
+        );
+        assert_eq!(
+            round_tripped
+                .attachments
+                .get(1)
+                .and_then(|attachment| attachment.preview_url.as_deref()),
+            Some("data:image/png;base64,ZmlsZS1pbWFnZQ==")
+        );
+
+        let _ = std::fs::remove_file(image_path);
     }
 
     #[test]

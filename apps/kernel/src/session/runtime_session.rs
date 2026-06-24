@@ -358,17 +358,6 @@ impl RuntimeSession {
         if sequence == 0 {
             return false;
         }
-        let focused_seen_user_ids = if self.focused_agent_id.as_deref() == Some(agent_id) {
-            let mut user_ids = self
-                .members
-                .iter()
-                .map(|member| member.user_id().to_string())
-                .collect::<BTreeSet<_>>();
-            user_ids.insert(self.owner_user_id.clone());
-            Some(user_ids)
-        } else {
-            None
-        };
         let state = self
             .agent_output_read_state
             .entry(agent_id.to_string())
@@ -377,13 +366,6 @@ impl RuntimeSession {
             return false;
         }
         state.latest_output_sequence = sequence;
-        if let Some(user_ids) = focused_seen_user_ids {
-            for user_id in user_ids {
-                state
-                    .seen_sequences_by_user
-                    .insert(user_id, state.latest_output_sequence);
-            }
-        }
         true
     }
 
