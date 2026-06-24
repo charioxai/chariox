@@ -27,7 +27,7 @@ const EXTERNAL_PROVIDER_IMPORTED_ACTIVE_INTERVAL: Duration = Duration::from_secs
 const EXTERNAL_PROVIDER_IMPORTED_IDLE_INTERVAL: Duration = Duration::from_secs(20);
 const EXTERNAL_PROVIDER_IMPORTED_ACTIVE_WINDOW: Duration = Duration::from_secs(120);
 const EXTERNAL_PROVIDER_IMPORTED_SETTLE_GRACE: Duration = Duration::from_secs(4);
-const EXTERNAL_PROVIDER_IMPORTED_MAX_POLLS_PER_TICK: usize = 2;
+const EXTERNAL_PROVIDER_IMPORTED_MAX_POLLS_PER_TICK: usize = 16;
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
 
 #[derive(Debug, Default)]
