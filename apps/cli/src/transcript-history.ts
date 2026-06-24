@@ -338,7 +338,7 @@ export function hydrateTranscriptEntries(
 
 function applyEntryMetadata(
   entry: TranscriptEntry,
-  options: Partial<TranscriptEntry>,
+  options: TranscriptEntryMetadataOptions,
 ) {
   if (options.source !== undefined) entry.source = options.source
   if (options.externalProvider !== undefined) entry.externalProvider = options.externalProvider
@@ -352,6 +352,21 @@ function applyEntryMetadata(
   if (options.historyFragmentStart !== undefined) entry.historyFragmentStart = options.historyFragmentStart
   if (options.historyFragmentEnd !== undefined) entry.historyFragmentEnd = options.historyFragmentEnd
   if (options.historyTotalChars !== undefined) entry.historyTotalChars = options.historyTotalChars
+}
+
+type TranscriptEntryMetadataOptions = {
+  source?: TranscriptEntry["source"] | undefined
+  externalProvider?: string | null | undefined
+  externalProviderSessionId?: string | null | undefined
+  externalProviderTurnId?: string | null | undefined
+  observedAtMs?: number | null | undefined
+  externalObservation?: TranscriptEntry["externalObservation"] | undefined
+  promptId?: string | null | undefined
+  sourceAttachmentId?: string | null | undefined
+  historyEntryIndex?: number | undefined
+  historyFragmentStart?: number | undefined
+  historyFragmentEnd?: number | undefined
+  historyTotalChars?: number | undefined
 }
 
 function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {

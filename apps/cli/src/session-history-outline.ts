@@ -102,7 +102,8 @@ function hydratePageEntries(
   turnId?: number,
   promptId?: string | null,
 ): TranscriptEntry[] {
-  return hydrateTranscriptEntries(pageEntries, { promptId }).map((entry) => ({
+  const hydrateOptions = promptId === undefined ? {} : { promptId }
+  return hydrateTranscriptEntries(pageEntries, hydrateOptions).map((entry) => ({
     ...entry,
     ...(turnId !== undefined ? { turnId } : {}),
   }))

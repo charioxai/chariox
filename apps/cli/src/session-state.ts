@@ -391,19 +391,19 @@ type ActivePromptLifecycleRecord = {
 
 function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecycleRecord[] {
   if (session.agent_activity) {
-    return Object.entries(session.agent_activity)
-      .map(([agentId, activity]) => {
-        const activeTurn = activity.active_turn
-        return activeTurn
-          ? {
-              id: activeTurn.prompt_id,
-              status: activeTurn.status,
-              target_agent_id: agentId,
-            }
-          : null
+    const records: ActivePromptLifecycleRecord[] = []
+    for (const [agentId, activity] of Object.entries(session.agent_activity)) {
+      const activeTurn = activity.active_turn
+      if (!activeTurn) {
+        continue
+      }
+      records.push({
+        id: activeTurn.prompt_id,
+        status: activeTurn.status,
+        target_agent_id: agentId,
       })
-      .filter((prompt): prompt is ActivePromptLifecycleRecord => Boolean(prompt))
-      .sort((left, right) => left.id.localeCompare(right.id))
+    }
+    return records.sort((left, right) => left.id.localeCompare(right.id))
   }
   if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
     return Object.values(session.prompt_states)

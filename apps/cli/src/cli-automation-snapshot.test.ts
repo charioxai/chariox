@@ -82,7 +82,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
 
   assert.equal(snapshot.screen, "workflow")
   assert.equal((snapshot.session as { id: string }).id, "session-1")
-  assert.equal(snapshot.transcript.visibleAgentId, "agent-1")
+  assert.equal(snapshot.transcript?.visibleAgentId, "agent-1")
   assert.equal((snapshot.selectedWorkflow as { alias: string }).alias, "release")
   assert.deepEqual((snapshot.interactions as Array<Record<string, unknown>>)[0], {
     id: "interaction-1",

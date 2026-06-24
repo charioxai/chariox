@@ -127,7 +127,7 @@ test("refreshAgentPaneState backfills older history until a user turn and keeps 
       assert.ok(page, `missing page for ${key}`)
       return page
     },
-    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    hydrateEntries: (entries: Array<{ role: string; text: string }>) => entries.map((entry) => ({ ...entry })),
     stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => [...entries, { role: "turn_toggle", turnId: 2, text: "toggle" }],
     applyExpandedTurns: (entries, expandedTurnIds) =>
@@ -367,7 +367,17 @@ test("refreshAgentPaneState does not preserve another imported agent when refres
       }],
     },
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
-    loadHistoryPage: async () => ({ entries: [], nextCursor: null }),
+    loadHistoryPage: async () => ({
+      entries: [] as Array<{
+        role: string
+        text: string
+        source?: string | null
+        externalProvider?: string | null
+        externalProviderSessionId?: string | null
+        externalProviderTurnId?: string | null
+      }>,
+      nextCursor: null,
+    }),
     hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
     stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
     collapseHistoricalTurns: (entries) => entries,
