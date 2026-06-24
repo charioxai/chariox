@@ -1,15 +1,202 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::config::WorkflowCodeLimitsConfig;
 use crate::extension::ExtensionGrant;
+use crate::mcp::validate_registry_name;
 use crate::session::{
     WorkflowEdgeEndpointSide, WorkflowHandoffValidationPolicy, WorkflowWatchdogPolicy,
 };
 
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
+pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeArtifactMetadata {
+    pub name: String,
+    pub language: WorkflowCodeLanguage,
+    pub path: PathBuf,
+    pub source_sha256: String,
+    pub source_bytes: u64,
+    pub validation: WorkflowCodeValidationReport,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowCodeArtifact {
+    pub metadata: WorkflowCodeArtifactMetadata,
+    pub source: String,
+    pub definition: WorkflowCodeDefinition,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowCodeLanguage {
+    JavaScript,
+    TypeScript,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowCodeArtifactRegistry {
+    roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredWorkflowCodeArtifact {
+    name: String,
+    language: WorkflowCodeLanguage,
+    source: String,
+    source_sha256: String,
+    definition: WorkflowCodeDefinition,
+    validation: WorkflowCodeValidationReport,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl WorkflowCodeArtifactRegistry {
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self { roots }
+    }
+
+    pub fn project_root(workspace: impl AsRef<Path>) -> PathBuf {
+        workspace.as_ref().join(".arroba").join("workflow-code")
+    }
+
+    pub fn user_root() -> Option<PathBuf> {
+        arroba_home().map(|home| home.join("workflow-code"))
+    }
+
+    pub fn save(
+        &self,
+        name: &str,
+        language: WorkflowCodeLanguage,
+        source: impl Into<String>,
+        definition: WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+    ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
+        validate_registry_name(name, "workflow-code artifact name")?;
+        let validation = definition.validate_with_limits(limits);
+        let source = source.into();
+        let now = crate::session::unix_epoch_ms();
+        let source_sha256 = sha256_hex(source.as_bytes());
+        let stored = StoredWorkflowCodeArtifact {
+            name: name.to_string(),
+            language,
+            source,
+            source_sha256,
+            definition,
+            validation,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        let path = self.artifact_path(name)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(io_error("workflow_code.save"))?;
+        }
+        write_stored_artifact(&path, &stored)?;
+        Ok(stored.into_artifact(path))
+    }
+
+    pub fn update(
+        &self,
+        name: &str,
+        language: WorkflowCodeLanguage,
+        source: impl Into<String>,
+        definition: WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+    ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
+        validate_registry_name(name, "workflow-code artifact name")?;
+        let path = self
+            .find_path(name)?
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.update",
+                message: format!("workflow-code artifact `{name}` is not saved"),
+            })?;
+        let previous = read_stored_artifact(&path)?;
+        let source = source.into();
+        let validation = definition.validate_with_limits(limits);
+        let stored = StoredWorkflowCodeArtifact {
+            name: name.to_string(),
+            language,
+            source_sha256: sha256_hex(source.as_bytes()),
+            source,
+            definition,
+            validation,
+            created_at_ms: previous.created_at_ms,
+            updated_at_ms: crate::session::unix_epoch_ms(),
+        };
+        write_stored_artifact(&path, &stored)?;
+        Ok(stored.into_artifact(path))
+    }
+
+    pub fn get(&self, name: &str) -> Result<Option<WorkflowCodeArtifact>, crate::DaemonError> {
+        validate_registry_name(name, "workflow-code artifact name")?;
+        let Some(path) = self.find_path(name)? else {
+            return Ok(None);
+        };
+        read_stored_artifact(&path).map(|stored| Some(stored.into_artifact(path)))
+    }
+
+    pub fn list(&self) -> Result<Vec<WorkflowCodeArtifactMetadata>, crate::DaemonError> {
+        let mut entries = BTreeMap::new();
+        for root in &self.roots {
+            if !root.exists() {
+                continue;
+            }
+            for entry in fs::read_dir(root).map_err(io_error("workflow_code.list"))? {
+                let path = entry.map_err(io_error("workflow_code.list"))?.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                let artifact = read_stored_artifact(&path)?.into_artifact(path);
+                entries
+                    .entry(artifact.metadata.name.clone())
+                    .or_insert(artifact.metadata);
+            }
+        }
+        Ok(entries.into_values().collect())
+    }
+
+    pub fn delete(&self, name: &str) -> Result<PathBuf, crate::DaemonError> {
+        validate_registry_name(name, "workflow-code artifact name")?;
+        let path = self
+            .find_path(name)?
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.delete",
+                message: format!("workflow-code artifact `{name}` is not saved"),
+            })?;
+        fs::remove_file(&path).map_err(io_error("workflow_code.delete"))?;
+        Ok(path)
+    }
+
+    fn artifact_path(&self, name: &str) -> Result<PathBuf, crate::DaemonError> {
+        Ok(self.primary_root()?.join(format!("{name}.json")))
+    }
+
+    fn find_path(&self, name: &str) -> Result<Option<PathBuf>, crate::DaemonError> {
+        for root in &self.roots {
+            let path = root.join(format!("{name}.json"));
+            if path.exists() {
+                return Ok(Some(path));
+            }
+        }
+        Ok(None)
+    }
+
+    fn primary_root(&self) -> Result<&PathBuf, crate::DaemonError> {
+        self.roots.first().ok_or(crate::DaemonError::InvalidConfig {
+            field: "workflow-code registry roots",
+            message: "must include at least one root",
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -562,6 +749,68 @@ impl<'a> WorkflowCodeValidator<'a> {
     }
 }
 
+impl StoredWorkflowCodeArtifact {
+    fn into_artifact(self, path: PathBuf) -> WorkflowCodeArtifact {
+        let source_bytes = self.source.len() as u64;
+        WorkflowCodeArtifact {
+            metadata: WorkflowCodeArtifactMetadata {
+                name: self.name,
+                language: self.language,
+                path,
+                source_sha256: self.source_sha256,
+                source_bytes,
+                validation: self.validation,
+                created_at_ms: self.created_at_ms,
+                updated_at_ms: self.updated_at_ms,
+            },
+            source: self.source,
+            definition: self.definition,
+        }
+    }
+}
+
+fn read_stored_artifact(path: &Path) -> Result<StoredWorkflowCodeArtifact, crate::DaemonError> {
+    let contents = fs::read_to_string(path).map_err(io_error("workflow_code.read"))?;
+    serde_json::from_str(&contents).map_err(|error| crate::DaemonError::LocalTransport {
+        operation: "workflow_code.read",
+        message: format!(
+            "failed to parse workflow-code artifact `{}`: {error}",
+            path.display()
+        ),
+    })
+}
+
+fn write_stored_artifact(
+    path: &Path,
+    artifact: &StoredWorkflowCodeArtifact,
+) -> Result<(), crate::DaemonError> {
+    let payload = serde_json::to_string_pretty(artifact).map_err(|error| {
+        crate::DaemonError::LocalTransport {
+            operation: "workflow_code.write",
+            message: format!("failed to serialize workflow-code artifact: {error}"),
+        }
+    })?;
+    fs::write(path, format!("{payload}\n")).map_err(io_error("workflow_code.write"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn arroba_home() -> Option<PathBuf> {
+    std::env::var_os("ARROBA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
+}
+
+fn io_error(operation: &'static str) -> impl FnOnce(std::io::Error) -> crate::DaemonError + Copy {
+    move |error| crate::DaemonError::LocalTransport {
+        operation,
+        message: error.to_string(),
+    }
+}
+
 fn collect_unique_handles<'a>(
     validator: &mut WorkflowCodeValidator<'_>,
     kind: &'static str,
@@ -752,5 +1001,94 @@ mod tests {
             .expect_err("unknown workflow-code fields should be rejected");
 
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn registry_saves_lists_reads_updates_and_deletes_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-code-registry-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let registry = WorkflowCodeArtifactRegistry::new(vec![root.clone()]);
+        let limits = WorkflowCodeLimitsConfig::default();
+        let definition = minimal_definition();
+
+        let created = registry
+            .save(
+                "toy",
+                WorkflowCodeLanguage::JavaScript,
+                "workflow.define({ alias: 'toy' })",
+                definition.clone(),
+                &limits,
+            )
+            .expect("workflow-code artifact should save");
+
+        assert_eq!(created.metadata.name, "toy");
+        assert_eq!(created.metadata.language, WorkflowCodeLanguage::JavaScript);
+        assert_eq!(created.metadata.source_bytes, 33);
+        assert!(created.metadata.validation.ok);
+        assert_eq!(registry.list().expect("list should load").len(), 1);
+
+        let loaded = registry
+            .get("toy")
+            .expect("get should succeed")
+            .expect("artifact should exist");
+        assert_eq!(loaded.source, "workflow.define({ alias: 'toy' })");
+        assert_eq!(loaded.definition, definition);
+
+        let updated = registry
+            .update(
+                "toy",
+                WorkflowCodeLanguage::TypeScript,
+                "workflow.define({ alias: 'toy-2' })",
+                minimal_definition(),
+                &limits,
+            )
+            .expect("workflow-code artifact should update");
+        assert_eq!(updated.metadata.language, WorkflowCodeLanguage::TypeScript);
+        assert_eq!(
+            updated.metadata.created_at_ms,
+            created.metadata.created_at_ms
+        );
+        assert!(updated.metadata.updated_at_ms >= created.metadata.updated_at_ms);
+
+        let deleted_path = registry.delete("toy").expect("artifact should delete");
+        assert!(!deleted_path.exists());
+        assert!(registry.get("toy").expect("get should succeed").is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_persists_validation_report_for_invalid_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-code-invalid-registry-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let registry = WorkflowCodeArtifactRegistry::new(vec![root.clone()]);
+        let mut definition = minimal_definition();
+        definition.endpoints.clear();
+
+        let artifact = registry
+            .save(
+                "invalid",
+                WorkflowCodeLanguage::JavaScript,
+                "workflow.define({ alias: 'invalid' })",
+                definition,
+                &WorkflowCodeLimitsConfig::default(),
+            )
+            .expect("invalid workflow-code artifact should still save diagnostics");
+
+        assert!(!artifact.metadata.validation.ok);
+        assert!(artifact
+            .metadata
+            .validation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "missing_endpoint"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }
