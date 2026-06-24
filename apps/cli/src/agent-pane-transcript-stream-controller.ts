@@ -20,6 +20,11 @@ export type AgentPaneTranscriptStreamControllerDeps = {
   toolStateForAgent: (agentId: string) => Map<string, ToolTranscriptUpdate>
 }
 
+type TranscriptStreamMetadata = {
+  promptId?: string | null
+  sourceAttachmentId?: string | null
+}
+
 export function createAgentPaneTranscriptStreamController(
   deps: AgentPaneTranscriptStreamControllerDeps,
 ) {
@@ -29,6 +34,7 @@ export function createAgentPaneTranscriptStreamController(
     chunk: string,
     mergeKey?: string,
     sourceText?: string,
+    metadata: TranscriptStreamMetadata = {},
   ) => {
     const normalized = normalizeProviderChunk(chunk)
     const normalizedSource = sourceText === undefined ? undefined : normalizeProviderChunk(sourceText)
@@ -43,6 +49,7 @@ export function createAgentPaneTranscriptStreamController(
       normalized,
       normalizedSource,
       mergeKey,
+      metadata,
     })
 
     if (mergedEntry) {
@@ -55,6 +62,7 @@ export function createAgentPaneTranscriptStreamController(
       normalized,
       normalizedSource,
       mergeKey,
+      metadata,
     }))
     deps.setAgentTranscriptEntries(
       agentId,
@@ -62,7 +70,7 @@ export function createAgentPaneTranscriptStreamController(
     )
   }
 
-  const appendToolUpdate = (agentId: string, chunk: string) => {
+  const appendToolUpdate = (agentId: string, chunk: string, metadata: TranscriptStreamMetadata = {}) => {
     const normalized = normalizeProviderChunk(chunk)
     if (!normalized) {
       return
@@ -79,11 +87,12 @@ export function createAgentPaneTranscriptStreamController(
         formatToolTranscriptUpdate(merged),
         parsed.id,
         JSON.stringify(merged),
+        metadata,
       )
       return
     }
 
-    appendProviderChunk(agentId, "tool", normalized, undefined, normalized)
+    appendProviderChunk(agentId, "tool", normalized, undefined, normalized, metadata)
   }
 
   return {
@@ -103,9 +112,10 @@ function mergeProviderChunk(
     normalized: string
     normalizedSource: string | undefined
     mergeKey: string | undefined
+    metadata: TranscriptStreamMetadata
   },
 ) {
-  const { role, normalized, normalizedSource, mergeKey } = options
+  const { role, normalized, normalizedSource, mergeKey, metadata } = options
 
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -114,6 +124,7 @@ function mergeProviderChunk(
         continue
       }
       applyMergedChunk(candidate, role, normalized, normalizedSource)
+      applyStreamMetadata(candidate, metadata)
       return candidate
     }
   }
@@ -121,6 +132,7 @@ function mergeProviderChunk(
   const last = [...entries].reverse().find((entry) => entry.role !== "turn_toggle")
   if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
     last.text += normalized
+    applyStreamMetadata(last, metadata)
     return last
   }
 
@@ -154,6 +166,7 @@ function createTranscriptEntry(
     normalized: string
     normalizedSource: string | undefined
     mergeKey: string | undefined
+    metadata: TranscriptStreamMetadata
   },
 ) {
   const nextEntry: TranscriptEntry = {
@@ -171,5 +184,15 @@ function createTranscriptEntry(
   if (options.normalizedSource !== undefined) {
     nextEntry.sourceText = options.normalizedSource
   }
+  applyStreamMetadata(nextEntry, options.metadata)
   return nextEntry
+}
+
+function applyStreamMetadata(entry: TranscriptEntry, metadata: TranscriptStreamMetadata) {
+  if (metadata.promptId !== undefined) {
+    entry.promptId = metadata.promptId
+  }
+  if (metadata.sourceAttachmentId !== undefined) {
+    entry.sourceAttachmentId = metadata.sourceAttachmentId
+  }
 }

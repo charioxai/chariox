@@ -20,8 +20,9 @@ type KernelEventControllerDeps = {
     text: string,
     mergeKey?: string,
     sourceText?: string,
+    metadata?: TerminalRecordTranscriptMetadata,
   ) => void
-  appendToolUpdateToAgentPane: (agentId: string, text: string) => void
+  appendToolUpdateToAgentPane: (agentId: string, text: string, metadata?: TerminalRecordTranscriptMetadata) => void
   setAgentActivityLabel: (agentId: string | null | undefined, label: string | null) => void
   agentActivityLabel: (agentId: string | null | undefined) => string | null
   setProviderActivityLabel: (label: string | null) => void
@@ -35,8 +36,9 @@ type KernelEventControllerDeps = {
     text: string,
     mergeKey?: string,
     sourceText?: string,
+    metadata?: TerminalRecordTranscriptMetadata,
   ) => void
-  appendToolUpdate: (text: string) => void
+  appendToolUpdate: (text: string, metadata?: TerminalRecordTranscriptMetadata) => void
   appendProviderError: (text: string) => void
   syncVisibleTranscriptPreview: () => void
   appendAgentPanePreview: (agentId: string | null | undefined, line: string) => void
@@ -52,6 +54,11 @@ type KernelEventControllerDeps = {
 }
 
 const EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS = "external_provider_history_updated"
+
+type TerminalRecordTranscriptMetadata = {
+  promptId?: string | null
+  sourceAttachmentId?: string | null
+}
 
 export function createKernelEventController(deps: KernelEventControllerDeps) {
   let lastTransportNoticeMessage: string | null = null
@@ -76,6 +83,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       }
     }
     if (deps.splitAgentResponseMode() && recordAgentId) {
+      const metadata = terminalRecordTranscriptMetadata(record)
       if (record.kind === "provider_status") {
         if (isProviderIdleStatus(text)) {
           return
@@ -101,29 +109,30 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
             role: "user",
             text: deps.trimSingleTrailingNewline(text),
             turnId: deps.computeNextTurnId(paneEntries),
+            ...metadata,
           })
           break
         }
         case "provider_reasoning":
-          deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key)
+          deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key, undefined, metadata)
           break
         case "provider_tool":
-          deps.appendToolUpdateToAgentPane(recordAgentId, text)
+          deps.appendToolUpdateToAgentPane(recordAgentId, text, metadata)
           break
         case "provider_error": {
           const normalized = normalize(text).trim()
           if (normalized) {
-            deps.appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error" })
+            deps.appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error", ...metadata })
           }
           break
         }
         case "provider_status":
           if (deps.shouldRenderProviderStatus(text)) {
-            deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__")
+            deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
           }
           break
         default:
-          deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key)
+          deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key, undefined, metadata)
           break
       }
       return
@@ -133,6 +142,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const isVisibleRecord = recordAgentId === mainTranscriptAgentId
     if (!isVisibleRecord) {
       if (recordAgentId) {
+        const metadata = terminalRecordTranscriptMetadata(record)
         switch (record.kind) {
           case "prompt_echo": {
             if (deps.hasTrailingUserPrompt(recordAgentId, text)) {
@@ -143,19 +153,20 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
               role: "user",
               text: deps.trimSingleTrailingNewline(text),
               turnId: deps.computeNextTurnId(paneEntries),
+              ...metadata,
             })
             break
           }
           case "provider_reasoning":
-            deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key)
+            deps.appendProviderChunkToAgentPane(recordAgentId, "reasoning", text, record.merge_key, undefined, metadata)
             break
           case "provider_tool":
-            deps.appendToolUpdateToAgentPane(recordAgentId, text)
+            deps.appendToolUpdateToAgentPane(recordAgentId, text, metadata)
             break
           case "provider_error": {
             const normalized = normalize(text).trim()
             if (normalized) {
-              deps.appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error" })
+              deps.appendTranscriptEntryToAgentPane(recordAgentId, { role: "error", text: normalized, emphasis: "error", ...metadata })
             }
             break
           }
@@ -165,11 +176,11 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
             }
             deps.setAgentActivityLabel(recordAgentId, deps.getProviderActivityLabel(text))
             if (deps.shouldRenderProviderStatus(text)) {
-              deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__")
+              deps.appendProviderChunkToAgentPane(recordAgentId, "status", text, "__provider_status__", undefined, metadata)
             }
             break
           default:
-            deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key)
+            deps.appendProviderChunkToAgentPane(recordAgentId, "assistant", text, record.merge_key, undefined, metadata)
             break
         }
       }
@@ -177,20 +188,21 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       return
     }
 
+    const metadata = terminalRecordTranscriptMetadata(record)
     switch (record.kind) {
       case "prompt_echo":
         if (recordAgentId && deps.hasTrailingUserPrompt(recordAgentId, text)) {
           break
         }
-        deps.appendEntry({ role: "user", text: deps.trimSingleTrailingNewline(text) })
+        deps.appendEntry({ role: "user", text: deps.trimSingleTrailingNewline(text), ...metadata })
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_reasoning":
-        deps.appendProviderChunk("reasoning", text, record.merge_key)
+        deps.appendProviderChunk("reasoning", text, record.merge_key, undefined, metadata)
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_tool":
-        deps.appendToolUpdate(text)
+        deps.appendToolUpdate(text, metadata)
         deps.syncVisibleTranscriptPreview()
         break
       case "provider_error":
@@ -210,13 +222,13 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
           deps.syncVisibleActivityLabel()
         }
         if (deps.shouldRenderProviderStatus(text)) {
-          deps.appendProviderChunk("status", text, "__provider_status__")
+          deps.appendProviderChunk("status", text, "__provider_status__", undefined, metadata)
           deps.syncVisibleTranscriptPreview()
         }
         break
       }
       default:
-        deps.appendProviderChunk("assistant", text, record.merge_key)
+        deps.appendProviderChunk("assistant", text, record.merge_key, undefined, metadata)
         deps.syncVisibleTranscriptPreview()
         break
     }
@@ -271,4 +283,11 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
 function normalize(text: string) {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+}
+
+function terminalRecordTranscriptMetadata(record: TerminalOutputRecord): TerminalRecordTranscriptMetadata {
+  return {
+    ...(record.prompt_id !== undefined ? { promptId: record.prompt_id } : {}),
+    ...(record.source_attachment_id !== undefined ? { sourceAttachmentId: record.source_attachment_id } : {}),
+  }
 }

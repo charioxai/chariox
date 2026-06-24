@@ -137,6 +137,71 @@ test("hydrateTranscriptEntries preserves external provider observed metadata", (
   assert.equal(entries[0]?.observedAtMs, 123)
 })
 
+test("hydrateTranscriptEntries preserves prompt identity, attachment identity, and external observation metadata", () => {
+  const entries = hydrateTranscriptEntries([
+    {
+      entry_index: 0,
+      fragment_start: 0,
+      fragment_end: 6,
+      total_chars: 6,
+      entry: {
+        kind: "user_prompt",
+        text: "build\n",
+        source_attachment_id: "attachment-1",
+      },
+    },
+    {
+      entry_index: 1,
+      fragment_start: 0,
+      fragment_end: 13,
+      total_chars: 13,
+      entry: {
+        kind: "provider_output",
+        text: "native reply\n",
+        source: "external_provider_observed",
+        external_provider: "codex",
+        external_provider_session_id: "thread-1",
+        external_provider_turn_id: "turn-1",
+        external_observation: {
+          settles_active_prompt: true,
+          passive_telemetry: false,
+        },
+      },
+    },
+  ], { promptId: "prompt-1" })
+
+  assert.equal(entries[0]?.promptId, "prompt-1")
+  assert.equal(entries[0]?.sourceAttachmentId, "attachment-1")
+  assert.equal(entries[1]?.promptId, "prompt-1")
+  assert.deepEqual(entries[1]?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
+test("mergeAdjacentHistoryPageEntries preserves attachment identity across stitched fragments", () => {
+  const merged = mergeAdjacentHistoryPageEntries([
+    {
+      entry_index: 0,
+      fragment_start: 0,
+      fragment_end: 3,
+      total_chars: 6,
+      entry: { kind: "user_prompt", text: "hel", source_attachment_id: "attachment-1" },
+    },
+    {
+      entry_index: 0,
+      fragment_start: 3,
+      fragment_end: 6,
+      total_chars: 6,
+      entry: { kind: "user_prompt", text: "lo\n", source_attachment_id: "attachment-1" },
+    },
+  ])
+
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0]?.entry.text, "hello\n")
+  assert.equal(merged[0]?.entry.source_attachment_id, "attachment-1")
+})
+
 test("stitchPrependedHistory merges adjacent assistant fragments", () => {
   const stitched = stitchPrependedHistory(
     [entry(1, "assistant", "hello ", {

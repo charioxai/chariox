@@ -247,3 +247,28 @@ test("duplicate trailing prompt echo is ignored for split-agent panes", () => {
     "turn-activity:terminal_record",
   ])
 })
+
+test("visible prompt echo carries kernel prompt identity into transcript entry", () => {
+  const appended: Array<Omit<TranscriptEntry, "id">> = []
+  const { deps } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    appendEntry: (entry: Omit<TranscriptEntry, "id">) => {
+      appended.push(entry)
+    },
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    agent_id: "agent-a",
+    prompt_id: "prompt-1",
+    source_attachment_id: "attachment-1",
+    kind: "prompt_echo",
+    bytes: [...Buffer.from("ship it\n", "utf8")],
+  })
+
+  assert.equal(appended.length, 1)
+  assert.equal(appended[0]?.role, "user")
+  assert.equal(appended[0]?.text, "ship it")
+  assert.equal(appended[0]?.promptId, "prompt-1")
+  assert.equal(appended[0]?.sourceAttachmentId, "attachment-1")
+})

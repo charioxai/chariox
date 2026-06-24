@@ -15,7 +15,7 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
 
   agent.turns.forEach((turn, turnIndex) => {
     const turnId = turnIndex + 1
-    const promptEntries = hydratePageEntries([turn.user_prompt], turnId)
+    const promptEntries = hydratePageEntries([turn.user_prompt], turnId, turn.prompt_id ?? null)
     for (const entry of promptEntries) {
       entries.push({ ...entry, id: ++nextId })
     }
@@ -26,10 +26,10 @@ export function hydrateOutlineAgentEntries(agent: SessionHistoryOutlineAgent): T
     ].sort((left, right) => left.sequence - right.sequence)
     for (const item of turnItems) {
       if ("blob" in item) {
-        entries.push(outlineBlobEntry(item.blob, agent.agent_id, turnId, ++nextId))
+        entries.push(outlineBlobEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId))
         continue
       }
-      const hydratedEntries = hydratePageEntries([item.entry], turnId)
+      const hydratedEntries = hydratePageEntries([item.entry], turnId, turn.prompt_id ?? null)
       for (const entry of hydratedEntries) {
         entries.push({ ...entry, id: ++nextId })
       }
@@ -50,7 +50,7 @@ export function replaceHistoryBlobPlaceholder(
     return entries
   }
   const turnId = placeholder.turnId
-  const hydrated = hydratePageEntries(content.entries, turnId).map((entry) => {
+  const hydrated = hydratePageEntries(content.entries, turnId, placeholder.promptId ?? null).map((entry) => {
     const next: TranscriptEntry = {
       ...entry,
       blobCollapsed: false,
@@ -97,8 +97,12 @@ export function markHistoryBlobLoading(
   })
 }
 
-function hydratePageEntries(pageEntries: SessionHistoryPageEntry[], turnId?: number): TranscriptEntry[] {
-  return hydrateTranscriptEntries(pageEntries).map((entry) => ({
+function hydratePageEntries(
+  pageEntries: SessionHistoryPageEntry[],
+  turnId?: number,
+  promptId?: string | null,
+): TranscriptEntry[] {
+  return hydrateTranscriptEntries(pageEntries, { promptId }).map((entry) => ({
     ...entry,
     ...(turnId !== undefined ? { turnId } : {}),
   }))
@@ -108,6 +112,7 @@ function outlineBlobEntry(
   blob: SessionHistoryOutlineBlob,
   agentId: string,
   turnId: number,
+  promptId: string | null,
   id: number,
 ): TranscriptEntry {
   return {
@@ -116,6 +121,7 @@ function outlineBlobEntry(
     text: "",
     sourceText: "",
     turnId,
+    promptId,
     blobCollapsible: true,
     blobCollapsed: true,
     blobTitle: blob.title,

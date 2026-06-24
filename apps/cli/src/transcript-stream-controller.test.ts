@@ -39,6 +39,28 @@ test("transcript stream controller merges assistant chunks in place", () => {
   assert.equal(harness.persisted.length, 1)
 })
 
+test("transcript stream controller carries prompt identity through new and merged chunks", () => {
+  const harness = streamHarness({
+    entryCounter: 1,
+    currentTurnId: 2,
+  })
+
+  harness.controller.appendProviderChunk("assistant", "hel", "reply-1", undefined, {
+    promptId: "prompt-1",
+    sourceAttachmentId: "attachment-1",
+  })
+  harness.controller.appendProviderChunk("assistant", "lo", "reply-1", undefined, {
+    promptId: "prompt-1",
+    sourceAttachmentId: "attachment-1",
+  })
+
+  assert.equal(harness.entries.length, 1)
+  assert.equal(harness.entries[0]?.text, "hello")
+  assert.equal(harness.entries[0]?.promptId, "prompt-1")
+  assert.equal(harness.entries[0]?.sourceAttachmentId, "attachment-1")
+  assert.equal(harness.updatedEntries.at(-1)?.id, 2)
+})
+
 test("transcript stream controller tracks and clears active tool labels", () => {
   const harness = streamHarness()
 

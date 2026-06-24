@@ -33,6 +33,25 @@ test("agent pane transcript stream controller merges assistant chunks", () => {
   assert.equal(harness.committedStreaming[0]?.updatedEntryId, 1)
 })
 
+test("agent pane transcript stream controller preserves prompt identity while merging chunks", () => {
+  const harness = streamHarness()
+
+  harness.controller.appendProviderChunk("agent-1", "assistant", "hel", "reply-1", undefined, {
+    promptId: "prompt-1",
+    sourceAttachmentId: "attachment-1",
+  })
+  harness.controller.appendProviderChunk("agent-1", "assistant", "lo", "reply-1", undefined, {
+    promptId: "prompt-1",
+    sourceAttachmentId: "attachment-1",
+  })
+
+  const transcriptEntry = harness.paneEntriesByAgent["agent-1"]?.[0]
+  assert.equal(transcriptEntry?.text, "hello")
+  assert.equal(transcriptEntry?.promptId, "prompt-1")
+  assert.equal(transcriptEntry?.sourceAttachmentId, "attachment-1")
+  assert.equal(harness.committedStreaming[0]?.updatedEntryId, 1)
+})
+
 test("agent pane transcript stream controller tracks structured tools", () => {
   const harness = streamHarness()
 

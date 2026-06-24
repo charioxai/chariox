@@ -1003,6 +1003,8 @@ export type TranscriptEntry = {
   id: number
   role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"
   text: string
+  promptId?: string | null
+  sourceAttachmentId?: string | null
   queuedPrompt?: {
     promptId: string
     agentId: string
@@ -1016,6 +1018,7 @@ export type TranscriptEntry = {
   externalProviderSessionId?: string | null
   externalProviderTurnId?: string | null
   observedAtMs?: number | null
+  externalObservation?: SessionHistoryExternalObservation | null
   emphasis?: "muted" | "warning" | "error"
   turnId?: number
   hidden?: boolean
