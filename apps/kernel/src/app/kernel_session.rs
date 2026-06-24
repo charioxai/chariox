@@ -8,7 +8,7 @@ use crate::config::WorkflowCodeLimitsConfig;
 use crate::error::DaemonError;
 use crate::extension::ExtensionGrant;
 use crate::history::SessionHistoryEntry;
-use crate::provider::{AgentEndpointMode, ProviderRunState};
+use crate::provider::{adapter_key_for_provider, AgentEndpointMode, ProviderRunState};
 use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
@@ -261,6 +261,72 @@ mod tests {
         assert_eq!(planner.provider(), "opencode");
         assert_eq!(planner.model(), Some("qwen3-coder"));
         assert_eq!(planner.effort(), Some("medium"));
+    }
+
+    #[test]
+    fn workflow_code_apply_rejects_unavailable_generated_agent_provider() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut definition = generated_workflow_code_definition();
+        if let WorkflowCodeAgentBinding::Create(agent) = &mut definition.nodes[0].agent {
+            agent.provider = "missing-provider".to_string();
+        }
+
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect_err("workflow-code should reject unavailable generated-agent provider");
+
+        let message = format!("{error}");
+        assert!(message.contains("node `planner` requests unavailable provider `missing-provider`"));
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(session.workflows().is_empty());
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 1);
+    }
+
+    #[test]
+    fn workflow_code_apply_rebinding_can_replace_unavailable_provider() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut definition = generated_workflow_code_definition();
+        if let WorkflowCodeAgentBinding::Create(agent) = &mut definition.nodes[0].agent {
+            agent.provider = "missing-provider".to_string();
+        }
+
+        let report = app
+            .apply_workflow_code_definition_with_rebindings(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+                &[WorkflowCodeProviderRebinding {
+                    node: "planner".to_string(),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                }],
+            )
+            .expect("workflow-code should apply after rebinding unavailable provider");
+
+        let planner_agent_id = report.agent_ids.get("planner").expect("planner agent id");
+        let planner = app
+            .agents()
+            .get_agent(planner_agent_id)
+            .expect("planner agent should exist");
+        assert_eq!(planner.provider(), "dev-stub");
     }
 
     #[test]
@@ -926,6 +992,7 @@ impl<'a> KernelSessionService<'a> {
             &mut definition,
             provider_rebindings,
         )?;
+        self.validate_workflow_code_generated_agent_providers(&definition)?;
 
         let mut node_agent_ids = BTreeMap::new();
         for node in &definition.nodes {
@@ -1013,6 +1080,31 @@ impl<'a> KernelSessionService<'a> {
         )?;
         crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok(report)
+    }
+
+    fn validate_workflow_code_generated_agent_providers(
+        &self,
+        definition: &WorkflowCodeDefinition,
+    ) -> Result<(), DaemonError> {
+        let registry = self.app.providers.registry();
+        for node in &definition.nodes {
+            let WorkflowCodeAgentBinding::Create(agent) = &node.agent else {
+                continue;
+            };
+            let provider = agent.provider.trim();
+            let adapter_key = adapter_key_for_provider(provider);
+            if registry.resolve(adapter_key).is_none() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workflow_code.apply",
+                    message: format!(
+                        "node `{}` requests unavailable provider `{provider}`; available providers: {}",
+                        node.handle,
+                        registry.advertised_provider_ids().join(", ")
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn spawn_workflow_code_generated_agent(
