@@ -6,7 +6,7 @@ use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, RuntimeAttachment};
 use crate::config::WorkflowCodeLimitsConfig;
 use crate::error::DaemonError;
-use crate::extension::ExtensionGrant;
+use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::history::SessionHistoryEntry;
 use crate::provider::{adapter_key_for_provider, AgentEndpointMode, ProviderRunState};
 use crate::session::{
@@ -26,6 +26,7 @@ mod tests {
     use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::WorkflowCodeLimitsConfig;
+    use crate::extension::{ExtensionGrant, ExtensionKind};
     use crate::session::{
         CreateSessionRequest, SchedulerState, SessionStatus, WorkflowNodeRun,
         WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
@@ -36,6 +37,7 @@ mod tests {
         WorkflowCodeProviderRebinding, WorkflowCodeWorkflow, WORKFLOW_CODE_SCHEMA_VERSION,
     };
     use crate::{DaemonApp, DaemonConfig};
+    use std::fs;
     use std::path::PathBuf;
 
     fn generated_workflow_code_definition() -> WorkflowCodeDefinition {
@@ -139,6 +141,29 @@ mod tests {
                 .status()
                 .is_ok_and(|status| status.success())
         })
+    }
+
+    fn unique_workflow_code_test_workspace(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-workflow-code-{name}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("test workspace should be created");
+        path
+    }
+
+    fn install_test_skill(workspace: &std::path::Path, name: &str) {
+        let skill_dir = workspace.join(".arroba").join("skills").join(name);
+        fs::create_dir_all(&skill_dir).expect("skill dir should be created");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: Workflow-code test skill\n---\nUse this skill.\n"
+            ),
+        )
+        .expect("skill should be written");
     }
 
     #[test]
@@ -327,6 +352,79 @@ mod tests {
             .get_agent(planner_agent_id)
             .expect("planner agent should exist");
         assert_eq!(planner.provider(), "dev-stub");
+    }
+
+    #[test]
+    fn workflow_code_apply_rejects_missing_node_extension_requirement() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut definition = generated_workflow_code_definition();
+        definition.nodes[0].extensions.push(ExtensionGrant::new(
+            ExtensionKind::Skill,
+            "missing-workflow-code-skill",
+        ));
+
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect_err("workflow-code should reject missing extension requirements");
+
+        let message = format!("{error}");
+        assert!(message.contains(
+            "node `planner` extension requirement `skill:missing-workflow-code-skill` cannot be satisfied"
+        ));
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(session.workflows().is_empty());
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 1);
+    }
+
+    #[test]
+    fn workflow_code_apply_grants_satisfied_node_extension_requirement() {
+        let workspace = unique_workflow_code_test_workspace("extension-satisfied");
+        install_test_skill(&workspace, "workflow-code-skill");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.display().to_string(),
+                "worktree",
+            ))
+            .expect("session should create");
+        let mut definition = generated_workflow_code_definition();
+        definition.nodes[0].extensions.push(ExtensionGrant::new(
+            ExtensionKind::Skill,
+            "workflow-code-skill",
+        ));
+
+        let report = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect("workflow-code should apply when extension requirement exists");
+
+        let planner_agent_id = report.agent_ids.get("planner").expect("planner agent id");
+        let planner = app
+            .agents()
+            .get_agent(planner_agent_id)
+            .expect("planner agent should exist");
+        assert!(planner
+            .extension_grants()
+            .iter()
+            .any(|grant| grant.matches(&ExtensionKind::Skill, "workflow-code-skill")));
+        let _ = fs::remove_dir_all(&workspace);
     }
 
     #[test]
@@ -993,6 +1091,7 @@ impl<'a> KernelSessionService<'a> {
             provider_rebindings,
         )?;
         self.validate_workflow_code_generated_agent_providers(&definition)?;
+        self.validate_workflow_code_node_extensions(session_id, &definition)?;
 
         let mut node_agent_ids = BTreeMap::new();
         for node in &definition.nodes {
@@ -1105,6 +1204,78 @@ impl<'a> KernelSessionService<'a> {
             }
         }
         Ok(())
+    }
+
+    fn validate_workflow_code_node_extensions(
+        &self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+    ) -> Result<(), DaemonError> {
+        let session = self.app.sessions().get_session(session_id)?;
+        let workspace_id = session.workspace_id();
+        for node in &definition.nodes {
+            for grant in &node.extensions {
+                self.validate_workflow_code_extension_requirement(
+                    workspace_id,
+                    &node.handle,
+                    grant,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_workflow_code_extension_requirement(
+        &self,
+        workspace_id: &str,
+        node_handle: &str,
+        grant: &ExtensionGrant,
+    ) -> Result<(), DaemonError> {
+        let result = match &grant.kind {
+            ExtensionKind::Mcp => crate::runtime::capability_registry::ensure_mcp_exists(
+                Some(workspace_id),
+                &grant.name,
+            ),
+            ExtensionKind::Skill => crate::runtime::capability_registry::ensure_skill_exists(
+                Some(workspace_id),
+                &grant.name,
+            ),
+            ExtensionKind::Script => {
+                let environment =
+                    grant
+                        .environment
+                        .as_deref()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "workflow_code.apply",
+                            message: "script extension requirements must include environment"
+                                .to_string(),
+                        })?;
+                crate::runtime::capability_registry::ensure_script_exists(
+                    Some(workspace_id),
+                    &grant.name,
+                )?;
+                crate::runtime::capability_registry::ensure_environment_exists(
+                    Some(workspace_id),
+                    environment,
+                )
+            }
+            ExtensionKind::Connector => {
+                crate::runtime::capability_registry::ensure_connector_exists(&grant.name)?;
+                if let Some(credential) = grant.credential.as_deref() {
+                    crate::runtime::capability_registry::ensure_credential_exists(credential)?;
+                }
+                crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref()).map(|_| ())
+            }
+        };
+
+        result.map_err(|error| DaemonError::LocalTransport {
+            operation: "workflow_code.apply",
+            message: format!(
+                "node `{node_handle}` extension requirement `{}:{}` cannot be satisfied: {error}",
+                grant.kind.as_str(),
+                grant.name
+            ),
+        })
     }
 
     fn spawn_workflow_code_generated_agent(
