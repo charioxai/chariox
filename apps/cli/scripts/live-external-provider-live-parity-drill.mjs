@@ -170,6 +170,7 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     "13. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
     "14. Use only low-risk shell commands: printf, cat, ls, wc, stat, find, test, touch, rm, rmdir, and sleep.",
     "15. Do not use xattr, chmod, chown, install, Python, Node, Ruby, Perl, network commands, package managers, git, or any command likely to require interactive approval.",
+    "16. Include a short `sleep 0.2` in each marked tool call so Arroba can observe the live turn before the final summary.",
   ].join("\n")
   return { text, promptMarker }
 }
@@ -243,6 +244,7 @@ async function main() {
     summary.ok = summary.results.length === options.providers.length && summary.results.every((result) => result.ok)
     summary.providerLimitations = collectProviderLimitations(summary.results)
     await writeJson(path.join(options.artifactRoot, "manifest.json"), summary)
+    await writeFinalReport(options.artifactRoot, summary)
     if (!summary.ok) {
       throw new Error(`external provider live parity drill failed: ${summary.results.filter((result) => !result.ok).map((result) => result.provider).join(", ")}`)
     }
@@ -252,6 +254,7 @@ async function main() {
     summary.error = String(error?.stack ?? error)
     summary.providerLimitations = collectProviderLimitations(summary.results)
     await writeJson(path.join(options.artifactRoot, "manifest.json"), summary).catch(() => {})
+    await writeFinalReport(options.artifactRoot, summary).catch(() => {})
     throw error
   } finally {
     await finalizeDrillArtifacts({
@@ -566,11 +569,10 @@ async function waitForNewExternalSession({ client, provider, before, marker, tim
 
 function startKernelMonitor({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
   const samples = []
-  const blobTextCache = new Map()
   let stopped = false
   const loop = (async () => {
     while (!stopped) {
-      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, blobTextCache }).catch((error) => ({
+      samples.push(await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }).catch((error) => ({
         at: new Date().toISOString(),
         error: String(error?.message ?? error),
       })))
@@ -581,15 +583,14 @@ function startKernelMonitor({ client, sessionId, agentId, provider, marker, fina
     async stop() {
       stopped = true
       await loop.catch(() => {})
-      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, blobTextCache }).catch((error) => ({ error: String(error?.message ?? error) }))
+      const finalSample = await kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }).catch((error) => ({ error: String(error?.message ?? error) }))
       samples.push(finalSample)
       return summarizeSamples("kernel", samples, finalMarker)
     },
   }
 }
 
-async function kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, blobTextCache }) {
-  const cache = blobTextCache ?? new Map()
+async function kernelSample({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker }) {
   const stateResponse = await client.send(getSessionStateRequest(sessionId))
   const sessionState = stateResponse.SessionState ?? stateResponse.SessionStateLoaded ?? {}
   const session = sessionState.session
@@ -599,7 +600,7 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, fina
     ?? sessionState.agent_activity?.[String(agentId)]
     ?? null
   const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 1)), "SessionHistoryOutline")
-  const text = await historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline, blobTextCache: cache })
+  const text = await historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline })
   return {
     at: new Date().toISOString(),
     surface: "kernel",
@@ -613,7 +614,7 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, fina
   }
 }
 
-async function historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline, blobTextCache }) {
+async function historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline }) {
   const chunks = []
   for (const agent of outline.agents ?? []) {
     for (const turn of agent.turns ?? []) {
@@ -633,13 +634,8 @@ async function historyOutlineTextWithBlobContent({ client, sessionId, agentId, o
           if (blob?.summary) chunks.push(blob.summary)
           continue
         }
-        const cacheKey = `${agent.agent_id ?? agentId}:${blob.blob_id}`
-        let blobText = blobTextCache.get(cacheKey)
-        if (blobText === undefined) {
-          blobText = await loadHistoryBlobText(client, sessionId, agent.agent_id ?? agentId, blob.blob_id)
-            .catch(() => blob.summary ?? "")
-          blobTextCache.set(cacheKey, blobText)
-        }
+        const blobText = await loadHistoryBlobText(client, sessionId, agent.agent_id ?? agentId, blob.blob_id)
+          .catch(() => blob.summary ?? "")
         if (blobText) chunks.push(blobText)
       }
     }
@@ -1633,6 +1629,112 @@ function assertion(name, passed, details = null) {
 async function writeJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8")
+}
+
+async function writeFinalReport(root, summary) {
+  const report = [
+    "# External Provider Live Parity Drill Report",
+    "",
+    "## Overall Result",
+    "",
+    `- Result: ${summary.ok ? "PASS" : "FAIL"}`,
+    `- Created: ${summary.createdAt}`,
+    `- Artifact root: ${summary.artifactRoot}`,
+    `- Kernel URL: ${summary.kernelUrl}`,
+    `- Web URL: ${summary.webUrl}`,
+    `- Workspace: ${summary.workspace}`,
+    "",
+    "## Provider Matrix",
+    "",
+    "| Provider | Model | Provider session | Arroba session | Agent | Result | Failed assertions |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...summary.results.map((result) => {
+      const failed = (result.assertions ?? []).filter((assertion) => !assertion.passed)
+      return [
+        result.provider,
+        result.model,
+        result.providerSessionId ?? result.externalSessionId ?? "",
+        result.arrobaSessionId ?? "",
+        result.agentId ?? "",
+        result.ok ? "PASS" : "FAIL",
+        failed.map((assertion) => assertion.name).join("; "),
+      ].map(markdownCell).join(" | ").replace(/^/, "| ").replace(/$/, " |")
+    }),
+    "",
+    "## Web Terminal Evidence",
+    "",
+    ...surfaceEvidence(summary.results, "web"),
+    "",
+    "## TUI Evidence",
+    "",
+    ...surfaceEvidence(summary.results, "tui"),
+    "",
+    "## Artifact Paths",
+    "",
+    ...summary.results.flatMap((result) => [
+      `- ${result.provider}: ${result.artifactDir}`,
+      `  - Prompt: ${path.join(result.artifactDir, "prompt.txt")}`,
+      `  - Provider stdout: ${path.join(result.artifactDir, "provider.stdout.log")}`,
+      `  - Provider stderr: ${path.join(result.artifactDir, "provider.stderr.log")}`,
+      `  - Web final screenshot: ${path.join(result.artifactDir, "web-final.png")}`,
+      `  - Provider transcript artifact: ${result.evidence?.providerTranscript?.artifactPath ?? "not captured"}`,
+    ]),
+    "",
+    "## Provider Limitations And Clarifications",
+    "",
+    "This section is intentionally last. It distinguishes Arroba bugs from provider-native metadata limits and drill-observation limits.",
+    "",
+    "| Provider | Metadata | Status | Classification | Surfaces | Clarification | IDs |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...summary.providerLimitations.map((entry) => [
+      entry.provider ?? "",
+      entry.metadata ?? entry.surface ?? "",
+      entry.status ?? "",
+      entry.classification ?? "",
+      (entry.surfaces ?? [entry.surface]).filter(Boolean).join(", "),
+      entry.note ?? "",
+      [
+        entry.providerSessionId ? `provider=${entry.providerSessionId}` : null,
+        entry.externalSessionId ? `external=${entry.externalSessionId}` : null,
+        entry.arrobaSessionId ? `arroba=${entry.arrobaSessionId}` : null,
+        entry.agentId ? `agent=${entry.agentId}` : null,
+      ].filter(Boolean).join("; "),
+    ].map(markdownCell).join(" | ").replace(/^/, "| ").replace(/$/, " |")),
+    "",
+  ].join("\n")
+  await writeFile(path.join(root, "final-report.md"), report, "utf8")
+}
+
+function surfaceEvidence(results, surface) {
+  const lines = []
+  for (const result of results) {
+    const monitor = result.evidence?.monitors?.find((entry) => entry.surface === surface)
+    if (!monitor) {
+      lines.push(`- ${result.provider}: ${surface} monitor was skipped or unavailable.`)
+      continue
+    }
+    const statuses = monitor.statuses ?? []
+    lines.push([
+      `- ${result.provider}:`,
+      `result=${result.ok ? "PASS" : "FAIL"}`,
+      `samples=${monitor.sampleCount}`,
+      `assistant=${monitor.assistantMarkersSeen?.length ?? 0}/20`,
+      `tools=${monitor.toolMarkersSeen?.length ?? 0}/20`,
+      `final=${monitor.finalSeen ? "yes" : "no"}`,
+      `first_status=${statuses[0] ?? "unknown"}`,
+      `last_status=${statuses.at(-1) ?? "unknown"}`,
+      `prompt_occurrence_max=${monitor.promptOccurrenceMax ?? "unknown"}`,
+      surface === "web" ? `max_bottom_distance=${monitor.maxBottomDistance ?? "unknown"}` : null,
+      `pre_final_samples=${monitor.preFinalSampleCount ?? 0}`,
+    ].filter(Boolean).join(" "))
+  }
+  return lines
+}
+
+function markdownCell(value) {
+  return String(value ?? "")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, "<br>")
 }
 
 main().catch((error) => {

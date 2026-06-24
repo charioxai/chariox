@@ -247,6 +247,17 @@
       <li>Include exact provider session IDs and Arroba session/agent IDs so limitations can be reproduced.</li>
       <li>When a provider falls short, record the product impact and the expected Arroba behavior, such as showing an explicit unavailable metadata state rather than leaving the UI blank or implying the turn is still active.</li>
     </ul>
+
+    <h2>Final Result Template</h2>
+    <p>The drill report should use this order so the last thing the reader sees is the clarified provider limitation matrix:</p>
+    <ol>
+      <li>Overall pass/fail result.</li>
+      <li>Provider matrix for <code>codex</code>, <code>claude</code>, and <code>opencode</code>.</li>
+      <li>Web terminal evidence: badge lifecycle, transcript parity, scroll behavior, and turn collapse behavior.</li>
+      <li>TUI evidence: badge lifecycle, transcript parity, scroll behavior, and turn collapse behavior.</li>
+      <li>Artifact links or paths for screenshots, snapshots, raw provider transcripts, and Arroba history excerpts.</li>
+      <li><strong>Provider limitations and clarifications.</strong> This must be the final section and must explicitly distinguish Arroba bugs from provider-native metadata limitations.</li>
+    </ol>
   </main>
 </body>
 </html>
