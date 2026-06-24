@@ -1,3 +1,9 @@
+export type AgentPaneExternalProviderImport = {
+  external_provider_session_id: string
+  external_provider: string
+  external_provider_session_provider_id: string
+}
+
 export type AgentPaneSession<TAgent extends { id: string }> = {
   agents: TAgent[]
   focused_agent_id: string | null
@@ -57,6 +63,12 @@ function shouldPreferCurrentPaneEntries<TEntry extends { role: string; text: str
   if (currentEntries.length === 0) {
     return false
   }
+  if (!entriesShareLineage(currentEntries, refreshedEntries)) {
+    return false
+  }
+  if (!refreshedEntriesAreContainedInCurrent(currentEntries, refreshedEntries)) {
+    return false
+  }
 
   const currentRenderableCount = countRenderablePaneEntries(currentEntries)
   const refreshedRenderableCount = countRenderablePaneEntries(refreshedEntries)
@@ -69,6 +81,119 @@ function shouldPreferCurrentPaneEntries<TEntry extends { role: string; text: str
   }
 
   return totalPaneTextLength(currentEntries) > totalPaneTextLength(refreshedEntries)
+}
+
+function refreshedEntriesAreContainedInCurrent<TEntry extends {
+  role: string
+  text: string
+  turnId?: number
+  source?: string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
+  historyBlobId?: string
+  historyBlobAgentId?: string
+  historyBlobSourceId?: string
+  historyBlobSourceAgentId?: string
+}>(
+  currentEntries: readonly TEntry[],
+  refreshedEntries: readonly TEntry[],
+) {
+  const currentKeys = new Set(
+    currentEntries
+      .filter((entry) => entry.role !== "turn_toggle")
+      .flatMap(entryLineageKeys),
+  )
+  return refreshedEntries
+    .filter((entry) => entry.role !== "turn_toggle")
+    .every((entry) => entryLineageKeys(entry).some((key) => currentKeys.has(key)))
+}
+
+function entriesShareLineage<TEntry extends {
+  role: string
+  text: string
+  turnId?: number
+  source?: string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
+  historyBlobId?: string
+  historyBlobAgentId?: string
+  historyBlobSourceId?: string
+  historyBlobSourceAgentId?: string
+}>(
+  currentEntries: readonly TEntry[],
+  refreshedEntries: readonly TEntry[],
+) {
+  const refreshedKeys = new Set(
+    refreshedEntries
+      .filter((entry) => entry.role !== "turn_toggle")
+      .flatMap(entryLineageKeys),
+  )
+  if (refreshedKeys.size === 0) {
+    return true
+  }
+  return currentEntries
+    .filter((entry) => entry.role !== "turn_toggle")
+    .some((entry) => entryLineageKeys(entry).some((key) => refreshedKeys.has(key)))
+}
+
+function entryLineageKeys(entry: {
+  role: string
+  text: string
+  turnId?: number
+  source?: string | null
+  externalProvider?: string | null
+  externalProviderSessionId?: string | null
+  externalProviderTurnId?: string | null
+  historyBlobId?: string
+  historyBlobAgentId?: string
+  historyBlobSourceId?: string
+  historyBlobSourceAgentId?: string
+}) {
+  const keys: string[] = []
+  const externalProvider = entry.externalProvider ?? ""
+  const externalProviderSessionId = entry.externalProviderSessionId ?? ""
+  const externalProviderTurnId = entry.externalProviderTurnId ?? ""
+  if (externalProvider || externalProviderSessionId || externalProviderTurnId) {
+    keys.push([
+      "external",
+      externalProvider,
+      externalProviderSessionId,
+      externalProviderTurnId,
+      entry.role,
+    ].join(":"))
+  }
+  const blobAgentId = entry.historyBlobSourceAgentId ?? entry.historyBlobAgentId
+  const blobId = entry.historyBlobSourceId ?? entry.historyBlobId
+  if (blobAgentId || blobId) {
+    keys.push([
+      "blob",
+      blobAgentId ?? "",
+      blobId ?? "",
+      entry.turnId ?? "",
+      entry.role,
+    ].join(":"))
+  }
+  const text = entry.text.trim()
+  if (typeof entry.turnId === "number") {
+    keys.push([
+      "turn",
+      entry.source ?? "",
+      entry.turnId,
+      entry.role,
+    ].join(":"))
+  }
+  if (text) {
+    keys.push([
+      "text",
+      entry.source ?? "",
+      entry.turnId ?? "",
+      entry.role,
+      text,
+    ].join(":"))
+  }
+  return keys
 }
 
 export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: string }>(options: {
@@ -103,12 +228,16 @@ export function trimAgentPaneEntries<TEntry extends { text: string; mergeKey?: s
 }
 
 export async function refreshAgentPaneState<
-  TAgent extends { id: string },
+  TAgent extends { id: string; external_provider_import?: AgentPaneExternalProviderImport | null },
   THistoryEntry,
   TEntry extends {
     role: string
     text: string
     turnId?: number
+    source?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
     historyBlobId?: string
     historyBlobAgentId?: string
     historyBlobSourceId?: string
@@ -142,7 +271,8 @@ export async function refreshAgentPaneState<
   let visibleCursor: TCursor | null = null
 
   for (const agent of options.session.agents) {
-    const currentPaneEntries = options.currentPaneEntriesByAgent?.[agent.id] ?? []
+    const currentPaneEntries = (options.currentPaneEntriesByAgent?.[agent.id] ?? [])
+      .filter((entry) => entryBelongsToAgent(agent, entry))
     const historyPage = await options.loadHistoryPage(agent.id, null)
     let resolvedHistoryEntries = options.hydrateEntries(historyPage.entries)
     let nextResolvedCursor = historyPage.nextCursor
@@ -255,6 +385,30 @@ function preserveLoadedHistoryBlobs<TEntry extends {
     options.applyExpandedTurns(nextEntries, options.expandedTurnIds),
     0,
   )
+}
+
+function entryBelongsToAgent(
+  agent: { external_provider_import?: AgentPaneExternalProviderImport | null },
+  entry: {
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+  },
+) {
+  if (!entry.externalProviderSessionId && !entry.externalProvider) {
+    return true
+  }
+  const externalImport = agent.external_provider_import
+  if (!externalImport) {
+    return true
+  }
+  if (entry.externalProvider && entry.externalProvider !== externalImport.external_provider) {
+    return false
+  }
+  if (!entry.externalProviderSessionId) {
+    return true
+  }
+  return entry.externalProviderSessionId === externalImport.external_provider_session_id
+    || entry.externalProviderSessionId === externalImport.external_provider_session_provider_id
 }
 
 function historyBlobSourceKey(agentId: string | null | undefined, blobId: string, turnId: number | undefined) {

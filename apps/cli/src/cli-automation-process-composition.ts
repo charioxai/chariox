@@ -59,6 +59,7 @@ export type CliAutomationProcessCompositionDeps = {
   workspaceShellContext: AnyFn
   workspaceShellEntries: AnyFn
   transcriptEntries: AnyFn
+  visibleTranscriptAgentId: AnyFn
   agentPaneEntries: AnyFn
   footerFlash: AnyFn
   getInteractionChoiceSelection: AnyFn
@@ -120,6 +121,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     workspaceShellContext: deps.workspaceShellContext,
     workspaceShellEntries: deps.workspaceShellEntries,
     transcriptEntries: deps.transcriptEntries,
+    visibleTranscriptAgentId: deps.visibleTranscriptAgentId,
     agentPaneEntries: deps.agentPaneEntries,
     footerFlash: deps.footerFlash,
     getInteractionChoiceSelection: deps.getInteractionChoiceSelection,

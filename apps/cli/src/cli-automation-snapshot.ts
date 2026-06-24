@@ -55,6 +55,7 @@ export type CliAutomationSnapshotDeps = {
   workspaceShellContext: () => ShellContext
   workspaceShellEntries: () => WorkspaceShellEntry[]
   transcriptEntries: () => TranscriptEntry[]
+  visibleTranscriptAgentId: () => string | null
   agentPaneEntries: () => Record<string, TranscriptEntry[]>
   footerFlash: () => unknown
   interactionChoiceSelection: (interactionId: string) => number
@@ -174,7 +175,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       transcript: renderWorkspaceShellTranscript(shellEntries),
     },
     transcript: {
-      visibleAgentId: deps.focusedAgentId(),
+      visibleAgentId: deps.visibleTranscriptAgentId(),
       entries: deps.transcriptEntries().map(automationTranscriptEntry),
     },
     agentPanes: Object.fromEntries(

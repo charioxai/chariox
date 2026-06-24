@@ -17,13 +17,39 @@ function nowStamp() {
   return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
 }
 
-function makePorts() {
-  const kernelPort = 55000 + Math.floor(Math.random() * 1000)
+async function reserveFreePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      const port = typeof address === "object" && address ? address.port : null
+      server.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+        if (!port) {
+          reject(new Error("failed to reserve free port"))
+          return
+        }
+        resolve(port)
+      })
+    })
+  })
+}
+
+async function makePorts() {
+  const ports = new Set()
+  while (ports.size < 4) {
+    ports.add(await reserveFreePort())
+  }
+  const [kernelPort, mcpPort, opencodePort, codexPort] = [...ports]
   return {
     kernelPort,
-    mcpPort: kernelPort + 1000,
-    opencodePort: kernelPort + 2000,
-    codexPort: kernelPort + 2001,
+    mcpPort,
+    opencodePort,
+    codexPort,
   }
 }
 
@@ -225,6 +251,7 @@ async function seedCodexSession(home, id, title, marker, workspace) {
       type: "response_item",
       payload: {
         id: `${id}-user-1`,
+        type: "message",
         role: "user",
         content: [{ type: "input_text", text: `${title} external prompt ${marker}.` }],
       },
@@ -234,6 +261,7 @@ async function seedCodexSession(home, id, title, marker, workspace) {
       type: "response_item",
       payload: {
         id: `${id}-assistant-1`,
+        type: "message",
         role: "assistant",
         content: [{ type: "output_text", text: `${title} observed reply ${marker}.` }],
       },
@@ -284,18 +312,75 @@ async function appendOpenCodeTurn(file, id, role, text) {
   return { providerTurnId: id, text }
 }
 
+async function appendOpenCodeCompletionMetadata(file, id) {
+  const payload = JSON.parse(await readFile(file, "utf8"))
+  payload.updatedAt = new Date().toISOString()
+  payload.messages.push({
+    info: {
+      id,
+      role: "assistant",
+      providerID: "moonshot",
+      modelID: "kimi-k2.6",
+      finish: "stop",
+      tokens: { input: 12, output: 6, reasoning: 2 },
+      time: { completed: Date.now() },
+    },
+    parts: [],
+  })
+  await writeFile(file, JSON.stringify(payload, null, 2))
+  return { providerTurnId: `message-status-${id}`, text: "opencode message completed" }
+}
+
 async function appendCodexTurn(file, id, role, text) {
   const line = JSON.stringify({
     timestamp: new Date().toISOString(),
     type: "response_item",
     payload: {
       id,
+      type: "message",
       role,
       content: [{ type: role === "user" ? "input_text" : "output_text", text }],
     },
   })
   await writeFile(file, `${await readFile(file, "utf8")}${line}\n`)
   return { providerTurnId: id, text }
+}
+
+async function appendCodexCompletionMetadata(file, marker) {
+  const tokenLine = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      turn_id: "codex-tui-queue-token-metadata",
+      info: {
+        total_token_usage: {
+          input_tokens: 123,
+          output_tokens: 45,
+          reasoning_output_tokens: 6,
+          total_tokens: 174,
+        },
+      },
+      rate_limits: {
+        limit_id: "codex",
+        used_percent: 1,
+      },
+    },
+  })
+  const completionLine = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: {
+      type: "task_complete",
+      turn_id: "codex-tui-queue-completion-metadata",
+      completed_at: Math.floor(Date.now() / 1000),
+      duration_ms: 1234,
+      last_agent_message: `codex external output releases queued prompt in TUI ${marker}`,
+      time_to_first_token_ms: 100,
+    },
+  })
+  await writeFile(file, `${await readFile(file, "utf8")}${tokenLine}\n${completionLine}\n`)
+  return { providerTurnId: "task_complete-codex-tui-queue-completion-metadata", text: "codex task_complete" }
 }
 
 async function appendClaudeTurn(file, sessionId, id, role, text, workspace) {
@@ -336,8 +421,11 @@ function hasExternalMetadata(snapshot, provider, providerTurnId) {
   ))
 }
 
-function hasQueuedPromptSteerDisabled(snapshot) {
-  return allTranscriptEntries(snapshot).some((entry) => entry?.queuedPrompt?.steerDisabled === true)
+function hasQueuedPromptSteerDisabled(snapshot, promptText = null) {
+  return allTranscriptEntries(snapshot).some((entry) => (
+    entry?.queuedPrompt?.steerDisabled === true
+    && (!promptText || String(entry?.text ?? "").includes(promptText))
+  ))
 }
 
 function agentForExternal(session, externalSessionId) {
@@ -380,15 +468,15 @@ async function main() {
   const artifactRoot = path.join(repoRoot, ".artifacts", "unattached-agents-tui-parity", stamp)
   const runtimeRoot = path.join(os.tmpdir(), `arroba-unattached-tui-${process.pid}-${Date.now()}`)
   const workspace = repoRoot
-  const automationSocket = path.join(runtimeRoot, "automation.sock")
-  const ports = makePorts()
+  const automationSocket = path.join(os.tmpdir(), `arroba-utui-${process.pid}.sock`)
+  const ports = await makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const opencodeHome = path.join(runtimeRoot, "provider-homes", "opencode")
   const codexHome = path.join(runtimeRoot, "provider-homes", "codex")
   const claudeHome = path.join(runtimeRoot, "provider-homes", "claude")
   const waitingProviderSessionId = `opencode-waiting-${marker}`
   const attachProviderSessionId = `opencode-attach-${marker}`
-  const codexProviderSessionId = `codex-attach-${marker}`
+  const codexProviderSessionId = randomUUID()
   const claudeProviderSessionId = randomUUID()
   const waitingExternalSessionId = `opencode:${waitingProviderSessionId}`
   const attachExternalSessionId = `opencode:${attachProviderSessionId}`
@@ -624,7 +712,7 @@ async function main() {
     unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
     await waitForSnapshot(
       automation,
-      (snapshot) => entriesForText(snapshot, assistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "opencode", assistantTurn.providerTurnId),
+      (snapshot) => entriesForText(snapshot, assistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "opencode", userTurn.providerTurnId),
       "external assistant turn metadata in TUI",
       30_000,
     )
@@ -648,7 +736,7 @@ async function main() {
     await automation.send("submit_prompt", { prompt: queuedPromptText })
     const queuedSnapshot = await waitForSnapshot(
       automation,
-      (snapshot) => hasQueuedPromptSteerDisabled(snapshot),
+      (snapshot) => hasQueuedPromptSteerDisabled(snapshot, queuedPromptText),
       "TUI queued prompt with steering disabled",
       30_000,
     )
@@ -667,10 +755,12 @@ async function main() {
     unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
     await waitForSnapshot(
       automation,
-      (snapshot) => entriesForText(snapshot, settlingAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "opencode", settlingAssistantTurn.providerTurnId),
+      (snapshot) => entriesForText(snapshot, settlingAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "opencode", queuedGuardUserTurn.providerTurnId),
       "external assistant settling turn metadata in TUI",
       30_000,
     )
+    const openCodeCompletion = await appendOpenCodeCompletionMetadata(attachFile, "opencode-completion-3")
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
     await waitForCondition(async () => {
       const session = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
       const state = promptStateForAgent(session, attachAgent.id)
@@ -683,6 +773,7 @@ async function main() {
     const finalSnapshot = await automation.send("snapshot")
     evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "07-tui-opencode-external-output-queue-drained.png", "TUI OpenCode External Output And Queue Drain", [
       `PASS providerTurnId=${settlingAssistantTurn.providerTurnId}`,
+      `PASS completion=${openCodeCompletion.providerTurnId}`,
       `PASS external assistant output visible`,
       `PASS queued prompt drained`,
       `PASS total transcript entries=${allTranscriptEntries(finalSnapshot).length}`,
@@ -710,7 +801,7 @@ async function main() {
     unwrap(await client.send(refreshExternalProviderSessionsRequest("codex")), "ExternalProviderSessionsRefreshed")
     await waitForSnapshot(
       automation,
-      (snapshot) => entriesForText(snapshot, codexAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "codex", codexAssistantTurn.providerTurnId),
+      (snapshot) => entriesForText(snapshot, codexAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "codex", codexUserTurn.providerTurnId),
       "Codex external assistant turn metadata in TUI",
       30_000,
     )
@@ -720,6 +811,68 @@ async function main() {
       `PASS user providerTurnId=${codexUserTurn.providerTurnId}`,
       `PASS assistant providerTurnId=${codexAssistantTurn.providerTurnId}`,
       `PASS observedAtMs=${entriesForText(codexUserSnapshot, codexUserTurn.text)[0]?.observedAtMs ?? "recorded"}`,
+    ])))
+
+    await automation.send("submit_prompt", { prompt: `/agent focus ${codexAgent.id}` })
+    await waitForSnapshot(
+      automation,
+      (snapshot) => snapshot?.session?.focusedAgentId === codexAgent.id,
+      "focused Codex agent before external queue guard",
+      30_000,
+    )
+    const codexQueuedGuardUserTurn = await appendCodexTurn(
+      codexFile,
+      "codex-user-3",
+      "user",
+      `codex external prompt queues arroba input in TUI ${marker}`,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("codex")), "ExternalProviderSessionsRefreshed")
+    await waitForCondition(async () => {
+      const session = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
+      const active = promptStateForAgent(session, codexAgent.id)?.active_prompt
+      return active?.prompt_origin === "external" && String(active.id ?? "").includes(codexQueuedGuardUserTurn.providerTurnId)
+        ? active
+        : false
+    }, "kernel external active prompt for Codex TUI queue guard", 30_000)
+
+    const codexQueuedPromptText = `arroba prompt queued behind external Codex TUI turn ${marker}`
+    await automation.send("submit_prompt", { prompt: codexQueuedPromptText })
+    const codexQueuedSnapshot = await waitForSnapshot(
+      automation,
+      (snapshot) => hasQueuedPromptSteerDisabled(snapshot, codexQueuedPromptText),
+      "Codex TUI queued prompt with steering disabled",
+      30_000,
+    )
+    const codexSettlingAssistantTurn = await appendCodexTurn(
+      codexFile,
+      "codex-assistant-3",
+      "assistant",
+      `codex external output releases queued prompt in TUI ${marker}`,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("codex")), "ExternalProviderSessionsRefreshed")
+    await waitForSnapshot(
+      automation,
+      (snapshot) => entriesForText(snapshot, codexSettlingAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "codex", codexQueuedGuardUserTurn.providerTurnId),
+      "Codex external assistant settling turn metadata in TUI",
+      30_000,
+    )
+    const codexCompletion = await appendCodexCompletionMetadata(codexFile, marker)
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("codex")), "ExternalProviderSessionsRefreshed")
+    await waitForCondition(async () => {
+      const session = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
+      const state = promptStateForAgent(session, codexAgent.id)
+      const active = state?.active_prompt
+      const queued = Array.isArray(state?.queued_prompts) ? state.queued_prompts : []
+      return active?.prompt_origin !== "external" && !queued.some((prompt) => prompt?.prompt === codexQueuedPromptText)
+        ? { active, queued }
+        : false
+    }, "Codex TUI queued prompt drained after external turn settled", 60_000)
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "09-tui-codex-external-queue-drained.png", "TUI Codex External Queue Guard", [
+      `PASS queued prompt=${codexQueuedPromptText}`,
+      `PASS queuedPrompt.steerDisabled=${hasQueuedPromptSteerDisabled(codexQueuedSnapshot, codexQueuedPromptText)}`,
+      `PASS providerTurnId=${codexSettlingAssistantTurn.providerTurnId}`,
+      `PASS completion=${codexCompletion.providerTurnId}`,
+      `PASS queued prompt drained`,
     ])))
 
     const claudeUserTurn = await appendClaudeTurn(
@@ -748,7 +901,7 @@ async function main() {
     unwrap(await client.send(refreshExternalProviderSessionsRequest("claude")), "ExternalProviderSessionsRefreshed")
     await waitForSnapshot(
       automation,
-      (snapshot) => entriesForText(snapshot, claudeAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "claude", claudeAssistantTurn.providerTurnId),
+      (snapshot) => entriesForText(snapshot, claudeAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "claude", claudeUserTurn.providerTurnId),
       "Claude external assistant turn metadata in TUI",
       30_000,
     )
@@ -758,6 +911,72 @@ async function main() {
       `PASS user providerTurnId=${claudeUserTurn.providerTurnId}`,
       `PASS assistant providerTurnId=${claudeAssistantTurn.providerTurnId}`,
       `PASS observedAtMs=${entriesForText(claudeUserSnapshot, claudeUserTurn.text)[0]?.observedAtMs ?? "recorded"}`,
+    ])))
+
+    await automation.send("submit_prompt", { prompt: `/agent focus ${claudeAgent.id}` })
+    await waitForSnapshot(
+      automation,
+      (snapshot) => snapshot?.session?.focusedAgentId === claudeAgent.id,
+      "focused Claude agent before external queue guard",
+      30_000,
+    )
+    const claudeQueuedGuardUserTurn = await appendClaudeTurn(
+      claudeFile,
+      claudeProviderSessionId,
+      "claude-user-3",
+      "user",
+      `claude external prompt queues arroba input in TUI ${marker}`,
+      workspace,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("claude")), "ExternalProviderSessionsRefreshed")
+    await waitForCondition(async () => {
+      const session = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
+      const active = promptStateForAgent(session, claudeAgent.id)?.active_prompt
+      return active?.prompt_origin === "external" && String(active.id ?? "").includes(claudeQueuedGuardUserTurn.providerTurnId)
+        ? active
+        : false
+    }, "kernel external active prompt for Claude TUI queue guard", 30_000)
+
+    const claudeQueuedPromptText = `arroba prompt queued behind external Claude TUI turn ${marker}`
+    await automation.send("submit_prompt", { prompt: claudeQueuedPromptText })
+    const claudeQueuedSnapshot = await waitForSnapshot(
+      automation,
+      (snapshot) => hasQueuedPromptSteerDisabled(snapshot, claudeQueuedPromptText),
+      "Claude TUI queued prompt with steering disabled",
+      30_000,
+    )
+    const claudeSettlingAssistantTurn = await appendClaudeTurn(
+      claudeFile,
+      claudeProviderSessionId,
+      "claude-assistant-3",
+      "assistant",
+      `claude external output releases queued prompt in TUI ${marker}`,
+      workspace,
+    )
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("claude")), "ExternalProviderSessionsRefreshed")
+    await waitForSnapshot(
+      automation,
+      (snapshot) => entriesForText(snapshot, claudeSettlingAssistantTurn.text).length > 0 && hasExternalMetadata(snapshot, "claude", claudeQueuedGuardUserTurn.providerTurnId),
+      "Claude external assistant settling turn metadata in TUI",
+      30_000,
+    )
+    // Claude has no mandatory completion sentinel, so the kernel waits for the
+    // assistant observation to be stable across a subsequent scanner pass.
+    unwrap(await client.send(refreshExternalProviderSessionsRequest("claude")), "ExternalProviderSessionsRefreshed")
+    await waitForCondition(async () => {
+      const session = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
+      const state = promptStateForAgent(session, claudeAgent.id)
+      const active = state?.active_prompt
+      const queued = Array.isArray(state?.queued_prompts) ? state.queued_prompts : []
+      return active?.prompt_origin !== "external" && !queued.some((prompt) => prompt?.prompt === claudeQueuedPromptText)
+        ? { active, queued }
+        : false
+    }, "Claude TUI queued prompt drained after external turn settled", 60_000)
+    evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "10-tui-claude-external-queue-drained.png", "TUI Claude External Queue Guard", [
+      `PASS queued prompt=${claudeQueuedPromptText}`,
+      `PASS queuedPrompt.steerDisabled=${hasQueuedPromptSteerDisabled(claudeQueuedSnapshot, claudeQueuedPromptText)}`,
+      `PASS providerTurnId=${claudeSettlingAssistantTurn.providerTurnId}`,
+      `PASS queued prompt drained`,
     ])))
 
     const manifest = {
@@ -774,7 +993,11 @@ async function main() {
       attachAgentId: attachAgent.id,
       codexAgentId: codexAgent.id,
       claudeAgentId: claudeAgent.id,
-      queuedPromptText,
+      queuedPromptTexts: {
+        opencode: queuedPromptText,
+        codex: codexQueuedPromptText,
+        claude: claudeQueuedPromptText,
+      },
       evidence,
     }
     await writeFile(path.join(artifactRoot, "manifest.json"), JSON.stringify(manifest, null, 2))

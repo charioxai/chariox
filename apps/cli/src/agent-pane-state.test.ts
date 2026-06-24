@@ -96,7 +96,24 @@ test("refreshAgentPaneState backfills older history until a user turn and keeps 
 
   const result = await refreshAgentPaneState({
     session: {
-      agents: [{ id: "agent-a" }, { id: "agent-b" }],
+      agents: [
+        {
+          id: "agent-a",
+          external_provider_import: {
+            external_provider: "opencode",
+            external_provider_session_id: "opencode:agent-a-thread",
+            external_provider_session_provider_id: "agent-a-thread",
+          },
+        },
+        {
+          id: "agent-b",
+          external_provider_import: {
+            external_provider: "opencode",
+            external_provider_session_id: "opencode:agent-b-thread",
+            external_provider_session_provider_id: "agent-b-thread",
+          },
+        },
+      ],
       focused_agent_id: "agent-b",
     },
     hasPromptWork: true,
@@ -128,6 +145,238 @@ test("refreshAgentPaneState backfills older history until a user turn and keeps 
   assert.deepEqual(result.visibleEntries.map((entry) => entry.text), ["other", "toggle"])
   assert.equal(result.previews["agent-a"], "question | answer")
   assert.equal(result.visibleCursor, null)
+})
+
+test("refreshAgentPaneState does not preserve current entries from another agent while busy", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{ id: "agent-a" }, { id: "agent-b" }],
+      focused_agent_id: "agent-b",
+    },
+    hasPromptWork: true,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-b": [
+        {
+          role: "user",
+          text: "agent a prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "opencode:agent-a-thread",
+          externalProviderTurnId: "agent-a-turn",
+        },
+        {
+          role: "assistant",
+          text: "agent a output",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "opencode:agent-a-thread",
+          externalProviderTurnId: "agent-a-turn",
+        },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async (agentId) => ({
+      entries: agentId === "agent-b"
+        ? [
+          {
+            role: "user",
+            text: "agent b prompt",
+            source: "external_provider_observed",
+            externalProvider: "opencode",
+            externalProviderSessionId: "opencode:agent-b-thread",
+            externalProviderTurnId: "agent-b-turn",
+          },
+          {
+            role: "assistant",
+            text: "agent b output",
+            source: "external_provider_observed",
+            externalProvider: "opencode",
+            externalProviderSessionId: "opencode:agent-b-thread",
+            externalProviderTurnId: "agent-b-turn",
+          },
+        ]
+        : [],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.paneEntries["agent-b"]?.map((entry) => entry.text), [
+    "agent b prompt",
+    "agent b output",
+  ])
+})
+
+test("refreshAgentPaneState preserves compatible current live entries while busy", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{ id: "agent-a" }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: true,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        {
+          role: "user",
+          text: "prompt",
+          source: "external_provider_observed",
+          externalProvider: "codex",
+          externalProviderSessionId: "codex-thread",
+          externalProviderTurnId: "codex-turn",
+        },
+        {
+          role: "assistant",
+          text: "longer live assistant output",
+          source: "external_provider_observed",
+          externalProvider: "codex",
+          externalProviderSessionId: "codex-thread",
+          externalProviderTurnId: "codex-turn",
+        },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        {
+          role: "user",
+          text: "prompt",
+          source: "external_provider_observed",
+          externalProvider: "codex",
+          externalProviderSessionId: "codex-thread",
+          externalProviderTurnId: "codex-turn",
+        },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), [
+    "prompt",
+    "longer live assistant output",
+  ])
+})
+
+test("refreshAgentPaneState does not hide new external history behind a queued prompt", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{
+        id: "agent-a",
+        external_provider_import: {
+          external_provider: "opencode",
+          external_provider_session_id: "opencode:thread-a",
+          external_provider_session_provider_id: "thread-a",
+        },
+      }],
+      focused_agent_id: "agent-a",
+    },
+    hasPromptWork: true,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-a": [
+        {
+          role: "user",
+          text: "external prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+        {
+          role: "user",
+          text: "queued arroba prompt",
+          queuedPrompt: {
+            promptId: "prompt-1",
+            agentId: "agent-a",
+            steerDisabled: true,
+          },
+        },
+      ],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({
+      entries: [
+        {
+          role: "user",
+          text: "external prompt",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+        {
+          role: "assistant",
+          text: "external assistant settled",
+          source: "external_provider_observed",
+          externalProvider: "opencode",
+          externalProviderSessionId: "thread-a",
+          externalProviderTurnId: "external-user-1",
+        },
+      ],
+      nextCursor: null,
+    }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.visibleEntries.map((entry) => entry.text), [
+    "external prompt",
+    "external assistant settled",
+  ])
+})
+
+test("refreshAgentPaneState does not preserve another imported agent when refreshed history is empty", async () => {
+  const result = await refreshAgentPaneState({
+    session: {
+      agents: [{
+        id: "agent-b",
+        external_provider_import: {
+          external_provider: "codex",
+          external_provider_session_id: "codex:agent-b-thread",
+          external_provider_session_provider_id: "agent-b-thread",
+        },
+      }],
+      focused_agent_id: "agent-b",
+    },
+    hasPromptWork: true,
+    expandedTurnIdsByAgent: {},
+    currentPaneEntriesByAgent: {
+      "agent-b": [{
+        role: "assistant",
+        text: "agent a output",
+        source: "external_provider_observed",
+        externalProvider: "opencode",
+        externalProviderSessionId: "agent-a-thread",
+        externalProviderTurnId: "agent-a-turn",
+      }],
+    },
+    resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,
+    loadHistoryPage: async () => ({ entries: [], nextCursor: null }),
+    hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
+    stitchPrependedHistory: (olderEntries, currentEntries) => [...olderEntries, ...currentEntries],
+    collapseHistoricalTurns: (entries) => entries,
+    applyExpandedTurns: (entries) => entries,
+    reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
+    formatPreview: (entries) => entries.map((entry) => entry.text).join(" | "),
+  })
+
+  assert.deepEqual(result.visibleEntries, [])
 })
 
 test("refreshAgentPaneState ignores stale focused agent ids", async () => {

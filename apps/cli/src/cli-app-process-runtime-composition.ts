@@ -63,6 +63,7 @@ export function createCliAppProcessRuntimeComposition(
     workspaceShellContext: deps.workspaceShellContext,
     workspaceShellEntries: deps.workspaceShellEntries,
     transcriptEntries: deps.transcriptEntries,
+    visibleTranscriptAgentId: deps.visibleTranscriptAgentId,
     agentPaneEntries: deps.agentPaneEntries,
     footerFlash: deps.footerFlash,
     getInteractionChoiceSelection: deps.getInteractionChoiceSelection,

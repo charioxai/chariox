@@ -72,6 +72,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
     workspaceShellEntries: () => [],
     transcriptEntries: () => [],
+    visibleTranscriptAgentId: () => "agent-1",
     agentPaneEntries: () => ({}),
     footerFlash: () => null,
     interactionChoiceSelection: () => 1,
@@ -81,6 +82,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
 
   assert.equal(snapshot.screen, "workflow")
   assert.equal((snapshot.session as { id: string }).id, "session-1")
+  assert.equal(snapshot.transcript.visibleAgentId, "agent-1")
   assert.equal((snapshot.selectedWorkflow as { alias: string }).alias, "release")
   assert.deepEqual((snapshot.interactions as Array<Record<string, unknown>>)[0], {
     id: "interaction-1",
@@ -152,6 +154,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
     selectedWorkflowNodeId: () => null,
     workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
     workspaceShellEntries: () => [],
+    visibleTranscriptAgentId: () => "agent-1",
     transcriptEntries: () => [{
       id: 1,
       role: "assistant",
@@ -262,6 +265,7 @@ test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", ()
     workspaceShellContext: () => ({ cwd: "/repo", env: {} }) as unknown as ShellContext,
     workspaceShellEntries: () => [],
     transcriptEntries: () => [],
+    visibleTranscriptAgentId: () => null,
     agentPaneEntries: () => ({}),
     footerFlash: () => null,
     interactionChoiceSelection: () => 0,
