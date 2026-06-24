@@ -754,6 +754,7 @@ export type AgentRuntimeActivity = {
 export type AgentActiveTurn = {
   prompt_id: string
   provider_run_id?: string | null
+  prompt_origin?: "arroba" | "external" | string | null
   status: "none" | "queued" | "running" | "cancelling" | "settling"
   phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
   started_at_ms?: number | null
@@ -1475,7 +1476,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 172
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 173
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

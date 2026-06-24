@@ -891,6 +891,7 @@ mod tests {
                     provider_run_id: None,
                     status: crate::runtime::projection::AgentPromptRuntimeStatus::Running,
                     phase: crate::runtime::projection::AgentTurnRuntimePhase::Accepted,
+                    prompt_origin: Some(crate::session::PromptOrigin::Arroba),
                     started_at_ms: None,
                 }),
                 last_completed_turn: None,

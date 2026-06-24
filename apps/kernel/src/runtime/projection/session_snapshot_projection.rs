@@ -7,7 +7,7 @@ use crate::agent::AgentState;
 use crate::app::{ActivePromptState, ActiveTurnPhase, ActiveTurnState, DaemonApp};
 use crate::error::DaemonError;
 use crate::provider::{ProviderRunState, RuntimeProviderRun};
-use crate::session::{PromptQueueItem, PromptStatus, RuntimeSession};
+use crate::session::{PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
@@ -62,6 +62,8 @@ pub struct AgentActiveTurnProjection {
     pub prompt_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_origin: Option<PromptOrigin>,
     pub status: AgentPromptRuntimeStatus,
     pub phase: AgentTurnRuntimePhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,6 +172,9 @@ pub(crate) fn agent_activity_for_session_projection(
             .map(|turn| AgentActiveTurnProjection {
                 prompt_id: turn.prompt_id.clone(),
                 provider_run_id: Some(turn.provider_run_id.clone()),
+                prompt_origin: active_prompt
+                    .filter(|prompt| prompt.id() == turn.prompt_id)
+                    .map(PromptQueueItem::prompt_origin),
                 status: prompt_status.clone(),
                 phase: AgentTurnRuntimePhase::from(&turn.phase),
                 started_at_ms: Some(turn.started_at_ms),
@@ -178,6 +183,7 @@ pub(crate) fn agent_activity_for_session_projection(
                 active_prompt.map(|prompt| AgentActiveTurnProjection {
                     prompt_id: prompt.id().to_string(),
                     provider_run_id: provider_run.as_ref().map(|run| run.id().to_string()),
+                    prompt_origin: Some(prompt.prompt_origin()),
                     status: prompt_status.clone(),
                     phase: AgentTurnRuntimePhase::Accepted,
                     started_at_ms: None,
@@ -378,7 +384,59 @@ mod tests {
             active_turn.phase,
             AgentTurnRuntimePhase::AwaitingFirstOutput
         );
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::Arroba)
+        );
         assert!(active_turn.started_at_ms.is_some());
+    }
+
+    #[test]
+    fn session_snapshot_projection_projects_external_active_turn_origin() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let provider_run = launch_dev_stub_provider(&mut app, session.id(), agent.id());
+        let external_prompt = crate::session::PromptQueueItem::new(
+            "external:codex:session-1:user-1",
+            "external:codex",
+            agent.id(),
+            "external prompt",
+            crate::session::PromptStatus::Running,
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::External);
+        app.prompt_owner_sync_external_active_prompt(
+            session.id(),
+            agent.id(),
+            Some(external_prompt),
+        )
+        .expect("external active prompt should sync");
+        app.active_turn_store()
+            .start(crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "external:codex:session-1:user-1".to_string(),
+                provider_run.id().to_string(),
+            ));
+
+        let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+            .expect("projection should build");
+        let activity = projection
+            .agent_activity
+            .get(agent.id())
+            .expect("agent activity should be projected");
+        let active_turn = activity
+            .active_turn
+            .as_ref()
+            .expect("external active turn should be projected");
+
+        assert_eq!(activity.status, AgentRuntimeStatus::Working);
+        assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
+        assert_eq!(
+            active_turn.prompt_origin,
+            Some(crate::session::PromptOrigin::External)
+        );
     }
 
     #[test]
