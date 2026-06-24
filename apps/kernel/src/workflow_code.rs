@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use wait_timeout::ChildExt;
 
 use crate::config::WorkflowCodeLimitsConfig;
 use crate::extension::ExtensionGrant;
@@ -15,6 +19,202 @@ use crate::session::{
 
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
+
+const NODE_WORKFLOW_CODE_COMPILER: &str = r#"
+import vm from "node:vm"
+
+const chunks = []
+for await (const chunk of process.stdin) chunks.push(chunk)
+const input = JSON.parse(Buffer.concat(chunks).toString() || "{}")
+const logs = []
+
+function createBuilder() {
+  let nextSchema = 1
+  let nextNode = 1
+  let nextEdge = 1
+  let nextEndpoint = 1
+  let nextQueue = 1
+  let nextWatchdog = 1
+  const state = {
+    schema_version: 1,
+    workflow: {},
+    schemas: [],
+    nodes: [],
+    edges: [],
+    endpoints: [],
+    queues: [],
+    watchdogs: []
+  }
+  function handle(kind, explicit) {
+    return explicit || `${kind}:${kind === "schema" ? nextSchema++ : kind === "node" ? nextNode++ : kind === "edge" ? nextEdge++ : kind === "endpoint" ? nextEndpoint++ : kind === "queue" ? nextQueue++ : nextWatchdog++}`
+  }
+  function ref(value, expected) {
+    if (typeof value === "string") return value
+    if (value && value.__workflowCodeHandle === expected) return value.handle
+    throw new Error(`expected ${expected} handle`)
+  }
+  function agent(value) {
+    if (value && value.__workflowCodeAgent) return value.binding
+    if (value && typeof value === "object" && typeof value.kind === "string") return value
+    throw new Error("node agent must be created with workflow.newAgent or workflow.existingAgent")
+  }
+  const api = {
+    define(options = {}) {
+      state.workflow = {
+        ...state.workflow,
+        ...(options.alias !== undefined ? { alias: options.alias } : {}),
+        ...(options.flushAgentContextBeforeRun !== undefined ? { flush_agent_context_before_run: options.flushAgentContextBeforeRun } : {}),
+        ...(options.maxConcurrent !== undefined ? { max_concurrent: options.maxConcurrent } : {}),
+        ...(options.runOutputSchema !== undefined ? { run_output_schema: ref(options.runOutputSchema, "schema") } : {}),
+        ...(options.intermediateOutputSchema !== undefined ? { intermediate_output_schema: ref(options.intermediateOutputSchema, "schema") } : {})
+      }
+      return api
+    },
+    schema(options = {}) {
+      const item = {
+        handle: handle("schema", options.handle),
+        ...(options.alias !== undefined ? { alias: options.alias } : {}),
+        ...(options.description !== undefined ? { description: options.description } : {}),
+        schema: options.schema
+      }
+      state.schemas.push(item)
+      return { __workflowCodeHandle: "schema", handle: item.handle }
+    },
+    newAgent(options = {}) {
+      return {
+        __workflowCodeAgent: true,
+        binding: {
+          kind: "create",
+          ...(options.alias !== undefined ? { alias: options.alias } : {}),
+          provider: options.provider,
+          ...(options.model !== undefined ? { model: options.model } : {}),
+          ...(options.effort !== undefined ? { effort: options.effort } : {}),
+          ...(options.accountProfile !== undefined ? { account_profile: options.accountProfile } : {})
+        }
+      }
+    },
+    existingAgent(agentRef) {
+      return {
+        __workflowCodeAgent: true,
+        binding: { kind: "existing", agent_ref: agentRef }
+      }
+    },
+    node(options = {}) {
+      const item = {
+        handle: handle("node", options.handle),
+        agent: agent(options.agent),
+        ...(options.publicLabel !== undefined ? { public_label: options.publicLabel } : {}),
+        ...(options.instructions !== undefined ? { instructions: options.instructions } : {}),
+        ...(options.canCompleteWorkflowRun !== undefined ? { can_complete_workflow_run: options.canCompleteWorkflowRun } : {}),
+        ...(options.canEmitIntermediateRunOutput !== undefined ? { can_emit_intermediate_run_output: options.canEmitIntermediateRunOutput } : {}),
+        ...(options.waitForAllInputs !== undefined ? { wait_for_all_inputs: options.waitForAllInputs } : {}),
+        ...(options.intermediateOutputSchema !== undefined ? { intermediate_output_schema: ref(options.intermediateOutputSchema, "schema") } : {}),
+        ...(options.maxTurns !== undefined ? { max_turns: options.maxTurns } : {}),
+        ...(options.extensions !== undefined ? { extensions: options.extensions } : {}),
+        ...(options.canvas !== undefined ? { canvas: options.canvas } : {})
+      }
+      state.nodes.push(item)
+      return { __workflowCodeHandle: "node", handle: item.handle }
+    },
+    edge(fromNode, toNode, options = {}) {
+      const item = {
+        handle: handle("edge", options.handle),
+        from_node: ref(fromNode, "node"),
+        to_node: ref(toNode, "node"),
+        ...(options.sourceSide !== undefined ? { source_side: options.sourceSide } : {}),
+        ...(options.targetSide !== undefined ? { target_side: options.targetSide } : {}),
+        ...(options.handoffSchema !== undefined ? { handoff_schema: ref(options.handoffSchema, "schema") } : {}),
+        ...(options.validationPolicy !== undefined ? { validation_policy: options.validationPolicy } : {}),
+        ...(options.canvas !== undefined ? { canvas: options.canvas } : {})
+      }
+      state.edges.push(item)
+      return { __workflowCodeHandle: "edge", handle: item.handle }
+    },
+    endpoint(entryNode, options = {}) {
+      const item = {
+        handle: handle("endpoint", options.handle),
+        entry_node: ref(entryNode, "node"),
+        ...(options.alias !== undefined ? { alias: options.alias } : {}),
+        ...(options.canvas !== undefined ? { canvas: options.canvas } : {})
+      }
+      state.endpoints.push(item)
+      return { __workflowCodeHandle: "endpoint", handle: item.handle }
+    },
+    queue(options = {}) {
+      const item = {
+        handle: handle("queue", options.handle),
+        alias: options.alias || "default",
+        ...(options.priority !== undefined ? { priority: options.priority } : {}),
+        ...(options.enabled !== undefined ? { enabled: options.enabled } : {})
+      }
+      state.queues.push(item)
+      return { __workflowCodeHandle: "queue", handle: item.handle }
+    },
+    watchdog(endpoint, options = {}) {
+      const item = {
+        handle: handle("watchdog", options.handle),
+        endpoint: ref(endpoint, "endpoint"),
+        ...(options.queue !== undefined ? { queue: ref(options.queue, "queue") } : {}),
+        interval_seconds: options.intervalSeconds,
+        invocation_prompt: options.invocationPrompt,
+        policy: options.policy,
+        ...(options.maxWakeups !== undefined ? { max_wakeups: options.maxWakeups } : {})
+      }
+      state.watchdogs.push(item)
+      return { __workflowCodeHandle: "watchdog", handle: item.handle }
+    },
+    export() {
+      return state
+    }
+  }
+  return api
+}
+
+try {
+  const workflow = createBuilder()
+  const context = vm.createContext({
+    workflow,
+    console: {
+      log: (...values) => logs.push(values.map(String).join(" ")),
+      error: (...values) => logs.push(values.map(String).join(" "))
+    }
+  })
+  const wrapped = `(async () => {\n${input.source || ""}\nif (typeof defineWorkflow === "function") await defineWorkflow(workflow)\nreturn workflow.export()\n})()`
+  const script = new vm.Script(wrapped, { filename: "workflow-code.js" })
+  const definition = await script.runInContext(context, { timeout: Math.max(1, Number(input.timeout_ms || 30000)) })
+  console.log(JSON.stringify({ ok: true, definition, logs: logs.join("\n") }))
+} catch (error) {
+  console.log(JSON.stringify({
+    ok: false,
+    error: String(error && error.message ? error.message : error),
+    logs: logs.join("\n")
+  }))
+}
+"#;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowCodeCompileResult {
+    pub definition: WorkflowCodeDefinition,
+    pub validation: WorkflowCodeValidationReport,
+    pub logs: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkflowCodeCompilerInput<'a> {
+    source: &'a str,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowCodeCompilerOutput {
+    ok: bool,
+    #[serde(default)]
+    definition: Option<WorkflowCodeDefinition>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    logs: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowCodeArtifactMetadata {
@@ -227,6 +427,115 @@ impl WorkflowCodeDefinition {
         validator.validate(self);
         validator.finish()
     }
+}
+
+pub fn compile_workflow_code_javascript(
+    node_path: impl AsRef<Path>,
+    source: &str,
+    limits: &WorkflowCodeLimitsConfig,
+) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
+    let max_old_space_mb = u64::max(16, limits.script_memory_bytes.div_ceil(1024 * 1024));
+    let mut child = Command::new(node_path.as_ref())
+        .arg(format!("--max-old-space-size={max_old_space_mb}"))
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg(NODE_WORKFLOW_CODE_COMPILER)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| crate::DaemonError::LocalTransport {
+            operation: "workflow_code.compile",
+            message: format!("failed to start Node workflow-code compiler: {error}"),
+        })?;
+
+    let input = serde_json::to_vec(&WorkflowCodeCompilerInput {
+        source,
+        timeout_ms: limits.script_timeout_ms,
+    })
+    .map_err(|error| crate::DaemonError::LocalTransport {
+        operation: "workflow_code.compile",
+        message: format!("failed to serialize workflow-code compiler input: {error}"),
+    })?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| crate::DaemonError::LocalTransport {
+            operation: "workflow_code.compile",
+            message: "failed to open Node workflow-code compiler stdin".to_string(),
+        })?;
+    stdin
+        .write_all(&input)
+        .map_err(io_error("workflow_code.compile"))?;
+    drop(stdin);
+
+    let timeout = Duration::from_millis(limits.script_timeout_ms);
+    match child
+        .wait_timeout(timeout)
+        .map_err(io_error("workflow_code.compile"))?
+    {
+        Some(_) => {}
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.compile",
+                message: format!(
+                    "workflow-code script exceeded configured timeout of {} ms",
+                    limits.script_timeout_ms
+                ),
+            });
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(io_error("workflow_code.compile"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_code.compile",
+            message: format!(
+                "Node workflow-code compiler failed with status {}: {}{}",
+                output.status,
+                stderr.trim(),
+                if stdout.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("\nstdout: {}", stdout.trim())
+                }
+            ),
+        });
+    }
+
+    let compiler_output = serde_json::from_str::<WorkflowCodeCompilerOutput>(stdout.trim())
+        .map_err(|error| crate::DaemonError::LocalTransport {
+            operation: "workflow_code.compile",
+            message: format!("failed to parse Node workflow-code compiler output: {error}"),
+        })?;
+    let logs = compiler_output.logs.unwrap_or_default();
+    if !compiler_output.ok {
+        return Err(crate::DaemonError::LocalTransport {
+            operation: "workflow_code.compile",
+            message: compiler_output
+                .error
+                .unwrap_or_else(|| "workflow-code script failed".to_string()),
+        });
+    }
+    let definition =
+        compiler_output
+            .definition
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.compile",
+                message: "Node workflow-code compiler did not return a definition".to_string(),
+            })?;
+    let validation = definition.validate_with_limits(limits);
+    Ok(WorkflowCodeCompileResult {
+        definition,
+        validation,
+        logs,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1001,6 +1310,89 @@ mod tests {
             .expect_err("unknown workflow-code fields should be rejected");
 
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    fn find_node() -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Some(path) = std::env::var_os("NODE") {
+            candidates.push(PathBuf::from(path));
+        }
+        candidates.extend([
+            PathBuf::from("/opt/homebrew/bin/node"),
+            PathBuf::from("/usr/local/bin/node"),
+            PathBuf::from("/usr/bin/node"),
+        ]);
+
+        candidates.into_iter().find(|candidate| {
+            Command::new(candidate)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+    }
+
+    #[test]
+    fn compiles_javascript_builder_source() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let source = r#"
+const finalSchema = workflow.schema({
+  alias: "Final",
+  schema: {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false
+  }
+})
+workflow.define({
+  alias: "compiled",
+  maxConcurrent: 2,
+  runOutputSchema: finalSchema
+})
+const planner = workflow.node({
+  agent: workflow.newAgent({ alias: "planner", provider: "dev-stub", model: "default" }),
+  publicLabel: "Planner",
+  instructions: "Plan.",
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(planner, { alias: "entry" })
+"#;
+
+        let result =
+            compile_workflow_code_javascript(node, source, &WorkflowCodeLimitsConfig::default())
+                .expect("workflow-code JS source should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert_eq!(
+            result.definition.workflow.alias.as_deref(),
+            Some("compiled")
+        );
+        assert_eq!(result.definition.nodes.len(), 1);
+        assert_eq!(result.definition.endpoints.len(), 1);
+        assert_eq!(result.definition.schemas.len(), 1);
+    }
+
+    #[test]
+    fn javascript_compiler_reports_script_errors() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let error = compile_workflow_code_javascript(
+            node,
+            r#"throw new Error("boom")"#,
+            &WorkflowCodeLimitsConfig::default(),
+        )
+        .expect_err("script error should be returned");
+
+        assert!(format!("{error}").contains("boom"));
     }
 
     #[test]
