@@ -801,11 +801,11 @@ async function startWebObserver({ sessionId, webUrl, providerRoot }) {
   await waitForProductKernelReady(page, 90_000)
   await waitForWaitingRoomSessionRow(page, sessionId, 90_000)
   await waitForWaitingRoomSessionRowEnabled(page, sessionId, 30_000)
-  await page.screenshot({ path: path.join(providerRoot, "web-waiting-room.png"), fullPage: true }).catch(() => {})
+  await captureWebScreenshot(page, path.join(providerRoot, "web-waiting-room.png"))
   await openSessionFromWaitingRoom(page, sessionId)
   await page.locator("[data-freeform-pane-grid], .freeform-workspace").first().waitFor({ timeout: 90_000 })
   await clearSessionPickerOverlay(page)
-  await page.screenshot({ path: path.join(providerRoot, "web-opened.png"), fullPage: true }).catch(() => {})
+  await captureWebScreenshot(page, path.join(providerRoot, "web-opened.png"))
   return { browser, context, page }
 }
 
@@ -984,10 +984,20 @@ function startWebMonitor({ page, provider, marker, finalMarker, promptMarker, pr
       stopped = true
       await loop.catch(() => {})
       samples.push(await webSample(page, provider, marker, finalMarker, promptMarker).catch((error) => ({ error: String(error?.message ?? error) })))
-      await page.screenshot({ path: path.join(providerRoot, "web-final.png"), fullPage: true }).catch(() => {})
+      await captureWebScreenshot(page, path.join(providerRoot, "web-final.png"))
       return summarizeSamples("web", samples, finalMarker)
     },
   }
+}
+
+async function captureWebScreenshot(page, file) {
+  await page.screenshot({
+    path: file,
+    fullPage: false,
+    timeout: 10_000,
+  }).catch((error) => {
+    void writeFile(`${file}.error.txt`, String(error?.stack ?? error), "utf8").catch(() => {})
+  })
 }
 
 async function webSample(page, provider, marker, finalMarker, promptMarker) {

@@ -734,39 +734,22 @@ fn append_observed_external_turns_for_import_with_options(
         .external_provider_session_provider_id
         .clone();
     let external_merge_key_prefix = format!("external:{provider}:{provider_session_id}:");
-    let cursor_merge_key = read
-        .target
-        .import
-        .observed_cursor
-        .last_observed_merge_key
-        .as_deref();
-    let has_cursor = cursor_merge_key.is_some();
-    let mut cursor_seen = !has_cursor;
-    let mut candidate_turns = Vec::new();
-    for turn in &read.turns {
-        let merge_key = observed_external_turn_merge_key(&external_merge_key_prefix, turn);
-        if !cursor_seen {
-            if merge_key.as_deref() == cursor_merge_key {
-                cursor_seen = true;
-            }
-            continue;
+    let history_entries = app.load_session_history_entries(&session, Some(agent.id()))?;
+    let mut arroba_owned_prompt_history = Vec::new();
+    let mut existing_entries_by_merge_key = BTreeMap::new();
+    for entry in history_entries {
+        if entry.kind == SessionHistoryEntryKind::UserPrompt
+            && entry.source
+                != Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved)
+        {
+            arroba_owned_prompt_history.push(entry.text.clone());
         }
-        candidate_turns.push(turn);
+        if let Some(merge_key) = entry.merge_key.as_deref() {
+            if merge_key.starts_with(&external_merge_key_prefix) {
+                existing_entries_by_merge_key.insert(merge_key.to_string(), entry);
+            }
+        }
     }
-    let (arroba_owned_prompt_history, existing_merge_keys) = if has_cursor && cursor_seen {
-        (
-            app.operational_history_store()
-                .load_arroba_owned_prompt_texts(&read.target.session_id, &read.target.agent_id)?,
-            BTreeSet::new(),
-        )
-    } else {
-        candidate_turns = read.turns.iter().collect();
-        app.operational_history_store().load_external_import_index(
-            &read.target.session_id,
-            &read.target.agent_id,
-            &external_merge_key_prefix,
-        )?
-    };
     let mut arroba_owned_prompt_texts = arroba_owned_prompt_history
         .iter()
         .filter_map(|text| normalized_observed_prompt_text(text))
@@ -791,9 +774,8 @@ fn append_observed_external_turns_for_import_with_options(
     let mut active_relevant_appended = 0usize;
     let mut last_cursor = read.target.import.observed_cursor.clone();
     let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
-    let mut seen_merge_keys = existing_merge_keys;
     let mut current_observed_turn_is_arroba_owned = false;
-    for turn in candidate_turns {
+    for turn in &read.turns {
         let kind = match turn.role {
             crate::app::ObservedExternalProviderTurnRole::User => {
                 SessionHistoryEntryKind::UserPrompt
@@ -849,11 +831,22 @@ fn append_observed_external_turns_for_import_with_options(
             provider_turn_id.clone(),
             turn.observed_at_ms,
         );
-        let is_duplicate = merge_key
-            .as_ref()
-            .is_some_and(|merge_key| seen_merge_keys.contains(merge_key));
-        if !is_duplicate {
-            app.append_history_entry(&read.target.session_id, entry.clone());
+        let has_observable_change = merge_key.as_ref().is_none_or(|merge_key| {
+            existing_entries_by_merge_key
+                .get(merge_key)
+                .is_none_or(|existing| !external_observed_history_entry_matches(existing, &entry))
+        });
+        if has_observable_change {
+            if let Some(merge_key) = merge_key.as_deref() {
+                app.replace_history_entry_by_merge_key_or_append(
+                    &read.target.session_id,
+                    merge_key,
+                    entry.clone(),
+                );
+                existing_entries_by_merge_key.insert(merge_key.to_string(), entry.clone());
+            } else {
+                app.append_history_entry(&read.target.session_id, entry.clone());
+            }
             emit_observed_external_history_signal(
                 app,
                 &read.target,
@@ -866,7 +859,6 @@ fn append_observed_external_turns_for_import_with_options(
             }
         }
         if let Some(merge_key) = merge_key {
-            seen_merge_keys.insert(merge_key.clone());
             last_cursor.last_observed_merge_key = Some(merge_key);
         }
         last_cursor.last_observed_turn_id = merge_turn_id;
@@ -928,14 +920,19 @@ fn append_observed_external_turns_for_import_with_options(
     Ok(outcome)
 }
 
-fn observed_external_turn_merge_key(
-    external_merge_key_prefix: &str,
-    turn: &crate::app::ObservedExternalProviderTurn,
-) -> Option<String> {
-    turn.provider_turn_id
-        .clone()
-        .or_else(|| Some(turn.stable_fallback_id()))
-        .map(|turn_id| format!("{external_merge_key_prefix}{turn_id}"))
+fn external_observed_history_entry_matches(
+    existing: &SessionHistoryEntry,
+    next: &SessionHistoryEntry,
+) -> bool {
+    existing.provider_run_id == next.provider_run_id
+        && existing.agent_id == next.agent_id
+        && existing.kind == next.kind
+        && existing.merge_key == next.merge_key
+        && existing.source == next.source
+        && existing.external_provider == next.external_provider
+        && existing.external_provider_session_id == next.external_provider_session_id
+        && existing.external_provider_turn_id == next.external_provider_turn_id
+        && existing.text == next.text
 }
 
 fn normalized_observed_prompt_text(text: &str) -> Option<String> {
@@ -2903,7 +2900,7 @@ mod tests {
     }
 
     #[test]
-    fn append_observed_external_turns_skips_changed_duplicate_merge_key() {
+    fn append_observed_external_turns_replaces_changed_duplicate_merge_key() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -2948,21 +2945,21 @@ mod tests {
                 }],
             },
         )
-        .expect("changed observed assistant duplicate should be skipped");
+        .expect("changed observed assistant duplicate should replace prior content");
 
-        assert_eq!(outcome.changed_count, 0);
+        assert_eq!(outcome.changed_count, 1);
         let entries = app
             .load_session_history_entries(&session, Some(agent.id()))
             .expect("history should load");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].text, "partial external reply");
-        assert_eq!(entries[0].observed_at_ms, Some(42));
+        assert_eq!(entries[0].text, "complete external reply");
+        assert_eq!(entries[0].observed_at_ms, Some(84));
         let legacy_entries = app
             .history_store()
             .load(&session)
             .expect("legacy history should load");
         assert_eq!(legacy_entries.len(), 1);
-        assert_eq!(legacy_entries[0].text, "partial external reply");
+        assert_eq!(legacy_entries[0].text, "complete external reply");
     }
 
     #[test]
