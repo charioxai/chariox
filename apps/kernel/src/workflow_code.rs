@@ -308,6 +308,12 @@ impl WorkflowCodeArtifactRegistry {
         limits: &WorkflowCodeLimitsConfig,
     ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
         validate_registry_name(name, "workflow-code artifact name")?;
+        if self.find_path(name)?.is_some() {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.save",
+                message: format!("workflow-code artifact `{name}` is already saved"),
+            });
+        }
         let validation = definition.validate_with_limits(limits);
         let source = source.into();
         let now = crate::session::unix_epoch_ms();

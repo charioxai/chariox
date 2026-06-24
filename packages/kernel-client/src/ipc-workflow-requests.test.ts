@@ -2,7 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  createWorkflowCodeArtifactRequest,
+  deleteWorkflowCodeArtifactRequest,
   exportWorkflowPublicationPackageRequest,
+  listWorkflowCodeArtifactsRequest,
   setWorkflowNodeWaitForAllInputsRequest,
 } from "./ipc-workflow-requests.js"
 
@@ -40,4 +43,30 @@ test("set workflow node wait-for-all-inputs request matches kernel shape", () =>
       },
     },
   )
+})
+
+test("workflow-code artifact requests match kernel shape", () => {
+  assert.deepEqual(
+    createWorkflowCodeArtifactRequest("session-1", "toy-flow", "/usr/local/bin/node", "workflow.define({})"),
+    {
+      CreateWorkflowCodeArtifact: {
+        session_id: "session-1",
+        name: "toy-flow",
+        language: "java_script",
+        node_path: "/usr/local/bin/node",
+        source: "workflow.define({})",
+      },
+    },
+  )
+  assert.deepEqual(listWorkflowCodeArtifactsRequest("session-1"), {
+    ListWorkflowCodeArtifacts: {
+      session_id: "session-1",
+    },
+  })
+  assert.deepEqual(deleteWorkflowCodeArtifactRequest("session-1", "toy-flow"), {
+    DeleteWorkflowCodeArtifact: {
+      session_id: "session-1",
+      name: "toy-flow",
+    },
+  })
 })

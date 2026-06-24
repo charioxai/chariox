@@ -22,6 +22,41 @@ pub struct ApplyWorkflowCodeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+    pub language: crate::workflow_code::WorkflowCodeLanguage,
+    pub node_path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+    pub language: crate::workflow_code::WorkflowCodeLanguage,
+    pub node_path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowCodeArtifactsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AliasWorkflowRequest {
     pub session_id: String,
     pub workflow_ref: String,

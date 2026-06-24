@@ -1,4 +1,8 @@
-import type { WorkflowDesignOp, WorkflowPublicationSnapshot } from "./kernel-types.js"
+import type {
+  WorkflowCodeLanguage,
+  WorkflowDesignOp,
+  WorkflowPublicationSnapshot,
+} from "./kernel-types.js"
 
 export function createWorkflowRequest(sessionId: string, alias?: string | null) {
   return {
@@ -49,6 +53,116 @@ export function applyWorkflowCodeRequest(
       session_id: sessionId,
       node_path: nodePath,
       source,
+    },
+  }
+}
+
+export type CreateWorkflowCodeArtifactRequest = {
+  CreateWorkflowCodeArtifact: {
+    session_id: string
+    name: string
+    language: WorkflowCodeLanguage
+    node_path: string
+    source: string
+  }
+}
+
+export function createWorkflowCodeArtifactRequest(
+  sessionId: string,
+  name: string,
+  nodePath: string,
+  source: string,
+  language: WorkflowCodeLanguage = "java_script",
+): CreateWorkflowCodeArtifactRequest {
+  return {
+    CreateWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
+      language,
+      node_path: nodePath,
+      source,
+    },
+  }
+}
+
+export type UpdateWorkflowCodeArtifactRequest = {
+  UpdateWorkflowCodeArtifact: {
+    session_id: string
+    name: string
+    language: WorkflowCodeLanguage
+    node_path: string
+    source: string
+  }
+}
+
+export function updateWorkflowCodeArtifactRequest(
+  sessionId: string,
+  name: string,
+  nodePath: string,
+  source: string,
+  language: WorkflowCodeLanguage = "java_script",
+): UpdateWorkflowCodeArtifactRequest {
+  return {
+    UpdateWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
+      language,
+      node_path: nodePath,
+      source,
+    },
+  }
+}
+
+export type GetWorkflowCodeArtifactRequest = {
+  GetWorkflowCodeArtifact: {
+    session_id: string
+    name: string
+  }
+}
+
+export function getWorkflowCodeArtifactRequest(
+  sessionId: string,
+  name: string,
+): GetWorkflowCodeArtifactRequest {
+  return {
+    GetWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
+    },
+  }
+}
+
+export type ListWorkflowCodeArtifactsRequest = {
+  ListWorkflowCodeArtifacts: {
+    session_id: string
+  }
+}
+
+export function listWorkflowCodeArtifactsRequest(
+  sessionId: string,
+): ListWorkflowCodeArtifactsRequest {
+  return {
+    ListWorkflowCodeArtifacts: {
+      session_id: sessionId,
+    },
+  }
+}
+
+export type DeleteWorkflowCodeArtifactRequest = {
+  DeleteWorkflowCodeArtifact: {
+    session_id: string
+    name: string
+  }
+}
+
+export function deleteWorkflowCodeArtifactRequest(
+  sessionId: string,
+  name: string,
+): DeleteWorkflowCodeArtifactRequest {
+  return {
+    DeleteWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
     },
   }
 }

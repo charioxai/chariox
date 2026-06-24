@@ -39,6 +39,31 @@ impl KernelRuntimeState {
                 )
                 .await
             }
+            LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => (
+                self.execute_workflow_code_artifact_create_request(request)
+                    .await,
+                None,
+            ),
+            LocalDaemonRequest::UpdateWorkflowCodeArtifact(request) => (
+                self.execute_workflow_code_artifact_update_request(request)
+                    .await,
+                None,
+            ),
+            LocalDaemonRequest::GetWorkflowCodeArtifact(request) => (
+                self.execute_workflow_code_artifact_get_request(request)
+                    .await,
+                None,
+            ),
+            LocalDaemonRequest::ListWorkflowCodeArtifacts(request) => (
+                self.execute_workflow_code_artifact_list_request(request)
+                    .await,
+                None,
+            ),
+            LocalDaemonRequest::DeleteWorkflowCodeArtifact(request) => (
+                self.execute_workflow_code_artifact_delete_request(request)
+                    .await,
+                None,
+            ),
             LocalDaemonRequest::ApplyWorkflowDesignOp(request) => {
                 let origin_client_id = request.origin_client_id.clone();
                 let op_id = request.op_id.clone();
@@ -327,6 +352,142 @@ impl KernelRuntimeState {
         let session = result.as_ref().ok().and_then(workflow_response_session);
         (result, session)
     }
+
+    async fn execute_workflow_code_artifact_create_request(
+        &self,
+        request: crate::local::CreateWorkflowCodeArtifactRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let limits = app.config().workflow_code_limits();
+            let compile = crate::workflow_code::compile_workflow_code_javascript(
+                &request.node_path,
+                &request.source,
+                &limits,
+            )?;
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let artifact = registry.save(
+                &request.name,
+                request.language,
+                request.source,
+                compile.definition,
+                &limits,
+            )?;
+            app.durable_state_store().append_event(
+                "workflow_code_artifact.created",
+                Some(request.session_id),
+                serde_json::json!({
+                    "artifact": &artifact.metadata,
+                }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact })
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_artifact_update_request(
+        &self,
+        request: crate::local::UpdateWorkflowCodeArtifactRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let limits = app.config().workflow_code_limits();
+            let compile = crate::workflow_code::compile_workflow_code_javascript(
+                &request.node_path,
+                &request.source,
+                &limits,
+            )?;
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let artifact = registry.update(
+                &request.name,
+                request.language,
+                request.source,
+                compile.definition,
+                &limits,
+            )?;
+            app.durable_state_store().append_event(
+                "workflow_code_artifact.updated",
+                Some(request.session_id),
+                serde_json::json!({
+                    "artifact": &artifact.metadata,
+                }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowCodeArtifactUpdated { artifact })
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_artifact_get_request(
+        &self,
+        request: crate::local::GetWorkflowCodeArtifactRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let artifact =
+                registry
+                    .get(&request.name)?
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "workflow_code.get",
+                        message: format!("workflow-code artifact `{}` is not saved", request.name),
+                    })?;
+            Ok(LocalDaemonResponse::WorkflowCodeArtifact { artifact })
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_artifact_list_request(
+        &self,
+        request: crate::local::ListWorkflowCodeArtifactsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let artifacts = registry.list()?;
+            Ok(LocalDaemonResponse::WorkflowCodeArtifactsListed { artifacts })
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_artifact_delete_request(
+        &self,
+        request: crate::local::DeleteWorkflowCodeArtifactRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let path = registry.delete(&request.name)?;
+            app.durable_state_store().append_event(
+                "workflow_code_artifact.deleted",
+                Some(request.session_id),
+                serde_json::json!({
+                    "name": &request.name,
+                    "path": &path,
+                }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowCodeArtifactDeleted {
+                name: request.name,
+                path,
+            })
+        })
+        .await
+    }
+}
+
+fn workflow_code_registry_for_session(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
+    let session = app.sessions().get_session(session_id)?;
+    let mut roots = Vec::new();
+    if !session.workspace_id().trim().is_empty() {
+        roots.push(
+            crate::workflow_code::WorkflowCodeArtifactRegistry::project_root(
+                session.workspace_id(),
+            ),
+        );
+    }
+    if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
+        roots.push(root);
+    }
+    Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
+        roots,
+    ))
 }
 
 pub(super) fn workflow_response_session(

@@ -111,6 +111,136 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 }
 
 #[test]
+fn local_request_api_persists_workflow_code_artifacts() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping workflow-code artifact local API test because node is not available");
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-artifact-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-artifact"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let name = format!("toy-{}", crate::session::unix_epoch_ms());
+    let source = r#"
+workflow.define({ alias: "artifact_flow" })
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "planner", provider: "dev-stub", model: "default" }),
+  instructions: "Plan."
+})
+workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+"#;
+    let updated_source = source.replace("artifact_flow", "artifact_flow_updated");
+
+    let created = harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowCodeArtifact(
+            crate::local::CreateWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.clone(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+            },
+        ))
+        .expect("workflow-code artifact should create");
+    match created {
+        LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact } => {
+            assert_eq!(artifact.metadata.name, name);
+            assert!(artifact.metadata.validation.ok);
+            assert!(artifact.metadata.path.starts_with(&workspace_root));
+            assert_eq!(
+                artifact.definition.workflow.alias.as_deref(),
+                Some("artifact_flow")
+            );
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflowCodeArtifacts(
+            crate::local::ListWorkflowCodeArtifactsRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("workflow-code artifacts should list");
+    match listed {
+        LocalDaemonResponse::WorkflowCodeArtifactsListed { artifacts } => {
+            assert!(artifacts.iter().any(|artifact| artifact.name == name));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let loaded = harness
+        .dispatch(LocalDaemonRequest::GetWorkflowCodeArtifact(
+            crate::local::GetWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.clone(),
+            },
+        ))
+        .expect("workflow-code artifact should load");
+    match loaded {
+        LocalDaemonResponse::WorkflowCodeArtifact { artifact } => {
+            assert_eq!(artifact.source, source);
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let updated = harness
+        .dispatch(LocalDaemonRequest::UpdateWorkflowCodeArtifact(
+            crate::local::UpdateWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.clone(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: node_path.display().to_string(),
+                source: updated_source.clone(),
+            },
+        ))
+        .expect("workflow-code artifact should update");
+    match updated {
+        LocalDaemonResponse::WorkflowCodeArtifactUpdated { artifact } => {
+            assert_eq!(artifact.source, updated_source);
+            assert_eq!(
+                artifact.definition.workflow.alias.as_deref(),
+                Some("artifact_flow_updated")
+            );
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let deleted = harness
+        .dispatch(LocalDaemonRequest::DeleteWorkflowCodeArtifact(
+            crate::local::DeleteWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.clone(),
+            },
+        ))
+        .expect("workflow-code artifact should delete");
+    match deleted {
+        LocalDaemonResponse::WorkflowCodeArtifactDeleted {
+            name: deleted,
+            path,
+        } => {
+            assert_eq!(deleted, name);
+            assert!(!path.exists());
+        }
+        _ => panic!("unexpected local response"),
+    }
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
 fn local_request_api_exports_agent_app_publication_package() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness

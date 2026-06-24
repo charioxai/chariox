@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 171;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 172;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -341,6 +341,11 @@ pub enum LocalDaemonRequest {
     CreateWorkflow(CreateWorkflowRequest),
     ValidateWorkflowCode(ValidateWorkflowCodeRequest),
     ApplyWorkflowCode(ApplyWorkflowCodeRequest),
+    CreateWorkflowCodeArtifact(CreateWorkflowCodeArtifactRequest),
+    UpdateWorkflowCodeArtifact(UpdateWorkflowCodeArtifactRequest),
+    GetWorkflowCodeArtifact(GetWorkflowCodeArtifactRequest),
+    ListWorkflowCodeArtifacts(ListWorkflowCodeArtifactsRequest),
+    DeleteWorkflowCodeArtifact(DeleteWorkflowCodeArtifactRequest),
     ApplyWorkflowDesignOp(ApplyWorkflowDesignOpRequest),
     AliasWorkflow(AliasWorkflowRequest),
     ListWorkflows(ListWorkflowsRequest),
@@ -1091,6 +1096,22 @@ pub enum LocalDaemonResponse {
     WorkflowCodeApplied {
         result: crate::workflow_code::WorkflowCodeCompileAndApplyResult,
         session: RuntimeSession,
+    },
+    WorkflowCodeArtifactCreated {
+        artifact: crate::workflow_code::WorkflowCodeArtifact,
+    },
+    WorkflowCodeArtifactUpdated {
+        artifact: crate::workflow_code::WorkflowCodeArtifact,
+    },
+    WorkflowCodeArtifact {
+        artifact: crate::workflow_code::WorkflowCodeArtifact,
+    },
+    WorkflowCodeArtifactsListed {
+        artifacts: Vec<crate::workflow_code::WorkflowCodeArtifactMetadata>,
+    },
+    WorkflowCodeArtifactDeleted {
+        name: String,
+        path: PathBuf,
     },
     WorkflowAliased {
         workflow: WorkflowDefinition,
