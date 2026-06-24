@@ -1,6 +1,9 @@
 use crate::app::provider_output_fanout::ProviderOutputFanout;
 use crate::app::DaemonApp;
-use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
+use crate::history::{
+    HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind,
+    SessionHistoryEntrySource,
+};
 use crate::prompt_transcript::render_prompt_transcript;
 use crate::session::PromptAttachment;
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
@@ -205,16 +208,29 @@ impl DaemonApp {
                 return;
             }
         };
-        match self
-            .history
-            .replace_by_merge_key(&session, merge_key, &entry)
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                if let Err(error) = self.history.append(&session, &entry) {
+        if entry.source != Some(SessionHistoryEntrySource::ExternalProviderObserved) {
+            match self
+                .history
+                .replace_by_merge_key(&session, merge_key, &entry)
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Err(error) = self.history.append(&session, &entry) {
+                        crate::logging::warn_with_fields(
+                            "daemon.history",
+                            "failed to append legacy session history entry after replacement miss",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "merge_key": merge_key,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                Err(error) => {
                     crate::logging::warn_with_fields(
                         "daemon.history",
-                        "failed to append legacy session history entry after replacement miss",
+                        "failed to replace legacy session history entry",
                         serde_json::json!({
                             "session_id": session_id,
                             "merge_key": merge_key,
@@ -222,17 +238,6 @@ impl DaemonApp {
                         }),
                     );
                 }
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "failed to replace legacy session history entry",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "merge_key": merge_key,
-                        "error": error.to_string(),
-                    }),
-                );
             }
         }
 

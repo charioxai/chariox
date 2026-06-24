@@ -2986,12 +2986,6 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].text, "complete external reply");
         assert_eq!(entries[0].observed_at_ms, Some(84));
-        let legacy_entries = app
-            .history_store()
-            .load(&session)
-            .expect("legacy history should load");
-        assert_eq!(legacy_entries.len(), 1);
-        assert_eq!(legacy_entries[0].text, "complete external reply");
     }
 
     #[test]
