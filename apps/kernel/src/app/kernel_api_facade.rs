@@ -1,7 +1,9 @@
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{DaemonApp, KernelSessionService, ProviderRunReadService};
+use crate::config::WorkflowCodeLimitsConfig;
 use crate::error::DaemonError;
 use crate::session::{CreateSessionRequest, RuntimeSession};
+use crate::workflow_code::{WorkflowCodeApplyReport, WorkflowCodeDefinition};
 
 impl DaemonApp {
     #[doc(hidden)]
@@ -39,6 +41,24 @@ impl DaemonApp {
         request: CreateAgentRequest,
     ) -> Result<AgentInstance, DaemonError> {
         KernelSessionService::new(self).spawn_agent(request)
+    }
+
+    #[doc(hidden)]
+    pub fn apply_workflow_code_definition(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        KernelSessionService::new(self).apply_workflow_code_definition(
+            session_id,
+            definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+        )
     }
 
     #[doc(hidden)]

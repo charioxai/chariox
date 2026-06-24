@@ -1,11 +1,18 @@
+use std::collections::BTreeMap;
+
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
 use crate::attachment::{AttachRequest, RuntimeAttachment};
+use crate::config::WorkflowCodeLimitsConfig;
 use crate::error::DaemonError;
+use crate::extension::ExtensionGrant;
 use crate::history::SessionHistoryEntry;
 use crate::provider::{AgentEndpointMode, ProviderRunState};
 use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
+};
+use crate::workflow_code::{
+    WorkflowCodeAgentBinding, WorkflowCodeApplyReport, WorkflowCodeDefinition,
 };
 
 pub(crate) struct KernelSessionService<'a> {
@@ -16,11 +23,100 @@ pub(crate) struct KernelSessionService<'a> {
 mod tests {
     use crate::agent::CreateAgentRequest;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::config::WorkflowCodeLimitsConfig;
     use crate::session::{
         CreateSessionRequest, SchedulerState, SessionStatus, WorkflowNodeRun,
         WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
     };
+    use crate::workflow_code::{
+        WorkflowCodeAgentBinding, WorkflowCodeAgentCreate, WorkflowCodeDefinition,
+        WorkflowCodeEndpointDefinition, WorkflowCodeExistingAgent, WorkflowCodeNodeDefinition,
+        WorkflowCodeWorkflow, WORKFLOW_CODE_SCHEMA_VERSION,
+    };
     use crate::{DaemonApp, DaemonConfig};
+
+    fn generated_workflow_code_definition() -> WorkflowCodeDefinition {
+        WorkflowCodeDefinition {
+            schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+            workflow: WorkflowCodeWorkflow {
+                alias: Some("generated_agents".to_string()),
+                flush_agent_context_before_run: Some(true),
+                max_concurrent: Some(2),
+                run_output_schema: None,
+                intermediate_output_schema: None,
+            },
+            schemas: Vec::new(),
+            nodes: vec![
+                WorkflowCodeNodeDefinition {
+                    handle: "planner".to_string(),
+                    agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                        alias: Some("coded-planner".to_string()),
+                        provider: "dev-stub".to_string(),
+                        model: Some("default".to_string()),
+                        effort: None,
+                        account_profile: None,
+                    }),
+                    public_label: Some("Planner".to_string()),
+                    instructions: Some("Plan.".to_string()),
+                    can_complete_workflow_run: Some(false),
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema: None,
+                    max_turns: None,
+                    extensions: Vec::new(),
+                    canvas: None,
+                },
+                WorkflowCodeNodeDefinition {
+                    handle: "finisher".to_string(),
+                    agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                        alias: Some("coded-finisher".to_string()),
+                        provider: "dev-stub".to_string(),
+                        model: Some("default".to_string()),
+                        effort: None,
+                        account_profile: None,
+                    }),
+                    public_label: Some("Finisher".to_string()),
+                    instructions: Some("Finish.".to_string()),
+                    can_complete_workflow_run: Some(true),
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema: None,
+                    max_turns: None,
+                    extensions: Vec::new(),
+                    canvas: None,
+                },
+            ],
+            edges: vec![crate::workflow_code::WorkflowCodeEdgeDefinition {
+                handle: "planner_to_finisher".to_string(),
+                from_node: "planner".to_string(),
+                to_node: "finisher".to_string(),
+                source_side: None,
+                target_side: None,
+                handoff_schema: None,
+                validation_policy: None,
+                canvas: None,
+            }],
+            endpoints: vec![WorkflowCodeEndpointDefinition {
+                handle: "entry".to_string(),
+                entry_node: "planner".to_string(),
+                alias: Some("entry".to_string()),
+                canvas: None,
+            }],
+            queues: Vec::new(),
+            watchdogs: Vec::new(),
+        }
+    }
+
+    fn existing_agent_workflow_code_definition(agent_id: &str) -> WorkflowCodeDefinition {
+        let mut definition = generated_workflow_code_definition();
+        definition.workflow.alias = Some("existing_agent".to_string());
+        definition.nodes.truncate(1);
+        definition.nodes[0].agent = WorkflowCodeAgentBinding::Existing(WorkflowCodeExistingAgent {
+            agent_ref: agent_id.to_string(),
+        });
+        definition.edges.clear();
+        definition
+    }
 
     #[test]
     fn create_session_writes_durable_state_event() {
@@ -66,6 +162,74 @@ mod tests {
         );
         assert_eq!(events[1].subject_id.as_deref(), Some(spawned.id()));
         assert_eq!(events[2].subject_id.as_deref(), Some(session.id()));
+    }
+
+    #[test]
+    fn workflow_code_apply_spawns_generated_agents_and_creates_workflow() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        let definition = generated_workflow_code_definition();
+        let report = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect("workflow-code should apply");
+
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        let workflow = session
+            .workflow(&report.workflow_id)
+            .expect("workflow should exist");
+        assert_eq!(workflow.nodes().len(), 2);
+        assert_eq!(workflow.edges().len(), 1);
+        assert_eq!(workflow.endpoints().len(), 1);
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 3);
+        assert_eq!(report.agent_ids.len(), 2);
+        assert!(report.queue_ids.contains_key("default"));
+
+        let events = app
+            .durable_state_store()
+            .load_events_after(0)
+            .expect("durable events should load");
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "workflow_code.applied"
+                && event.subject_id.as_deref() == Some(report.workflow_id.as_str())));
+    }
+
+    #[test]
+    fn workflow_code_apply_rejects_metaagent_binding_unowned_existing_agent() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let definition = existing_agent_workflow_code_definition(default_agent.id());
+
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                Some("meta-1".to_string()),
+            )
+            .expect_err("metaagent should not bind an agent it does not control");
+
+        assert!(format!("{error}").contains("not authorized"));
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(session.workflows().is_empty());
     }
 
     #[test]
@@ -601,6 +765,137 @@ impl<'a> KernelSessionService<'a> {
             }),
         )?;
         Ok(agent)
+    }
+
+    pub(crate) fn apply_workflow_code_definition(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        let validation = definition.validate_with_limits(limits);
+        if !validation.ok {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.apply",
+                message: format!(
+                    "workflow-code definition is invalid: {}",
+                    validation
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| diagnostic.code.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+
+        let mut node_agent_ids = BTreeMap::new();
+        for node in &definition.nodes {
+            let agent_id = match &node.agent {
+                WorkflowCodeAgentBinding::Create(agent) => {
+                    if agent.account_profile.is_some() {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "workflow_code.apply",
+                            message: format!(
+                                "node `{}` requests account_profile, but provider account rebinding is not wired yet",
+                                node.handle
+                            ),
+                        });
+                    }
+                    let mut request = CreateAgentRequest::new(session_id, agent.provider.clone())
+                        .with_owner_user_id(created_by_user_id.clone());
+                    if let Some(alias) = agent.alias.as_deref() {
+                        request = request.with_alias(alias.to_string());
+                    }
+                    if let Some(model) = agent.model.as_deref() {
+                        request = request.with_model(model.to_string());
+                    }
+                    if let Some(effort) = agent.effort.as_deref() {
+                        request = request.with_effort(effort.to_string());
+                    }
+                    if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
+                        request = request.with_controlled_by_metaagent_id(metaagent_id.to_string());
+                    }
+                    let created = self.spawn_agent(request)?;
+                    self.grant_workflow_code_node_extensions(created.id(), &node.extensions)?;
+                    created.id().to_string()
+                }
+                WorkflowCodeAgentBinding::Existing(existing) => {
+                    let agent = self.app.agents.get_agent(&existing.agent_ref)?;
+                    if agent.session_id() != session_id {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "workflow_code.apply",
+                            message: format!(
+                                "existing agent `{}` belongs to session `{}` instead of `{session_id}`",
+                                existing.agent_ref,
+                                agent.session_id()
+                            ),
+                        });
+                    }
+                    if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
+                        if agent.controlled_by_metaagent_id() != Some(metaagent_id) {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "workflow_code.apply",
+                                message: format!(
+                                    "metaagent `{metaagent_id}` is not authorized to bind existing agent `{}`",
+                                    existing.agent_ref
+                                ),
+                            });
+                        }
+                    }
+                    self.grant_workflow_code_node_extensions(agent.id(), &node.extensions)?;
+                    agent.id().to_string()
+                }
+            };
+            node_agent_ids.insert(node.handle.clone(), agent_id);
+        }
+
+        let session_store = self.app.session_state_store();
+        let mut sessions = session_store.write();
+        let report = sessions.apply_workflow_code_definition(
+            session_id,
+            definition,
+            &node_agent_ids,
+            limits,
+            created_by_user_id.clone(),
+            controlled_by_metaagent_id.clone(),
+        )?;
+        drop(sessions);
+
+        self.app.durable_state_store().append_event(
+            "workflow_code.applied",
+            Some(report.workflow_id.clone()),
+            serde_json::json!({
+                "session_id": session_id,
+                "created_by_user_id": created_by_user_id,
+                "controlled_by_metaagent_id": controlled_by_metaagent_id,
+                "report": &report,
+            }),
+        )?;
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
+        Ok(report)
+    }
+
+    fn grant_workflow_code_node_extensions(
+        &mut self,
+        agent_id: &str,
+        grants: &[ExtensionGrant],
+    ) -> Result<(), DaemonError> {
+        for grant in grants {
+            let agent = self.app.agents.grant_extension(agent_id, grant.clone())?;
+            self.app.durable_state_store().append_event(
+                "agent.extension_granted",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                    "grant": grant,
+                    "source": "workflow_code",
+                }),
+            )?;
+        }
+        Ok(())
     }
 
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {

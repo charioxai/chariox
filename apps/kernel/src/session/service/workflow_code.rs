@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::*;
 use crate::config::WorkflowCodeLimitsConfig;
@@ -190,16 +190,10 @@ impl SessionService {
 
     fn validate_workflow_code_agent_bindings(
         &self,
-        session_id: &str,
+        _session_id: &str,
         definition: &WorkflowCodeDefinition,
         node_agent_ids: &BTreeMap<String, String>,
     ) -> Result<(), DaemonError> {
-        let session = self.get_session(session_id)?;
-        let session_agent_ids = session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<BTreeSet<_>>();
         for node in &definition.nodes {
             let agent_id =
                 node_agent_ids
@@ -208,11 +202,6 @@ impl SessionService {
                         operation: "workflow_code.apply",
                         message: format!("node `{}` is missing a resolved agent id", node.handle),
                     })?;
-            if !session_agent_ids.contains(agent_id) {
-                return Err(DaemonError::AgentNotFound {
-                    agent_id: agent_id.clone(),
-                });
-            }
             if let WorkflowCodeAgentBinding::Existing(existing) = &node.agent {
                 if existing.agent_ref != *agent_id {
                     return Err(DaemonError::LocalTransport {
