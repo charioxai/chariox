@@ -1,11 +1,23 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::params;
 
 use crate::error::DaemonError;
 use crate::session::prompt_id_number;
 
-use super::{HistoryEvent, OperationalHistoryStore, SessionHistoryEntry};
+use super::{HistoryEvent, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalImportHistoryIndex {
+    pub arroba_owned_prompts: Vec<String>,
+    pub external_entries_by_merge_key: BTreeMap<String, ExternalImportHistoryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalImportHistoryEntry {
+    pub kind: SessionHistoryEntryKind,
+    pub text: String,
+}
 
 impl OperationalHistoryStore {
     pub fn max_prompt_number(&self) -> Result<u64, DaemonError> {
@@ -336,6 +348,106 @@ impl OperationalHistoryStore {
         Ok((arroba_owned_prompts, external_merge_keys))
     }
 
+    pub fn load_external_import_history_index(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        external_merge_key_prefix: &str,
+    ) -> Result<ExternalImportHistoryIndex, DaemonError> {
+        self.delay_read_if_configured();
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock operational history store",
+                    message: error.to_string(),
+                })?;
+        let like_pattern = format!("%{external_merge_key_prefix}%");
+        let mut statement = connection
+            .prepare(
+                "SELECT kind, content, metadata_text
+                 FROM history_events
+                 WHERE session_id = ?1
+                   AND agent_id = ?2
+                   AND (kind = 'user_prompt' OR metadata_text LIKE ?3)",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare external import history entry index load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![session_id, agent_id, like_pattern])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load external import history entry index",
+                message: error.to_string(),
+            })?;
+        let mut arroba_owned_prompts = Vec::new();
+        let mut external_entries_by_merge_key = BTreeMap::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "read external import history entry index",
+                message: error.to_string(),
+            })?
+        {
+            let kind =
+                row.get::<_, String>(0)
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode external import history entry index kind",
+                        message: error.to_string(),
+                    })?;
+            let content = row.get::<_, Option<String>>(1).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode external import history entry index content",
+                    message: error.to_string(),
+                }
+            })?;
+            let metadata_text = row.get::<_, Option<String>>(2).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode external import history entry index metadata",
+                    message: error.to_string(),
+                }
+            })?;
+            let metadata_text = metadata_text.unwrap_or_default();
+            let is_external_observed = metadata_text
+                .lines()
+                .any(|line| line == "external_provider_observed");
+            if kind == "user_prompt" && !is_external_observed {
+                if let Some(content) = content.clone() {
+                    arroba_owned_prompts.push(content);
+                }
+            }
+            let Some(kind) = session_history_kind_from_key(&kind) else {
+                continue;
+            };
+            let Some(content) = content else {
+                continue;
+            };
+            for line in metadata_text.lines() {
+                if line.starts_with(external_merge_key_prefix) {
+                    external_entries_by_merge_key.insert(
+                        line.to_string(),
+                        ExternalImportHistoryEntry {
+                            kind,
+                            text: content.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(ExternalImportHistoryIndex {
+            arroba_owned_prompts,
+            external_entries_by_merge_key,
+        })
+    }
+
     pub fn load_arroba_owned_prompt_texts(
         &self,
         session_id: &str,
@@ -456,6 +568,19 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 }),
             })
+    }
+}
+
+fn session_history_kind_from_key(kind: &str) -> Option<SessionHistoryEntryKind> {
+    match kind {
+        "user_prompt" => Some(SessionHistoryEntryKind::UserPrompt),
+        "provider_output" => Some(SessionHistoryEntryKind::ProviderOutput),
+        "provider_reasoning" => Some(SessionHistoryEntryKind::ProviderReasoning),
+        "provider_tool" => Some(SessionHistoryEntryKind::ProviderTool),
+        "provider_error" => Some(SessionHistoryEntryKind::ProviderError),
+        "provider_status" => Some(SessionHistoryEntryKind::ProviderStatus),
+        "notice" => Some(SessionHistoryEntryKind::Notice),
+        _ => None,
     }
 }
 

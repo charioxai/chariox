@@ -19,6 +19,7 @@ mod operational_session;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
+pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
     SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
 };

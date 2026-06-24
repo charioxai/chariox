@@ -7,7 +7,7 @@ use tokio::sync::{watch, Mutex};
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{external_session_id_for_provider_session, DaemonApp};
 use crate::error::DaemonError;
-use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
+use crate::history::{ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntryKind};
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
     ImportExternalProviderSessionRequest, ListExternalProviderSessionsRequest, LocalDaemonRequest,
@@ -734,23 +734,16 @@ fn append_observed_external_turns_for_import_with_options(
         .external_provider_session_provider_id
         .clone();
     let external_merge_key_prefix = format!("external:{provider}:{provider_session_id}:");
-    let history_entries = app.load_session_history_entries(&session, Some(agent.id()))?;
-    let mut arroba_owned_prompt_history = Vec::new();
-    let mut existing_entries_by_merge_key = BTreeMap::new();
-    for entry in history_entries {
-        if entry.kind == SessionHistoryEntryKind::UserPrompt
-            && entry.source
-                != Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved)
-        {
-            arroba_owned_prompt_history.push(entry.text.clone());
-        }
-        if let Some(merge_key) = entry.merge_key.as_deref() {
-            if merge_key.starts_with(&external_merge_key_prefix) {
-                existing_entries_by_merge_key.insert(merge_key.to_string(), entry);
-            }
-        }
-    }
-    let mut arroba_owned_prompt_texts = arroba_owned_prompt_history
+    let history_index = app
+        .operational_history_store()
+        .load_external_import_history_index(
+            &read.target.session_id,
+            &read.target.agent_id,
+            &external_merge_key_prefix,
+        )?;
+    let mut existing_entries_by_merge_key = history_index.external_entries_by_merge_key;
+    let mut arroba_owned_prompt_texts = history_index
+        .arroba_owned_prompts
         .iter()
         .filter_map(|text| normalized_observed_prompt_text(text))
         .collect::<BTreeSet<_>>();
@@ -845,7 +838,13 @@ fn append_observed_external_turns_for_import_with_options(
                     merge_key,
                     entry.clone(),
                 );
-                existing_entries_by_merge_key.insert(merge_key.to_string(), entry.clone());
+                existing_entries_by_merge_key.insert(
+                    merge_key.to_string(),
+                    ExternalImportHistoryEntry {
+                        kind: entry.kind,
+                        text: entry.text.clone(),
+                    },
+                );
             } else {
                 app.append_history_entry(&read.target.session_id, entry.clone());
             }
@@ -954,17 +953,10 @@ fn observed_external_turn_merge_key(
 }
 
 fn external_observed_history_entry_matches(
-    existing: &SessionHistoryEntry,
+    existing: &ExternalImportHistoryEntry,
     next: &SessionHistoryEntry,
 ) -> bool {
-    existing.agent_id == next.agent_id
-        && existing.kind == next.kind
-        && existing.merge_key == next.merge_key
-        && existing.source == next.source
-        && existing.external_provider == next.external_provider
-        && existing.external_provider_session_id == next.external_provider_session_id
-        && existing.external_provider_turn_id == next.external_provider_turn_id
-        && existing.text == next.text
+    existing.kind == next.kind && existing.text == next.text
 }
 
 fn normalized_observed_prompt_text(text: &str) -> Option<String> {
