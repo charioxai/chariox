@@ -521,6 +521,9 @@ function spawnProviderProcess(command, artifactDir, workspace) {
 }
 
 async function waitForProviderExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return { code: child.exitCode, signal: child.signalCode }
+  }
   return await Promise.race([
     new Promise((resolve) => {
       child.once("exit", (code, signal) => resolve({ code, signal }))
