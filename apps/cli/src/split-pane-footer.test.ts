@@ -69,6 +69,17 @@ test("agentPaneStatusBadge stays working while the local busy latch is active", 
   })
 })
 
+test("agentPaneStatusBadge can ignore stale legacy processing state", () => {
+  assert.deepEqual(agentPaneStatusBadge({
+    ...primaryAgent,
+    state: "Working",
+    is_processing: true,
+  }, null, false, false, false, false), {
+    label: "IDLE",
+    tone: "idle",
+  })
+})
+
 test("formatSplitPaneFooter uses alias without runtime metadata", () => {
   assert.equal(
     formatSplitPaneFooter(primaryAgent, null, null),
@@ -267,4 +278,31 @@ test("buildSplitPaneFooterState marks an agent working for the turn and idle aft
   })
 
   assert.deepEqual(completedState.primary.badge, { label: "IDLE", tone: "idle" })
+})
+
+test("buildSplitPaneFooterState can treat projected activity as authoritative over agent state", () => {
+  const state = buildSplitPaneFooterState({
+    mode: "idle",
+    selection: {
+      primary: { ...primaryAgent, state: "Working", is_processing: true },
+      secondary: null,
+      tertiary: null,
+    },
+    focusedAgentId: "agent-a",
+    streamingAgentId: null,
+    activityLabels: {
+      "agent-a": null,
+    },
+    hasPromptWorkByAgent: {
+      "agent-a": false,
+    },
+    busyLatchesByAgent: {
+      "agent-a": false,
+    },
+    useLegacyAgentProcessingState: false,
+    activeRun: null,
+    fallbackModel: "gpt-5.4",
+  })
+
+  assert.deepEqual(state.primary.badge, { label: "IDLE", tone: "idle" })
 })

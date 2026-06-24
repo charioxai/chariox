@@ -258,19 +258,24 @@ export function deriveSessionTransitionState(
   const nextAgentSignature = options.nextSession.agents.map((agent) => agent.id).join(",")
   const nextFocusedAgentId = focusedAgentIdForSession(options.nextSession)
   const nextHasPromptWork = sessionHasPromptWork(options.nextSession)
-  const resolvedStreamingAgentId = resolveStreamingAgentId(
-    options.nextSession.agents,
-    projectedStreamingAgentIdForSession(options.nextSession),
-    nextHasPromptWork,
-    options.currentWorking,
-    options.currentStreamingAgentId,
-  )
+  const resolvedStreamingAgentId = options.nextSession.agent_activity
+    ? projectedStreamingAgentIdForSession(options.nextSession)
+    : resolveStreamingAgentId(
+      options.nextSession.agents,
+      projectedStreamingAgentIdForSession(options.nextSession),
+      nextHasPromptWork,
+      options.currentWorking,
+      options.currentStreamingAgentId,
+    )
   const nextStreamingAgentId = resolvedStreamingAgentId
   const nextAgentActivityLabels: Record<string, string | null> = {}
   for (const agent of options.nextSession.agents) {
-    nextAgentActivityLabels[agent.id] =
+    const legacyAgentBusy = !options.nextSession.agent_activity && (
       agent.is_processing
-        || agent.state === "Working"
+      || agent.state === "Working"
+    )
+    nextAgentActivityLabels[agent.id] =
+      legacyAgentBusy
         || agent.id === nextStreamingAgentId
         || agentHasPromptWork(options.nextSession, agent.id)
         ? (options.currentAgentActivityLabels[agent.id] ?? null)

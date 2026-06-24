@@ -471,6 +471,38 @@ test("deriveSessionTransitionState ignores stale active prompt target when proje
   })
 })
 
+test("deriveSessionTransitionState ignores stale processing state when projected activity is idle", () => {
+  const nextSession = session({
+    focused_agent_id: "agent-a",
+    agent_activity: {
+      "agent-a": {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+      },
+    },
+    agents: [agent("agent-a", { is_processing: true, state: "Working" })],
+  })
+
+  const transition = deriveSessionTransitionState({
+    currentSession: session({ agents: [agent("agent-a")] }),
+    nextSession,
+    currentWorking: true,
+    currentStreamingAgentId: "agent-a",
+    currentAgentActivityLabels: {
+      "agent-a": "thinking",
+    },
+    layoutPreference: "individual",
+  })
+
+  assert.equal(transition.nextHasPromptWork, false)
+  assert.equal(transition.nextStreamingAgentId, null)
+  assert.equal(transition.nextFocusedActivityLabel, null)
+  assert.deepEqual(transition.nextAgentActivityLabels, {
+    "agent-a": null,
+  })
+})
+
 test("derivePromptLifecycleTransition detects when a cancelling prompt settles", () => {
   const transition = derivePromptLifecycleTransition(
     session({
