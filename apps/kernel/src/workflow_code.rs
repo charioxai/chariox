@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
 
 use crate::config::WorkflowCodeLimitsConfig;
-use crate::extension::ExtensionGrant;
+use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::mcp::validate_registry_name;
 use crate::session::{
     WorkflowEdgeEndpointSide, WorkflowHandoffValidationPolicy, WorkflowWatchdogPolicy,
@@ -1035,6 +1035,7 @@ impl<'a> WorkflowCodeValidator<'a> {
         let mut existing_agent_refs = BTreeMap::<&str, &str>::new();
         for node in &definition.nodes {
             self.validate_agent_binding(node, &mut existing_agent_refs);
+            self.validate_node_extensions(node);
             self.validate_schema_ref(
                 &schema_handles,
                 node.intermediate_output_schema.as_deref(),
@@ -1162,6 +1163,45 @@ impl<'a> WorkflowCodeValidator<'a> {
             }
         }
         handles
+    }
+
+    fn validate_node_extensions(&mut self, node: &WorkflowCodeNodeDefinition) {
+        for grant in &node.extensions {
+            if grant.name.trim().is_empty() {
+                self.error(
+                    "invalid_extension_name",
+                    "extension name must not be empty",
+                    Some(node.handle.clone()),
+                );
+            }
+            match &grant.kind {
+                ExtensionKind::Script => {
+                    if grant
+                        .environment
+                        .as_deref()
+                        .is_none_or(|environment| environment.trim().is_empty())
+                    {
+                        self.error(
+                            "invalid_extension_environment",
+                            "script extension requirements must include environment",
+                            Some(node.handle.clone()),
+                        );
+                    }
+                }
+                ExtensionKind::Connector => {
+                    if let Err(error) =
+                        crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())
+                    {
+                        self.error(
+                            "invalid_connector_safety",
+                            format!("connector extension safety is invalid: {error}"),
+                            Some(node.handle.clone()),
+                        );
+                    }
+                }
+                ExtensionKind::Mcp | ExtensionKind::Skill => {}
+            }
+        }
     }
 
     fn validate_agent_binding<'b>(
@@ -1681,6 +1721,36 @@ mod tests {
                     .message
                     .contains("workflow generated prompt text uses")
         }));
+    }
+
+    #[test]
+    fn validates_node_extension_grant_shape() {
+        let mut definition = minimal_definition();
+        definition.nodes[0]
+            .extensions
+            .push(ExtensionGrant::new(ExtensionKind::Skill, ""));
+        definition.nodes[0]
+            .extensions
+            .push(ExtensionGrant::new(ExtensionKind::Script, "release-script"));
+        definition.nodes[0].extensions.push(ExtensionGrant {
+            kind: ExtensionKind::Connector,
+            name: "deploy-api".to_string(),
+            environment: None,
+            credential: None,
+            max_safety: Some("admin".to_string()),
+        });
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+        let codes = report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!report.ok);
+        assert!(codes.contains(&"invalid_extension_name"));
+        assert!(codes.contains(&"invalid_extension_environment"));
+        assert!(codes.contains(&"invalid_connector_safety"));
     }
 
     #[test]
