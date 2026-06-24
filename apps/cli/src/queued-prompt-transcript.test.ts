@@ -46,8 +46,36 @@ test("syncQueuedPromptEntriesForAgent disables steering behind external active p
   assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
 })
 
+test("syncQueuedPromptEntriesForAgent disables steering behind external active turns", () => {
+  const synced = syncQueuedPromptEntriesForAgent(
+    [],
+    sessionWithQueuedPrompt({}, {
+      agent_activity: {
+        "agent-1": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-external",
+            provider_run_id: "run-external",
+            prompt_origin: "external",
+            status: "running",
+            phase: "streaming",
+            started_at_ms: 2,
+          },
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
+})
+
 function sessionWithQueuedPrompt(
   overrides: Partial<NonNullable<RuntimeSession["prompt_states"]>[string]> = {},
+  sessionOverrides: Partial<RuntimeSession> = {},
 ): RuntimeSession {
   return {
     id: "session-1",
@@ -95,5 +123,6 @@ function sessionWithQueuedPrompt(
       version: 1,
       values: {},
     },
+    ...sessionOverrides,
   }
 }

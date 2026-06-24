@@ -461,6 +461,7 @@ export type AgentRuntimeActivity = {
   active_turn?: {
     prompt_id: string
     provider_run_id?: string | null
+    prompt_origin?: "arroba" | "external" | string | null
     status: "none" | "queued" | "running" | "cancelling" | "settling"
     phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
     started_at_ms?: number | null
