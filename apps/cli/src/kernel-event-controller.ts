@@ -10,7 +10,7 @@ type KernelEventControllerDeps = {
   splitAgentResponseMode: () => boolean
   visibleTranscriptAgentId: () => string | null
   focusedAgentId: () => string | null
-  hasTrailingUserPrompt: (agentId: string, text: string) => boolean
+  hasTrailingUserPrompt: (agentId: string, text: string, promptId?: string | null) => boolean
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]
   computeNextTurnId: (entries: TranscriptEntry[]) => number
   appendTranscriptEntryToAgentPane: (agentId: string, entry: Omit<TranscriptEntry, "id">) => void
@@ -101,7 +101,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
       }
       switch (record.kind) {
         case "prompt_echo": {
-          if (deps.hasTrailingUserPrompt(recordAgentId, text)) {
+          if (deps.hasTrailingUserPrompt(recordAgentId, text, record.prompt_id ?? null)) {
             break
           }
           const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
@@ -145,7 +145,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
         const metadata = terminalRecordTranscriptMetadata(record)
         switch (record.kind) {
           case "prompt_echo": {
-            if (deps.hasTrailingUserPrompt(recordAgentId, text)) {
+            if (deps.hasTrailingUserPrompt(recordAgentId, text, record.prompt_id ?? null)) {
               break
             }
             const paneEntries = deps.currentAgentPaneEntries(recordAgentId)
@@ -191,7 +191,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     const metadata = terminalRecordTranscriptMetadata(record)
     switch (record.kind) {
       case "prompt_echo":
-        if (recordAgentId && deps.hasTrailingUserPrompt(recordAgentId, text)) {
+        if (recordAgentId && deps.hasTrailingUserPrompt(recordAgentId, text, record.prompt_id ?? null)) {
           break
         }
         deps.appendEntry({ role: "user", text: deps.trimSingleTrailingNewline(text), ...metadata })

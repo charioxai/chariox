@@ -29,11 +29,13 @@ test("agent pane transcript entry controller appends preview lines", () => {
 test("agent pane transcript entry controller detects trailing user prompts", () => {
   const harness = entryHarness({
     paneEntriesByAgent: {
-      "agent-1": [entry(1, "user", "hello\n")],
+      "agent-1": [entry(1, "user", "hello\n", { promptId: "prompt-1" })],
     },
   })
 
   assert.equal(harness.controller.hasTrailingUserPrompt("agent-1", "hello"), true)
+  assert.equal(harness.controller.hasTrailingUserPrompt("agent-1", "changed display text", "prompt-1"), true)
+  assert.equal(harness.controller.hasTrailingUserPrompt("agent-1", "hello\n", "prompt-2"), false)
   assert.equal(harness.controller.hasTrailingUserPrompt("agent-1", "other"), false)
 })
 

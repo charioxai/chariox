@@ -51,10 +51,15 @@ export function createAgentPaneTranscriptEntryController(
     }))
   }
 
-  const hasTrailingUserPrompt = (agentId: string, text: string) => {
+  const hasTrailingUserPrompt = (agentId: string, text: string, promptId?: string | null) => {
     const lastEntry = deps.currentAgentPaneEntries(agentId).at(-1)
-    return lastEntry?.role === "user"
-      && trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
+    if (lastEntry?.role !== "user") {
+      return false
+    }
+    if (lastEntry.promptId && promptId) {
+      return lastEntry.promptId === promptId
+    }
+    return trimSingleTrailingNewline(lastEntry.text) === trimSingleTrailingNewline(text)
   }
 
   const appendEntry = (
