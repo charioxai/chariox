@@ -260,6 +260,82 @@ impl ArrobaUserConfig {
                     true,
                 )?)
             }
+            "workflow.session_default_max_agents" => {
+                self.workflow.session_default_max_agents = Some(parse_config_u32(
+                    "workflow.session_default_max_agents",
+                    &value,
+                    true,
+                )?)
+            }
+            path if path.starts_with("workflow.code.") => {
+                let code = self.workflow.code.get_or_insert_with(Default::default);
+                match path {
+                    "workflow.code.max_concurrent" => {
+                        code.max_concurrent = Some(parse_config_u32(
+                            "workflow.code.max_concurrent",
+                            &value,
+                            true,
+                        )?)
+                    }
+                    "workflow.code.max_nodes" => {
+                        code.max_nodes =
+                            Some(parse_config_u32("workflow.code.max_nodes", &value, true)?)
+                    }
+                    "workflow.code.max_agents" => {
+                        code.max_agents =
+                            Some(parse_config_u32("workflow.code.max_agents", &value, true)?)
+                    }
+                    "workflow.code.max_edges" => {
+                        code.max_edges =
+                            Some(parse_config_u32("workflow.code.max_edges", &value, true)?)
+                    }
+                    "workflow.code.max_queues" => {
+                        code.max_queues =
+                            Some(parse_config_u32("workflow.code.max_queues", &value, true)?)
+                    }
+                    "workflow.code.max_watchdogs" => {
+                        code.max_watchdogs = Some(parse_config_u32(
+                            "workflow.code.max_watchdogs",
+                            &value,
+                            true,
+                        )?)
+                    }
+                    "workflow.code.max_schema_bytes" => {
+                        code.max_schema_bytes = Some(parse_config_u32(
+                            "workflow.code.max_schema_bytes",
+                            &value,
+                            true,
+                        )?)
+                    }
+                    "workflow.code.max_generated_prompt_bytes" => {
+                        code.max_generated_prompt_bytes = Some(parse_config_u32(
+                            "workflow.code.max_generated_prompt_bytes",
+                            &value,
+                            true,
+                        )?)
+                    }
+                    "workflow.code.script_timeout_ms" => {
+                        code.script_timeout_ms = Some(parse_config_u64(
+                            "workflow.code.script_timeout_ms",
+                            &value,
+                            true,
+                        )?)
+                    }
+                    "workflow.code.script_memory_bytes" => {
+                        code.script_memory_bytes = Some(parse_config_u64(
+                            "workflow.code.script_memory_bytes",
+                            &value,
+                            true,
+                        )?)
+                    }
+                    _ => {
+                        return Err(DaemonError::InvalidConfig {
+                            field: "user_config",
+                            message: "unsupported user config key",
+                        });
+                    }
+                }
+            }
             "credential_vault.service" => {
                 self.credential_vault.service =
                     non_empty_config_string("credential_vault.service", value)?
@@ -406,6 +482,41 @@ impl ArrobaUserConfig {
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
             "workflow.max_queues_per_workflow" => self.workflow.max_queues_per_workflow = None,
+            "workflow.session_default_max_agents" => {
+                self.workflow.session_default_max_agents = None
+            }
+            path if path.starts_with("workflow.code.") => {
+                if let Some(code) = self.workflow.code.as_mut() {
+                    match path {
+                        "workflow.code.max_concurrent" => code.max_concurrent = None,
+                        "workflow.code.max_nodes" => code.max_nodes = None,
+                        "workflow.code.max_agents" => code.max_agents = None,
+                        "workflow.code.max_edges" => code.max_edges = None,
+                        "workflow.code.max_queues" => code.max_queues = None,
+                        "workflow.code.max_watchdogs" => code.max_watchdogs = None,
+                        "workflow.code.max_schema_bytes" => code.max_schema_bytes = None,
+                        "workflow.code.max_generated_prompt_bytes" => {
+                            code.max_generated_prompt_bytes = None
+                        }
+                        "workflow.code.script_timeout_ms" => code.script_timeout_ms = None,
+                        "workflow.code.script_memory_bytes" => code.script_memory_bytes = None,
+                        _ => {
+                            return Err(DaemonError::InvalidConfig {
+                                field: "user_config",
+                                message: "unsupported user config key",
+                            });
+                        }
+                    }
+                }
+                if self
+                    .workflow
+                    .code
+                    .as_ref()
+                    .is_some_and(crate::config::UserWorkflowCodeConfig::is_empty)
+                {
+                    self.workflow.code = None;
+                }
+            }
             "credential_vault.agent_management" => {
                 self.credential_vault.agent_management =
                     crate::config::CredentialVaultAgentManagementPolicy::default()

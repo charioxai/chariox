@@ -284,6 +284,18 @@ impl DaemonConfig {
             .map(|value| value as usize)
     }
 
+    pub fn session_default_max_agents(&self) -> i32 {
+        self.user_config
+            .workflow
+            .session_default_max_agents
+            .unwrap_or(crate::session::DEFAULT_SESSION_MAX_AGENTS as u32)
+            .min(i32::MAX as u32) as i32
+    }
+
+    pub fn workflow_code_limits(&self) -> WorkflowCodeLimitsConfig {
+        self.user_config.workflow.code_limits()
+    }
+
     pub fn operational_history_max_size_bytes(&self) -> u64 {
         self.user_config
             .history
@@ -403,6 +415,113 @@ pub struct UserKernelConfig {
 pub struct UserWorkflowConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_queues_per_workflow: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_default_max_agents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<UserWorkflowCodeConfig>,
+}
+
+impl UserWorkflowConfig {
+    pub fn code_limits(&self) -> WorkflowCodeLimitsConfig {
+        self.code
+            .as_ref()
+            .map(UserWorkflowCodeConfig::limits)
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserWorkflowCodeConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_nodes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_edges: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_queues: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_watchdogs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_schema_bytes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_generated_prompt_bytes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_memory_bytes: Option<u64>,
+}
+
+impl UserWorkflowCodeConfig {
+    pub fn is_empty(&self) -> bool {
+        self.max_concurrent.is_none()
+            && self.max_nodes.is_none()
+            && self.max_agents.is_none()
+            && self.max_edges.is_none()
+            && self.max_queues.is_none()
+            && self.max_watchdogs.is_none()
+            && self.max_schema_bytes.is_none()
+            && self.max_generated_prompt_bytes.is_none()
+            && self.script_timeout_ms.is_none()
+            && self.script_memory_bytes.is_none()
+    }
+
+    pub fn limits(&self) -> WorkflowCodeLimitsConfig {
+        WorkflowCodeLimitsConfig {
+            max_concurrent: self
+                .max_concurrent
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT),
+            max_nodes: self
+                .max_nodes
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_NODES),
+            max_agents: self
+                .max_agents
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_AGENTS),
+            max_edges: self
+                .max_edges
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_EDGES),
+            max_queues: self
+                .max_queues
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES),
+            max_watchdogs: self
+                .max_watchdogs
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS),
+            max_schema_bytes: self
+                .max_schema_bytes
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES),
+            max_generated_prompt_bytes: self
+                .max_generated_prompt_bytes
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES),
+            script_timeout_ms: self
+                .script_timeout_ms
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS),
+            script_memory_bytes: self
+                .script_memory_bytes
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeLimitsConfig {
+    pub max_concurrent: u32,
+    pub max_nodes: u32,
+    pub max_agents: u32,
+    pub max_edges: u32,
+    pub max_queues: u32,
+    pub max_watchdogs: u32,
+    pub max_schema_bytes: u32,
+    pub max_generated_prompt_bytes: u32,
+    pub script_timeout_ms: u64,
+    pub script_memory_bytes: u64,
+}
+
+impl Default for WorkflowCodeLimitsConfig {
+    fn default() -> Self {
+        UserWorkflowCodeConfig::default().limits()
+    }
 }
 
 fn default_user_config_version() -> u32 {
@@ -1241,6 +1360,99 @@ unlock_policy = "{unlock_policy}"
         assert!(schema
             .iter()
             .any(|entry| entry.path == "ui.worktree_aliases.<alias>"));
+        assert!(schema
+            .iter()
+            .any(|entry| entry.path == "workflow.session_default_max_agents"));
+        assert!(schema
+            .iter()
+            .any(|entry| entry.path == "workflow.code.max_concurrent"));
+    }
+
+    #[test]
+    fn workflow_code_limits_have_large_defaults() {
+        let config = DaemonConfig::new("daemon", "machine", "tester");
+        let limits = config.workflow_code_limits();
+
+        assert_eq!(
+            config.session_default_max_agents(),
+            crate::session::DEFAULT_SESSION_MAX_AGENTS
+        );
+        assert_eq!(
+            limits.max_concurrent,
+            crate::session::DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT
+        );
+        assert_eq!(
+            limits.max_agents,
+            crate::session::DEFAULT_WORKFLOW_CODE_MAX_AGENTS
+        );
+        assert_eq!(
+            limits.max_generated_prompt_bytes,
+            crate::session::DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES
+        );
+    }
+
+    #[test]
+    fn workflow_code_limits_can_be_set_and_unset() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-workflow-code-config-test-{}-{}.toml",
+            std::process::id(),
+            generate_identity_suffix()
+        ));
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config_path = path.clone();
+
+        config
+            .set_user_config_value("workflow.session_default_max_agents", "2048")
+            .expect("session agent cap should update");
+        config
+            .set_user_config_value("workflow.code.max_concurrent", "64")
+            .expect("workflow-code concurrency should update");
+        config
+            .set_user_config_value("workflow.code.max_nodes", "256")
+            .expect("workflow-code node cap should update");
+
+        assert_eq!(config.session_default_max_agents(), 2048);
+        let limits = config.workflow_code_limits();
+        assert_eq!(limits.max_concurrent, 64);
+        assert_eq!(limits.max_nodes, 256);
+
+        config
+            .unset_user_config_value("workflow.code.max_concurrent")
+            .expect("workflow-code concurrency should unset");
+
+        assert_eq!(
+            config.workflow_code_limits().max_concurrent,
+            crate::session::DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT
+        );
+        assert_eq!(
+            config
+                .user_config
+                .workflow
+                .code
+                .as_ref()
+                .expect("remaining workflow-code config should stay")
+                .max_nodes,
+            Some(256)
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_code_limits_reject_zero_values() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+
+        let error = config
+            .set_user_config_value("workflow.code.max_concurrent", "0")
+            .expect_err("zero concurrency should be rejected");
+
+        assert!(matches!(
+            error,
+            DaemonError::InvalidConfig {
+                field: "workflow.code.max_concurrent",
+                ..
+            }
+        ));
     }
 
     #[test]

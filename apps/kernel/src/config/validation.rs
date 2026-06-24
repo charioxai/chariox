@@ -63,6 +63,18 @@ impl DaemonConfig {
                 message: "value must not be zero",
             });
         }
+        if self
+            .user_config
+            .workflow
+            .session_default_max_agents
+            .is_some_and(|value| value == 0)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "workflow.session_default_max_agents",
+                message: "value must not be zero",
+            });
+        }
+        validate_workflow_code_limits(&self.user_config.workflow)?;
         validate_non_empty("relay_public_key", &self.relay_public_key)?;
         validate_non_empty("relay_private_key", &self.relay_private_key)?;
         if self.relay_heartbeat_ms == 0 {
@@ -79,6 +91,54 @@ impl DaemonConfig {
         }
         Ok(())
     }
+}
+
+fn validate_workflow_code_limits(
+    workflow: &crate::config::UserWorkflowConfig,
+) -> Result<(), DaemonError> {
+    let Some(code) = workflow.code.as_ref() else {
+        return Ok(());
+    };
+    validate_optional_nonzero("workflow.code.max_concurrent", code.max_concurrent)?;
+    validate_optional_nonzero("workflow.code.max_nodes", code.max_nodes)?;
+    validate_optional_nonzero("workflow.code.max_agents", code.max_agents)?;
+    validate_optional_nonzero("workflow.code.max_edges", code.max_edges)?;
+    validate_optional_nonzero("workflow.code.max_queues", code.max_queues)?;
+    validate_optional_nonzero("workflow.code.max_watchdogs", code.max_watchdogs)?;
+    validate_optional_nonzero("workflow.code.max_schema_bytes", code.max_schema_bytes)?;
+    validate_optional_nonzero(
+        "workflow.code.max_generated_prompt_bytes",
+        code.max_generated_prompt_bytes,
+    )?;
+    validate_optional_nonzero_u64("workflow.code.script_timeout_ms", code.script_timeout_ms)?;
+    validate_optional_nonzero_u64(
+        "workflow.code.script_memory_bytes",
+        code.script_memory_bytes,
+    )?;
+    Ok(())
+}
+
+fn validate_optional_nonzero(field: &'static str, value: Option<u32>) -> Result<(), DaemonError> {
+    if value.is_some_and(|value| value == 0) {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(())
+}
+
+fn validate_optional_nonzero_u64(
+    field: &'static str,
+    value: Option<u64>,
+) -> Result<(), DaemonError> {
+    if value.is_some_and(|value| value == 0) {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(())
 }
 
 impl ArrobaUserConfig {

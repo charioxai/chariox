@@ -337,6 +337,10 @@ impl RuntimeSession {
         self.max_agents
     }
 
+    pub fn set_max_agents(&mut self, max_agents: i32) {
+        self.max_agents = max_agents.max(1);
+    }
+
     pub fn agents(&self) -> &[AgentInstance] {
         &self.agents
     }

@@ -888,6 +888,22 @@ export type ArrobaUserConfig = {
   ui?: Record<string, unknown>
   relay?: Record<string, unknown>
   kernel?: Record<string, unknown>
+  workflow?: {
+    max_queues_per_workflow?: number
+    session_default_max_agents?: number
+    code?: {
+      max_concurrent?: number
+      max_nodes?: number
+      max_agents?: number
+      max_edges?: number
+      max_queues?: number
+      max_watchdogs?: number
+      max_schema_bytes?: number
+      max_generated_prompt_bytes?: number
+      script_timeout_ms?: number
+      script_memory_bytes?: number
+    }
+  }
   credential_vault?: {
     backend?: "arroba_encrypted" | "process_memory"
     service?: string
@@ -1459,7 +1475,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 167
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 168
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

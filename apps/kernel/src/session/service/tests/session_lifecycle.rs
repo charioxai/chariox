@@ -17,6 +17,10 @@ fn creates_gets_and_lists_sessions() {
     assert_eq!(created.host_daemon_id(), "daemon-test");
     assert_eq!(created.status(), SessionStatus::Created);
     assert!(created.active_provider_run_id().is_none());
+    assert_eq!(
+        created.max_agents(),
+        crate::session::DEFAULT_SESSION_MAX_AGENTS
+    );
     assert!(created.attachment_ids().is_empty());
     assert!(created.active_prompt().is_none());
     assert!(created.queued_prompts().is_empty());
@@ -34,6 +38,19 @@ fn creates_gets_and_lists_sessions() {
         .expect("lookup should succeed");
     assert_eq!(fetched, created);
     assert_eq!(service.list_sessions(), vec![created]);
+}
+
+#[test]
+fn create_session_uses_configured_default_agent_cap() {
+    let mut config = test_config();
+    config.user_config.workflow.session_default_max_agents = Some(2048);
+    let mut service = SessionService::new(&config);
+
+    let created = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    assert_eq!(created.max_agents(), 2048);
 }
 
 #[test]

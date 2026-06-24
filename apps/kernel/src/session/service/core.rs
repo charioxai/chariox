@@ -20,6 +20,7 @@ impl SessionService {
             next_workflow_prompt_queue_number: 0,
             next_workflow_queued_prompt_number: 0,
             max_workflow_queues_per_workflow: config.max_workflow_queues_per_workflow(),
+            session_default_max_agents: config.session_default_max_agents(),
             next_workspace_link_number: 0,
         }
     }
@@ -44,6 +45,7 @@ impl SessionService {
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
+        session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
         if let Some(agent_defaults) = request.agent_defaults {
