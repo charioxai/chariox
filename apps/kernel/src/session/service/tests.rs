@@ -41,6 +41,7 @@ fn seed_agents(service: &mut SessionService, session_id: &str, agent_ids: &[&str
 }
 
 mod session_lifecycle;
+mod workflow_code_apply;
 mod workflow_definitions;
 mod workflow_dispatch;
 mod workflow_runs;

@@ -136,6 +136,7 @@ mod sessions;
 mod tests;
 mod turns;
 mod watchdogs;
+mod workflow_code;
 mod workflow_defs;
 
 pub use helpers::classify_workflow_failure_kind;

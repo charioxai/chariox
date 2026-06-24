@@ -199,6 +199,26 @@ pub struct WorkflowCodeCompileResult {
     pub logs: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeApplyReport {
+    pub workflow_id: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schema_refs: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub node_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edge_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub endpoint_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub queue_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub watchdog_ids: BTreeMap<String, String>,
+    pub canvas_layout_applied: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct WorkflowCodeCompilerInput<'a> {
     source: &'a str,
