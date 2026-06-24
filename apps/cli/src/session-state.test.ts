@@ -217,6 +217,35 @@ test("sessionHasPromptWork and agentHasPromptWork prefer kernel agent activity",
   assert.equal(agentHasPromptWork(nextSession, "agent-b"), false)
 })
 
+test("kernel agent activity busy predicate includes status, prompt status, and active turn", () => {
+  for (const activity of [
+    { status: "working", prompt_status: "none", busy: false },
+    { status: "idle", prompt_status: "settling", busy: false },
+    {
+      status: "idle",
+      prompt_status: "none",
+      busy: false,
+      active_turn: {
+        prompt_id: "prompt-1",
+        status: "running",
+        phase: "streaming",
+      },
+    },
+  ] satisfies NonNullable<RuntimeSession["agent_activity"]>[string][]) {
+    const nextSession = session({
+      agent_activity: {
+        "agent-a": activity,
+      },
+      agents: [agent("agent-a")],
+    })
+
+    assert.equal(sessionHasPromptWork(nextSession), true)
+    assert.equal(sessionHasProcessingAgent(nextSession), true)
+    assert.equal(agentHasPromptWork(nextSession, "agent-a"), true)
+    assert.equal(projectedStreamingAgentIdForSession(nextSession), "agent-a")
+  }
+})
+
 test("kernel agent activity suppresses stale legacy prompt activity", () => {
   const nextSession = session({
     active_prompt: {

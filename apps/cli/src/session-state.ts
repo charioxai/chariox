@@ -114,7 +114,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
   if (session.agent_activity) {
-    return Object.values(session.agent_activity).some((activity) => activity.busy)
+    return Object.values(session.agent_activity).some(agentRuntimeActivityIsBusy)
   }
   if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
     return Object.values(session.prompt_states).some((state) => {
@@ -125,6 +125,9 @@ export function sessionHasPromptWork(session: RuntimeSession): boolean {
 }
 
 export function sessionHasProcessingAgent(session: RuntimeSession): boolean {
+  if (session.agent_activity) {
+    return Object.values(session.agent_activity).some(agentRuntimeActivityIsBusy)
+  }
   return session.agents.some((agent) => {
     return agent.is_processing || agent.state === "Working"
   })
@@ -203,7 +206,7 @@ export function agentHasPromptWork(
   agentId: string | null | undefined,
 ): boolean {
   if (session.agent_activity) {
-    return agentId ? (session.agent_activity[agentId]?.busy ?? false) : false
+    return agentId ? agentRuntimeActivityIsBusy(session.agent_activity[agentId]) : false
   }
   const promptState = agentPromptState(session, agentId)
   return Boolean(promptState?.active_prompt) || (promptState?.queued_prompts.length ?? 0) > 0
@@ -230,9 +233,20 @@ export function sessionResponseLayout(
 
 export function projectedStreamingAgentIdForSession(session: RuntimeSession): string | null {
   if (session.agent_activity) {
-    return session.agents.find((agent) => session.agent_activity?.[agent.id]?.busy === true)?.id ?? null
+    return session.agents.find((agent) => agentRuntimeActivityIsBusy(session.agent_activity?.[agent.id]))?.id ?? null
   }
   return session.active_prompt?.target_agent_id ?? null
+}
+
+export function agentRuntimeActivityIsBusy(
+  activity: NonNullable<RuntimeSession["agent_activity"]>[string] | null | undefined,
+): boolean {
+  return Boolean(activity && (
+    activity.busy
+    || activity.status === "working"
+    || activity.prompt_status !== "none"
+    || activity.active_turn
+  ))
 }
 
 export function deriveSessionTransitionState(

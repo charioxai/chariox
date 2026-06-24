@@ -98,6 +98,42 @@ test("agent activity labels are preserved for streaming, prompt work, and workin
   }), false)
 })
 
+test("projected idle activity suppresses stale legacy processing state", () => {
+  const idleProjectionSession = session({
+    agents: [agent("a1", { state: "Working", is_processing: true })],
+    agent_activity: {
+      a1: {
+        status: "idle",
+        prompt_status: "none",
+        busy: false,
+      },
+    },
+  })
+
+  assert.equal(shouldPreserveAgentActivityLabel({
+    agentId: "a1",
+    session: idleProjectionSession,
+    streamingAgentId: null,
+  }), false)
+  assert.equal(deriveFocusedAgentBusy({
+    focusedAgentId: "a1",
+    submitting: false,
+    submittingAgentId: null,
+    session: idleProjectionSession,
+    streamingAgentId: null,
+    focusedActivityLabel: null,
+    agentBusyLatches: {},
+  }), false)
+  assert.deepEqual(deriveAllAgentsBusyState({
+    submitting: false,
+    submittingAgentId: null,
+    session: idleProjectionSession,
+    streamingAgentId: null,
+    agentActivityLabels: {},
+    agentBusyLatches: {},
+  }), [{ id: "a1", busy: false }])
+})
+
 test("active tool labels prefer visible transcript tools and ignore completed pane tools", () => {
   assert.equal(resolveActiveToolLabelForAgent({
     agentId: "a1",
