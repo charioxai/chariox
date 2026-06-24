@@ -216,6 +216,47 @@ test("sessionHasPromptWork and agentHasPromptWork prefer kernel agent activity",
   assert.equal(agentHasPromptWork(nextSession, "agent-b"), false)
 })
 
+test("kernel agent activity suppresses stale legacy prompt activity", () => {
+  const nextSession = session({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale top-level prompt",
+      status: "running",
+    },
+    queued_prompts: [{
+      id: "queued-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-b",
+      prompt: "stale queued prompt",
+      status: "queued",
+    }],
+    prompt_states: {
+      "agent-a": {
+        active_prompt: {
+          id: "prompt-state-stale",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-a",
+          prompt: "stale prompt state",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+    agent_activity: {},
+    agents: [agent("agent-a"), agent("agent-b")],
+  })
+
+  assert.equal(sessionHasPromptWork(nextSession), false)
+  assert.equal(agentHasPromptWork(nextSession, "agent-a"), false)
+  assert.equal(agentHasPromptWork(nextSession, "agent-b"), false)
+  assert.deepEqual(promptWorkByAgent(nextSession), {
+    "agent-a": false,
+    "agent-b": false,
+  })
+})
+
 test("shouldConfirmIdleTurnCompletion treats idle session snapshots as stale-turn completion", () => {
   const idleSession = session({
     agents: [agent("agent-a", { state: "Focused" }), agent("agent-b")],

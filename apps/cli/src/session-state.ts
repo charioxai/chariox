@@ -113,7 +113,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
 }
 
 export function sessionHasPromptWork(session: RuntimeSession): boolean {
-  if (session.agent_activity && Object.keys(session.agent_activity).length > 0) {
+  if (session.agent_activity) {
     return Object.values(session.agent_activity).some((activity) => activity.busy)
   }
   if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
@@ -202,8 +202,8 @@ export function agentHasPromptWork(
   session: RuntimeSession,
   agentId: string | null | undefined,
 ): boolean {
-  if (agentId && session.agent_activity?.[agentId]) {
-    return session.agent_activity[agentId].busy
+  if (session.agent_activity) {
+    return agentId ? (session.agent_activity[agentId]?.busy ?? false) : false
   }
   const promptState = agentPromptState(session, agentId)
   return Boolean(promptState?.active_prompt) || (promptState?.queued_prompts.length ?? 0) > 0
