@@ -339,6 +339,27 @@ impl KernelRuntimeOwnedState {
                 ),
             })?;
         let node_id = node_run.node_id().to_string();
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&context.session_id, workflow_run.workflow_id())?;
+        let outgoing_edges = workflow
+            .edges()
+            .iter()
+            .filter(|edge| edge.from_node_id() == node_id)
+            .map(|edge| {
+                let target_node = workflow.node(edge.to_node_id());
+                serde_json::json!({
+                    "edge_id": edge.id(),
+                    "from_node_id": edge.from_node_id(),
+                    "to_node_id": edge.to_node_id(),
+                    "to_node_public_label": target_node.map(|node| node.public_label()),
+                    "to_agent_id": target_node.map(|node| node.agent_id()),
+                    "handoff_schema_ref": edge.handoff_schema_ref(),
+                    "validation_policy": edge.validation_policy(),
+                })
+            })
+            .collect::<Vec<_>>();
         let messages = workflow_run
             .messages()
             .iter()
@@ -373,6 +394,12 @@ impl KernelRuntimeOwnedState {
                 "invocation_prompt": workflow_run.invocation_prompt(),
                 "delivery_token": context.delivery_token,
                 "messages": messages,
+                "outgoing_edges": outgoing_edges,
+                "handoff_routing": {
+                    "final_json_field": "workflow_handoffs",
+                    "select_by": ["edge_id", "to_node_id"],
+                    "message_fields": ["output.message", "message"],
+                },
             }),
         })
     }
@@ -697,8 +724,223 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
+        let config_projection = app.config_projection_store();
+        let session_store = app.session_state_store();
+        let agent_store = app.agents().clone();
+        let attachment_store = app.attachments().clone();
+        let provider_store = app.providers().clone();
+        let provider_process_tracking = app.provider_process_tracking_store();
+        let slice_store = app.slices();
+        let session_projection = app.session_state_projection_store();
+        let provider_run_projection = app.provider_run_projection_store();
+        let history_store = app.history_store();
+        let operational_history_store = app.operational_history_store();
+        let durable_state_store = app.durable_state_store();
+        let history_projection = app.session_history_projection_store();
+        let prompt_state_owner = app.prompt_state_owner();
+        let active_turns = app.active_turn_store();
+        let prompt_activity = app.prompt_activity_store();
+        let prompt_workspace_claims = app.prompt_workspace_claim_store();
+        let structured_output_records = app.structured_output_record_store();
+        let terminal_stream = app.terminal_stream_store();
+        let workflow_design_events = app.workflow_design_event_store();
+        let metaagent_events = app.metaagent_event_store();
+        let workspace_coordinator = app.workspace_coordinator();
+        KernelRuntimeState::new_with_owned_state(
+            Arc::new(Mutex::new(app)),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            history_store,
+            operational_history_store,
+            durable_state_store,
+            history_projection,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
+
+    #[test]
+    fn workflow_turn_context_lists_outgoing_edge_options() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, router_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should be created");
+        let worker_a = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("worker-a"),
+            )
+            .expect("worker a should spawn");
+        let worker_b = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("worker-b"),
+            )
+            .expect("worker b should spawn");
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("routing".to_string()))
+            .expect("workflow should be created");
+        let router = app
+            .sessions_mut()
+            .add_workflow_node_owned(
+                session.id(),
+                workflow.id(),
+                router_agent.id(),
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+                "Router".to_string(),
+            )
+            .expect("router node should be added");
+        let node_a = app
+            .sessions_mut()
+            .add_workflow_node_owned(
+                session.id(),
+                workflow.id(),
+                worker_a.id(),
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+                "Worker A".to_string(),
+            )
+            .expect("worker a node should be added");
+        let node_b = app
+            .sessions_mut()
+            .add_workflow_node_owned(
+                session.id(),
+                workflow.id(),
+                worker_b.id(),
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+                crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+                "Worker B".to_string(),
+            )
+            .expect("worker b node should be added");
+        let edge_a = app
+            .sessions_mut()
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                router.id(),
+                node_a.id(),
+                Some("/schemas/route-a.json".to_string()),
+                Some(crate::session::WorkflowHandoffValidationPolicy::Halt),
+            )
+            .expect("edge a should be added");
+        let edge_b = app
+            .sessions_mut()
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                router.id(),
+                node_b.id(),
+                Some("/schemas/route-b.json".to_string()),
+                Some(crate::session::WorkflowHandoffValidationPolicy::Warn),
+            )
+            .expect("edge b should be added");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                router.id(),
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should be created");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("route this".to_string()),
+            )
+            .expect("workflow run should be created");
+        let workflow_run_id = workflow_run.id().to_string();
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .start_workflow_node_run(session.id(), &workflow_run_id, &node_run_id)
+            .expect("router node run should start");
+
+        let runtime = runtime_state_from_app(app);
+        let context = runtime
+            .owned
+            .workflow_tool_context(
+                session.id().to_string(),
+                workflow_run_id,
+                node_run_id.clone(),
+                Some("delivery-token".to_string()),
+            )
+            .expect("workflow tool context should resolve");
+        let (result, dispatches) = runtime
+            .owned
+            .dispatch_workflow_runtime_tool_call(
+                crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL.to_string(),
+                serde_json::json!({}),
+                context,
+            )
+            .expect("read workflow context should succeed");
+
+        assert!(dispatches.local.is_empty());
+        assert!(dispatches.remote.is_empty());
+        assert!(dispatches.starting_provider_runs.is_empty());
+        assert!(result.ok);
+        let outgoing = result.payload["outgoing_edges"]
+            .as_array()
+            .expect("outgoing edges should be an array");
+        assert_eq!(outgoing.len(), 2);
+        let option_a = outgoing
+            .iter()
+            .find(|edge| edge["edge_id"] == edge_a.id())
+            .expect("edge a should be present");
+        assert_eq!(option_a["to_node_id"], node_a.id());
+        assert_eq!(option_a["to_node_public_label"], "Worker A");
+        assert_eq!(option_a["to_agent_id"], worker_a.id());
+        assert_eq!(option_a["handoff_schema_ref"], "/schemas/route-a.json");
+        assert_eq!(option_a["validation_policy"], "halt");
+        let option_b = outgoing
+            .iter()
+            .find(|edge| edge["edge_id"] == edge_b.id())
+            .expect("edge b should be present");
+        assert_eq!(option_b["to_node_id"], node_b.id());
+        assert_eq!(option_b["to_node_public_label"], "Worker B");
+        assert_eq!(option_b["to_agent_id"], worker_b.id());
+        assert_eq!(option_b["handoff_schema_ref"], "/schemas/route-b.json");
+        assert_eq!(option_b["validation_policy"], "warn");
+        assert_eq!(
+            result.payload["handoff_routing"]["final_json_field"],
+            "workflow_handoffs"
+        );
+        assert!(result.payload["handoff_routing"]["select_by"]
+            .as_array()
+            .expect("select_by should be an array")
+            .iter()
+            .any(|value| value == "edge_id"));
+        assert_eq!(result.payload["workflow_node_run_id"], node_run_id);
+    }
 
     #[test]
     fn agent_app_http_action_forwards_invocation_context_headers() {
