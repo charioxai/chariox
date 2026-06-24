@@ -219,6 +219,27 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         _ => panic!("unexpected local response"),
     }
 
+    let package = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowCodeArtifact(
+            crate::local::ExportWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.clone(),
+            },
+        ))
+        .expect("workflow-code artifact should export")
+    {
+        LocalDaemonResponse::WorkflowCodeArtifactExported { package } => {
+            assert_eq!(package.name, name);
+            assert_eq!(package.source, updated_source);
+            assert_eq!(
+                package.definition.workflow.alias.as_deref(),
+                Some("artifact_flow_updated")
+            );
+            package
+        }
+        _ => panic!("unexpected local response"),
+    };
+
     let deleted = harness
         .dispatch(LocalDaemonRequest::DeleteWorkflowCodeArtifact(
             crate::local::DeleteWorkflowCodeArtifactRequest {
@@ -237,6 +258,32 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         }
         _ => panic!("unexpected local response"),
     }
+
+    let imported_name = format!("{name}-imported");
+    let imported = harness
+        .dispatch(LocalDaemonRequest::ImportWorkflowCodeArtifact(
+            crate::local::ImportWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                package,
+                name: Some(imported_name.clone()),
+                overwrite: false,
+                node_path: node_path.display().to_string(),
+            },
+        ))
+        .expect("workflow-code artifact package should import");
+    match imported {
+        LocalDaemonResponse::WorkflowCodeArtifactImported { artifact } => {
+            assert_eq!(artifact.metadata.name, imported_name);
+            assert_eq!(artifact.source, updated_source);
+            assert_eq!(
+                artifact.definition.workflow.alias.as_deref(),
+                Some("artifact_flow_updated")
+            );
+            assert!(artifact.metadata.validation.ok);
+        }
+        _ => panic!("unexpected local response"),
+    }
+
     std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
 }
 

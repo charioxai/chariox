@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 173;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 174;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -135,7 +135,7 @@ pub struct AckMetaagentEventsRequest {
     pub up_to_sequence: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
     CreateSession(CreateSessionRequest),
     AttachToSession(AttachToSessionRequest),
@@ -346,6 +346,8 @@ pub enum LocalDaemonRequest {
     GetWorkflowCodeArtifact(GetWorkflowCodeArtifactRequest),
     ListWorkflowCodeArtifacts(ListWorkflowCodeArtifactsRequest),
     DeleteWorkflowCodeArtifact(DeleteWorkflowCodeArtifactRequest),
+    ExportWorkflowCodeArtifact(ExportWorkflowCodeArtifactRequest),
+    ImportWorkflowCodeArtifact(ImportWorkflowCodeArtifactRequest),
     ApplyWorkflowDesignOp(ApplyWorkflowDesignOpRequest),
     AliasWorkflow(AliasWorkflowRequest),
     ListWorkflows(ListWorkflowsRequest),
@@ -1112,6 +1114,12 @@ pub enum LocalDaemonResponse {
     WorkflowCodeArtifactDeleted {
         name: String,
         path: PathBuf,
+    },
+    WorkflowCodeArtifactExported {
+        package: crate::workflow_code::WorkflowCodeArtifactPackage,
+    },
+    WorkflowCodeArtifactImported {
+        artifact: crate::workflow_code::WorkflowCodeArtifact,
     },
     WorkflowAliased {
         workflow: WorkflowDefinition,

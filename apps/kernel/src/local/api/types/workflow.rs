@@ -56,6 +56,23 @@ pub struct DeleteWorkflowCodeArtifactRequest {
     pub name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub package: crate::workflow_code::WorkflowCodeArtifactPackage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overwrite: bool,
+    pub node_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AliasWorkflowRequest {
     pub session_id: String,

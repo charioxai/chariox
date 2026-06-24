@@ -228,6 +228,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::DeleteWorkflowCodeArtifact(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ExportWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ImportWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ApplyWorkflowDesignOp(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

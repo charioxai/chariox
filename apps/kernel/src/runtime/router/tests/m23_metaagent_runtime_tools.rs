@@ -345,6 +345,59 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         Some("meta_scripted_flow")
     );
 
+    let exported = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_EXPORT_TOOL,
+            serde_json::json!({ "name": "meta-flow" }),
+        )
+        .await
+        .expect("metaagent should export workflow-code artifact");
+    assert!(exported.ok, "{:?}", exported.payload);
+    assert_eq!(
+        exported
+            .payload
+            .pointer("/WorkflowCodeArtifactExported/package/name")
+            .and_then(serde_json::Value::as_str),
+        Some("meta-flow")
+    );
+    let package = exported
+        .payload
+        .pointer("/WorkflowCodeArtifactExported/package")
+        .cloned()
+        .expect("export should return package");
+
+    let imported = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_IMPORT_TOOL,
+            serde_json::json!({
+                "package": package,
+                "name": "meta-flow-imported"
+            }),
+        )
+        .await
+        .expect("metaagent should import workflow-code package");
+    assert!(imported.ok, "{:?}", imported.payload);
+    assert_eq!(
+        imported
+            .payload
+            .pointer("/WorkflowCodeArtifactImported/artifact/metadata/name")
+            .and_then(serde_json::Value::as_str),
+        Some("meta-flow-imported")
+    );
+    assert_eq!(
+        imported
+            .payload
+            .pointer("/WorkflowCodeArtifactImported/artifact/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("meta_scripted_flow")
+    );
+
     let deleted = router
         .runtime_state
         .dispatch_meta_runtime_tool_call_for_agent(
@@ -362,6 +415,25 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .pointer("/WorkflowCodeArtifactDeleted/name")
             .and_then(serde_json::Value::as_str),
         Some("meta-flow")
+    );
+
+    let deleted_import = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL,
+            serde_json::json!({ "name": "meta-flow-imported" }),
+        )
+        .await
+        .expect("metaagent should delete imported workflow-code artifact");
+    assert!(deleted_import.ok, "{:?}", deleted_import.payload);
+    assert_eq!(
+        deleted_import
+            .payload
+            .pointer("/WorkflowCodeArtifactDeleted/name")
+            .and_then(serde_json::Value::as_str),
+        Some("meta-flow-imported")
     );
 }
 

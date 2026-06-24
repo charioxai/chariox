@@ -555,6 +555,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetWorkflowCodeArtifact(_) => "workflow_code_artifact.get",
         LocalDaemonRequest::ListWorkflowCodeArtifacts(_) => "workflow_code_artifact.list",
         LocalDaemonRequest::DeleteWorkflowCodeArtifact(_) => "workflow_code_artifact.delete",
+        LocalDaemonRequest::ExportWorkflowCodeArtifact(_) => "workflow_code_artifact.export",
+        LocalDaemonRequest::ImportWorkflowCodeArtifact(_) => "workflow_code_artifact.import",
         LocalDaemonRequest::ApplyWorkflowDesignOp(_) => "workflow_design.apply_op",
         LocalDaemonRequest::AliasWorkflow(_) => "workflow.alias",
         LocalDaemonRequest::ListWorkflows(_) => "workflow.list",

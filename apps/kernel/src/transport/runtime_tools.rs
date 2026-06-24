@@ -116,6 +116,8 @@ pub const META_WORKFLOW_CODE_DELETE_TOOL: &str = "arroba.meta.workflow_code.dele
 pub const META_WORKFLOW_CODE_VALIDATE_TOOL: &str = "arroba.meta.workflow_code.validate";
 pub const META_WORKFLOW_CODE_APPLY_TOOL: &str = "arroba.meta.workflow_code.apply";
 pub const META_WORKFLOW_CODE_RUN_TOOL: &str = "arroba.meta.workflow_code.run";
+pub const META_WORKFLOW_CODE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.export";
+pub const META_WORKFLOW_CODE_IMPORT_TOOL: &str = "arroba.meta.workflow_code.import";
 
 pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
 pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
@@ -578,6 +580,22 @@ pub struct MetaWorkflowCodeRunArgs {
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetaWorkflowCodeExportArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetaWorkflowCodeImportArgs {
+    pub package: crate::workflow_code::WorkflowCodeArtifactPackage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
 }
@@ -1453,6 +1471,33 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_EXPORT_TOOL.to_string(),
+            description: "Export a saved workflow-code artifact as a portable package without local filesystem paths.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_IMPORT_TOOL.to_string(),
+            description: "Import a portable workflow-code package after recompiling and validating it on this kernel. name overrides the package name; overwrite replaces an existing saved artifact with the target name.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["package"],
+                "properties": {
+                    "package": {"type": "object"},
+                    "name": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                    "node_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
             description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
@@ -1623,6 +1668,14 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_meta_workflow_code_run"
         | "mcp__arroba__meta_workflow_code_run"
         | "mcp__arroba__arroba_meta_workflow_code_run" => Some(META_WORKFLOW_CODE_RUN_TOOL),
+        META_WORKFLOW_CODE_EXPORT_TOOL
+        | "arroba_meta_workflow_code_export"
+        | "mcp__arroba__meta_workflow_code_export"
+        | "mcp__arroba__arroba_meta_workflow_code_export" => Some(META_WORKFLOW_CODE_EXPORT_TOOL),
+        META_WORKFLOW_CODE_IMPORT_TOOL
+        | "arroba_meta_workflow_code_import"
+        | "mcp__arroba__meta_workflow_code_import"
+        | "mcp__arroba__arroba_meta_workflow_code_import" => Some(META_WORKFLOW_CODE_IMPORT_TOOL),
         META_RESOLVE_RUNTIME_INTERACTION_TOOL
         | "arroba_meta_resolve_runtime_interaction"
         | "mcp__arroba__meta_resolve_runtime_interaction"

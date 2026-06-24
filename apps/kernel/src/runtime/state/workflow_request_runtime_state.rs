@@ -64,6 +64,16 @@ impl KernelRuntimeState {
                     .await,
                 None,
             ),
+            LocalDaemonRequest::ExportWorkflowCodeArtifact(request) => (
+                self.execute_workflow_code_artifact_export_request(request)
+                    .await,
+                None,
+            ),
+            LocalDaemonRequest::ImportWorkflowCodeArtifact(request) => (
+                self.execute_workflow_code_artifact_import_request(request)
+                    .await,
+                None,
+            ),
             LocalDaemonRequest::ApplyWorkflowDesignOp(request) => {
                 let origin_client_id = request.origin_client_id.clone();
                 let op_id = request.op_id.clone();
@@ -464,6 +474,61 @@ impl KernelRuntimeState {
                 name: request.name,
                 path,
             })
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_artifact_export_request(
+        &self,
+        request: crate::local::ExportWorkflowCodeArtifactRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let package = registry.export_package(&request.name)?;
+            app.durable_state_store().append_event(
+                "workflow_code_artifact.exported",
+                Some(request.session_id),
+                serde_json::json!({
+                    "name": &package.name,
+                    "source_sha256": &package.source_sha256,
+                    "source_bytes": package.source_bytes,
+                    "package_version": package.package_version,
+                }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowCodeArtifactExported { package })
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_artifact_import_request(
+        &self,
+        request: crate::local::ImportWorkflowCodeArtifactRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            request.package.validate_integrity()?;
+            let limits = app.config().workflow_code_limits();
+            let compile = crate::workflow_code::compile_workflow_code_javascript(
+                &request.node_path,
+                &request.package.source,
+                &limits,
+            )?;
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let artifact = registry.import_package(
+                request.name.as_deref(),
+                request.package,
+                compile.definition,
+                &limits,
+                request.overwrite,
+            )?;
+            app.durable_state_store().append_event(
+                "workflow_code_artifact.imported",
+                Some(request.session_id),
+                serde_json::json!({
+                    "artifact": &artifact.metadata,
+                    "overwrite": request.overwrite,
+                }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowCodeArtifactImported { artifact })
         })
         .await
     }

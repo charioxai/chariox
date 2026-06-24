@@ -7,20 +7,21 @@ use crate::transport::runtime_tools::{
     MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
     MetaSubscribeTraceArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
     MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs,
-    MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs, MetaWorkflowCodeListArgs,
-    MetaWorkflowCodeReadArgs, MetaWorkflowCodeRunArgs, MetaWorkflowCodeUpdateArgs,
-    MetaWorkflowCodeValidateArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
-    META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
-    META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
-    META_POLL_TRACE_TOOL, META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL,
-    META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
-    META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL,
-    META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL,
-    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL,
-    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
-    META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL,
-    META_WORKFLOW_CODE_LIST_TOOL, META_WORKFLOW_CODE_READ_TOOL, META_WORKFLOW_CODE_RUN_TOOL,
-    META_WORKFLOW_CODE_UPDATE_TOOL, META_WORKFLOW_CODE_VALIDATE_TOOL,
+    MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs, MetaWorkflowCodeExportArgs,
+    MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs, MetaWorkflowCodeReadArgs,
+    MetaWorkflowCodeRunArgs, MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs,
+    RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_COMPLETE_TASK_TOOL,
+    META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_GUIDES_TOOL,
+    META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_POLL_TRACE_TOOL,
+    META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL, META_READ_TASK_TOOL,
+    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
+    META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
+    META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
+    META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL,
+    META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL, META_WORKFLOW_CODE_APPLY_TOOL,
+    META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_EXPORT_TOOL,
+    META_WORKFLOW_CODE_IMPORT_TOOL, META_WORKFLOW_CODE_LIST_TOOL, META_WORKFLOW_CODE_READ_TOOL,
+    META_WORKFLOW_CODE_RUN_TOOL, META_WORKFLOW_CODE_UPDATE_TOOL, META_WORKFLOW_CODE_VALIDATE_TOOL,
 };
 
 const META_TRACE_WAIT_DEFAULT_MS: u64 = 30_000;
@@ -496,6 +497,16 @@ impl KernelRuntimeState {
                     .map_err(invalid_meta_args)?;
                 self.meta_workflow_code_run(session, agent, args).await
             }
+            META_WORKFLOW_CODE_EXPORT_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeExportArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_export(session, agent, args).await
+            }
+            META_WORKFLOW_CODE_IMPORT_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeImportArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_import(session, agent, args).await
+            }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
                 let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
                     .map_err(invalid_meta_args)?;
@@ -647,6 +658,76 @@ impl KernelRuntimeState {
                 session,
                 agent,
                 serde_json::json!({ "name": name, "path": path }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_export(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeExportArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::ExportWorkflowCodeArtifact(
+                    crate::local::ExportWorkflowCodeArtifactRequest {
+                        session_id: session.id().to_string(),
+                        name: args.name,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowCodeArtifactExported { package } =
+            &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_code.exported",
+                session,
+                agent,
+                serde_json::json!({
+                    "name": &package.name,
+                    "source_sha256": &package.source_sha256,
+                    "source_bytes": package.source_bytes,
+                    "package_version": package.package_version,
+                }),
+            );
+        }
+        runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_import(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeImportArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::ImportWorkflowCodeArtifact(
+                    crate::local::ImportWorkflowCodeArtifactRequest {
+                        session_id: session.id().to_string(),
+                        package: args.package,
+                        name: args.name,
+                        overwrite: args.overwrite.unwrap_or(false),
+                        node_path: meta_workflow_code_node_path(args.node_path)?
+                            .display()
+                            .to_string(),
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        if let crate::local::LocalDaemonResponse::WorkflowCodeArtifactImported { artifact } =
+            &response
+        {
+            self.persist_metaagent_workflow_code_event(
+                "metaagent.workflow_code.imported",
+                session,
+                agent,
+                serde_json::json!({ "artifact": &artifact.metadata }),
             );
         }
         runtime_tool_result_from_local_response(response)

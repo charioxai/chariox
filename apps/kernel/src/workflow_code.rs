@@ -19,6 +19,7 @@ use crate::session::{
 };
 
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
+pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
 
 const NODE_WORKFLOW_CODE_COMPILER: &str = r#"
@@ -262,6 +263,19 @@ pub struct WorkflowCodeArtifact {
     pub definition: WorkflowCodeDefinition,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowCodeArtifactPackage {
+    pub package_version: u32,
+    pub name: String,
+    pub language: WorkflowCodeLanguage,
+    pub source: String,
+    pub source_sha256: String,
+    pub source_bytes: u64,
+    pub definition: WorkflowCodeDefinition,
+    pub validation: WorkflowCodeValidationReport,
+    pub exported_at_ms: u64,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowCodeLanguage {
@@ -407,6 +421,38 @@ impl WorkflowCodeArtifactRegistry {
             })?;
         fs::remove_file(&path).map_err(io_error("workflow_code.delete"))?;
         Ok(path)
+    }
+
+    pub fn export_package(
+        &self,
+        name: &str,
+    ) -> Result<WorkflowCodeArtifactPackage, crate::DaemonError> {
+        let artifact = self
+            .get(name)?
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.export",
+                message: format!("workflow-code artifact `{name}` is not saved"),
+            })?;
+        Ok(artifact.into_package())
+    }
+
+    pub fn import_package(
+        &self,
+        name_override: Option<&str>,
+        package: WorkflowCodeArtifactPackage,
+        definition: WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        overwrite: bool,
+    ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
+        package.validate_integrity()?;
+        let name = name_override.unwrap_or(package.name.as_str());
+        validate_registry_name(name, "workflow-code artifact name")?;
+        let existing = self.get(name)?.is_some();
+        if overwrite && existing {
+            self.update(name, package.language, package.source, definition, limits)
+        } else {
+            self.save(name, package.language, package.source, definition, limits)
+        }
     }
 
     fn artifact_path(&self, name: &str) -> Result<PathBuf, crate::DaemonError> {
@@ -1123,6 +1169,55 @@ impl<'a> WorkflowCodeValidator<'a> {
             ok,
             diagnostics: self.diagnostics,
         }
+    }
+}
+
+impl WorkflowCodeArtifact {
+    pub fn into_package(self) -> WorkflowCodeArtifactPackage {
+        WorkflowCodeArtifactPackage {
+            package_version: WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION,
+            name: self.metadata.name,
+            language: self.metadata.language,
+            source: self.source,
+            source_sha256: self.metadata.source_sha256,
+            source_bytes: self.metadata.source_bytes,
+            definition: self.definition,
+            validation: self.metadata.validation,
+            exported_at_ms: crate::session::unix_epoch_ms(),
+        }
+    }
+}
+
+impl WorkflowCodeArtifactPackage {
+    pub fn validate_integrity(&self) -> Result<(), crate::DaemonError> {
+        if self.package_version != WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.import",
+                message: format!(
+                    "unsupported workflow-code package version {}; expected {}",
+                    self.package_version, WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION
+                ),
+            });
+        }
+        validate_registry_name(&self.name, "workflow-code artifact package name")?;
+        let source_bytes = self.source.len() as u64;
+        if source_bytes != self.source_bytes {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.import",
+                message: format!(
+                    "workflow-code package source byte count mismatch: declared {}, actual {source_bytes}",
+                    self.source_bytes
+                ),
+            });
+        }
+        let source_sha256 = sha256_hex(self.source.as_bytes());
+        if source_sha256 != self.source_sha256 {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.import",
+                message: "workflow-code package source sha256 mismatch".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 

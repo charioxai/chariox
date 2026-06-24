@@ -1,4 +1,5 @@
 import type {
+  WorkflowCodeArtifactPackage,
   WorkflowCodeLanguage,
   WorkflowDesignOp,
   WorkflowPublicationSnapshot,
@@ -163,6 +164,55 @@ export function deleteWorkflowCodeArtifactRequest(
     DeleteWorkflowCodeArtifact: {
       session_id: sessionId,
       name,
+    },
+  }
+}
+
+export type ExportWorkflowCodeArtifactRequest = {
+  ExportWorkflowCodeArtifact: {
+    session_id: string
+    name: string
+  }
+}
+
+export function exportWorkflowCodeArtifactRequest(
+  sessionId: string,
+  name: string,
+): ExportWorkflowCodeArtifactRequest {
+  return {
+    ExportWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
+    },
+  }
+}
+
+export type ImportWorkflowCodeArtifactRequest = {
+  ImportWorkflowCodeArtifact: {
+    session_id: string
+    package: WorkflowCodeArtifactPackage
+    name?: string
+    overwrite?: boolean
+    node_path: string
+  }
+}
+
+export function importWorkflowCodeArtifactRequest(
+  sessionId: string,
+  workflowCodePackage: WorkflowCodeArtifactPackage,
+  nodePath: string,
+  options: {
+    name?: string
+    overwrite?: boolean
+  } = {},
+): ImportWorkflowCodeArtifactRequest {
+  return {
+    ImportWorkflowCodeArtifact: {
+      session_id: sessionId,
+      package: workflowCodePackage,
+      ...(options.name !== undefined ? { name: options.name } : {}),
+      ...(options.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
+      node_path: nodePath,
     },
   }
 }

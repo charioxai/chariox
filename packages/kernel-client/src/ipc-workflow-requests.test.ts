@@ -4,7 +4,9 @@ import test from "node:test"
 import {
   createWorkflowCodeArtifactRequest,
   deleteWorkflowCodeArtifactRequest,
+  exportWorkflowCodeArtifactRequest,
   exportWorkflowPublicationPackageRequest,
+  importWorkflowCodeArtifactRequest,
   listWorkflowCodeArtifactsRequest,
   setWorkflowNodeWaitForAllInputsRequest,
 } from "./ipc-workflow-requests.js"
@@ -46,6 +48,25 @@ test("set workflow node wait-for-all-inputs request matches kernel shape", () =>
 })
 
 test("workflow-code artifact requests match kernel shape", () => {
+  const workflowCodePackage = {
+    package_version: 1,
+    name: "toy-flow",
+    language: "java_script" as const,
+    source: "workflow.define({})",
+    source_sha256: "sha256",
+    source_bytes: 19,
+    definition: {
+      schema_version: 1,
+      workflow: {},
+      nodes: [],
+      endpoints: [],
+    },
+    validation: {
+      ok: true,
+      diagnostics: [],
+    },
+    exported_at_ms: 1_000,
+  }
   assert.deepEqual(
     createWorkflowCodeArtifactRequest("session-1", "toy-flow", "/usr/local/bin/node", "workflow.define({})"),
     {
@@ -69,4 +90,25 @@ test("workflow-code artifact requests match kernel shape", () => {
       name: "toy-flow",
     },
   })
+  assert.deepEqual(exportWorkflowCodeArtifactRequest("session-1", "toy-flow"), {
+    ExportWorkflowCodeArtifact: {
+      session_id: "session-1",
+      name: "toy-flow",
+    },
+  })
+  assert.deepEqual(
+    importWorkflowCodeArtifactRequest("session-1", workflowCodePackage, "/usr/local/bin/node", {
+      name: "imported-toy-flow",
+      overwrite: true,
+    }),
+    {
+      ImportWorkflowCodeArtifact: {
+        session_id: "session-1",
+        package: workflowCodePackage,
+        name: "imported-toy-flow",
+        overwrite: true,
+        node_path: "/usr/local/bin/node",
+      },
+    },
+  )
 })
