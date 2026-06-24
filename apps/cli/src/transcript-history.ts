@@ -306,7 +306,7 @@ export function hydrateTranscriptEntries(
         })
         break
       case "provider_status":
-        if (shouldRenderProviderStatus(pageEntry.entry.text)) {
+        if (shouldRenderHistoryProviderStatus(pageEntry.entry)) {
           appendTranscriptEntry("status", pageEntry.entry.text, {
             ...entryOptions,
             ...observedOptions,
@@ -383,6 +383,9 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
   if (!text) {
     return null
   }
+  if (entry.kind === "provider_status" && !shouldRenderHistoryProviderStatus(entry)) {
+    return null
+  }
   const label = entry.kind === "user_prompt"
     ? "You"
     : entry.kind === "provider_reasoning"
@@ -397,4 +400,8 @@ export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
               ? "Note"
               : "Asst"
   return `${label}: ${text.split("\n")[0]}`
+}
+
+function shouldRenderHistoryProviderStatus(entry: SessionHistoryEntry): boolean {
+  return entry.source === "external_provider_observed" && shouldRenderProviderStatus(entry.text)
 }

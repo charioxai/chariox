@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { TranscriptEntry } from "./cli-types.js"
 import {
+  previewLineForHistoryEntry,
   hydrateTranscriptEntries,
   mergeAdjacentHistoryPageEntries,
   stitchPrependedHistory,
@@ -135,6 +136,50 @@ test("hydrateTranscriptEntries preserves external provider observed metadata", (
   assert.equal(entries[0]?.externalProviderSessionId, "thread-1")
   assert.equal(entries[0]?.externalProviderTurnId, "item-1")
   assert.equal(entries[0]?.observedAtMs, 123)
+})
+
+test("hydrateTranscriptEntries renders only externally observed provider statuses from history", () => {
+  const entries = hydrateTranscriptEntries([
+    {
+      entry_index: 1,
+      fragment_start: 0,
+      fragment_end: 31,
+      total_chars: 31,
+      entry: { kind: "provider_status", text: "OpenCode status: reconnecting" },
+    },
+    {
+      entry_index: 2,
+      fragment_start: 0,
+      fragment_end: 39,
+      total_chars: 39,
+      entry: {
+        kind: "provider_status",
+        text: "codex event turn_aborted {\"reason\":\"user\"}",
+        source: "external_provider_observed",
+        external_provider: "codex",
+        external_provider_session_id: "thread-1",
+        external_provider_turn_id: "turn-aborted",
+      },
+    },
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.text), [
+    "codex event turn_aborted {\"reason\":\"user\"}",
+  ])
+  assert.equal(entries[0]?.role, "status")
+  assert.equal(entries[0]?.source, "external_provider_observed")
+})
+
+test("previewLineForHistoryEntry suppresses non-external provider statuses", () => {
+  assert.equal(previewLineForHistoryEntry({
+    kind: "provider_status",
+    text: "OpenCode status: reconnecting",
+  }), null)
+  assert.equal(previewLineForHistoryEntry({
+    kind: "provider_status",
+    text: "codex token_count {\"total\":42}",
+    source: "external_provider_observed",
+  }), "Stat: codex token_count {\"total\":42}")
 })
 
 test("hydrateTranscriptEntries preserves prompt identity, attachment identity, and external observation metadata", () => {
