@@ -896,7 +896,8 @@ impl<'a> KernelSessionService<'a> {
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
                         request = request.with_controlled_by_metaagent_id(metaagent_id.to_string());
                     }
-                    let created = self.spawn_agent(request)?;
+                    let created =
+                        self.spawn_workflow_code_generated_agent(request, agent.alias.as_deref())?;
                     self.grant_workflow_code_node_extensions(created.id(), &node.extensions)?;
                     created.id().to_string()
                 }
@@ -954,6 +955,41 @@ impl<'a> KernelSessionService<'a> {
         )?;
         crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok(report)
+    }
+
+    fn spawn_workflow_code_generated_agent(
+        &mut self,
+        request: CreateAgentRequest,
+        requested_alias: Option<&str>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let Some(alias) = requested_alias else {
+            return self.spawn_agent(request);
+        };
+        let trimmed_alias = alias.trim();
+        if trimmed_alias.is_empty() {
+            return self.spawn_agent(request);
+        }
+
+        for attempt in 0..1000 {
+            let candidate_alias = if attempt == 0 {
+                trimmed_alias.to_string()
+            } else {
+                format!("{trimmed_alias}-{}", attempt + 1)
+            };
+            let candidate = request.clone().with_alias(candidate_alias);
+            match self.spawn_agent(candidate) {
+                Ok(agent) => return Ok(agent),
+                Err(DaemonError::AgentAliasConflict { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(DaemonError::LocalTransport {
+            operation: "workflow_code.apply",
+            message: format!(
+                "could not allocate a unique generated agent alias for `{trimmed_alias}`"
+            ),
+        })
     }
 
     fn grant_workflow_code_node_extensions(

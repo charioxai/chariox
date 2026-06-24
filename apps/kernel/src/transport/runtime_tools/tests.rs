@@ -123,6 +123,9 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == META_WORKFLOW_CODE_APPLY_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_RUN_TOOL));
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__arroba_meta_workflow_code_create"),
             Some(META_WORKFLOW_CODE_CREATE_TOOL)
@@ -130,6 +133,10 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__meta_workflow_code_apply"),
             Some(META_WORKFLOW_CODE_APPLY_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_run"),
+            Some(META_WORKFLOW_CODE_RUN_TOOL)
         );
     }
 

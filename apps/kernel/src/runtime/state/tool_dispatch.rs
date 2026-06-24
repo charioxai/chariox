@@ -287,6 +287,7 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL
                     | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
             ) {
                 if let Some(result) = self

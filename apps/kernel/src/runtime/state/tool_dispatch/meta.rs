@@ -8,18 +8,19 @@ use crate::transport::runtime_tools::{
     MetaSubscribeTraceArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
     MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs,
     MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs, MetaWorkflowCodeListArgs,
-    MetaWorkflowCodeReadArgs, MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs,
-    RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_COMPLETE_TASK_TOOL,
-    META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_GUIDES_TOOL,
-    META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_POLL_TRACE_TOOL,
-    META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL, META_READ_TASK_TOOL,
-    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
-    META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
-    META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
-    META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL,
-    META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL, META_WORKFLOW_CODE_APPLY_TOOL,
-    META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_LIST_TOOL,
-    META_WORKFLOW_CODE_READ_TOOL, META_WORKFLOW_CODE_UPDATE_TOOL, META_WORKFLOW_CODE_VALIDATE_TOOL,
+    MetaWorkflowCodeReadArgs, MetaWorkflowCodeRunArgs, MetaWorkflowCodeUpdateArgs,
+    MetaWorkflowCodeValidateArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
+    META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
+    META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
+    META_POLL_TRACE_TOOL, META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL,
+    META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
+    META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL,
+    META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL,
+    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL,
+    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
+    META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL,
+    META_WORKFLOW_CODE_LIST_TOOL, META_WORKFLOW_CODE_READ_TOOL, META_WORKFLOW_CODE_RUN_TOOL,
+    META_WORKFLOW_CODE_UPDATE_TOOL, META_WORKFLOW_CODE_VALIDATE_TOOL,
 };
 
 const META_TRACE_WAIT_DEFAULT_MS: u64 = 30_000;
@@ -490,6 +491,11 @@ impl KernelRuntimeState {
                     .map_err(invalid_meta_args)?;
                 self.meta_workflow_code_apply(session, agent, args).await
             }
+            META_WORKFLOW_CODE_RUN_TOOL => {
+                let args = serde_json::from_value::<MetaWorkflowCodeRunArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                self.meta_workflow_code_run(session, agent, args).await
+            }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
                 let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)
                     .map_err(invalid_meta_args)?;
@@ -678,18 +684,7 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let source = meta_workflow_code_source(session, args.name, args.source)?;
         let response = self
-            .meta_execute_workflow_request(
-                crate::local::LocalDaemonRequest::ApplyWorkflowCode(
-                    crate::local::ApplyWorkflowCodeRequest {
-                        session_id: session.id().to_string(),
-                        node_path: meta_workflow_code_node_path(args.node_path)?
-                            .display()
-                            .to_string(),
-                        source,
-                    },
-                ),
-                agent,
-            )
+            .meta_workflow_code_apply_response(session, agent, source, args.node_path)
             .await?;
         if let crate::local::LocalDaemonResponse::WorkflowCodeApplied { result, .. } = &response {
             self.persist_metaagent_workflow_code_event(
@@ -700,6 +695,87 @@ impl KernelRuntimeState {
             );
         }
         runtime_tool_result_from_local_response(response)
+    }
+
+    async fn meta_workflow_code_run(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        args: MetaWorkflowCodeRunArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let source = meta_workflow_code_source(session, args.name, args.source)?;
+        let apply_response = self
+            .meta_workflow_code_apply_response(session, agent, source, args.node_path)
+            .await?;
+        let apply_report = match &apply_response {
+            crate::local::LocalDaemonResponse::WorkflowCodeApplied { result, .. } => {
+                result.apply.clone()
+            }
+            _ => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "meta.workflow_code.run",
+                    message: "workflow-code apply returned an unexpected response".to_string(),
+                })
+            }
+        };
+        self.persist_metaagent_workflow_code_event(
+            "metaagent.workflow_code.applied",
+            session,
+            agent,
+            serde_json::json!({ "apply": &apply_report }),
+        );
+
+        let endpoint_ref = meta_workflow_code_endpoint_ref(&apply_report, args.endpoint)?;
+        let run_response = self
+            .meta_execute_workflow_request(
+                crate::local::LocalDaemonRequest::InvokeWorkflowEndpoint(
+                    crate::local::InvokeWorkflowEndpointRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: apply_report.workflow_id.clone(),
+                        endpoint_ref,
+                        queue_ref: args.queue,
+                        prompt: Some(args.prompt),
+                        publication_invocation: None,
+                    },
+                ),
+                agent,
+            )
+            .await?;
+        self.persist_metaagent_workflow_code_event(
+            "metaagent.workflow_code.run",
+            session,
+            agent,
+            meta_workflow_code_run_audit_payload(&apply_report, &run_response),
+        );
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "apply": local_response_to_value(&apply_response)?,
+                "run": local_response_to_value(&run_response)?,
+            }),
+        })
+    }
+
+    async fn meta_workflow_code_apply_response(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+        source: String,
+        node_path: Option<String>,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        self.meta_execute_workflow_request(
+            crate::local::LocalDaemonRequest::ApplyWorkflowCode(
+                crate::local::ApplyWorkflowCodeRequest {
+                    session_id: session.id().to_string(),
+                    node_path: meta_workflow_code_node_path(node_path)?
+                        .display()
+                        .to_string(),
+                    source,
+                },
+            ),
+            agent,
+        )
+        .await
     }
 
     async fn meta_execute_workflow_request(
@@ -1702,6 +1778,69 @@ fn meta_workflow_code_source(
     }
 }
 
+fn meta_workflow_code_endpoint_ref(
+    apply_report: &crate::workflow_code::WorkflowCodeApplyReport,
+    endpoint: Option<String>,
+) -> Result<String, DaemonError> {
+    match endpoint {
+        Some(endpoint) => Ok(apply_report
+            .endpoint_ids
+            .get(&endpoint)
+            .cloned()
+            .unwrap_or(endpoint)),
+        None if apply_report.endpoint_ids.len() == 1 => Ok(apply_report
+            .endpoint_ids
+            .values()
+            .next()
+            .expect("length checked")
+            .clone()),
+        None => Err(DaemonError::LocalTransport {
+            operation: "meta.workflow_code.run",
+            message: format!(
+                "workflow-code defines {} endpoints; pass endpoint as a script handle or kernel endpoint ref",
+                apply_report.endpoint_ids.len()
+            ),
+        }),
+    }
+}
+
+fn meta_workflow_code_run_audit_payload(
+    apply_report: &crate::workflow_code::WorkflowCodeApplyReport,
+    response: &crate::local::LocalDaemonResponse,
+) -> serde_json::Value {
+    match response {
+        crate::local::LocalDaemonResponse::WorkflowRunInvoked {
+            workflow_run,
+            workflow,
+            endpoint,
+            ..
+        } => serde_json::json!({
+            "outcome": "invoked",
+            "apply": apply_report,
+            "workflow_id": workflow.id(),
+            "endpoint_id": endpoint.id(),
+            "workflow_run_id": workflow_run.id(),
+        }),
+        crate::local::LocalDaemonResponse::WorkflowPromptEnqueued {
+            queued_prompt,
+            workflow,
+            endpoint,
+            ..
+        } => serde_json::json!({
+            "outcome": "enqueued",
+            "apply": apply_report,
+            "workflow_id": workflow.id(),
+            "endpoint_id": endpoint.id(),
+            "queued_prompt_id": queued_prompt.id(),
+            "queue_id": queued_prompt.queue_id(),
+        }),
+        _ => serde_json::json!({
+            "outcome": "unexpected",
+            "apply": apply_report,
+        }),
+    }
+}
+
 fn meta_workflow_code_artifact_registry(
     session: &crate::session::RuntimeSession,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
@@ -1726,10 +1865,16 @@ fn runtime_tool_result_from_local_response(
 ) -> Result<RuntimeToolResult, DaemonError> {
     Ok(RuntimeToolResult {
         ok: true,
-        payload: serde_json::to_value(response).map_err(|error| DaemonError::LocalTransport {
-            operation: "runtime_tool_meta",
-            message: format!("failed to serialize workflow-code response: {error}"),
-        })?,
+        payload: local_response_to_value(&response)?,
+    })
+}
+
+fn local_response_to_value(
+    response: &crate::local::LocalDaemonResponse,
+) -> Result<serde_json::Value, DaemonError> {
+    serde_json::to_value(response).map_err(|error| DaemonError::LocalTransport {
+        operation: "runtime_tool_meta",
+        message: format!("failed to serialize workflow-code response: {error}"),
     })
 }
 

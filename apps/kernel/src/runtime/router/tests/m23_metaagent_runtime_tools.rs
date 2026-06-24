@@ -292,6 +292,41 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         "applied workflow should be controlled by the metaagent"
     );
 
+    let run = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL,
+            serde_json::json!({
+                "name": "meta-flow",
+                "endpoint": "entry",
+                "prompt": "Plan this tiny scripted workflow run."
+            }),
+        )
+        .await
+        .expect("metaagent should apply and run saved workflow-code artifact");
+    assert!(run.ok, "{:?}", run.payload);
+    assert_eq!(
+        run.payload
+            .pointer("/apply/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        true
+    );
+    assert_eq!(
+        run.payload
+            .pointer("/run/WorkflowRunInvoked/workflow/controlled_by_metaagent_id")
+            .and_then(serde_json::Value::as_str),
+        Some(metaagent.id())
+    );
+    assert_eq!(
+        run.payload
+            .pointer("/run/WorkflowRunInvoked/endpoint/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("entry")
+    );
+
     let read = router
         .runtime_state
         .dispatch_meta_runtime_tool_call_for_agent(

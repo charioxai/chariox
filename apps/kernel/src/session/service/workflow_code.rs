@@ -45,10 +45,10 @@ impl SessionService {
             }
         }
 
-        let workflow = self.create_workflow_controlled_by_metaagent(
+        let workflow = self.create_workflow_code_workflow(
             session_id,
-            definition.workflow.alias.clone(),
-            controlled_by_metaagent_id,
+            definition.workflow.alias.as_deref(),
+            controlled_by_metaagent_id.clone(),
         )?;
         let workflow_id = workflow.id().to_string();
         let mut report = WorkflowCodeApplyReport {
@@ -186,6 +186,51 @@ impl SessionService {
         }
 
         Ok(report)
+    }
+
+    fn create_workflow_code_workflow(
+        &mut self,
+        session_id: &str,
+        requested_alias: Option<&str>,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<crate::session::WorkflowDefinition, DaemonError> {
+        let Some(alias) = requested_alias else {
+            return self.create_workflow_controlled_by_metaagent(
+                session_id,
+                None,
+                controlled_by_metaagent_id,
+            );
+        };
+        let trimmed_alias = alias.trim();
+        if trimmed_alias.is_empty() {
+            return self.create_workflow_controlled_by_metaagent(
+                session_id,
+                Some(alias.to_string()),
+                controlled_by_metaagent_id,
+            );
+        }
+
+        for attempt in 0..1000 {
+            let candidate_alias = if attempt == 0 {
+                trimmed_alias.to_string()
+            } else {
+                format!("{trimmed_alias}-{}", attempt + 1)
+            };
+            match self.create_workflow_controlled_by_metaagent(
+                session_id,
+                Some(candidate_alias),
+                controlled_by_metaagent_id.clone(),
+            ) {
+                Ok(workflow) => return Ok(workflow),
+                Err(DaemonError::WorkflowAliasConflict { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(DaemonError::LocalTransport {
+            operation: "workflow_code.apply",
+            message: format!("could not allocate a unique workflow alias for `{trimmed_alias}`"),
+        })
     }
 
     fn validate_workflow_code_agent_bindings(

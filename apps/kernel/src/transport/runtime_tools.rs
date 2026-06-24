@@ -115,6 +115,7 @@ pub const META_WORKFLOW_CODE_UPDATE_TOOL: &str = "arroba.meta.workflow_code.upda
 pub const META_WORKFLOW_CODE_DELETE_TOOL: &str = "arroba.meta.workflow_code.delete";
 pub const META_WORKFLOW_CODE_VALIDATE_TOOL: &str = "arroba.meta.workflow_code.validate";
 pub const META_WORKFLOW_CODE_APPLY_TOOL: &str = "arroba.meta.workflow_code.apply";
+pub const META_WORKFLOW_CODE_RUN_TOOL: &str = "arroba.meta.workflow_code.run";
 
 pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
 pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
@@ -562,6 +563,21 @@ pub struct MetaWorkflowCodeApplyArgs {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowCodeRunArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
 }
@@ -1420,6 +1436,23 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_RUN_TOOL.to_string(),
+            description: "Apply saved or inline workflow-code into the current session and invoke one endpoint. endpoint may be a script endpoint handle or a kernel endpoint ref; when omitted, the script must define exactly one endpoint.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["prompt"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "source": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "endpoint": {"type": "string"},
+                    "queue": {"type": "string"},
+                    "node_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
             description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
@@ -1586,6 +1619,10 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_meta_workflow_code_apply"
         | "mcp__arroba__meta_workflow_code_apply"
         | "mcp__arroba__arroba_meta_workflow_code_apply" => Some(META_WORKFLOW_CODE_APPLY_TOOL),
+        META_WORKFLOW_CODE_RUN_TOOL
+        | "arroba_meta_workflow_code_run"
+        | "mcp__arroba__meta_workflow_code_run"
+        | "mcp__arroba__arroba_meta_workflow_code_run" => Some(META_WORKFLOW_CODE_RUN_TOOL),
         META_RESOLVE_RUNTIME_INTERACTION_TOOL
         | "arroba_meta_resolve_runtime_interaction"
         | "mcp__arroba__meta_resolve_runtime_interaction"
