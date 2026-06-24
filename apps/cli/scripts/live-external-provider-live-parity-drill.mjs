@@ -170,7 +170,7 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     "13. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
     "14. Use only low-risk shell commands: printf, cat, ls, wc, stat, find, test, touch, rm, rmdir, and sleep.",
     "15. Do not use xattr, chmod, chown, install, Python, Node, Ruby, Perl, network commands, package managers, git, or any command likely to require interactive approval.",
-    "16. Include a short `sleep 0.2` in each marked tool call so Arroba can observe the live turn before the final summary.",
+    "16. Include a short `sleep 0.5` in each marked tool call so Arroba can observe the live turn before the final summary.",
   ].join("\n")
   return { text, promptMarker }
 }
@@ -685,9 +685,19 @@ async function kernelSample({ client, sessionId, agentId, provider, marker, fina
     assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
     toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
     finalSeen: text.includes(finalMarker),
-    promptOccurrences: countOccurrences(text, promptMarker),
+    promptOccurrences: countPromptMarkerInHistoryOutline(outline, promptMarker),
     provider,
   }
+}
+
+function countPromptMarkerInHistoryOutline(outline, promptMarker) {
+  let count = 0
+  for (const agent of outline.agents ?? []) {
+    for (const turn of agent.turns ?? []) {
+      if (turn.user_prompt?.entry?.text?.includes(promptMarker)) count += 1
+    }
+  }
+  return count
 }
 
 async function historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline }) {
@@ -849,6 +859,10 @@ async function tuiSample(socketPath, provider, marker, finalMarker, promptMarker
   const text = [transcriptText, paneText].filter(Boolean).join("\n")
   const badge = snapshot.session?.agents?.[0]?.badge ?? null
   const entries = [...transcriptEntries, ...paneEntries]
+  const promptEntries = entries.filter((entry) => {
+    const role = String(entry.role ?? entry.entry?.role ?? entry.kind ?? entry.entry?.kind ?? "").toLowerCase()
+    return (role === "user" || role === "user_prompt") && String(entry.text ?? entry.entry?.text ?? "").includes(promptMarker)
+  })
   return {
     at: new Date().toISOString(),
     surface: "tui",
@@ -857,7 +871,7 @@ async function tuiSample(socketPath, provider, marker, finalMarker, promptMarker
     assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
     toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
     finalSeen: text.includes(finalMarker),
-    promptOccurrences: Math.max(
+    promptOccurrences: promptEntries.length || Math.max(
       countOccurrences(transcriptText, promptMarker),
       countOccurrences(paneText, promptMarker),
     ),
@@ -1087,6 +1101,9 @@ async function webSample(page, provider, marker, finalMarker, promptMarker) {
     const badges = [...document.querySelectorAll(".freeform-status-badge")].map((element) => element.textContent?.trim() ?? "")
     const turnButtons = [...document.querySelectorAll("[data-freeform-turn-toggle]")].map((element) => element.getAttribute("aria-expanded"))
     const blobButtons = [...document.querySelectorAll(".freeform-blob-header")].map((element) => element.getAttribute("aria-expanded"))
+    const promptOccurrences = [...document.querySelectorAll(".freeform-user-prompt")]
+      .filter((element) => (element.textContent ?? "").includes(promptMarker))
+      .length
     return {
       at: new Date().toISOString(),
       surface: "web",
@@ -1095,7 +1112,7 @@ async function webSample(page, provider, marker, finalMarker, promptMarker) {
       assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
       toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
       finalSeen: text.includes(finalMarker),
-      promptOccurrences: text.split(promptMarker).length - 1,
+      promptOccurrences: promptOccurrences || text.split(promptMarker).length - 1,
       bottomDistance,
       turnExpandedCount: turnButtons.filter((value) => value === "true").length,
       turnCollapsedCount: turnButtons.filter((value) => value === "false").length,
@@ -1123,6 +1140,7 @@ function summarizeSamples(surface, samples, finalMarker) {
     finalSeen: text.includes(finalMarker),
     statuses: valid.map((sample) => sample.status).filter(Boolean),
     maxBottomDistance: Math.max(0, ...valid.map((sample) => Number(sample.bottomDistance ?? 0)).filter(Number.isFinite)),
+    preFinalMaxBottomDistance: Math.max(0, ...preFinalSamples.map((sample) => Number(sample.bottomDistance ?? 0)).filter(Number.isFinite)),
     promptOccurrenceMax: Math.max(0, ...valid.map((sample) => Number(sample.promptOccurrences ?? 0)).filter(Number.isFinite)),
     firstFinalSampleIndex,
     preFinalSampleCount: preFinalSamples.length,
@@ -1433,7 +1451,7 @@ function assertSurface(result, surfaceResult, label) {
   result.assertions.push(assertion(`${label} saw final summary marker`, surfaceResult.finalSeen, surfaceResult.finalSeen))
   result.assertions.push(assertion(`${label} rendered external prompt marker exactly once`, surfaceResult.promptOccurrenceMax === 1, surfaceResult.promptOccurrenceMax))
   if (label.includes("web")) {
-    result.assertions.push(assertion(`${label} stayed near bottom while tailing`, surfaceResult.maxBottomDistance < 260, surfaceResult.maxBottomDistance))
+    result.assertions.push(assertion(`${label} stayed near bottom while tailing`, surfaceResult.preFinalMaxBottomDistance < 260, surfaceResult.preFinalMaxBottomDistance))
   }
 }
 
@@ -1810,6 +1828,7 @@ function surfaceEvidence(results, surface) {
       `first_status=${statuses[0] ?? "unknown"}`,
       `last_status=${statuses.at(-1) ?? "unknown"}`,
       `prompt_occurrence_max=${monitor.promptOccurrenceMax ?? "unknown"}`,
+      surface === "web" ? `pre_final_max_bottom_distance=${monitor.preFinalMaxBottomDistance ?? "unknown"}` : null,
       surface === "web" ? `max_bottom_distance=${monitor.maxBottomDistance ?? "unknown"}` : null,
       `pre_final_samples=${monitor.preFinalSampleCount ?? 0}`,
     ].filter(Boolean).join(" "))

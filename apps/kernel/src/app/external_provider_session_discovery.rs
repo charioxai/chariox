@@ -1561,24 +1561,15 @@ fn read_opencode_sqlite_observed_turns(
     ) in rows.filter_map(Result::ok)
     {
         let observed_at_ms = updated_at_ms.or(created_at_ms);
-        if part_type.as_deref() == Some("text") {
-            if let Some(role) = observed_role(role.as_deref()) {
-                if let Some(text) = opencode_text_from_sqlite_part_data(&part_data)
-                    .and_then(|text| clean_observed_turn_text(Some(role_text(role)), text))
-                {
-                    let provider_turn_id = if part_id.trim().is_empty() {
-                        message_id.clone()
-                    } else {
-                        part_id
-                    };
-                    turns.push(ObservedExternalProviderTurn {
-                        role,
-                        text,
-                        provider_turn_id: Some(provider_turn_id),
-                        observed_at_ms,
-                    });
-                }
-            }
+        if let Some(turn) = opencode_sqlite_part_observed_turn(
+            role.as_deref(),
+            &message_id,
+            &part_id,
+            part_type.as_deref(),
+            &part_data,
+            observed_at_ms,
+        ) {
+            turns.push(turn);
         }
         if status_message_ids.insert(message_id.clone()) {
             if let Ok(message_info) = serde_json::from_str::<Value>(&message_data) {
@@ -1630,6 +1621,64 @@ fn is_opencode_sqlite_db(path: &Path) -> bool {
 fn opencode_text_from_sqlite_part_data(data: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(data).ok()?;
     text_from_content(&value)
+}
+
+fn opencode_sqlite_part_observed_turn(
+    role: Option<&str>,
+    message_id: &str,
+    part_id: &str,
+    part_type: Option<&str>,
+    part_data: &str,
+    observed_at_ms: Option<u64>,
+) -> Option<ObservedExternalProviderTurn> {
+    let part = serde_json::from_str::<Value>(part_data).ok()?;
+    let provider_turn_id = if part_id.trim().is_empty() {
+        message_id.to_string()
+    } else {
+        part_id.to_string()
+    };
+    match (
+        role,
+        part_type.or_else(|| part.get("type").and_then(Value::as_str)),
+    ) {
+        (Some("assistant"), Some("reasoning")) => {
+            let text = part
+                .get("text")
+                .or_else(|| part.get("content"))
+                .and_then(Value::as_str)
+                .and_then(|text| clean_observed_turn_text(Some("reasoning"), text.to_string()))?;
+            Some(ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Reasoning,
+                text,
+                provider_turn_id: Some(provider_turn_id),
+                observed_at_ms,
+            })
+        }
+        (Some("assistant"), Some("tool")) => Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Tool,
+            text: opencode_tool_text(&part),
+            provider_turn_id: Some(provider_turn_id),
+            observed_at_ms,
+        }),
+        (_, Some("text")) => {
+            let role = observed_role(role)?;
+            let text = text_from_content(&part)
+                .and_then(|text| clean_observed_turn_text(Some(role_text(role)), text))?;
+            Some(ObservedExternalProviderTurn {
+                role,
+                text,
+                provider_turn_id: Some(provider_turn_id),
+                observed_at_ms,
+            })
+        }
+        (Some("assistant"), Some(part_type)) => Some(ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Status,
+            text: opencode_metadata_text(&format!("opencode part {part_type}"), &part),
+            provider_turn_id: Some(provider_turn_id),
+            observed_at_ms,
+        }),
+        _ => None,
+    }
 }
 
 fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
@@ -2688,23 +2737,30 @@ mod tests {
         seed_opencode_sqlite(&db_path);
 
         let turns = read_opencode_observed_turns(root, "ses_sqlite_1");
-        assert_eq!(turns.len(), 3);
+        assert_eq!(turns.len(), 5);
         assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
         assert_eq!(turns[0].text, "Investigate SQLite-backed OpenCode imports.");
         assert_eq!(turns[0].provider_turn_id.as_deref(), Some("prt_user_text"));
-        assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
-        assert_eq!(turns[1].text, "Use the session, message, and part tables.");
+        assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Reasoning);
+        assert_eq!(turns[1].text, "Internal reasoning");
+        assert_eq!(turns[1].provider_turn_id.as_deref(), Some("prt_reasoning"));
+        assert_eq!(turns[2].role, ObservedExternalProviderTurnRole::Tool);
+        assert!(turns[2].text.contains("TOOL_STEP_01"));
+        assert!(turns[2].text.contains("created"));
+        assert_eq!(turns[2].provider_turn_id.as_deref(), Some("prt_tool"));
+        assert_eq!(turns[3].role, ObservedExternalProviderTurnRole::Assistant);
+        assert_eq!(turns[3].text, "Use the session, message, and part tables.");
         assert_eq!(
-            turns[1].provider_turn_id.as_deref(),
+            turns[3].provider_turn_id.as_deref(),
             Some("prt_assistant_text")
         );
-        assert_eq!(turns[2].role, ObservedExternalProviderTurnRole::Status);
+        assert_eq!(turns[4].role, ObservedExternalProviderTurnRole::Status);
         assert_eq!(
-            turns[2].provider_turn_id.as_deref(),
+            turns[4].provider_turn_id.as_deref(),
             Some("message-status-msg_assistant")
         );
-        assert!(turns[2].text.contains("opencode message completed"));
-        assert!(turns[2].text.contains("kimi-k2.6"));
+        assert!(turns[4].text.contains("opencode message completed"));
+        assert!(turns[4].text.contains("kimi-k2.6"));
     }
 
     struct TempDir {
@@ -2811,6 +2867,13 @@ mod tests {
                     'prt_reasoning', 'msg_assistant', 'ses_sqlite_1',
                     1782113002001, 1782113002001,
                     '{"type":"reasoning","text":"Internal reasoning"}'
+                );
+                insert into part (
+                    id, message_id, session_id, time_created, time_updated, data
+                ) values (
+                    'prt_tool', 'msg_assistant', 'ses_sqlite_1',
+                    1782113002002, 1782113002002,
+                    '{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"printf TOOL_STEP_01"},"output":"created"}}'
                 );
                 insert into part (
                     id, message_id, session_id, time_created, time_updated, data
