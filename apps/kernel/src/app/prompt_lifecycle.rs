@@ -316,6 +316,7 @@ impl DaemonApp {
                 self.echo_prompt_to_other_attachments(
                     &dispatch.session_id,
                     &remote_provider_run_id,
+                    &dispatch.prompt_id,
                     &dispatch.source_attachment_id,
                     &dispatch.prompt,
                     &dispatch.attachments,

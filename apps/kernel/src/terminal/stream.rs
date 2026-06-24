@@ -34,6 +34,10 @@ pub struct TerminalOutputRecord {
     pub provider_run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attachment_id: Option<String>,
     pub kind: TerminalOutputKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_key: Option<String>,
@@ -171,6 +175,34 @@ impl TerminalStreamStore {
                 agent_id,
                 kind,
                 merge_key,
+                recipient_attachment_ids,
+                bytes,
+            );
+        self.record_change();
+        record
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_prompt_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        prompt_id: &str,
+        source_attachment_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        let record = self
+            .inner
+            .lock()
+            .expect("terminal stream lock should not be poisoned")
+            .fan_out_prompt_output(
+                session_id,
+                provider_run_id,
+                agent_id,
+                prompt_id,
+                source_attachment_id,
                 recipient_attachment_ids,
                 bytes,
             );
@@ -406,8 +438,42 @@ impl TerminalStreamService {
             session_id: session_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             agent_id: agent_id.map(str::to_string),
+            prompt_id: None,
+            source_attachment_id: None,
             kind,
             merge_key,
+            pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
+            recipient_attachment_ids,
+            bytes: bytes.to_vec(),
+        };
+
+        if !self.try_coalesce_output_record(&record) {
+            self.output_records.push(record.clone());
+        }
+        self.enforce_pending_output_record_limits();
+        self.refresh_health();
+        record
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_prompt_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        prompt_id: &str,
+        source_attachment_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        let record = TerminalOutputRecord {
+            session_id: session_id.to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.map(str::to_string),
+            prompt_id: Some(prompt_id.to_string()),
+            source_attachment_id: Some(source_attachment_id.to_string()),
+            kind: TerminalOutputKind::PromptEcho,
+            merge_key: None,
             pending_recipient_attachment_ids: recipient_attachment_ids.clone(),
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
@@ -831,6 +897,30 @@ mod tests {
             vec!["attachment-2"]
         );
         assert!(terminal.output_records().is_empty());
+    }
+
+    #[test]
+    fn prompt_output_records_carry_prompt_identity() {
+        let mut terminal = TerminalStreamService::new();
+        let output = terminal.fan_out_prompt_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            "prompt-42",
+            "attachment-1",
+            vec!["attachment-2".to_string()],
+            b"hello\n",
+        );
+
+        assert_eq!(output.kind, TerminalOutputKind::PromptEcho);
+        assert_eq!(output.prompt_id.as_deref(), Some("prompt-42"));
+        assert_eq!(output.source_attachment_id.as_deref(), Some("attachment-1"));
+        let drained = terminal.drain_output_records("session-1", "attachment-2");
+        assert_eq!(drained[0].prompt_id.as_deref(), Some("prompt-42"));
+        assert_eq!(
+            drained[0].source_attachment_id.as_deref(),
+            Some("attachment-1")
+        );
     }
 
     #[test]

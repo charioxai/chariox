@@ -301,6 +301,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         provider_run_id: &str,
+        prompt_id: &str,
         source_attachment_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
@@ -331,12 +332,12 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             recipient_attachment_ids,
         );
-        self.terminal_stream.fan_out_output(
+        self.terminal_stream.fan_out_prompt_output(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
-            crate::terminal::TerminalOutputKind::PromptEcho,
-            None,
+            prompt_id,
+            source_attachment_id,
             recipient_attachment_ids,
             &bytes,
         );

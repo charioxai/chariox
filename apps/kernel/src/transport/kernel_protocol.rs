@@ -719,6 +719,8 @@ mod tests {
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
+                prompt_id: None,
+                source_attachment_id: None,
                 kind: TerminalOutputKind::ProviderOutput,
                 merge_key: Some(format!("chunk-{index}")),
                 recipient_attachment_ids: vec!["attachment-1".to_string()],

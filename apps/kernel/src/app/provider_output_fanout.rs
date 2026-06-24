@@ -131,6 +131,8 @@ impl ProviderOutputFanout {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: agent_id.map(str::to_string),
+                prompt_id: None,
+                source_attachment_id: None,
                 kind,
                 merge_key,
                 recipient_attachment_ids: Vec::new(),

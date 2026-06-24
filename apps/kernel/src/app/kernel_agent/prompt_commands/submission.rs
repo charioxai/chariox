@@ -328,6 +328,7 @@ impl<'a> KernelAgentService<'a> {
                 self.app.echo_prompt_to_other_attachments(
                     &submitted.admission.session_id,
                     provider_run_id,
+                    prompt.id(),
                     prompt.source_attachment_id(),
                     prompt.prompt(),
                     prompt.attachments(),
@@ -356,6 +357,7 @@ impl<'a> KernelAgentService<'a> {
                     self.app.echo_prompt_to_other_attachments(
                         &submitted.admission.session_id,
                         provider_run_id,
+                        prompt.id(),
                         prompt.source_attachment_id(),
                         prompt.prompt(),
                         prompt.attachments(),

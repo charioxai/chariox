@@ -1475,7 +1475,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 169
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 170
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1597,6 +1597,8 @@ export type RuntimeNoticeRecord = {
 
 export type TerminalOutputRecord = {
   agent_id?: string | null
+  prompt_id?: string | null
+  source_attachment_id?: string | null
   kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
   merge_key?: string
   bytes: number[]

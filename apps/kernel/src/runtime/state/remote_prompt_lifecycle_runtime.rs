@@ -266,6 +266,7 @@ impl KernelRuntimeState {
                 owned.echo_prompt_to_other_attachments(
                     session_id,
                     &provider_run_id,
+                    started_next.id(),
                     started_next.source_attachment_id(),
                     started_next.prompt(),
                     started_next.attachments(),

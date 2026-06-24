@@ -419,6 +419,7 @@ impl<'a> KernelAgentService<'a> {
             self.app.echo_prompt_to_other_attachments(
                 session_id,
                 &remote_provider_run_id,
+                active.id(),
                 active.source_attachment_id(),
                 active.prompt(),
                 active.attachments(),

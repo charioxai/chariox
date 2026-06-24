@@ -118,6 +118,7 @@ impl KernelRuntimeOwnedState {
                 self.echo_prompt_to_other_attachments(
                     &session_id,
                     provider_run_id,
+                    prompt.id(),
                     prompt.source_attachment_id(),
                     prompt.prompt(),
                     prompt.attachments(),
@@ -142,6 +143,7 @@ impl KernelRuntimeOwnedState {
                     self.echo_prompt_to_other_attachments(
                         &session_id,
                         provider_run_id,
+                        prompt.id(),
                         prompt.source_attachment_id(),
                         prompt.prompt(),
                         prompt.attachments(),

@@ -431,6 +431,7 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
         provider_run_id: &str,
+        prompt_id: &str,
         source_attachment_id: &str,
         prompt: &str,
         attachments: &[PromptAttachment],
@@ -443,11 +444,17 @@ impl DaemonApp {
         if !bytes.ends_with(b"\n") {
             bytes.push(b'\n');
         }
-        self.fan_out_output(
+        let agent_id = self
+            .providers
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string));
+        self.terminal.fan_out_prompt_output(
             session_id,
             provider_run_id,
-            TerminalOutputKind::PromptEcho,
-            None,
+            agent_id.as_deref(),
+            prompt_id,
+            source_attachment_id,
             recipient_attachment_ids,
             &bytes,
         );
