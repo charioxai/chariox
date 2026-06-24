@@ -29,23 +29,18 @@ impl KernelRuntimeState {
                 message: format!("turn `{}` has already been undone", turn.before.turn_id),
             });
         }
-        let Some(change) = turn.change.clone() else {
-            return Err(DaemonError::LocalTransport {
+        let path_results = if let Some(change) = turn.change.clone() {
+            tokio::task::spawn_blocking(move || {
+                crate::git_observer::apply_workspace_live_sync_undo_to_target(&change)
+            })
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
                 operation: "turn undo",
-                message: format!(
-                    "turn `{}` did not record reversible workspace changes",
-                    turn.before.turn_id
-                ),
-            });
+                message: error.to_string(),
+            })??
+        } else {
+            Vec::new()
         };
-        let path_results = tokio::task::spawn_blocking(move || {
-            crate::git_observer::apply_workspace_live_sync_undo_to_target(&change)
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "turn undo",
-            message: error.to_string(),
-        })??;
         let failed = path_results
             .iter()
             .filter(|result| {

@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use crate::error::DaemonError;
 use crate::history::{
-    HistoryEvent, HistoryEventKind, HistoryEventTurnContext, OperationalHistoryStore,
-    SessionHistoryEntry, SessionHistoryEntryKind,
+    HistoryEvent, HistoryEventKind, HistoryEventQuery, HistoryEventTurnContext,
+    OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
 };
 use crate::local::{
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, LocalDaemonResponse,
@@ -35,6 +35,7 @@ pub(crate) async fn execute_session_history_outline_request(
                 &request.session_id,
                 &agent_id,
                 latest_prompt_count,
+                request.cursor.as_ref().map(|cursor| cursor.before_sequence),
             )?);
         }
         Ok(LocalDaemonResponse::SessionHistoryOutline { agents })
@@ -98,13 +99,36 @@ fn load_agent_outline(
     session_id: &str,
     agent_id: &str,
     latest_prompt_count: usize,
+    before_sequence: Option<u64>,
 ) -> Result<SessionHistoryOutlineAgent, DaemonError> {
-    let prompts = operational_history.load_latest_user_prompt_events(
-        session_id,
-        agent_id,
-        latest_prompt_count,
-    )?;
+    let mut prompts = if before_sequence.is_some() {
+        operational_history.query_events(HistoryEventQuery {
+            session_id: Some(session_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            kind: Some("user_prompt".to_string()),
+            before_sequence,
+            limit: Some(latest_prompt_count.saturating_add(1)),
+            ..HistoryEventQuery::default()
+        })?
+    } else {
+        operational_history.load_latest_user_prompt_events(
+            session_id,
+            agent_id,
+            latest_prompt_count.saturating_add(1),
+        )?
+    };
+    let has_more = prompts.len() > latest_prompt_count;
+    if has_more {
+        prompts.remove(0);
+    }
     if prompts.is_empty() {
+        if before_sequence.is_some() {
+            return Ok(SessionHistoryOutlineAgent {
+                agent_id: agent_id.to_string(),
+                turns: Vec::new(),
+                next_cursor: None,
+            });
+        }
         return load_promptless_agent_outline(operational_history, session_id, agent_id);
     }
     let mut turns = Vec::new();
@@ -125,9 +149,13 @@ fn load_agent_outline(
             turns.push(turn);
         }
     }
-    let next_cursor = prompts.first().map(|event| SessionHistoryOutlineCursor {
-        before_sequence: event.sequence,
-    });
+    let next_cursor =
+        has_more
+            .then(|| prompts.first())
+            .flatten()
+            .map(|event| SessionHistoryOutlineCursor {
+                before_sequence: event.sequence,
+            });
     Ok(SessionHistoryOutlineAgent {
         agent_id: agent_id.to_string(),
         turns,
@@ -296,7 +324,10 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
 }
 
 fn page_entry_from_event(event: HistoryEvent) -> Option<SessionHistoryPageEntry> {
-    let entry = event.to_session_history_entry()?;
+    let mut entry = event.to_session_history_entry()?;
+    for attachment in &mut entry.attachments {
+        attachment.rehydrate_preview_url();
+    }
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryPageEntry {
         entry_index: event.sequence as usize,
@@ -433,7 +464,9 @@ fn truncate_single_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
+    use crate::history::{
+        HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryPromptAttachment,
+    };
     use crate::terminal::TerminalOutputKind;
 
     #[test]
@@ -573,8 +606,8 @@ mod tests {
             .append(&second_prompt)
             .expect("second prompt should append");
 
-        let outline =
-            load_agent_outline(&store, "session-1", "agent-1", 2).expect("outline should load");
+        let outline = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+            .expect("outline should load");
 
         assert_eq!(outline.turns.len(), 2);
         assert_eq!(outline.turns[0].turn_id, "prompt-2");
@@ -588,6 +621,139 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn agent_outline_pages_older_turns_with_cursor() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-cursor-outline-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open");
+        for index in 1..=5 {
+            let sequence = index * 10;
+            let context = HistoryEventTurnContext {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                turn_id: Some(format!("turn-{index}")),
+                prompt_id: Some(format!("prompt-{index}")),
+                ..HistoryEventTurnContext::default()
+            };
+            let prompt = HistoryEvent::transcript(
+                sequence,
+                &SessionHistoryEntry::user_prompt(
+                    "session-1",
+                    &format!("attachment-{index}"),
+                    "agent-1",
+                    &format!("prompt {index}"),
+                ),
+                context,
+            );
+            store.append(&prompt).expect("prompt should append");
+        }
+
+        let newest = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+            .expect("newest page should load");
+        assert_eq!(newest.turns.len(), 2);
+        assert_eq!(newest.turns[0].user_prompt.entry.text, "prompt 4");
+        assert_eq!(newest.turns[1].user_prompt.entry.text, "prompt 5");
+        assert_eq!(
+            newest
+                .next_cursor
+                .as_ref()
+                .map(|cursor| cursor.before_sequence),
+            Some(40)
+        );
+
+        let older = load_agent_outline(
+            &store,
+            "session-1",
+            "agent-1",
+            2,
+            newest
+                .next_cursor
+                .as_ref()
+                .map(|cursor| cursor.before_sequence),
+        )
+        .expect("older page should load");
+        assert_eq!(older.turns.len(), 2);
+        assert_eq!(older.turns[0].user_prompt.entry.text, "prompt 2");
+        assert_eq!(older.turns[1].user_prompt.entry.text, "prompt 3");
+        assert_eq!(
+            older
+                .next_cursor
+                .as_ref()
+                .map(|cursor| cursor.before_sequence),
+            Some(20)
+        );
+
+        let oldest = load_agent_outline(
+            &store,
+            "session-1",
+            "agent-1",
+            2,
+            older
+                .next_cursor
+                .as_ref()
+                .map(|cursor| cursor.before_sequence),
+        )
+        .expect("oldest page should load");
+        assert_eq!(oldest.turns.len(), 1);
+        assert_eq!(oldest.turns[0].user_prompt.entry.text, "prompt 1");
+        assert_eq!(oldest.next_cursor, None);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn agent_outline_rehydrates_file_image_attachment_previews() {
+        let image_path = std::env::temp_dir().join(format!(
+            "arroba-outline-preview-{}-{}.png",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::write(&image_path, b"file-image").expect("fixture image should write");
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            prompt_id: Some("prompt-1".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut entry = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "inspect image",
+        );
+        entry.attachments = vec![SessionHistoryPromptAttachment {
+            url: format!("file://{}", image_path.display()),
+            mime: "image/png".to_string(),
+            filename: Some("file-screenshot.png".to_string()),
+            preview_url: None,
+        }];
+        let event = HistoryEvent::transcript(10, &entry, context);
+
+        let page_entry = page_entry_from_event(event).expect("page entry should project");
+
+        assert_eq!(
+            page_entry
+                .entry
+                .attachments
+                .first()
+                .and_then(|attachment| attachment.preview_url.as_deref()),
+            Some("data:image/png;base64,ZmlsZS1pbWFnZQ==")
+        );
+
+        let _ = std::fs::remove_file(image_path);
     }
 
     #[test]
@@ -626,8 +792,8 @@ mod tests {
             .append(&tool)
             .expect("promptless provider activity should append");
 
-        let outline =
-            load_agent_outline(&store, "session-1", "agent-1", 1).expect("outline should load");
+        let outline = load_agent_outline(&store, "session-1", "agent-1", 1, None)
+            .expect("outline should load");
 
         assert_eq!(outline.turns.len(), 1);
         assert_eq!(outline.turns[0].turn_id, "run-1");

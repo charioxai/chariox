@@ -918,6 +918,129 @@ fn undo_turn_request_restores_workspace_states_and_preserves_head() {
 }
 
 #[test]
+fn undo_turn_request_allows_noop_turns_without_workspace_changes() {
+    let root = temp_git_repo("turn-undo-noop");
+    fs::write(root.join("README.md"), "seed\n").expect("seed file should be written");
+    run_git(&root, &["add", "."]);
+    run_git(&root, &["commit", "-m", "seed noop undo repo"]);
+
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy()),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let before = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        provider: "dev-stub".to_string(),
+        model: "default".to_string(),
+        provider_run_id: "provider-run-noop".to_string(),
+        provider_session_id: None,
+        prompt_id: "prompt-noop".to_string(),
+        turn_id: "turn-noop".to_string(),
+        started_at_ms: Some(crate::session::unix_epoch_ms()),
+        worktree_path: root.clone(),
+        workspace_live_sync_tracked: false,
+        machine_id: None,
+        prompt_summary: "inspect without editing".to_string(),
+    })
+    .expect("pre-turn snapshot should capture");
+    let after = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        provider: "dev-stub".to_string(),
+        model: "default".to_string(),
+        provider_run_id: "provider-run-noop".to_string(),
+        provider_session_id: None,
+        prompt_id: "prompt-noop".to_string(),
+        turn_id: "turn-noop".to_string(),
+        started_at_ms: before.started_at_ms,
+        worktree_path: root.clone(),
+        workspace_live_sync_tracked: false,
+        machine_id: None,
+        prompt_summary: "inspect without editing".to_string(),
+    })
+    .expect("post-turn snapshot should capture");
+    harness.with_app_mut(|app| {
+        app.completed_git_turn_snapshot_store().record(
+            crate::git_observer::CompletedGitTurnSnapshot::new(
+                before,
+                after,
+                None,
+                crate::session::unix_epoch_ms(),
+            ),
+        );
+    });
+
+    let completed_turn = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { agent_activity, .. } => agent_activity
+            .get(agent.id())
+            .and_then(|activity| activity.last_completed_turn.clone())
+            .expect("completed turn should project"),
+        other => panic!("unexpected session state response: {other:?}"),
+    };
+    assert!(
+        completed_turn.undo_available,
+        "latest turn undo should be available even with no changed paths"
+    );
+    assert!(completed_turn.changed_paths.is_empty());
+    assert_eq!(completed_turn.undo_unavailable_reason, None);
+
+    let undo = match harness
+        .dispatch(LocalDaemonRequest::UndoTurn(
+            crate::local::UndoTurnRequest {
+                session_id: session.id().to_string(),
+                agent_ref: None,
+                turn_ref: None,
+            },
+        ))
+        .expect("noop undo should succeed")
+    {
+        LocalDaemonResponse::TurnUndone { result } => result,
+        other => panic!("unexpected undo response: {other:?}"),
+    };
+
+    assert_eq!(undo.agent_id, agent.id());
+    assert_eq!(undo.turn_id, completed_turn.turn_id);
+    assert!(undo.reverted_paths.is_empty());
+    assert!(undo.path_results.is_empty());
+
+    let completed_turn = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { agent_activity, .. } => agent_activity
+            .get(agent.id())
+            .and_then(|activity| activity.last_completed_turn.clone())
+            .expect("completed turn should still project"),
+        other => panic!("unexpected session state response: {other:?}"),
+    };
+    assert!(!completed_turn.undo_available);
+    assert_eq!(
+        completed_turn.undo_unavailable_reason.as_deref(),
+        Some("turn already undone")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn undo_turn_request_conflict_fails_without_partial_writes() {
     let root = temp_git_repo("turn-undo-conflict");
     fs::create_dir_all(root.join("src")).expect("src directory should be created");

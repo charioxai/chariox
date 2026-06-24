@@ -205,8 +205,6 @@ impl CompletedGitTurnSnapshot {
     pub(crate) fn action_projection(&self) -> CompletedGitTurnActionProjection {
         let undo_unavailable_reason = if self.undone {
             Some("turn already undone".to_string())
-        } else if self.change.is_none() {
-            Some("turn did not record reversible workspace changes".to_string())
         } else {
             None
         };

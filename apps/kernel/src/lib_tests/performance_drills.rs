@@ -39,6 +39,7 @@ async fn performance_drill_session_history_outline() {
             session_id: session.id().to_string(),
             agent_ids: Some(agent_ids.clone()),
             latest_prompt_count: Some(4),
+            cursor: None,
         },
     )
     .await

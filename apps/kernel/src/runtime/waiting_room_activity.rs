@@ -471,12 +471,14 @@ mod tests {
             .iter()
             .find(|agent| agent.id() == "agent-1")
             .expect("agent exists");
-        assert!(waiting_room_agent_activity_summary(
-            &session,
-            agent,
-            crate::session::DEFAULT_LOCAL_USER_ID
-        )
-        .unread_idle_output);
+        assert!(
+            waiting_room_agent_activity_summary(
+                &session,
+                agent,
+                crate::session::DEFAULT_LOCAL_USER_ID
+            )
+            .unread_idle_output
+        );
         assert_eq!(
             waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID)
                 .unread_idle_agent_count,

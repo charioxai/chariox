@@ -443,6 +443,7 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
             session_id: session_id.clone(),
             agent_ids: Some(vec![agent_id.clone()]),
             latest_prompt_count: Some(4),
+            cursor: None,
         });
     let history_command = KernelCommand::from_local_request(
         "cmd-history-slow-background",

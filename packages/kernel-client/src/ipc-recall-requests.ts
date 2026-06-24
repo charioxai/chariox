@@ -1,18 +1,21 @@
 import type {
   RecallQueryPayload,
   SemanticSearchRecallMode,
+  SessionHistoryOutlineCursor,
 } from "./kernel-types.js"
 
 export function getSessionHistoryOutlineRequest(
   sessionId: string,
   agentIds?: readonly string[] | null,
   latestPromptCount?: number | null,
+  cursor?: SessionHistoryOutlineCursor | null,
 ) {
   return {
     GetSessionHistoryOutline: {
       session_id: sessionId,
       agent_ids: agentIds ? [...agentIds] : null,
       latest_prompt_count: latestPromptCount ?? null,
+      cursor: cursor ?? null,
     },
   }
 }

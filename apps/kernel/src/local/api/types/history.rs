@@ -7,6 +7,8 @@ pub struct GetSessionHistoryOutlineRequest {
     pub agent_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_prompt_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<SessionHistoryOutlineCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

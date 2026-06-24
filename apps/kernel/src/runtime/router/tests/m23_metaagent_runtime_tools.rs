@@ -4866,6 +4866,7 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents_inn
             session_id: session.id().to_string(),
             agent_ids: Some(vec![peer_worker.id().to_string()]),
             latest_prompt_count: Some(1),
+            cursor: None,
         },
     )
     .await

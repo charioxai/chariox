@@ -740,6 +740,7 @@ impl KernelRuntimeState {
             session_id: session.id().to_string(),
             agent_ids: Some(vec![target.id().to_string()]),
             latest_prompt_count: Some(latest_prompt_count),
+            cursor: None,
         };
         let response = crate::runtime::history_requests::execute_session_history_outline_request(
             self.owned.operational_history_store.clone(),

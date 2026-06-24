@@ -72,6 +72,13 @@ impl SessionHistoryPromptAttachment {
             preview_url: image_prompt_attachment_preview_url(attachment),
         }
     }
+
+    pub fn rehydrate_preview_url(&mut self) {
+        if self.preview_url.is_some() || !self.mime.starts_with("image/") {
+            return;
+        }
+        self.preview_url = image_attachment_preview_url_from_url(&self.url, &self.mime);
+    }
 }
 
 fn image_prompt_attachment_preview_url(
@@ -86,11 +93,14 @@ fn image_prompt_attachment_preview_url(
             attachment.mime()
         ));
     }
-    let local_path = local_file_url_path(attachment.url())?;
+    image_attachment_preview_url_from_url(attachment.url(), attachment.mime())
+}
+
+fn image_attachment_preview_url_from_url(url: &str, mime: &str) -> Option<String> {
+    let local_path = local_file_url_path(url)?;
     let bytes = fs::read(local_path).ok()?;
     Some(format!(
-        "data:{};base64,{}",
-        attachment.mime(),
+        "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
 }
