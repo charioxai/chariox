@@ -219,6 +219,12 @@ pub struct WorkflowCodeApplyReport {
     pub canvas_layout_applied: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowCodeCompileAndApplyResult {
+    pub compile: WorkflowCodeCompileResult,
+    pub apply: WorkflowCodeApplyReport,
+}
+
 #[derive(Debug, Serialize)]
 struct WorkflowCodeCompilerInput<'a> {
     source: &'a str,

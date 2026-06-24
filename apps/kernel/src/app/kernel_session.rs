@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::DaemonApp;
@@ -12,7 +13,8 @@ use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
 use crate::workflow_code::{
-    WorkflowCodeAgentBinding, WorkflowCodeApplyReport, WorkflowCodeDefinition,
+    compile_workflow_code_javascript, WorkflowCodeAgentBinding, WorkflowCodeApplyReport,
+    WorkflowCodeCompileAndApplyResult, WorkflowCodeDefinition,
 };
 
 pub(crate) struct KernelSessionService<'a> {
@@ -34,6 +36,7 @@ mod tests {
         WorkflowCodeWorkflow, WORKFLOW_CODE_SCHEMA_VERSION,
     };
     use crate::{DaemonApp, DaemonConfig};
+    use std::path::PathBuf;
 
     fn generated_workflow_code_definition() -> WorkflowCodeDefinition {
         WorkflowCodeDefinition {
@@ -116,6 +119,26 @@ mod tests {
         });
         definition.edges.clear();
         definition
+    }
+
+    fn find_node_for_workflow_code_test() -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Some(path) = std::env::var_os("NODE") {
+            candidates.push(PathBuf::from(path));
+        }
+        candidates.extend([
+            PathBuf::from("/opt/homebrew/bin/node"),
+            PathBuf::from("/usr/local/bin/node"),
+            PathBuf::from("/usr/bin/node"),
+        ]);
+        candidates.into_iter().find(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
     }
 
     #[test]
@@ -204,6 +227,61 @@ mod tests {
             .iter()
             .any(|event| event.kind == "workflow_code.applied"
                 && event.subject_id.as_deref() == Some(report.workflow_id.as_str())));
+    }
+
+    #[test]
+    fn workflow_code_javascript_compile_and_apply_creates_generated_workflow() {
+        let Some(node_path) = find_node_for_workflow_code_test() else {
+            eprintln!("skipping workflow-code JS apply test because node is not available");
+            return;
+        };
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let source = r#"
+workflow.define({ alias: "js_coded_flow", maxConcurrent: 2 })
+const planner = workflow.node({
+  agent: workflow.newAgent({ alias: "js-planner", provider: "dev-stub", model: "default" }),
+  publicLabel: "JS Planner",
+  instructions: "Plan from JS."
+})
+const finisher = workflow.node({
+  agent: workflow.newAgent({ alias: "js-finisher", provider: "dev-stub", model: "default" }),
+  publicLabel: "JS Finisher",
+  instructions: "Finish from JS.",
+  canCompleteWorkflowRun: true
+})
+workflow.edge(planner, finisher)
+workflow.endpoint(planner, { alias: "entry" })
+"#;
+
+        let result = app
+            .compile_and_apply_workflow_code_javascript(
+                session.id(),
+                &node_path,
+                source,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect("workflow-code JS should compile and apply");
+
+        assert!(result.compile.validation.ok);
+        assert_eq!(
+            result.compile.definition.workflow.alias.as_deref(),
+            Some("js_coded_flow")
+        );
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        let workflow = session
+            .workflow(&result.apply.workflow_id)
+            .expect("workflow should exist");
+        assert_eq!(workflow.alias(), Some("js_coded_flow"));
+        assert_eq!(workflow.nodes().len(), 2);
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 3);
     }
 
     #[test]
@@ -896,6 +974,26 @@ impl<'a> KernelSessionService<'a> {
             )?;
         }
         Ok(())
+    }
+
+    pub(crate) fn compile_and_apply_workflow_code_javascript(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        let compile = compile_workflow_code_javascript(node_path, source, limits)?;
+        let apply = self.apply_workflow_code_definition(
+            session_id,
+            &compile.definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+        )?;
+        Ok(WorkflowCodeCompileAndApplyResult { compile, apply })
     }
 
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {

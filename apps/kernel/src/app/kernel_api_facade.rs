@@ -1,9 +1,13 @@
+use std::path::Path;
+
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{DaemonApp, KernelSessionService, ProviderRunReadService};
 use crate::config::WorkflowCodeLimitsConfig;
 use crate::error::DaemonError;
 use crate::session::{CreateSessionRequest, RuntimeSession};
-use crate::workflow_code::{WorkflowCodeApplyReport, WorkflowCodeDefinition};
+use crate::workflow_code::{
+    WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult, WorkflowCodeDefinition,
+};
 
 impl DaemonApp {
     #[doc(hidden)]
@@ -55,6 +59,26 @@ impl DaemonApp {
         KernelSessionService::new(self).apply_workflow_code_definition(
             session_id,
             definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn compile_and_apply_workflow_code_javascript(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        KernelSessionService::new(self).compile_and_apply_workflow_code_javascript(
+            session_id,
+            node_path,
+            source,
             limits,
             created_by_user_id,
             controlled_by_metaagent_id,
