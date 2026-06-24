@@ -36,7 +36,12 @@ import type {
 import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import { buildDetachedSessionState } from "./session-state.js"
-import { focusedAgentIdForSession, sessionHasPromptWork, sessionResponseLayout } from "./session-state.js"
+import {
+  focusedAgentIdForSession,
+  projectedStreamingAgentIdForSession,
+  sessionHasPromptWork,
+  sessionResponseLayout,
+} from "./session-state.js"
 import type { SessionListEntry } from "./sessions.js"
 import { applyTheme, setThemeRegistry } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -142,7 +147,9 @@ export function createCliAppState(options: {
   const [activeStatusLabel, setActiveStatusLabel] = createSignal<string | null>(null)
   const [providerActivityLabel, setProviderActivityLabel] = createSignal<string | null>(null)
   const [agentActivityLabels, setAgentActivityLabels] = createSignal<Record<string, string | null>>({})
-  const [streamingAgentId, setStreamingAgentId] = createSignal<string | null>(initialSession.active_prompt?.target_agent_id ?? null)
+  const [streamingAgentId, setStreamingAgentId] = createSignal<string | null>(
+    projectedStreamingAgentIdForSession(initialSession),
+  )
   const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)

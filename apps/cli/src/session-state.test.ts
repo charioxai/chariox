@@ -13,6 +13,7 @@ import {
   deriveSessionTransitionState,
   focusedAgentIdForSession,
   focusedProviderRunForAgent,
+  projectedStreamingAgentIdForSession,
   promptWorkByAgent,
   sessionHasProcessingAgent,
   sessionHasPromptWork,
@@ -255,6 +256,46 @@ test("kernel agent activity suppresses stale legacy prompt activity", () => {
     "agent-a": false,
     "agent-b": false,
   })
+})
+
+test("projectedStreamingAgentIdForSession uses projected activity before legacy active prompts", () => {
+  assert.equal(projectedStreamingAgentIdForSession(session({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale",
+      status: "running",
+    },
+    agent_activity: {
+      "agent-a": { status: "idle", prompt_status: "none", busy: false },
+      "agent-b": { status: "working", prompt_status: "running", busy: true },
+    },
+    agents: [agent("agent-a"), agent("agent-b")],
+  })), "agent-b")
+
+  assert.equal(projectedStreamingAgentIdForSession(session({
+    active_prompt: {
+      id: "prompt-stale",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "stale",
+      status: "running",
+    },
+    agent_activity: {},
+    agents: [agent("agent-a")],
+  })), null)
+
+  assert.equal(projectedStreamingAgentIdForSession(session({
+    active_prompt: {
+      id: "prompt-legacy",
+      source_attachment_id: "attachment-1",
+      target_agent_id: "agent-a",
+      prompt: "legacy",
+      status: "running",
+    },
+    agents: [agent("agent-a")],
+  })), "agent-a")
 })
 
 test("shouldConfirmIdleTurnCompletion treats idle session snapshots as stale-turn completion", () => {
