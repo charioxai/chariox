@@ -548,6 +548,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
+        LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",
+        LocalDaemonRequest::ApplyWorkflowCode(_) => "workflow_code.apply",
         LocalDaemonRequest::ApplyWorkflowDesignOp(_) => "workflow_design.apply_op",
         LocalDaemonRequest::AliasWorkflow(_) => "workflow.alias",
         LocalDaemonRequest::ListWorkflows(_) => "workflow.list",

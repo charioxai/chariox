@@ -1475,7 +1475,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 170
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 171
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1852,6 +1852,154 @@ export type WorkflowDefinition = {
   nodes?: WorkflowNodeDefinition[]
   edges?: WorkflowEdgeDefinition[]
   endpoints?: WorkflowEndpointDefinition[]
+}
+
+export type WorkflowCodeDefinition = {
+  schema_version?: number
+  workflow: WorkflowCodeWorkflow
+  schemas?: WorkflowCodeSchemaDefinition[]
+  nodes?: WorkflowCodeNodeDefinition[]
+  edges?: WorkflowCodeEdgeDefinition[]
+  endpoints?: WorkflowCodeEndpointDefinition[]
+  queues?: WorkflowCodeQueueDefinition[]
+  watchdogs?: WorkflowCodeWatchdogDefinition[]
+}
+
+export type WorkflowCodeWorkflow = {
+  alias?: string | null
+  flush_agent_context_before_run?: boolean | null
+  max_concurrent?: number | null
+  run_output_schema?: string | null
+  intermediate_output_schema?: string | null
+}
+
+export type WorkflowCodeSchemaDefinition = {
+  handle: string
+  alias?: string | null
+  description?: string | null
+  schema: unknown
+}
+
+export type WorkflowCodeNodeDefinition = {
+  handle: string
+  agent: WorkflowCodeAgentBinding
+  public_label?: string | null
+  instructions?: string | null
+  can_complete_workflow_run?: boolean | null
+  can_emit_intermediate_run_output?: boolean | null
+  wait_for_all_inputs?: boolean | null
+  intermediate_output_schema?: string | null
+  max_turns?: number | null
+  extensions?: ExtensionGrant[]
+  canvas?: WorkflowCodeCanvasPoint | null
+}
+
+export type WorkflowCodeAgentBinding =
+  | ({ kind: "create" } & WorkflowCodeAgentCreate)
+  | ({ kind: "existing" } & WorkflowCodeExistingAgent)
+
+export type WorkflowCodeAgentCreate = {
+  alias?: string | null
+  provider: string
+  model?: string | null
+  effort?: string | null
+  account_profile?: string | null
+}
+
+export type WorkflowCodeExistingAgent = {
+  agent_ref: string
+}
+
+export type WorkflowCodeEdgeDefinition = {
+  handle: string
+  from_node: string
+  to_node: string
+  source_side?: "top" | "right" | "bottom" | "left" | null
+  target_side?: "top" | "right" | "bottom" | "left" | null
+  handoff_schema?: string | null
+  validation_policy?: "warn" | "halt" | null
+  canvas?: WorkflowCodeCanvasEdge | null
+}
+
+export type WorkflowCodeEndpointDefinition = {
+  handle: string
+  entry_node: string
+  alias?: string | null
+  canvas?: WorkflowCodeCanvasPoint | null
+}
+
+export type WorkflowCodeQueueDefinition = {
+  handle: string
+  alias: string
+  priority?: number
+  enabled?: boolean
+}
+
+export type WorkflowCodeWatchdogDefinition = {
+  handle: string
+  endpoint: string
+  queue?: string | null
+  interval_seconds: number
+  invocation_prompt: string
+  policy: "skip" | "queue"
+  max_wakeups?: number | null
+}
+
+export type WorkflowCodeCanvasPoint = {
+  x: number
+  y: number
+}
+
+export type WorkflowCodeCanvasEdge = {
+  points?: WorkflowCodeCanvasPoint[]
+}
+
+export type WorkflowCodeValidationReport = {
+  ok: boolean
+  diagnostics?: WorkflowCodeValidationDiagnostic[]
+}
+
+export type WorkflowCodeValidationDiagnostic = {
+  severity: "error" | "warning"
+  code: string
+  message: string
+  handle?: string | null
+}
+
+export type WorkflowCodeCompileResult = {
+  definition: WorkflowCodeDefinition
+  validation: WorkflowCodeValidationReport
+  logs: string
+}
+
+export type WorkflowCodeApplyReport = {
+  workflow_id: string
+  schema_refs?: Record<string, string>
+  node_ids?: Record<string, string>
+  agent_ids?: Record<string, string>
+  edge_ids?: Record<string, string>
+  endpoint_ids?: Record<string, string>
+  queue_ids?: Record<string, string>
+  watchdog_ids?: Record<string, string>
+  canvas_layout_applied: boolean
+}
+
+export type WorkflowCodeCompileAndApplyResult = {
+  compile: WorkflowCodeCompileResult
+  apply: WorkflowCodeApplyReport
+}
+
+export type WorkflowCodeValidatedResponse = {
+  WorkflowCodeValidated: {
+    result: WorkflowCodeCompileResult
+  }
+}
+
+export type WorkflowCodeAppliedResponse = {
+  WorkflowCodeApplied: {
+    result: WorkflowCodeCompileAndApplyResult
+    session: RuntimeSession
+  }
 }
 
 export type WorkflowCanvasPoint = {

@@ -195,6 +195,12 @@ pub(crate) fn redact_response_for_user(
                 session: session.redacted_for_user(caller_user_id),
             }
         }
+        LocalDaemonResponse::WorkflowCodeApplied { result, session } => {
+            LocalDaemonResponse::WorkflowCodeApplied {
+                result,
+                session: session.redacted_for_user(caller_user_id),
+            }
+        }
         LocalDaemonResponse::WorkflowDesignOpAccepted { session, event } => {
             LocalDaemonResponse::WorkflowDesignOpAccepted {
                 session: session.redacted_for_user(caller_user_id),

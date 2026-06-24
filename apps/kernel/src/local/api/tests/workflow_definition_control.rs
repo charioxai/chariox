@@ -4,6 +4,111 @@ use crate::local::{
     RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
+use std::path::PathBuf;
+
+fn find_node_for_workflow_code_local_api_test() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("NODE") {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/node"),
+        PathBuf::from("/usr/local/bin/node"),
+        PathBuf::from("/usr/bin/node"),
+    ]);
+    candidates.into_iter().find(|candidate| {
+        std::process::Command::new(candidate)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+}
+
+#[test]
+fn local_request_api_validates_and_applies_workflow_code() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping workflow-code local API test because node is not available");
+        return;
+    };
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-workflow-code", "worktree-workflow-code"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+workflow.define({
+  alias: "scripted_flow",
+  flushAgentContextBeforeRun: true,
+  maxConcurrent: 8
+})
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "planner", provider: "dev-stub", model: "default" }),
+  instructions: "Plan the task and produce a concise answer.",
+  canCompleteWorkflowRun: true,
+  canvas: { x: 20, y: 40 }
+})
+workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+"#;
+
+    let validated = harness
+        .dispatch(LocalDaemonRequest::ValidateWorkflowCode(
+            crate::local::ValidateWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+            },
+        ))
+        .expect("workflow-code should validate");
+    match validated {
+        LocalDaemonResponse::WorkflowCodeValidated { result } => {
+            assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+            assert_eq!(
+                result.definition.workflow.alias.as_deref(),
+                Some("scripted_flow")
+            );
+        }
+        _ => panic!("unexpected local response"),
+    }
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => assert!(workflows.is_empty()),
+        _ => panic!("unexpected local response"),
+    }
+
+    let applied = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+            },
+        ))
+        .expect("workflow-code should apply");
+    match applied {
+        LocalDaemonResponse::WorkflowCodeApplied { result, session } => {
+            assert!(result.compile.validation.ok);
+            assert_eq!(result.apply.node_ids.len(), 1);
+            assert_eq!(result.apply.agent_ids.len(), 1);
+            assert!(session
+                .workflows()
+                .iter()
+                .any(|workflow| workflow.id() == result.apply.workflow_id));
+        }
+        _ => panic!("unexpected local response"),
+    }
+}
 
 #[test]
 fn local_request_api_exports_agent_app_publication_package() {

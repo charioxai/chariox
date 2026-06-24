@@ -9,6 +9,50 @@ export function createWorkflowRequest(sessionId: string, alias?: string | null) 
   }
 }
 
+export type ValidateWorkflowCodeRequest = {
+  ValidateWorkflowCode: {
+    session_id: string
+    node_path: string
+    source: string
+  }
+}
+
+export function validateWorkflowCodeRequest(
+  sessionId: string,
+  nodePath: string,
+  source: string,
+): ValidateWorkflowCodeRequest {
+  return {
+    ValidateWorkflowCode: {
+      session_id: sessionId,
+      node_path: nodePath,
+      source,
+    },
+  }
+}
+
+export type ApplyWorkflowCodeRequest = {
+  ApplyWorkflowCode: {
+    session_id: string
+    node_path: string
+    source: string
+  }
+}
+
+export function applyWorkflowCodeRequest(
+  sessionId: string,
+  nodePath: string,
+  source: string,
+): ApplyWorkflowCodeRequest {
+  return {
+    ApplyWorkflowCode: {
+      session_id: sessionId,
+      node_path: nodePath,
+      source,
+    },
+  }
+}
+
 export function applyWorkflowDesignOpRequest(
   sessionId: string,
   originClientId: string,

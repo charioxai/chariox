@@ -8,6 +8,20 @@ pub struct CreateWorkflowRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateWorkflowCodeRequest {
+    pub session_id: String,
+    pub node_path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyWorkflowCodeRequest {
+    pub session_id: String,
+    pub node_path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AliasWorkflowRequest {
     pub session_id: String,
     pub workflow_ref: String,

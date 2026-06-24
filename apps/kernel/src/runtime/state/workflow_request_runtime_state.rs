@@ -27,6 +27,18 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::ValidateWorkflowCode(request) => (
+                self.execute_workflow_code_validate_request(request).await,
+                None,
+            ),
+            LocalDaemonRequest::ApplyWorkflowCode(request) => {
+                self.execute_workflow_code_apply_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
+            }
             LocalDaemonRequest::ApplyWorkflowDesignOp(request) => {
                 let origin_client_id = request.origin_client_id.clone();
                 let op_id = request.op_id.clone();
@@ -267,6 +279,54 @@ impl KernelRuntimeState {
         }
         outcome
     }
+
+    async fn execute_workflow_code_validate_request(
+        &self,
+        request: crate::local::ValidateWorkflowCodeRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let limits = app.config().workflow_code_limits();
+            crate::workflow_code::compile_workflow_code_javascript(
+                &request.node_path,
+                &request.source,
+                &limits,
+            )
+            .map(|result| LocalDaemonResponse::WorkflowCodeValidated { result })
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_apply_request(
+        &self,
+        request: crate::local::ApplyWorkflowCodeRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let caller_user_id = caller_user_id.to_string();
+        let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
+        let session_id = request.session_id.clone();
+        let result = self
+            .with_app_side_effect(move |app| {
+                let limits = app.config().workflow_code_limits();
+                let result = app.compile_and_apply_workflow_code_javascript(
+                    &request.session_id,
+                    &request.node_path,
+                    &request.source,
+                    &limits,
+                    caller_user_id,
+                    controlled_by_metaagent_id,
+                )?;
+                let session =
+                    crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
+                Ok(LocalDaemonResponse::WorkflowCodeApplied { result, session })
+            })
+            .await;
+        let session = result.as_ref().ok().and_then(workflow_response_session);
+        (result, session)
+    }
 }
 
 pub(super) fn workflow_response_session(
@@ -274,6 +334,7 @@ pub(super) fn workflow_response_session(
 ) -> Option<crate::session::RuntimeSession> {
     match response {
         LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::WorkflowCodeApplied { session, .. }
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
