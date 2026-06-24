@@ -735,7 +735,7 @@ fn claude_observed_turns_from_path(
     if parsed_session_id != provider_session_id {
         return None;
     }
-    let lines = read_recent_jsonl_values(path);
+    let lines = read_recent_claude_jsonl_values(path);
     let mut turns = Vec::new();
     for value in &lines {
         turns.extend(claude_observed_turns_from_value(value));
@@ -1690,6 +1690,49 @@ fn read_recent_codex_jsonl_values(path: &Path) -> Vec<Value> {
     values
 }
 
+fn read_recent_claude_jsonl_values(path: &Path) -> Vec<Value> {
+    let lines = read_recent_jsonl_lines(path);
+    let start = lines.len().saturating_sub(MAX_JSONL_LINES);
+    let recent = lines[start..]
+        .iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line.as_str()).ok())
+        .collect::<Vec<_>>();
+    let anchor = read_jsonl_values(path).into_iter().rev().find(|value| {
+        claude_observed_turns_from_value(value)
+            .into_iter()
+            .any(|turn| turn.role == ObservedExternalProviderTurnRole::User)
+    });
+    let Some(anchor) = anchor else {
+        return recent;
+    };
+    let anchor_id = claude_record_identity(&anchor);
+    let already_in_recent = anchor_id.as_ref().is_some_and(|anchor_id| {
+        recent
+            .iter()
+            .filter_map(claude_record_identity)
+            .any(|recent_id| &recent_id == anchor_id)
+    });
+    if already_in_recent {
+        return recent;
+    }
+    let mut values = Vec::with_capacity(recent.len() + 1);
+    values.push(anchor);
+    values.extend(recent);
+    values
+}
+
+fn claude_record_identity(value: &Value) -> Option<String> {
+    string_field(value, &["uuid", "id", "message_id"])
+        .or_else(|| string_field(value.get("message").unwrap_or(value), &["id"]))
+        .or_else(|| {
+            string_field(value, &["sessionId", "session_id"]).and_then(|session_id| {
+                let timestamp = string_field(value, &["timestamp"])?;
+                let record_type = string_field(value, &["type"])?;
+                Some(format!("{session_id}:{record_type}:{timestamp}"))
+            })
+        })
+}
+
 fn read_recent_jsonl_lines(path: &Path) -> Vec<String> {
     let Ok(mut file) = fs::File::open(path) else {
         return Vec::new();
@@ -2425,6 +2468,42 @@ mod tests {
         assert_eq!(turns[0].text, "Summarize external imports.");
         assert_eq!(turns[1].role, ObservedExternalProviderTurnRole::Assistant);
         assert_eq!(turns[1].provider_turn_id.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn reads_claude_observed_turns_preserves_latest_user_before_recent_jsonl_window() {
+        let temp = temp_dir("claude-observed-window-user");
+        let root = temp.path();
+        let session_dir = root.join("projects").join("-repo");
+        fs::create_dir_all(&session_dir).unwrap();
+        let mut lines = vec![
+            "{\"type\":\"user\",\"uuid\":\"u-window\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Run a long Claude external drill.\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}".to_string(),
+        ];
+        for index in 0..MAX_JSONL_LINES + 25 {
+            lines.push(format!(
+                "{{\"type\":\"mode\",\"mode\":\"default\",\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:02.{index:03}Z\"}}"
+            ));
+        }
+        lines.push(
+            "{\"type\":\"assistant\",\"uuid\":\"a-final\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"FINAL_EXTERNAL_PARITY_SUMMARY\"}]},\"sessionId\":\"session-1\",\"timestamp\":\"2026-02-01T00:00:03.000Z\"}".to_string(),
+        );
+        fs::write(
+            session_dir.join("session-1.jsonl"),
+            format!("{}\n", lines.join("\n")),
+        )
+        .unwrap();
+
+        let turns = read_claude_observed_turns(root, "session-1");
+        assert_eq!(turns.len(), MAX_OBSERVED_TURNS + 1);
+        assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::User);
+        assert_eq!(turns[0].text, "Run a long Claude external drill.");
+        assert_eq!(turns[0].provider_turn_id.as_deref(), Some("u-window"));
+        assert!(turns
+            .iter()
+            .any(|turn| turn.text == "FINAL_EXTERNAL_PARITY_SUMMARY"));
+        assert!(turns
+            .iter()
+            .any(|turn| turn.text.starts_with("claude message completed")));
     }
 
     #[test]
