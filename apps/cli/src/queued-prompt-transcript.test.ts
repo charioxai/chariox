@@ -73,6 +73,32 @@ test("syncQueuedPromptEntriesForAgent disables steering behind external active t
   assert.equal(synced.entries[0]?.queuedPrompt?.steerDisabled, true)
 })
 
+test("syncQueuedPromptEntriesForAgent removes stale queued prompts when projected activity is idle", () => {
+  const existing: TranscriptEntry[] = [{
+    id: 1,
+    role: "user",
+    text: "new queued",
+    queuedPrompt: { agentId: "agent-1", promptId: "prompt-1", status: "queued" },
+  }]
+
+  const synced = syncQueuedPromptEntriesForAgent(
+    existing,
+    sessionWithQueuedPrompt({}, {
+      agent_activity: {
+        "agent-1": {
+          status: "idle",
+          prompt_status: "none",
+          busy: false,
+        },
+      },
+    }),
+    "agent-1",
+  )
+
+  assert.equal(synced.changed, true)
+  assert.deepEqual(synced.entries, [])
+})
+
 function sessionWithQueuedPrompt(
   overrides: Partial<NonNullable<RuntimeSession["prompt_states"]>[string]> = {},
   sessionOverrides: Partial<RuntimeSession> = {},

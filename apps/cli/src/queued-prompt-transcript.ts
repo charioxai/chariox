@@ -12,6 +12,9 @@ export type QueuedPromptTranscriptSyncResult = {
 }
 
 export function queuedPromptsForAgent(session: RuntimeSession, agentId: string): PromptQueueItem[] {
+  if (!projectedActivityAllowsPromptQueue(session, agentId)) {
+    return []
+  }
   const statePrompts = session.prompt_states?.[agentId]?.queued_prompts
   if (statePrompts) {
     return statePrompts
@@ -128,6 +131,17 @@ function activePromptOrigin(session: RuntimeSession, agentId: string): string | 
     return session.active_prompt.prompt_origin ?? "arroba"
   }
   return null
+}
+
+function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: string): boolean {
+  if (!session.agent_activity) {
+    return true
+  }
+  const activity = session.agent_activity[agentId]
+  if (!activity) {
+    return false
+  }
+  return activity.busy || activity.prompt_status !== "none" || Boolean(activity.active_turn)
 }
 
 function nextTranscriptEntryId(entries: readonly TranscriptEntry[]) {
