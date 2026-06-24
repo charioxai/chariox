@@ -775,7 +775,9 @@ fn append_observed_external_turns_for_import_with_options(
     let mut last_cursor = read.target.import.observed_cursor.clone();
     let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
     let mut current_observed_turn_is_arroba_owned = false;
-    for turn in &read.turns {
+    let candidate_turns =
+        latest_observed_external_turns_by_merge_key(&read.turns, &external_merge_key_prefix);
+    for turn in &candidate_turns {
         let kind = match turn.role {
             crate::app::ObservedExternalProviderTurnRole::User => {
                 SessionHistoryEntryKind::UserPrompt
@@ -869,11 +871,12 @@ fn append_observed_external_turns_for_import_with_options(
     outcome.active_relevant_changed_count = active_relevant_appended;
     let latest_active_prompt = external_active_prompt_from_turns(
         &read.target,
-        &read.turns,
+        &candidate_turns,
         active_relevant_appended > 0,
         &arroba_owned_prompt_texts,
     );
-    let latest_observation_settles = latest_effective_observed_turn_settles(&provider, &read.turns);
+    let latest_observation_settles =
+        latest_effective_observed_turn_settles(&provider, &candidate_turns);
     let should_sync_active_prompt = latest_active_prompt.is_some()
         || latest_observation_settles
         || (changed == 0 && options.allow_external_active_prompt_settlement);
@@ -918,6 +921,36 @@ fn append_observed_external_turns_for_import_with_options(
         );
     }
     Ok(outcome)
+}
+
+fn latest_observed_external_turns_by_merge_key(
+    turns: &[crate::app::ObservedExternalProviderTurn],
+    external_merge_key_prefix: &str,
+) -> Vec<crate::app::ObservedExternalProviderTurn> {
+    let mut latest_indices_by_merge_key = BTreeMap::new();
+    for (index, turn) in turns.iter().enumerate() {
+        if let Some(merge_key) = observed_external_turn_merge_key(external_merge_key_prefix, turn) {
+            latest_indices_by_merge_key.insert(merge_key, index);
+        }
+    }
+    let latest_indices = latest_indices_by_merge_key
+        .into_values()
+        .collect::<BTreeSet<_>>();
+    turns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, turn)| latest_indices.contains(&index).then_some(turn.clone()))
+        .collect()
+}
+
+fn observed_external_turn_merge_key(
+    external_merge_key_prefix: &str,
+    turn: &crate::app::ObservedExternalProviderTurn,
+) -> Option<String> {
+    turn.provider_turn_id
+        .clone()
+        .or_else(|| Some(turn.stable_fallback_id()))
+        .map(|turn_id| format!("{external_merge_key_prefix}{turn_id}"))
 }
 
 fn external_observed_history_entry_matches(
@@ -2960,6 +2993,72 @@ mod tests {
             .expect("legacy history should load");
         assert_eq!(legacy_entries.len(), 1);
         assert_eq!(legacy_entries[0].text, "complete external reply");
+    }
+
+    #[test]
+    fn append_observed_external_turns_uses_latest_duplicate_merge_key_per_poll() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "claude:thread-observed".to_string(),
+            "claude".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import: import.clone(),
+        };
+        let turns = vec![
+            crate::app::ObservedExternalProviderTurn {
+                provider_turn_id: Some("assistant-1".to_string()),
+                role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                text: "partial external reply".to_string(),
+                observed_at_ms: Some(42),
+            },
+            crate::app::ObservedExternalProviderTurn {
+                provider_turn_id: Some("assistant-1".to_string()),
+                role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                text: "complete external reply".to_string(),
+                observed_at_ms: Some(84),
+            },
+        ];
+
+        let initial = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target: target.clone(),
+                turns: turns.clone(),
+            },
+        )
+        .expect("latest duplicate observed assistant turn should append");
+
+        assert_eq!(initial.changed_count, 1);
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "complete external reply");
+        assert_eq!(entries[0].observed_at_ms, Some(84));
+
+        let stable = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead { target, turns },
+        )
+        .expect("same duplicate snapshot should not churn history");
+
+        assert_eq!(stable.changed_count, 0);
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "complete external reply");
     }
 
     #[test]
