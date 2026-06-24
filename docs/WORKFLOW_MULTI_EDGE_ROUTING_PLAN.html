@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workflow Multi-Edge Routing Plan</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --ink: #17202f;
+        --muted: #596579;
+        --line: #d8deea;
+        --panel: #ffffff;
+        --accent: #0f766e;
+        --accent-soft: #e7f4f2;
+        --warn: #8a4b09;
+        --warn-soft: #fff3df;
+        --code: #f0f3f8;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 22px;
+        margin-top: 34px;
+        padding-top: 28px;
+        border-top: 1px solid var(--line);
+      }
+
+      h3 {
+        font-size: 17px;
+        margin-top: 22px;
+      }
+
+      p {
+        margin: 10px 0;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0 22px;
+        padding: 0;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: var(--code);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.93em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 14px 0 0;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #101827;
+        color: #edf2ff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #eef2f8;
+        font-weight: 700;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .hero,
+      .callout,
+      .warning {
+        border-radius: 8px;
+      }
+
+      .hero {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 28px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .summary {
+        margin-top: 14px;
+        color: var(--muted);
+        max-width: 860px;
+      }
+
+      .callout {
+        margin-top: 18px;
+        border: 1px solid #b7d8d3;
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        padding: 14px 16px;
+      }
+
+      .warning {
+        margin-top: 18px;
+        border: 1px solid #e5c08f;
+        border-left: 4px solid var(--warn);
+        background: var(--warn-soft);
+        padding: 14px 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Arroba kernel implementation plan</p>
+        <h1>Workflow Multi-Edge Routing</h1>
+        <p class="summary">
+          This plan covers the immediate prompt and validation work needed before workflow-code generation
+          depends on multi-edge nodes. It does not implement workflow-code artifacts, schema refactors, or
+          metaagent workflow-code MCP endpoints.
+        </p>
+        <div class="callout">
+          <strong>Goal:</strong> make the existing runtime routing contract explicit to workflow nodes, then
+          prove fan-out, conditional routing, loop routing, and schema validation with focused drills.
+        </div>
+      </section>
+
+      <h2>Current State</h2>
+      <p>
+        The runtime already supports conditional workflow routing. When a node's <code>output.message</code>
+        is JSON with a non-empty <code>workflow_handoffs</code> array, downstream completion selects only
+        matching edges. A route may match by <code>edge_id</code> or <code>to_node_id</code>. Without
+        <code>workflow_handoffs</code>, the existing behavior fans out the same output to every outgoing edge.
+      </p>
+      <p>
+        The prompt layer is weaker than the runtime. It lists outgoing edge contracts and tells the agent to
+        return one <code>output.message</code>, but it does not explain the <code>workflow_handoffs</code>
+        routing shape. That makes conditional fan-out possible but under-taught.
+      </p>
+
+      <h2>Step 1: Extend Workflow Turn Prompt</h2>
+      <p>
+        Update the bundled workflow turn template in <code>apps/kernel/src/prompt_assembly.rs</code>. The new
+        text should teach routing without introducing edge predicates.
+      </p>
+      <h3>Required Prompt Contract</h3>
+      <ul>
+        <li>If <code>output.message</code> is plain text or JSON without <code>workflow_handoffs</code>, the runtime sends the same handoff to every outgoing edge.</li>
+        <li>If <code>output.message</code> is JSON with a non-empty <code>workflow_handoffs</code> array, the runtime sends handoffs only to matching edges.</li>
+        <li>Each handoff may target one edge with <code>edge_id</code> or one target node with <code>to_node_id</code>.</li>
+        <li>Each routed handoff may provide <code>summary</code> and either <code>output.message</code> or top-level <code>message</code>.</li>
+        <li>A null routed message suppresses output for that route.</li>
+        <li>If a selected edge has a <code>handoff_schema_ref</code>, the routed message for that edge must pass <code>validate_workflow_handoff</code> before finalizing.</li>
+      </ul>
+      <h3>Prompt Example</h3>
+      <pre><code>{
+  "summary": "Routed implementation task to reviewer",
+  "output": {
+    "message": {
+      "workflow_handoffs": [
+        {
+          "edge_id": "edge_123",
+          "summary": "Review implementation details",
+          "output": {
+            "message": {
+              "task": "review",
+              "files": ["apps/kernel/src/session/service/turns.rs"]
+            }
+          }
+        }
+      ]
+    }
+  }
+}</code></pre>
+
+      <h2>Step 2: Improve Outgoing Edge Contracts</h2>
+      <p>
+        Update <code>workflow_outgoing_edge_contracts_block</code> in
+        <code>apps/kernel/src/scheduler/prompt_injection.rs</code> so the prompt includes target labels when
+        available. Keep ids authoritative; labels are only readability hints.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Before</th>
+            <th>After</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>- edge edge_123 -&gt; node_456, handoff_schema_ref: /tmp/review.json, validation_policy: halt</code></td>
+            <td><code>- edge edge_123 -&gt; node_456 (Reviewer), handoff_schema_ref: /tmp/review.json, validation_policy: halt</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Mirror this in <code>apps/kernel/src/runtime/state/workflow_turn_prompt_owned_state.rs</code> if that
+        state-owned prompt path remains active. The two prompt construction paths should not drift.
+      </p>
+
+      <h2>Step 3: Tests And Drills</h2>
+      <h3>Unit Tests For Routing Primitive</h3>
+      <p>
+        Add focused tests around the current edge-completion behavior in
+        <code>apps/kernel/src/session/service/turns.rs</code>.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Case</th>
+            <th>Expected result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>No <code>workflow_handoffs</code></td>
+            <td>All outgoing edges receive the same output.</td>
+          </tr>
+          <tr>
+            <td>One handoff with <code>edge_id</code></td>
+            <td>Only the matching edge receives output.</td>
+          </tr>
+          <tr>
+            <td>One handoff with <code>to_node_id</code></td>
+            <td>Only edges targeting that node receive output.</td>
+          </tr>
+          <tr>
+            <td>Handoff message is null</td>
+            <td>The route is suppressed and no downstream message is emitted for that edge.</td>
+          </tr>
+          <tr>
+            <td>Invalid JSON or plain text <code>output.message</code></td>
+            <td>Existing fan-out behavior is preserved.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Prompt Assembly Tests</h3>
+      <ul>
+        <li>Assert the hidden workflow prompt includes <code>workflow_handoffs</code>, <code>edge_id</code>, <code>to_node_id</code>, and fan-out fallback language.</li>
+        <li>Assert outgoing edge contracts still include edge ids, target node ids, handoff schema refs, and validation policy.</li>
+        <li>Assert target node public labels appear when configured.</li>
+        <li>Assert prompt registry overrides still work, so custom prompt templates are not broken by the new bundled default.</li>
+      </ul>
+
+      <h3>Drill: Two-Edge Conditional Route</h3>
+      <p>
+        Build a workflow with one router node and two downstream worker nodes.
+      </p>
+      <pre><code>router
+  |--&gt; worker_a
+  |--&gt; worker_b</code></pre>
+      <ol>
+        <li>Run with a dev-stub router that returns <code>workflow_handoffs</code> selecting only worker B by <code>edge_id</code>.</li>
+        <li>Assert worker B receives a node run and worker A does not.</li>
+        <li>Repeat selecting worker A by <code>to_node_id</code>.</li>
+        <li>Repeat with no <code>workflow_handoffs</code> and assert both workers receive work.</li>
+      </ol>
+
+      <h3>Drill: Loop Edge</h3>
+      <p>
+        Build a loop workflow where synthesis can route back to intake when revision is needed.
+      </p>
+      <pre><code>intake --&gt; worker --&gt; synthesis
+  ^                       |
+  |-----------------------|</code></pre>
+      <ol>
+        <li>Run a prompt that makes synthesis request revision.</li>
+        <li>Assert synthesis emits a routed handoff to the loop edge only.</li>
+        <li>Assert intake receives the loop handoff and starts another node run.</li>
+        <li>Assert no unrelated outgoing edge fires during the loop route.</li>
+      </ol>
+
+      <h3>Drill: Selected-Edge Schema Validation</h3>
+      <p>
+        Build a router with two outgoing edges that use different handoff schemas.
+      </p>
+      <ol>
+        <li>Select edge A and emit payload valid for A but invalid for B.</li>
+        <li>Assert validation only requires edge A's schema because edge B is not selected.</li>
+        <li>With <code>validation_policy: halt</code>, assert an invalid selected payload blocks the turn.</li>
+        <li>With <code>validation_policy: warn</code>, assert the warning is recorded and the runtime follows the existing warning policy.</li>
+      </ol>
+
+      <h2>Acceptance Criteria</h2>
+      <ul>
+        <li>Workflow nodes can read the prompt and know how to choose one outgoing edge, several outgoing edges, or all outgoing edges.</li>
+        <li>Conditional routing remains a node action via <code>workflow_handoffs</code>; no edge predicate system is introduced.</li>
+        <li>Edge contracts are readable enough for agents to choose routes without searching the workspace for workflow metadata.</li>
+        <li>Unit tests lock current fan-out fallback behavior and selected-route behavior.</li>
+        <li>Drills prove conditional route, fan-out, loop routing, and selected-edge schema validation end to end.</li>
+      </ul>
+    </main>
+  </body>
+</html>

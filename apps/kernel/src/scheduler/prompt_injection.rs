@@ -5,7 +5,9 @@ use crate::prompt_assembly::{
     bundled_workflow_run_intermediate_output_template, bundled_workflow_turn_template,
     PromptManifest, PromptTemplate, PromptTemplateRegistry,
 };
-use crate::session::{WorkflowHandoffValidationPolicy, WorkflowMessage};
+use crate::session::{
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowHandoffValidationPolicy, WorkflowMessage,
+};
 use std::path::PathBuf;
 
 pub(crate) struct WorkflowPromptInjectionContext {
@@ -506,20 +508,7 @@ fn workflow_outgoing_edge_contracts_block(
         .edges()
         .iter()
         .filter(|edge| edge.from_node_id() == node_id)
-        .map(|edge| {
-            let mut line = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
-            if let Some(schema_ref) = edge.handoff_schema_ref() {
-                line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));
-            }
-            if let Some(validation_policy) = edge.validation_policy() {
-                let validation_policy = match validation_policy {
-                    WorkflowHandoffValidationPolicy::Warn => "warn",
-                    WorkflowHandoffValidationPolicy::Halt => "halt",
-                };
-                line.push_str(&format!(", validation_policy: {validation_policy}"));
-            }
-            line
-        })
+        .map(|edge| workflow_outgoing_edge_contract_line(&workflow, edge))
         .collect::<Vec<String>>();
 
     if lines.is_empty() {
@@ -530,6 +519,31 @@ fn workflow_outgoing_edge_contracts_block(
         "Outgoing edge contracts:\n{}\nAll schema refs needed for this turn are listed above. Do not search the workspace for workflow metadata unless the workflow-level prompt explicitly asks you to.\n\n",
         lines.join("\n")
     )
+}
+
+fn workflow_outgoing_edge_contract_line(
+    workflow: &WorkflowDefinition,
+    edge: &WorkflowEdgeDefinition,
+) -> String {
+    let target_label = workflow
+        .node(edge.to_node_id())
+        .map(|node| node.public_label())
+        .filter(|label| !label.trim().is_empty());
+    let mut line = match target_label {
+        Some(label) => format!("- edge {} -> {} ({label})", edge.id(), edge.to_node_id()),
+        None => format!("- edge {} -> {}", edge.id(), edge.to_node_id()),
+    };
+    if let Some(schema_ref) = edge.handoff_schema_ref() {
+        line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));
+    }
+    if let Some(validation_policy) = edge.validation_policy() {
+        let validation_policy = match validation_policy {
+            WorkflowHandoffValidationPolicy::Warn => "warn",
+            WorkflowHandoffValidationPolicy::Halt => "halt",
+        };
+        line.push_str(&format!(", validation_policy: {validation_policy}"));
+    }
+    line
 }
 
 fn workflow_node_instruction_reference(
@@ -753,6 +767,62 @@ mod tests {
         assert!(legacy.contains("ENDPOINT_VISIBLE_TOKEN"));
         assert!(legacy.contains("WORKFLOW_HIDDEN_TOKEN"));
         assert!(legacy.contains("NODE_HIDDEN_TOKEN"));
+    }
+
+    #[test]
+    fn workflow_prompt_teaches_selected_edge_routing_contract() {
+        let _guard = env_lock::lock();
+        let home = temp_arroba_home("routing-contract");
+        let previous_home = set_arroba_home(&home);
+        let mut context = test_context();
+        context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt\n\n".to_string();
+
+        let assembly = build_workflow_turn_prompt_assembly(context);
+        restore_arroba_home(previous_home);
+
+        assert!(assembly
+            .hidden_system_context
+            .contains("Outgoing edge routing:"));
+        assert!(assembly.hidden_system_context.contains("workflow_handoffs"));
+        assert!(assembly.hidden_system_context.contains("edge_id"));
+        assert!(assembly.hidden_system_context.contains("to_node_id"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("the runtime sends the same handoff to every outgoing edge"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("the runtime sends handoffs only to the matching outgoing edges"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("validate the routed message for each selected edge"));
+        assert!(assembly
+            .hidden_system_context
+            .contains("edge edge-1 -> node-2 (Reviewer)"));
+    }
+
+    #[test]
+    fn workflow_outgoing_edge_contract_line_includes_target_label_and_policy() {
+        let mut workflow = WorkflowDefinition::new("workflow-1", Some("routing".to_string()));
+        workflow.add_node(crate::session::WorkflowNodeDefinition::new(
+            "node-1", "agent-1",
+        ));
+        let mut reviewer = crate::session::WorkflowNodeDefinition::new("node-2", "agent-2");
+        reviewer.set_public_label("Reviewer");
+        workflow.add_node(reviewer);
+        let edge = WorkflowEdgeDefinition::new(
+            "edge-1",
+            "node-1",
+            "node-2",
+            Some("/tmp/review.schema.json".to_string()),
+            Some(WorkflowHandoffValidationPolicy::Halt),
+        );
+
+        let line = workflow_outgoing_edge_contract_line(&workflow, &edge);
+
+        assert_eq!(
+            line,
+            "- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
+        );
     }
 
     #[test]
