@@ -1,4 +1,5 @@
 use super::{ObservedExternalProviderTurn, ObservedExternalProviderTurnRole};
+use crate::history::SessionHistoryExternalObservation;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ExternalProviderObservationPolicy<'a> {
@@ -53,6 +54,18 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             | ObservedExternalProviderTurnRole::Tool => false,
         }
     }
+
+    pub(crate) fn observation_for_turn(
+        self,
+        turn: &ObservedExternalProviderTurn,
+    ) -> Option<SessionHistoryExternalObservation> {
+        SessionHistoryExternalObservation {
+            settles_active_prompt: turn.role == ObservedExternalProviderTurnRole::Status
+                && self.status_settles(&turn.text),
+            passive_telemetry: self.turn_is_passive_telemetry(turn),
+        }
+        .useful()
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +104,18 @@ mod tests {
                 }]),
                 "{provider} status should settle"
             );
+            assert_eq!(
+                policy
+                    .observation_for_turn(&ObservedExternalProviderTurn {
+                        role: ObservedExternalProviderTurnRole::Status,
+                        text: text.to_string(),
+                        provider_turn_id: None,
+                        observed_at_ms: None,
+                    })
+                    .map(|observation| observation.settles_active_prompt),
+                Some(true),
+                "{provider} status should be marked as settling"
+            );
         }
     }
 
@@ -104,6 +129,17 @@ mod tests {
                 provider_turn_id: None,
                 observed_at_ms: None,
             })
+        );
+        assert_eq!(
+            policy
+                .observation_for_turn(&ObservedExternalProviderTurn {
+                    role: ObservedExternalProviderTurnRole::Status,
+                    text: "claude last-prompt {\"lastPrompt\":\"prompt\"}".to_string(),
+                    provider_turn_id: None,
+                    observed_at_ms: None,
+                })
+                .map(|observation| observation.passive_telemetry),
+            Some(true)
         );
         assert!(policy.latest_effective_turn_settles(&[
             ObservedExternalProviderTurn {

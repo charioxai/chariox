@@ -932,9 +932,15 @@ export type SessionHistoryEntry = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   observed_at_ms?: number | null
+  external_observation?: SessionHistoryExternalObservation | null
   text: string
   timestamp_ms?: number
   source_attachment_id?: string | null
+}
+
+export type SessionHistoryExternalObservation = {
+  settles_active_prompt: boolean
+  passive_telemetry: boolean
 }
 
 export type SessionHistoryOutline = {

@@ -1475,7 +1475,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 168
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 169
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1639,10 +1639,16 @@ export type SessionHistoryEntry = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   observed_at_ms?: number | null
+  external_observation?: SessionHistoryExternalObservation | null
   attachments?: SessionHistoryPromptAttachment[]
   text: string
   timestamp_ms?: number
   source_attachment_id?: string | null
+}
+
+export type SessionHistoryExternalObservation = {
+  settles_active_prompt: boolean
+  passive_telemetry: boolean
 }
 
 export type SessionHistoryPromptAttachment = {

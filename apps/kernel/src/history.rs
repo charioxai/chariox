@@ -22,7 +22,7 @@ pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
     SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource,
-    SessionHistoryPromptAttachment, SessionHistoryStore,
+    SessionHistoryExternalObservation, SessionHistoryPromptAttachment, SessionHistoryStore,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -241,6 +241,12 @@ impl HistoryEvent {
                 serde_json::Value::Number(observed_at_ms.into()),
             );
         }
+        if let Some(external_observation) = entry.external_observation.clone() {
+            metadata.insert(
+                "external_observation".to_string(),
+                serde_json::to_value(external_observation).unwrap_or(serde_json::Value::Null),
+            );
+        }
         if !entry.attachments.is_empty() {
             metadata.insert(
                 "attachments".to_string(),
@@ -327,6 +333,11 @@ impl HistoryEvent {
                 .metadata
                 .get("observed_at_ms")
                 .and_then(|value| value.as_u64()),
+            external_observation: self
+                .metadata
+                .get("external_observation")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
             attachments: self
                 .metadata
                 .get("attachments")

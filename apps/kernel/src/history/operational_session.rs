@@ -17,6 +17,7 @@ pub struct ExternalImportHistoryIndex {
 pub struct ExternalImportHistoryEntry {
     pub kind: SessionHistoryEntryKind,
     pub text: String,
+    pub external_observation: Option<super::SessionHistoryExternalObservation>,
 }
 
 impl OperationalHistoryStore {
@@ -366,7 +367,7 @@ impl OperationalHistoryStore {
         let like_pattern = format!("%{external_merge_key_prefix}%");
         let mut statement = connection
             .prepare(
-                "SELECT kind, content, metadata_text
+                "SELECT kind, content, metadata_text, event_json
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
@@ -415,7 +416,18 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 }
             })?;
+            let event_json =
+                row.get::<_, String>(3)
+                    .map_err(|error| DaemonError::SessionHistoryFailed {
+                        session_id: Some(session_id.to_string()),
+                        operation: "decode external import history entry index event json",
+                        message: error.to_string(),
+                    })?;
             let metadata_text = metadata_text.unwrap_or_default();
+            let external_observation = serde_json::from_str::<HistoryEvent>(&event_json)
+                .ok()
+                .and_then(|event| event.to_session_history_entry())
+                .and_then(|entry| entry.external_observation);
             let is_external_observed = metadata_text
                 .lines()
                 .any(|line| line == "external_provider_observed");
@@ -437,6 +449,7 @@ impl OperationalHistoryStore {
                         ExternalImportHistoryEntry {
                             kind,
                             text: content.clone(),
+                            external_observation: external_observation.clone(),
                         },
                     );
                 }

@@ -47,10 +47,24 @@ pub struct SessionHistoryEntry {
     pub external_provider_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_observation: Option<SessionHistoryExternalObservation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SessionHistoryPromptAttachment>,
     pub text: String,
     pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryExternalObservation {
+    pub settles_active_prompt: bool,
+    pub passive_telemetry: bool,
+}
+
+impl SessionHistoryExternalObservation {
+    pub fn useful(self) -> Option<Self> {
+        (self.settles_active_prompt || self.passive_telemetry).then_some(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +195,7 @@ impl SessionHistoryEntry {
             external_provider_session_id: None,
             external_provider_turn_id: None,
             observed_at_ms: None,
+            external_observation: None,
             attachments: attachments
                 .iter()
                 .map(SessionHistoryPromptAttachment::from_prompt_attachment)
@@ -217,6 +232,7 @@ impl SessionHistoryEntry {
             external_provider_session_id: None,
             external_provider_turn_id: None,
             observed_at_ms: None,
+            external_observation: None,
             attachments: Vec::new(),
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
@@ -241,6 +257,7 @@ impl SessionHistoryEntry {
             external_provider_session_id: None,
             external_provider_turn_id: None,
             observed_at_ms: None,
+            external_observation: None,
             attachments: Vec::new(),
             text: text.into(),
             timestamp_ms: super::unix_epoch_ms(),
@@ -299,6 +316,7 @@ impl SessionHistoryEntry {
             external_provider_session_id: Some(provider_session_id.to_string()),
             external_provider_turn_id: provider_turn_id,
             observed_at_ms: Some(observed_at_ms),
+            external_observation: None,
             attachments: Vec::new(),
             text: text.into(),
             timestamp_ms: observed_at_ms,

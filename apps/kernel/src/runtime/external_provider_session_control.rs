@@ -836,7 +836,7 @@ fn append_observed_external_turns_for_import_with_options(
                 turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
             continue;
         }
-        let entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
+        let mut entry = SessionHistoryEntry::external_provider_observed_with_merge_key(
             &read.target.session_id,
             provider_run_id.as_deref(),
             &read.target.agent_id,
@@ -848,6 +848,8 @@ fn append_observed_external_turns_for_import_with_options(
             provider_turn_id.clone(),
             turn.observed_at_ms,
         );
+        entry.external_observation =
+            ExternalProviderObservationPolicy::for_provider(&provider).observation_for_turn(turn);
         let has_observable_change = merge_key.as_ref().is_none_or(|merge_key| {
             existing_entries_by_merge_key
                 .get(merge_key)
@@ -865,6 +867,7 @@ fn append_observed_external_turns_for_import_with_options(
                     ExternalImportHistoryEntry {
                         kind: entry.kind,
                         text: entry.text.clone(),
+                        external_observation: entry.external_observation.clone(),
                     },
                 );
             } else {
@@ -980,7 +983,9 @@ fn external_observed_history_entry_matches(
     existing: &ExternalImportHistoryEntry,
     next: &SessionHistoryEntry,
 ) -> bool {
-    existing.kind == next.kind && existing.text == next.text
+    existing.kind == next.kind
+        && existing.text == next.text
+        && existing.external_observation == next.external_observation
 }
 
 fn normalized_observed_prompt_text(text: &str) -> Option<String> {
@@ -2313,6 +2318,22 @@ mod tests {
                     .expect("active prompt should load")
                     .is_none(),
                 "{provider} abort-like completion status should clear the external active prompt"
+            );
+            let entries = app
+                .history_store()
+                .load(&session)
+                .expect("history should load");
+            let status_entry = entries
+                .iter()
+                .find(|entry| entry.kind == SessionHistoryEntryKind::ProviderStatus)
+                .expect("status history entry should persist");
+            assert_eq!(
+                status_entry
+                    .external_observation
+                    .as_ref()
+                    .map(|observation| observation.settles_active_prompt),
+                Some(true),
+                "{provider} settling status should persist structured observation metadata"
             );
         }
     }

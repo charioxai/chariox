@@ -133,6 +133,7 @@ export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPa
         ...(entry.entry.external_provider_session_id !== undefined ? { external_provider_session_id: entry.entry.external_provider_session_id } : {}),
         ...(entry.entry.external_provider_turn_id !== undefined ? { external_provider_turn_id: entry.entry.external_provider_turn_id } : {}),
         ...(entry.entry.observed_at_ms !== undefined ? { observed_at_ms: entry.entry.observed_at_ms } : {}),
+        ...(entry.entry.external_observation !== undefined ? { external_observation: entry.entry.external_observation } : {}),
       },
     })
   }
