@@ -3,6 +3,7 @@ import type {
   RuntimeSession,
   TranscriptEntry,
 } from "./cli-types.js"
+import { agentRuntimeActivityIsBusy } from "./session-state.js"
 import { formatTranscriptPreview } from "./transcript-preview.js"
 import { reindexTranscriptEntries, trimSingleTrailingNewline } from "./transcript-text.js"
 
@@ -148,7 +149,7 @@ function projectedActivityAllowsPromptQueue(session: RuntimeSession, agentId: st
   if (!activity) {
     return false
   }
-  return activity.busy || activity.prompt_status !== "none" || Boolean(activity.active_turn)
+  return agentRuntimeActivityIsBusy(activity)
 }
 
 function nextTranscriptEntryId(entries: readonly TranscriptEntry[]) {
