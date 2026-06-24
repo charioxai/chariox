@@ -37,7 +37,7 @@ impl OperationalHistoryStore {
             })?;
             connection
                 .execute(
-                    "INSERT OR IGNORE INTO history_archive_outbox (
+                    "INSERT INTO history_archive_outbox (
                         event_id,
                         event_json,
                         attempts,
@@ -45,7 +45,13 @@ impl OperationalHistoryStore {
                         archived_at_ms,
                         created_at_ms,
                         updated_at_ms
-                    ) VALUES (?1, ?2, 0, NULL, NULL, ?3, ?3)",
+                    ) VALUES (?1, ?2, 0, NULL, NULL, ?3, ?3)
+                     ON CONFLICT(event_id) DO UPDATE SET
+                         event_json = excluded.event_json,
+                         attempts = 0,
+                         last_error = NULL,
+                         updated_at_ms = excluded.updated_at_ms
+                     WHERE history_archive_outbox.archived_at_ms IS NULL",
                     params![event.event_id.as_str(), event_json, now as i64],
                 )
                 .map_err(|error| DaemonError::SessionHistoryFailed {

@@ -1863,6 +1863,125 @@ mod tests {
     }
 
     #[test]
+    fn append_observed_external_turns_persist_as_reloadable_regular_history_turn() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let import = ExternalProviderImportMetadata::observed_history(
+            "codex:thread-observed".to_string(),
+            "codex".to_string(),
+            "thread-observed".to_string(),
+        );
+        let agent =
+            persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+                .expect("metadata should persist");
+        let target = ImportedExternalObserverTarget {
+            session_id: session.id().to_string(),
+            agent_id: agent.id().to_string(),
+            provider_run_id: None,
+            import,
+        };
+
+        let outcome = append_observed_external_turns_for_import(
+            &mut app,
+            ImportedExternalObserverRead {
+                target,
+                turns: vec![
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("user-1".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::User,
+                        text: "external prompt".to_string(),
+                        observed_at_ms: Some(42),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("reasoning-1".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Reasoning,
+                        text: "external reasoning".to_string(),
+                        observed_at_ms: Some(63),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("tool-1".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Tool,
+                        text: "{\"tool\":\"bash\",\"status\":\"completed\"}".to_string(),
+                        observed_at_ms: Some(72),
+                    },
+                    crate::app::ObservedExternalProviderTurn {
+                        provider_turn_id: Some("assistant-1".to_string()),
+                        role: crate::app::ObservedExternalProviderTurnRole::Assistant,
+                        text: "external answer".to_string(),
+                        observed_at_ms: Some(84),
+                    },
+                ],
+            },
+        )
+        .expect("observed external turn should append");
+
+        assert_eq!(outcome.changed_count, 4);
+        let legacy_entries = app
+            .history_store()
+            .load(&session)
+            .expect("legacy session history should load");
+        assert_eq!(
+            legacy_entries
+                .iter()
+                .map(|entry| entry.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                SessionHistoryEntryKind::UserPrompt,
+                SessionHistoryEntryKind::ProviderReasoning,
+                SessionHistoryEntryKind::ProviderTool,
+                SessionHistoryEntryKind::ProviderOutput,
+            ]
+        );
+        assert_eq!(legacy_entries[0].text, "external prompt");
+        assert_eq!(
+            legacy_entries[0].source,
+            Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved)
+        );
+
+        let response = tokio::runtime::Runtime::new()
+            .expect("runtime should create")
+            .block_on(
+                crate::runtime::history_requests::execute_session_history_outline_request(
+                    app.operational_history_store(),
+                    crate::local::GetSessionHistoryOutlineRequest {
+                        session_id: session.id().to_string(),
+                        agent_ids: Some(vec![agent.id().to_string()]),
+                        latest_prompt_count: Some(4),
+                        cursor: None,
+                    },
+                ),
+            )
+            .expect("outline should load");
+        let crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+            panic!("unexpected response")
+        };
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].turns.len(), 1);
+        let turn = &agents[0].turns[0];
+        assert_eq!(turn.user_prompt.entry.text, "external prompt");
+        assert_eq!(
+            turn.user_prompt.entry.source,
+            Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved)
+        );
+        assert_eq!(
+            turn.summary
+                .as_ref()
+                .expect("assistant summary should load")
+                .entry
+                .text,
+            "external answer"
+        );
+        assert_eq!(turn.blobs.len(), 2);
+        assert_eq!(
+            turn.blobs[0].kind,
+            SessionHistoryEntryKind::ProviderReasoning
+        );
+        assert_eq!(turn.blobs[1].kind, SessionHistoryEntryKind::ProviderTool);
+    }
+
+    #[test]
     fn append_observed_external_user_turn_creates_external_active_prompt() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)

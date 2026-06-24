@@ -1149,13 +1149,35 @@ mod tests {
             .expect("event should enqueue for archive");
         store
             .enqueue_archive_events(std::slice::from_ref(&event))
-            .expect("duplicate outbox event should be ignored");
+            .expect("duplicate outbox event should refresh pending payload");
         let pending = store
             .load_pending_archive_events(10)
             .expect("pending outbox events should load");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].event.event_id, event.event_id);
         assert_eq!(pending[0].attempts, 0);
+
+        let mut replacement_event = event.clone();
+        replacement_event.timestamp_ms += 1;
+        replacement_event.event_id = event.event_id.clone();
+        replacement_event.content = Some("final observed content".to_string());
+        store
+            .mark_archive_events_failed(std::slice::from_ref(&event.event_id), "adapter down")
+            .expect("outbox failure should record before replacement");
+        store
+            .enqueue_archive_events(std::slice::from_ref(&replacement_event))
+            .expect("replacement event should refresh pending outbox payload");
+        let pending_after_replacement = store
+            .load_pending_archive_events(10)
+            .expect("pending replacement outbox event should load");
+        assert_eq!(pending_after_replacement.len(), 1);
+        assert_eq!(pending_after_replacement[0].event.event_id, event.event_id);
+        assert_eq!(
+            pending_after_replacement[0].event.content.as_deref(),
+            Some("final observed content")
+        );
+        assert_eq!(pending_after_replacement[0].attempts, 0);
+        assert_eq!(pending_after_replacement[0].last_error, None);
 
         drop(store);
         let store = OperationalHistoryStore::open(path.clone())
