@@ -1476,7 +1476,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 180
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 181
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2029,9 +2029,38 @@ export type WorkflowCodeArtifactMetadata = {
   source_sha256: string
   source_bytes: number
   validation: WorkflowCodeValidationReport
+  provenance: WorkflowCodeArtifactProvenance
+  history?: WorkflowCodeArtifactHistoryEntry[]
   created_at_ms: number
   updated_at_ms: number
 }
+
+export type WorkflowCodeArtifactActor = {
+  user_id: string
+  metaagent_id?: string | null
+}
+
+export type WorkflowCodeArtifactProvenance = {
+  created_by: WorkflowCodeArtifactActor
+  updated_by: WorkflowCodeArtifactActor
+}
+
+export type WorkflowCodeArtifactHistoryEntry = {
+  action: WorkflowCodeArtifactHistoryAction
+  at_ms: number
+  actor: WorkflowCodeArtifactActor
+  source_sha256: string
+  validation_ok?: boolean | null
+  workflow_id?: string | null
+  warnings?: WorkflowCodeApplyWarning[]
+}
+
+export type WorkflowCodeArtifactHistoryAction =
+  | "created"
+  | "updated"
+  | "imported"
+  | "applied"
+  | "run"
 
 export type WorkflowCodeArtifact = {
   metadata: WorkflowCodeArtifactMetadata

@@ -764,6 +764,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         args: MetaWorkflowCodeApplyArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        let artifact_name = args.name.clone();
         let source = meta_workflow_code_source(session, args.name, args.source)?;
         let response = self
             .meta_workflow_code_apply_response(
@@ -775,6 +776,13 @@ impl KernelRuntimeState {
             )
             .await?;
         if let crate::local::LocalDaemonResponse::WorkflowCodeApplied { result, .. } = &response {
+            self.record_metaagent_workflow_code_artifact_history(
+                session,
+                agent,
+                artifact_name.as_deref(),
+                crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
+                &result.apply,
+            );
             self.persist_metaagent_workflow_code_event(
                 "metaagent.workflow_code.applied",
                 session,
@@ -791,6 +799,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         args: MetaWorkflowCodeRunArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        let artifact_name = args.name.clone();
         let source = meta_workflow_code_source(session, args.name, args.source)?;
         let apply_response = self
             .meta_workflow_code_apply_response(
@@ -840,6 +849,13 @@ impl KernelRuntimeState {
             session,
             agent,
             meta_workflow_code_run_audit_payload(&apply_report, &run_response),
+        );
+        self.record_metaagent_workflow_code_artifact_history(
+            session,
+            agent,
+            artifact_name.as_deref(),
+            crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
+            &apply_report,
         );
         Ok(RuntimeToolResult {
             ok: true,
@@ -917,6 +933,38 @@ impl KernelRuntimeState {
                     "error": error.to_string(),
                 }),
             );
+        }
+    }
+
+    fn record_metaagent_workflow_code_artifact_history(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        artifact_name: Option<&str>,
+        action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
+        apply_report: &crate::workflow_code::WorkflowCodeApplyReport,
+    ) {
+        let Some(artifact_name) = artifact_name else {
+            return;
+        };
+        let actor = crate::workflow_code::WorkflowCodeArtifactActor::new(
+            metaagent.owner_user_id().to_string(),
+            Some(metaagent.id().to_string()),
+        );
+        match meta_workflow_code_artifact_registry(session).and_then(|registry| {
+            registry.record_apply_history(artifact_name, actor, action, apply_report)
+        }) {
+            Ok(_) => {}
+            Err(error) => crate::logging::warn_with_fields(
+                "metaagent.workflow_code",
+                "failed to record workflow-code artifact apply history",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "metaagent_id": metaagent.id(),
+                    "artifact": artifact_name,
+                    "error": error.to_string(),
+                }),
+            ),
         }
     }
 

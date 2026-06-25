@@ -44,13 +44,21 @@ impl KernelRuntimeState {
                 .await
             }
             LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => (
-                self.execute_workflow_code_artifact_create_request(request)
-                    .await,
+                self.execute_workflow_code_artifact_create_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
                 None,
             ),
             LocalDaemonRequest::UpdateWorkflowCodeArtifact(request) => (
-                self.execute_workflow_code_artifact_update_request(request)
-                    .await,
+                self.execute_workflow_code_artifact_update_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
                 None,
             ),
             LocalDaemonRequest::GetWorkflowCodeArtifact(request) => (
@@ -74,8 +82,12 @@ impl KernelRuntimeState {
                 None,
             ),
             LocalDaemonRequest::ImportWorkflowCodeArtifact(request) => (
-                self.execute_workflow_code_artifact_import_request(request)
-                    .await,
+                self.execute_workflow_code_artifact_import_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
                 None,
             ),
             LocalDaemonRequest::ApplyWorkflowDesignOp(request) => {
@@ -377,7 +389,10 @@ impl KernelRuntimeState {
     async fn execute_workflow_code_artifact_create_request(
         &self,
         request: crate::local::CreateWorkflowCodeArtifactRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
         self.with_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let compile = crate::workflow_code::compile_workflow_code_javascript(
@@ -392,6 +407,8 @@ impl KernelRuntimeState {
                 request.source,
                 compile.definition,
                 compile.validation,
+                actor,
+                crate::workflow_code::WorkflowCodeArtifactHistoryAction::Created,
             )?;
             app.durable_state_store().append_event(
                 "workflow_code_artifact.created",
@@ -408,7 +425,10 @@ impl KernelRuntimeState {
     async fn execute_workflow_code_artifact_update_request(
         &self,
         request: crate::local::UpdateWorkflowCodeArtifactRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
         self.with_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let compile = crate::workflow_code::compile_workflow_code_javascript(
@@ -423,6 +443,8 @@ impl KernelRuntimeState {
                 request.source,
                 compile.definition,
                 compile.validation,
+                actor,
+                crate::workflow_code::WorkflowCodeArtifactHistoryAction::Updated,
             )?;
             app.durable_state_store().append_event(
                 "workflow_code_artifact.updated",
@@ -514,7 +536,10 @@ impl KernelRuntimeState {
     async fn execute_workflow_code_artifact_import_request(
         &self,
         request: crate::local::ImportWorkflowCodeArtifactRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
         self.with_app_side_effect(move |app| {
             request.package.validate_integrity()?;
             let limits = app.config().workflow_code_limits();
@@ -529,6 +554,7 @@ impl KernelRuntimeState {
                 request.package,
                 compile.definition,
                 compile.validation,
+                actor,
                 request.overwrite,
             )?;
             app.durable_state_store().append_event(
@@ -564,6 +590,16 @@ fn workflow_code_registry_for_session(
     Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
         roots,
     ))
+}
+
+fn workflow_code_artifact_actor(
+    caller_user_id: &str,
+    caller_metaagent_id: Option<&str>,
+) -> crate::workflow_code::WorkflowCodeArtifactActor {
+    crate::workflow_code::WorkflowCodeArtifactActor::new(
+        caller_user_id.to_string(),
+        caller_metaagent_id.map(str::to_string),
+    )
 }
 
 pub(super) fn workflow_response_session(

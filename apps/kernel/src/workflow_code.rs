@@ -21,6 +21,7 @@ use crate::session::{
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
+const WORKFLOW_CODE_ARTIFACT_HISTORY_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WorkflowCodePatternExample {
@@ -377,8 +378,67 @@ pub struct WorkflowCodeArtifactMetadata {
     pub source_sha256: String,
     pub source_bytes: u64,
     pub validation: WorkflowCodeValidationReport,
+    #[serde(default)]
+    pub provenance: WorkflowCodeArtifactProvenance,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<WorkflowCodeArtifactHistoryEntry>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeArtifactActor {
+    pub user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metaagent_id: Option<String>,
+}
+
+impl WorkflowCodeArtifactActor {
+    pub fn new(user_id: impl Into<String>, metaagent_id: Option<String>) -> Self {
+        Self {
+            user_id: user_id.into(),
+            metaagent_id,
+        }
+    }
+}
+
+impl Default for WorkflowCodeArtifactActor {
+    fn default() -> Self {
+        Self {
+            user_id: "unknown".to_string(),
+            metaagent_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorkflowCodeArtifactProvenance {
+    pub created_by: WorkflowCodeArtifactActor,
+    pub updated_by: WorkflowCodeArtifactActor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeArtifactHistoryEntry {
+    pub action: WorkflowCodeArtifactHistoryAction,
+    pub at_ms: u64,
+    pub actor: WorkflowCodeArtifactActor,
+    pub source_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<WorkflowCodeApplyWarning>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowCodeArtifactHistoryAction {
+    Created,
+    Updated,
+    Imported,
+    Applied,
+    Run,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -422,6 +482,10 @@ struct StoredWorkflowCodeArtifact {
     source_sha256: String,
     definition: WorkflowCodeDefinition,
     validation: WorkflowCodeValidationReport,
+    #[serde(default)]
+    provenance: WorkflowCodeArtifactProvenance,
+    #[serde(default)]
+    history: Vec<WorkflowCodeArtifactHistoryEntry>,
     created_at_ms: u64,
     updated_at_ms: u64,
 }
@@ -446,6 +510,8 @@ impl WorkflowCodeArtifactRegistry {
         source: impl Into<String>,
         definition: WorkflowCodeDefinition,
         validation: WorkflowCodeValidationReport,
+        actor: WorkflowCodeArtifactActor,
+        action: WorkflowCodeArtifactHistoryAction,
     ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
         validate_registry_name(name, "workflow-code artifact name")?;
         if self.find_path(name)?.is_some() {
@@ -457,6 +523,19 @@ impl WorkflowCodeArtifactRegistry {
         let source = source.into();
         let now = crate::session::unix_epoch_ms();
         let source_sha256 = sha256_hex(source.as_bytes());
+        let provenance = WorkflowCodeArtifactProvenance {
+            created_by: actor.clone(),
+            updated_by: actor.clone(),
+        };
+        let history = workflow_code_artifact_history(vec![workflow_code_artifact_history_entry(
+            action,
+            now,
+            actor,
+            source_sha256.clone(),
+            Some(validation.ok),
+            None,
+            Vec::new(),
+        )]);
         let stored = StoredWorkflowCodeArtifact {
             name: name.to_string(),
             language,
@@ -464,6 +543,8 @@ impl WorkflowCodeArtifactRegistry {
             source_sha256,
             definition,
             validation,
+            provenance,
+            history,
             created_at_ms: now,
             updated_at_ms: now,
         };
@@ -482,6 +563,8 @@ impl WorkflowCodeArtifactRegistry {
         source: impl Into<String>,
         definition: WorkflowCodeDefinition,
         validation: WorkflowCodeValidationReport,
+        actor: WorkflowCodeArtifactActor,
+        action: WorkflowCodeArtifactHistoryAction,
     ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
         validate_registry_name(name, "workflow-code artifact name")?;
         let path = self
@@ -492,15 +575,31 @@ impl WorkflowCodeArtifactRegistry {
             })?;
         let previous = read_stored_artifact(&path)?;
         let source = source.into();
+        let now = crate::session::unix_epoch_ms();
+        let source_sha256 = sha256_hex(source.as_bytes());
+        let mut provenance = previous.provenance.clone();
+        provenance.updated_by = actor.clone();
+        let mut history = previous.history.clone();
+        history.push(workflow_code_artifact_history_entry(
+            action,
+            now,
+            actor,
+            source_sha256.clone(),
+            Some(validation.ok),
+            None,
+            Vec::new(),
+        ));
         let stored = StoredWorkflowCodeArtifact {
             name: name.to_string(),
             language,
-            source_sha256: sha256_hex(source.as_bytes()),
+            source_sha256,
             source,
             definition,
             validation,
+            provenance,
+            history: workflow_code_artifact_history(history),
             created_at_ms: previous.created_at_ms,
-            updated_at_ms: crate::session::unix_epoch_ms(),
+            updated_at_ms: now,
         };
         write_stored_artifact(&path, &stored)?;
         Ok(stored.into_artifact(path))
@@ -565,6 +664,7 @@ impl WorkflowCodeArtifactRegistry {
         package: WorkflowCodeArtifactPackage,
         definition: WorkflowCodeDefinition,
         validation: WorkflowCodeValidationReport,
+        actor: WorkflowCodeArtifactActor,
         overwrite: bool,
     ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
         package.validate_integrity()?;
@@ -578,6 +678,8 @@ impl WorkflowCodeArtifactRegistry {
                 package.source,
                 definition,
                 validation,
+                actor,
+                WorkflowCodeArtifactHistoryAction::Imported,
             )
         } else {
             self.save(
@@ -586,8 +688,42 @@ impl WorkflowCodeArtifactRegistry {
                 package.source,
                 definition,
                 validation,
+                actor,
+                WorkflowCodeArtifactHistoryAction::Imported,
             )
         }
+    }
+
+    pub fn record_apply_history(
+        &self,
+        name: &str,
+        actor: WorkflowCodeArtifactActor,
+        action: WorkflowCodeArtifactHistoryAction,
+        report: &WorkflowCodeApplyReport,
+    ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
+        validate_registry_name(name, "workflow-code artifact name")?;
+        let path = self
+            .find_path(name)?
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.history",
+                message: format!("workflow-code artifact `{name}` is not saved"),
+            })?;
+        let mut stored = read_stored_artifact(&path)?;
+        let now = crate::session::unix_epoch_ms();
+        stored.updated_at_ms = now;
+        stored.provenance.updated_by = actor.clone();
+        stored.history.push(workflow_code_artifact_history_entry(
+            action,
+            now,
+            actor,
+            stored.source_sha256.clone(),
+            None,
+            Some(report.workflow_id.clone()),
+            report.warnings.clone(),
+        ));
+        stored.history = workflow_code_artifact_history(stored.history);
+        write_stored_artifact(&path, &stored)?;
+        Ok(stored.into_artifact(path))
     }
 
     fn artifact_path(&self, name: &str) -> Result<PathBuf, crate::DaemonError> {
@@ -1511,6 +1647,8 @@ impl StoredWorkflowCodeArtifact {
                 source_sha256: self.source_sha256,
                 source_bytes,
                 validation: self.validation,
+                provenance: self.provenance,
+                history: self.history,
                 created_at_ms: self.created_at_ms,
                 updated_at_ms: self.updated_at_ms,
             },
@@ -1529,6 +1667,35 @@ fn read_stored_artifact(path: &Path) -> Result<StoredWorkflowCodeArtifact, crate
             path.display()
         ),
     })
+}
+
+fn workflow_code_artifact_history_entry(
+    action: WorkflowCodeArtifactHistoryAction,
+    at_ms: u64,
+    actor: WorkflowCodeArtifactActor,
+    source_sha256: String,
+    validation_ok: Option<bool>,
+    workflow_id: Option<String>,
+    warnings: Vec<WorkflowCodeApplyWarning>,
+) -> WorkflowCodeArtifactHistoryEntry {
+    WorkflowCodeArtifactHistoryEntry {
+        action,
+        at_ms,
+        actor,
+        source_sha256,
+        validation_ok,
+        workflow_id,
+        warnings,
+    }
+}
+
+fn workflow_code_artifact_history(
+    mut history: Vec<WorkflowCodeArtifactHistoryEntry>,
+) -> Vec<WorkflowCodeArtifactHistoryEntry> {
+    if history.len() > WORKFLOW_CODE_ARTIFACT_HISTORY_LIMIT {
+        history.drain(0..history.len() - WORKFLOW_CODE_ARTIFACT_HISTORY_LIMIT);
+    }
+    history
 }
 
 fn write_stored_artifact(
@@ -2039,6 +2206,8 @@ workflow.define({ alias: "bad", runOutputSchema: final })
         let registry = WorkflowCodeArtifactRegistry::new(vec![root.clone()]);
         let definition = minimal_definition();
         let validation = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+        let creator = WorkflowCodeArtifactActor::new("user-1", None);
+        let updater = WorkflowCodeArtifactActor::new("user-2", Some("meta-1".to_string()));
 
         let created = registry
             .save(
@@ -2047,6 +2216,8 @@ workflow.define({ alias: "bad", runOutputSchema: final })
                 "workflow.define({ alias: 'toy' })",
                 definition.clone(),
                 validation,
+                creator.clone(),
+                WorkflowCodeArtifactHistoryAction::Created,
             )
             .expect("workflow-code artifact should save");
 
@@ -2054,6 +2225,14 @@ workflow.define({ alias: "bad", runOutputSchema: final })
         assert_eq!(created.metadata.language, WorkflowCodeLanguage::JavaScript);
         assert_eq!(created.metadata.source_bytes, 33);
         assert!(created.metadata.validation.ok);
+        assert_eq!(created.metadata.provenance.created_by, creator);
+        assert_eq!(created.metadata.provenance.updated_by, creator);
+        assert_eq!(created.metadata.history.len(), 1);
+        assert_eq!(
+            created.metadata.history[0].action,
+            WorkflowCodeArtifactHistoryAction::Created
+        );
+        assert_eq!(created.metadata.history[0].validation_ok, Some(true));
         assert_eq!(registry.list().expect("list should load").len(), 1);
 
         let loaded = registry
@@ -2070,6 +2249,8 @@ workflow.define({ alias: "bad", runOutputSchema: final })
                 "workflow.define({ alias: 'toy-2' })",
                 minimal_definition(),
                 minimal_definition().validate_with_limits(&WorkflowCodeLimitsConfig::default()),
+                updater.clone(),
+                WorkflowCodeArtifactHistoryAction::Updated,
             )
             .expect("workflow-code artifact should update");
         assert_eq!(updated.metadata.language, WorkflowCodeLanguage::TypeScript);
@@ -2078,6 +2259,13 @@ workflow.define({ alias: "bad", runOutputSchema: final })
             created.metadata.created_at_ms
         );
         assert!(updated.metadata.updated_at_ms >= created.metadata.updated_at_ms);
+        assert_eq!(updated.metadata.provenance.created_by, creator);
+        assert_eq!(updated.metadata.provenance.updated_by, updater);
+        assert_eq!(updated.metadata.history.len(), 2);
+        assert_eq!(
+            updated.metadata.history[1].action,
+            WorkflowCodeArtifactHistoryAction::Updated
+        );
 
         let deleted_path = registry.delete("toy").expect("artifact should delete");
         assert!(!deleted_path.exists());
@@ -2097,6 +2285,7 @@ workflow.define({ alias: "bad", runOutputSchema: final })
         let mut definition = minimal_definition();
         definition.endpoints.clear();
         let validation = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+        let actor = WorkflowCodeArtifactActor::new("user-1", None);
 
         let artifact = registry
             .save(
@@ -2105,6 +2294,8 @@ workflow.define({ alias: "bad", runOutputSchema: final })
                 "workflow.define({ alias: 'invalid' })",
                 definition,
                 validation,
+                actor,
+                WorkflowCodeArtifactHistoryAction::Created,
             )
             .expect("invalid workflow-code artifact should still save diagnostics");
 
@@ -2115,6 +2306,7 @@ workflow.define({ alias: "bad", runOutputSchema: final })
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "missing_endpoint"));
+        assert_eq!(artifact.metadata.history[0].validation_ok, Some(false));
 
         let _ = fs::remove_dir_all(root);
     }

@@ -241,6 +241,22 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .and_then(serde_json::Value::as_str),
         Some("meta-flow")
     );
+    assert_eq!(
+        created
+            .payload
+            .pointer(
+                "/WorkflowCodeArtifactCreated/artifact/metadata/provenance/created_by/metaagent_id"
+            )
+            .and_then(serde_json::Value::as_str),
+        Some(metaagent.id())
+    );
+    assert_eq!(
+        created
+            .payload
+            .pointer("/WorkflowCodeArtifactCreated/artifact/metadata/history/0/action")
+            .and_then(serde_json::Value::as_str),
+        Some("created")
+    );
 
     let validated = router
         .runtime_state
@@ -358,6 +374,38 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .pointer("/WorkflowCodeArtifact/artifact/definition/workflow/alias")
             .and_then(serde_json::Value::as_str),
         Some("meta_scripted_flow")
+    );
+    assert_eq!(
+        read.payload
+            .pointer("/WorkflowCodeArtifact/artifact/metadata/provenance/updated_by/metaagent_id")
+            .and_then(serde_json::Value::as_str),
+        Some(metaagent.id())
+    );
+    assert_eq!(
+        read.payload
+            .pointer("/WorkflowCodeArtifact/artifact/metadata/history/0/action")
+            .and_then(serde_json::Value::as_str),
+        Some("created")
+    );
+    assert_eq!(
+        read.payload
+            .pointer("/WorkflowCodeArtifact/artifact/metadata/history/1/action")
+            .and_then(serde_json::Value::as_str),
+        Some("applied")
+    );
+    assert_eq!(
+        read.payload
+            .pointer("/WorkflowCodeArtifact/artifact/metadata/history/2/action")
+            .and_then(serde_json::Value::as_str),
+        Some("run")
+    );
+    assert!(
+        read.payload
+            .pointer("/WorkflowCodeArtifact/artifact/metadata/history/2/workflow_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "{:?}",
+        read.payload
     );
 
     let exported = router
