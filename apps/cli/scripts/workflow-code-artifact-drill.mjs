@@ -457,6 +457,191 @@ function rebindingsForDefinition(definition) {
   }))
 }
 
+const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
+  'adversarial-verification.js': {
+    alias: 'pattern-adversarial-verification',
+    schemas: ['proposal', 'critique', 'final_output'],
+    nodes: ['proposer', 'critic', 'judge'],
+    edges: ['proposal_to_critic', 'critic_loop', 'critic_to_judge'],
+    endpoints: ['entry'],
+    completers: ['judge'],
+    providers: ['codex', 'claude', 'opencode'],
+    hasLoop: true,
+  },
+  'evaluator-optimizer.js': {
+    alias: 'pattern-evaluator-optimizer',
+    schemas: ['candidate', 'evaluation', 'final_output'],
+    nodes: ['optimizer', 'evaluator'],
+    edges: ['candidate_to_evaluator', 'revision_loop'],
+    endpoints: ['entry'],
+    completers: ['evaluator'],
+    providers: ['codex', 'claude'],
+    hasLoop: true,
+  },
+  'fan-out-synthesize.js': {
+    alias: 'pattern-fan-out-synthesize',
+    schemas: ['assignment', 'finding', 'final_output'],
+    nodes: ['planner', 'worker_a', 'worker_b', 'synthesizer'],
+    edges: ['planner_to_a', 'planner_to_b', 'a_to_synth', 'b_to_synth'],
+    endpoints: ['entry'],
+    completers: ['synthesizer'],
+    providers: ['codex', 'claude', 'opencode'],
+    waitForAll: ['synthesizer'],
+  },
+  'generate-filter.js': {
+    alias: 'pattern-generate-filter',
+    schemas: ['candidates', 'filtered', 'final_output'],
+    nodes: ['generator', 'filter', 'finisher'],
+    edges: ['generated_candidates', 'filtered_candidates'],
+    endpoints: ['entry'],
+    completers: ['finisher'],
+    providers: ['codex', 'claude', 'opencode'],
+  },
+  'loop-until-done.js': {
+    alias: 'pattern-loop-until-done',
+    schemas: ['work_product', 'feedback', 'final_output'],
+    nodes: ['worker', 'checker'],
+    edges: ['work_to_checker', 'revise_loop'],
+    endpoints: ['entry'],
+    completers: ['checker'],
+    providers: ['codex', 'claude'],
+    hasLoop: true,
+  },
+  'orchestrator-workers.js': {
+    alias: 'pattern-orchestrator-workers',
+    schemas: ['assignment', 'result', 'final_output'],
+    nodes: ['orchestrator', 'worker', 'synthesizer'],
+    edges: ['orchestrator_to_worker', 'worker_to_synthesizer'],
+    endpoints: ['entry'],
+    completers: ['synthesizer'],
+    providers: ['codex', 'opencode', 'claude'],
+  },
+  'parallelization.js': {
+    alias: 'pattern-parallelization',
+    schemas: ['review_task', 'review_result', 'final_output'],
+    nodes: ['dispatcher', 'policy_reviewer', 'quality_reviewer', 'aggregator'],
+    edges: ['to_policy', 'to_quality', 'policy_to_aggregator', 'quality_to_aggregator'],
+    endpoints: ['entry'],
+    completers: ['aggregator'],
+    providers: ['codex', 'claude', 'opencode'],
+    waitForAll: ['aggregator'],
+  },
+  'prompt-chaining.js': {
+    alias: 'pattern-prompt-chaining',
+    schemas: ['handoff', 'final_output'],
+    nodes: ['drafter', 'refiner'],
+    edges: ['draft_to_refiner'],
+    endpoints: ['entry'],
+    completers: ['refiner'],
+    providers: ['codex', 'claude'],
+  },
+  'routing.js': {
+    alias: 'pattern-routing',
+    schemas: ['route_task', 'final_output'],
+    nodes: ['classifier', 'code_specialist', 'research_specialist'],
+    edges: ['to_code', 'to_research'],
+    endpoints: ['entry'],
+    completers: ['code_specialist', 'research_specialist'],
+    providers: ['codex', 'opencode', 'claude'],
+    multiEdgeRouter: 'classifier',
+  },
+  'tournament.js': {
+    alias: 'pattern-tournament',
+    schemas: ['contest_prompt', 'entry', 'final_output'],
+    nodes: ['seeder', 'contestant_a', 'contestant_b', 'judge'],
+    edges: ['seed_a', 'seed_b', 'entry_a', 'entry_b'],
+    endpoints: ['entry'],
+    completers: ['judge'],
+    providers: ['codex', 'claude', 'opencode'],
+    waitForAll: ['judge'],
+  },
+}
+
+function assertSameSet(actual, expected, label) {
+  const sortedActual = [...actual].sort()
+  const sortedExpected = [...expected].sort()
+  assert(
+    JSON.stringify(sortedActual) === JSON.stringify(sortedExpected),
+    `${label} mismatch`,
+    { actual: sortedActual, expected: sortedExpected },
+  )
+}
+
+function validationDiagnostics(validation) {
+  return validation?.diagnostics ?? []
+}
+
+function validateExampleTopologyDefinition(exampleName, definition, validation) {
+  const expectation = EXAMPLE_TOPOLOGY_EXPECTATIONS[exampleName]
+  assert(expectation, `missing workflow-code topology expectation for ${exampleName}`)
+
+  assert(definition?.workflow?.alias === expectation.alias, `${exampleName} alias mismatch`, definition?.workflow)
+  assert(definition.workflow?.max_concurrent === 32, `${exampleName} should set maxConcurrent to 32`, definition.workflow)
+  assert(definition.workflow?.run_output_schema === 'final_output', `${exampleName} should set workflow-level final output schema`, definition.workflow)
+  assertSameSet((definition.schemas ?? []).map((schema) => schema.handle), expectation.schemas, `${exampleName} schemas`)
+  assertSameSet((definition.nodes ?? []).map((node) => node.handle), expectation.nodes, `${exampleName} nodes`)
+  assertSameSet((definition.edges ?? []).map((edge) => edge.handle), expectation.edges, `${exampleName} edges`)
+  assertSameSet((definition.endpoints ?? []).map((endpoint) => endpoint.handle), expectation.endpoints, `${exampleName} endpoints`)
+  assertSameSet(
+    (definition.nodes ?? [])
+      .filter((node) => node.can_complete_workflow_run === true)
+      .map((node) => node.handle),
+    expectation.completers,
+    `${exampleName} completion nodes`,
+  )
+
+  for (const schema of definition.schemas ?? []) {
+    assert(schema.schema?.type === 'object', `${exampleName} schema ${schema.handle} should be an object schema`, schema)
+  }
+  for (const node of definition.nodes ?? []) {
+    assert(node.instructions, `${exampleName} node ${node.handle} should include node-level instructions`, node)
+    assert(node.canvas && Number.isFinite(node.canvas.x) && Number.isFinite(node.canvas.y), `${exampleName} node ${node.handle} should include canvas coordinates`, node)
+    assert(node.agent?.kind === 'create', `${exampleName} node ${node.handle} should create an agent for portability`, node)
+  }
+  for (const endpoint of definition.endpoints ?? []) {
+    assert(endpoint.canvas && Number.isFinite(endpoint.canvas.x) && Number.isFinite(endpoint.canvas.y), `${exampleName} endpoint ${endpoint.handle} should include canvas coordinates`, endpoint)
+    assert(expectation.nodes.includes(endpoint.entry_node), `${exampleName} endpoint ${endpoint.handle} should target a known node`, endpoint)
+  }
+  for (const edge of definition.edges ?? []) {
+    assert(expectation.nodes.includes(edge.from_node), `${exampleName} edge ${edge.handle} should have a known source node`, edge)
+    assert(expectation.nodes.includes(edge.to_node), `${exampleName} edge ${edge.handle} should have a known target node`, edge)
+    assert(expectation.schemas.includes(edge.handoff_schema), `${exampleName} edge ${edge.handle} should use a known schema`, edge)
+  }
+
+  for (const waitNode of expectation.waitForAll ?? []) {
+    const node = (definition.nodes ?? []).find((entry) => entry.handle === waitNode)
+    assert(node?.wait_for_all_inputs === true, `${exampleName} node ${waitNode} should wait for all inputs`, node)
+  }
+  if (expectation.hasLoop) {
+    assert(
+      (definition.edges ?? []).some((edge) => edge.to_node === expectation.nodes[0]),
+      `${exampleName} should include a loop edge back to the first node`,
+      definition.edges,
+    )
+  }
+  if (expectation.multiEdgeRouter) {
+    const outgoing = (definition.edges ?? []).filter((edge) => edge.from_node === expectation.multiEdgeRouter)
+    assert(outgoing.length >= 2, `${exampleName} should model conditional routing as multi-edge agent handoff`, outgoing)
+  }
+
+  const providers = new Set((definition.nodes ?? []).map((node) => node.agent?.provider).filter(Boolean))
+  assertSameSet(providers, expectation.providers, `${exampleName} provider mix`)
+  if ((definition.nodes ?? []).length >= 3) {
+    assertSameSet(providers, ['claude', 'codex', 'opencode'], `${exampleName} 3+ node provider coverage`)
+  }
+
+  const diagnostics = validationDiagnostics(validation)
+  assert(!diagnostics.some((diagnostic) => diagnostic.code === 'canvas_overlap'), `${exampleName} should not have canvas overlap diagnostics`, diagnostics)
+  return {
+    alias: expectation.alias,
+    providers: [...providers].sort(),
+    completers: expectation.completers,
+    waitForAll: expectation.waitForAll ?? [],
+    hasLoop: Boolean(expectation.hasLoop),
+    multiEdgeRouter: expectation.multiEdgeRouter ?? null,
+  }
+}
+
 function validateApplyResult(result, label, expected = defaultToyExpectation()) {
   assert(result?.compile?.validation?.ok, `${label} compile validation failed`, result?.compile?.validation)
   const apply = result.apply
@@ -572,6 +757,11 @@ async function applyExampleSuite(client, sessionId, nodePath, workspace) {
     ).package
     assert(exported?.source_sha256, `example ${example.name} package export should include source hash`, exported)
     assert(exported?.definition_sha256, `example ${example.name} package export should include definition hash`, exported)
+    const topology = validateExampleTopologyDefinition(
+      example.name,
+      exported.definition,
+      created.metadata.validation,
+    )
 
     const importedArtifactName = `${artifactName}-package-imported`
     const imported = unwrap(
@@ -612,6 +802,11 @@ async function applyExampleSuite(client, sessionId, nodePath, workspace) {
       'WorkflowCodeArtifactCreated',
     ).artifact
     assert(inlineRoundTrip?.metadata?.validation?.ok, `example ${example.name} inline source should recompile`, inlineRoundTrip?.metadata?.validation)
+    validateExampleTopologyDefinition(
+      example.name,
+      inlineRoundTrip.definition,
+      inlineRoundTrip.metadata.validation,
+    )
 
     const directorySource = unwrap(
       await client.send(exportWorkflowCodeSourceRequest(
@@ -630,10 +825,16 @@ async function applyExampleSuite(client, sessionId, nodePath, workspace) {
       'WorkflowCodeArtifactCreated',
     ).artifact
     assert(directoryRoundTrip?.metadata?.validation?.ok, `example ${example.name} source directory should recompile`, directoryRoundTrip?.metadata?.validation)
+    validateExampleTopologyDefinition(
+      example.name,
+      directoryRoundTrip.definition,
+      directoryRoundTrip.metadata.validation,
+    )
 
     results.push({
       example: example.name,
       artifactName,
+      topology,
       packageImportedArtifactName: importedArtifactName,
       workflowId: apply.workflow_id,
       nodes: expected.nodes,
