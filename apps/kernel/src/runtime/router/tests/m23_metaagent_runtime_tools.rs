@@ -616,6 +616,301 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 }
 
 #[tokio::test]
+async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern() {
+    if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
+        eprintln!(
+            "skipping meta workflow-code routing pattern test because Node.js is unavailable: {error}"
+        );
+        return;
+    }
+
+    let env = TestMetaRuntimeEnv::new("workflow-code-routing-pattern");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let routing_example = crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES
+        .iter()
+        .find(|example| example.slug == "routing")
+        .expect("routing pattern example should be bundled");
+    let provider_rebindings = serde_json::json!([
+        { "node": "classifier", "provider": "dev-stub", "model": "default" },
+        { "node": "code_specialist", "provider": "dev-stub", "model": "default" },
+        { "node": "research_specialist", "provider": "dev-stub", "model": "default" }
+    ]);
+
+    let created = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL,
+            serde_json::json!({
+                "name": "routing-pattern",
+                "source": routing_example.source
+            }),
+        )
+        .await
+        .expect("metaagent should create routing workflow-code artifact");
+    assert!(created.ok, "{:?}", created.payload);
+    assert_eq!(
+        created
+            .payload
+            .pointer("/WorkflowCodeArtifactCreated/artifact/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("pattern-routing")
+    );
+
+    let applied = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
+            serde_json::json!({
+                "name": "routing-pattern",
+                "provider_rebindings": provider_rebindings
+            }),
+        )
+        .await
+        .expect("metaagent should apply routing workflow-code artifact");
+    assert!(applied.ok, "{:?}", applied.payload);
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("pattern-routing")
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/nodes")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(3)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/edges")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/endpoints")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/schemas")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/node_ids")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len),
+        Some(3)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/agent_ids")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len),
+        Some(3)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/edge_ids")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len),
+        Some(2)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        true
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/schema_refs/route_task")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        true
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/schema_refs/final_output")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        true
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/canvas_layout_applied")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    let workflow_id = applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/workflow_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("apply should return workflow id");
+    let generated_agent_ids = applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/agent_ids")
+        .and_then(serde_json::Value::as_object)
+        .expect("apply should return generated agent ids");
+    for handle in ["classifier", "code_specialist", "research_specialist"] {
+        let agent_id = generated_agent_ids
+            .get(handle)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("missing generated agent id for {handle}"));
+        assert!(
+            applied
+                .payload
+                .pointer("/WorkflowCodeApplied/session/agents")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|agents| agents.iter().any(|agent| {
+                    agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id)
+                        && agent.get("provider").and_then(serde_json::Value::as_str)
+                            == Some("dev-stub")
+                        && agent.get("model").and_then(serde_json::Value::as_str) == Some("default")
+                        && agent
+                            .get("controlled_by_metaagent_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(metaagent.id())
+                })),
+            "generated {handle} agent should be present with rebound provider/model: {:?}",
+            applied.payload
+        );
+    }
+    assert!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/session/workflows")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|workflows| workflows.iter().any(|workflow| {
+                workflow.get("id").and_then(serde_json::Value::as_str) == Some(workflow_id)
+                    && workflow
+                        .get("controlled_by_metaagent_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(metaagent.id())
+            })),
+        "routing workflow should appear in session snapshot as metaagent-controlled"
+    );
+
+    let exported = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_EXPORT_TOOL,
+            serde_json::json!({ "name": "routing-pattern" }),
+        )
+        .await
+        .expect("metaagent should export routing workflow-code artifact");
+    assert!(exported.ok, "{:?}", exported.payload);
+    let package = exported
+        .payload
+        .pointer("/WorkflowCodeArtifactExported/package")
+        .cloned()
+        .expect("export should return routing package");
+    let imported = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_IMPORT_TOOL,
+            serde_json::json!({
+                "package": package,
+                "name": "routing-pattern-imported"
+            }),
+        )
+        .await
+        .expect("metaagent should import routing workflow-code package");
+    assert!(imported.ok, "{:?}", imported.payload);
+    assert_eq!(
+        imported
+            .payload
+            .pointer("/WorkflowCodeArtifactImported/artifact/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("pattern-routing")
+    );
+
+    let run = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL,
+            serde_json::json!({
+                "name": "routing-pattern-imported",
+                "endpoint": "entry",
+                "prompt": "Route this request to the code specialist: fix the failing build.",
+                "provider_rebindings": [
+                    { "node": "classifier", "provider": "dev-stub", "model": "default" },
+                    { "node": "code_specialist", "provider": "dev-stub", "model": "default" },
+                    { "node": "research_specialist", "provider": "dev-stub", "model": "default" }
+                ]
+            }),
+        )
+        .await
+        .expect("metaagent should run imported routing workflow-code artifact");
+    assert!(run.ok, "{:?}", run.payload);
+    assert_eq!(
+        run.payload
+            .pointer("/WorkflowCodeRun/result/invocation/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("started")
+    );
+    assert_eq!(
+        run.payload
+            .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        true
+    );
+    assert_eq!(
+        run.payload
+            .pointer("/WorkflowCodeRun/result/invocation/workflow/controlled_by_metaagent_id")
+            .and_then(serde_json::Value::as_str),
+        Some(metaagent.id())
+    );
+}
+
+#[tokio::test]
 async fn metaagent_workflow_code_applies_inline_typescript_source() {
     let node_path = match crate::workflow_code::discover_workflow_code_node_path() {
         Ok(path) => path,
