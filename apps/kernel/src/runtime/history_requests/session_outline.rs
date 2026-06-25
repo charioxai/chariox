@@ -280,8 +280,8 @@ fn outline_turn_from_events(
         .iter()
         .filter(|event| event.sequence != prompt.sequence)
         .filter(|event| Some(event.sequence) != summary_sequence)
-        .filter(|event| event.kind == HistoryEventKind::ProviderOutput)
         .filter(|event| has_content(event))
+        .filter(|event| event_projects_as_outline_entry(event))
         .cloned()
         .filter_map(page_entry_from_event)
         .collect::<Vec<_>>();
@@ -289,7 +289,7 @@ fn outline_turn_from_events(
         .into_iter()
         .filter(|event| event.sequence != prompt.sequence)
         .filter(|event| Some(event.sequence) != summary_sequence)
-        .filter(|event| event.kind != HistoryEventKind::ProviderOutput)
+        .filter(|event| event_projects_as_outline_blob(event))
         .filter_map(outline_blob_from_event)
         .collect::<Vec<_>>();
     Some(SessionHistoryOutlineTurn {
@@ -305,6 +305,23 @@ fn outline_turn_from_events(
         summary,
         blobs,
     })
+}
+
+fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
+    match event.kind {
+        HistoryEventKind::ProviderOutput => true,
+        HistoryEventKind::ProviderStatus => event
+            .to_session_history_entry()
+            .is_some_and(|entry| entry.is_external_provider_observed()),
+        _ => false,
+    }
+}
+
+fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
+    match event.kind {
+        HistoryEventKind::ProviderOutput | HistoryEventKind::ProviderStatus => false,
+        _ => true,
+    }
 }
 
 fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineBlob> {
@@ -470,7 +487,7 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     #[test]
-    fn outline_turn_includes_assistant_entries_without_lazy_provider_output_blobs() {
+    fn outline_turn_uses_transcript_admission_for_provider_status() {
         let context = HistoryEventTurnContext {
             session_id: Some("session-1".to_string()),
             agent_id: Some("agent-1".to_string()),
@@ -520,6 +537,23 @@ mod tests {
             ),
             context.clone(),
         );
+        let mut external_status_entry = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::ProviderStatus,
+            "codex task_complete",
+            "codex",
+            "thread-1",
+            Some("done-1".to_string()),
+            Some(15),
+        );
+        external_status_entry.external_observation =
+            Some(crate::history::SessionHistoryExternalObservation {
+                settles_active_prompt: true,
+                passive_telemetry: false,
+            });
+        let external_status = HistoryEvent::transcript(15, &external_status_entry, context.clone());
         let summary = HistoryEvent::transcript(
             14,
             &SessionHistoryEntry::provider_output(
@@ -535,24 +569,45 @@ mod tests {
 
         let turn = outline_turn_from_events(
             &prompt,
-            vec![prompt.clone(), assistant, tool, status, summary],
+            vec![
+                prompt.clone(),
+                assistant,
+                tool,
+                status,
+                external_status,
+                summary,
+            ],
         )
         .expect("turn should be outlined");
 
-        assert_eq!(turn.entries.len(), 1);
+        assert_eq!(turn.entries.len(), 2);
         assert_eq!(
             turn.entries[0].entry.kind,
             SessionHistoryEntryKind::ProviderOutput
         );
         assert_eq!(turn.entries[0].entry.text, "assistant body before tool");
-        assert_eq!(turn.blobs.len(), 2);
-        assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderTool);
-        assert_eq!(turn.blobs[1].kind, SessionHistoryEntryKind::ProviderStatus);
-        assert!(
-            turn.blobs[1].summary.contains("total_token_usage"),
-            "{}",
-            turn.blobs[1].summary
+        assert_eq!(
+            turn.entries[1].entry.kind,
+            SessionHistoryEntryKind::ProviderStatus
         );
+        assert!(turn.entries[1].entry.is_external_provider_observed());
+        assert_eq!(
+            turn.entries[1]
+                .entry
+                .external_provider_session_id
+                .as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            turn.entries[1]
+                .entry
+                .external_observation
+                .as_ref()
+                .map(|observation| observation.settles_active_prompt),
+            Some(true)
+        );
+        assert_eq!(turn.blobs.len(), 1);
+        assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderTool);
         assert_eq!(
             turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
             Some("final assistant body")
