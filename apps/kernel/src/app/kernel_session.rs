@@ -14,7 +14,8 @@ use crate::session::{
 };
 use crate::workflow_code::{
     compile_workflow_code_javascript, WorkflowCodeAgentBinding, WorkflowCodeApplyReport,
-    WorkflowCodeCompileAndApplyResult, WorkflowCodeDefinition,
+    WorkflowCodeCompileAndApplyResult, WorkflowCodeCompileResult, WorkflowCodeDefinition,
+    WorkflowCodeValidationDiagnostic, WorkflowCodeValidationReport, WorkflowCodeValidationSeverity,
 };
 
 pub(crate) struct KernelSessionService<'a> {
@@ -1353,6 +1354,31 @@ impl<'a> KernelSessionService<'a> {
         )
     }
 
+    pub(crate) fn compile_and_validate_workflow_code_javascript_with_rebindings(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    ) -> Result<WorkflowCodeCompileResult, DaemonError> {
+        let mut compile = compile_workflow_code_javascript(node_path, source, limits)?;
+        let mut definition = compile.definition.clone();
+        crate::workflow_code::apply_workflow_code_provider_rebindings(
+            &mut definition,
+            provider_rebindings,
+        )?;
+        if compile.validation.ok {
+            self.append_workflow_code_target_validation(
+                session_id,
+                &definition,
+                &mut compile.validation,
+            )?;
+        }
+        compile.definition = definition;
+        Ok(compile)
+    }
+
     pub(crate) fn compile_and_apply_workflow_code_javascript_with_rebindings(
         &mut self,
         session_id: &str,
@@ -1385,6 +1411,83 @@ impl<'a> KernelSessionService<'a> {
             },
             apply,
         })
+    }
+
+    fn append_workflow_code_target_validation(
+        &self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        validation: &mut WorkflowCodeValidationReport,
+    ) -> Result<(), DaemonError> {
+        let session = self.app.sessions().get_session(session_id)?;
+        let registry = self.app.providers.registry();
+        for node in &definition.nodes {
+            match &node.agent {
+                WorkflowCodeAgentBinding::Create(agent) => {
+                    if agent.account_profile.is_some() {
+                        push_workflow_code_target_validation_error(
+                            validation,
+                            "unsupported_account_profile",
+                            "generated agent account_profile is not supported by workflow-code apply yet",
+                            Some(node.handle.clone()),
+                        );
+                    }
+                    let provider = agent.provider.trim();
+                    let adapter_key = adapter_key_for_provider(provider);
+                    if registry.resolve(adapter_key).is_none() {
+                        push_workflow_code_target_validation_error(
+                            validation,
+                            "unavailable_provider",
+                            format!(
+                                "node `{}` requests unavailable provider `{provider}`; available providers: {}",
+                                node.handle,
+                                registry.advertised_provider_ids().join(", ")
+                            ),
+                            Some(node.handle.clone()),
+                        );
+                    }
+                }
+                WorkflowCodeAgentBinding::Existing(existing) => {
+                    match self.app.agents.get_agent(&existing.agent_ref) {
+                        Ok(agent) if agent.session_id() == session_id => {}
+                        Ok(agent) => push_workflow_code_target_validation_error(
+                            validation,
+                            "invalid_existing_agent_binding",
+                            format!(
+                            "existing agent `{}` belongs to session `{}` instead of `{session_id}`",
+                            existing.agent_ref,
+                            agent.session_id()
+                        ),
+                            Some(node.handle.clone()),
+                        ),
+                        Err(error) => push_workflow_code_target_validation_error(
+                            validation,
+                            "invalid_existing_agent_binding",
+                            format!(
+                                "existing agent `{}` cannot be resolved: {error}",
+                                existing.agent_ref
+                            ),
+                            Some(node.handle.clone()),
+                        ),
+                    }
+                }
+            }
+            for grant in &node.extensions {
+                if let Err(error) = self.validate_workflow_code_extension_requirement(
+                    session.workspace_id(),
+                    &node.handle,
+                    grant,
+                ) {
+                    push_workflow_code_target_validation_error(
+                        validation,
+                        "unavailable_extension",
+                        error.to_string(),
+                        Some(node.handle.clone()),
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
@@ -1681,4 +1784,21 @@ impl<'a> KernelSessionService<'a> {
 
         self.app.pty.resize(provider_run_id, cols, rows)
     }
+}
+
+fn push_workflow_code_target_validation_error(
+    validation: &mut WorkflowCodeValidationReport,
+    code: &'static str,
+    message: impl Into<String>,
+    handle: Option<String>,
+) {
+    validation.ok = false;
+    validation
+        .diagnostics
+        .push(WorkflowCodeValidationDiagnostic {
+            severity: WorkflowCodeValidationSeverity::Error,
+            code: code.to_string(),
+            message: message.into(),
+            handle,
+        });
 }

@@ -321,12 +321,15 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.with_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
-            crate::workflow_code::compile_workflow_code_javascript(
-                &request.node_path,
-                &request.source,
-                &limits,
-            )
-            .map(|result| LocalDaemonResponse::WorkflowCodeValidated { result })
+            let result = crate::app::KernelSessionService::new(app)
+                .compile_and_validate_workflow_code_javascript_with_rebindings(
+                    &request.session_id,
+                    &request.node_path,
+                    &request.source,
+                    &limits,
+                    &request.provider_rebindings,
+                )?;
+            Ok(LocalDaemonResponse::WorkflowCodeValidated { result })
         })
         .await
     }

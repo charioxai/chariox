@@ -12,6 +12,8 @@ pub struct ValidateWorkflowCodeRequest {
     pub session_id: String,
     pub node_path: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

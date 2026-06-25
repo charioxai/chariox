@@ -557,6 +557,8 @@ pub struct MetaWorkflowCodeValidateArgs {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

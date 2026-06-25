@@ -20,6 +20,7 @@ export type ValidateWorkflowCodeRequest = {
     session_id: string
     node_path: string
     source: string
+    provider_rebindings?: WorkflowCodeProviderRebinding[]
   }
 }
 
@@ -27,12 +28,14 @@ export function validateWorkflowCodeRequest(
   sessionId: string,
   nodePath: string,
   source: string,
+  providerRebindings: WorkflowCodeProviderRebinding[] = [],
 ): ValidateWorkflowCodeRequest {
   return {
     ValidateWorkflowCode: {
       session_id: sessionId,
       node_path: nodePath,
       source,
+      ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
     },
   }
 }

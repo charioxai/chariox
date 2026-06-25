@@ -64,6 +64,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                provider_rebindings: Vec::new(),
             },
         ))
         .expect("workflow-code should validate");
@@ -107,6 +108,99 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 .iter()
                 .any(|workflow| workflow.id() == result.apply.workflow_id));
         }
+        _ => panic!("unexpected local response"),
+    }
+}
+
+#[test]
+fn local_request_api_workflow_code_validate_checks_target_provider_rebindings() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping workflow-code local API test because node is not available");
+        return;
+    };
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-workflow-code", "worktree-workflow-code"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+workflow.define({ alias: "portable_flow" })
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "planner", provider: "missing-provider", model: "default" }),
+  publicLabel: "Planner",
+  instructions: "Plan.",
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+"#;
+
+    let missing_provider = harness
+        .dispatch(LocalDaemonRequest::ValidateWorkflowCode(
+            crate::local::ValidateWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("workflow-code validate should return diagnostics");
+    match missing_provider {
+        LocalDaemonResponse::WorkflowCodeValidated { result } => {
+            assert!(!result.validation.ok);
+            let node_handle = result.definition.nodes[0].handle.as_str();
+            assert!(result
+                .validation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "unavailable_provider"
+                    && diagnostic.handle.as_deref() == Some(node_handle)));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let rebound = harness
+        .dispatch(LocalDaemonRequest::ValidateWorkflowCode(
+            crate::local::ValidateWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                provider_rebindings: vec![crate::workflow_code::WorkflowCodeProviderRebinding {
+                    node: "planner".to_string(),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                }],
+            },
+        ))
+        .expect("workflow-code validate should accept provider rebinding");
+    match rebound {
+        LocalDaemonResponse::WorkflowCodeValidated { result } => {
+            assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+            match &result.definition.nodes[0].agent {
+                crate::workflow_code::WorkflowCodeAgentBinding::Create(agent) => {
+                    assert_eq!(agent.provider, "dev-stub");
+                }
+                crate::workflow_code::WorkflowCodeAgentBinding::Existing(_) => {
+                    panic!("planner should be a generated agent")
+                }
+            }
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => assert!(workflows.is_empty()),
         _ => panic!("unexpected local response"),
     }
 }

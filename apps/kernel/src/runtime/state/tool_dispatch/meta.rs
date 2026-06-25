@@ -749,6 +749,7 @@ impl KernelRuntimeState {
                             .display()
                             .to_string(),
                         source,
+                        provider_rebindings: args.provider_rebindings,
                     },
                 ),
                 agent,
