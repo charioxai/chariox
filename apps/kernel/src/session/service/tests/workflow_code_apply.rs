@@ -636,6 +636,61 @@ fn workflow_code_apply_maps_omitted_queues_to_kernel_default_queue() {
 }
 
 #[test]
+fn workflow_code_apply_normalizes_explicit_default_queue_alias() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let mut definition = workflow_code_definition();
+    definition.queues.clear();
+    definition.queues.push(WorkflowCodeQueueDefinition {
+        handle: "script_default".to_string(),
+        alias: " Default ".to_string(),
+        priority: 7,
+        enabled: false,
+    });
+    definition.watchdogs.clear();
+
+    let agent_ids = BTreeMap::from([
+        ("planner".to_string(), "agent-1".to_string()),
+        ("worker".to_string(), "agent-2".to_string()),
+    ]);
+    let report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+        )
+        .expect("workflow-code should apply with normalized default queue alias");
+
+    let session = service
+        .get_session(session.id())
+        .expect("session should still exist");
+    let default_queue = session
+        .workflow_prompt_queue(&report.workflow_id, "default")
+        .expect("kernel default workflow queue should exist");
+
+    assert_eq!(
+        report.queue_ids.get("script_default").map(String::as_str),
+        Some(default_queue.id())
+    );
+    assert_eq!(default_queue.alias(), "default");
+    assert_eq!(default_queue.priority(), 7);
+    assert!(!default_queue.enabled());
+    assert_eq!(
+        session
+            .workflow_prompt_queues_for_workflow(&report.workflow_id)
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn workflow_code_apply_maps_watchdogs_to_implicit_default_queue_when_other_queues_exist() {
     let mut service = SessionService::new(&test_config());
     let session = service

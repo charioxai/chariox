@@ -433,7 +433,8 @@ impl SessionService {
         }
 
         for queue in &definition.queues {
-            let queue_id = if queue.alias == "default" {
+            let normalized_alias = normalize_workflow_queue_alias(queue.alias.clone())?;
+            let queue_id = if normalized_alias == "default" {
                 let session = self.get_session(session_id)?;
                 session
                     .workflow_prompt_queue(workflow_id, "default")
@@ -449,13 +450,13 @@ impl SessionService {
                 self.create_workflow_prompt_queue(
                     session_id,
                     workflow_id,
-                    queue.alias.clone(),
+                    normalized_alias.clone(),
                     queue.priority,
                 )?
                 .id()
                 .to_string()
             };
-            if queue.alias == "default" && (queue.priority != 0 || !queue.enabled) {
+            if normalized_alias == "default" && (queue.priority != 0 || !queue.enabled) {
                 self.update_workflow_prompt_queue(
                     session_id,
                     workflow_id,
