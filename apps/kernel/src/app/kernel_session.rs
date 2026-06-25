@@ -510,6 +510,55 @@ mod tests {
     }
 
     #[test]
+    fn workflow_code_apply_rejects_exhausted_alias_allocation_before_spawning_agents() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        for attempt in 0..crate::workflow_code::WORKFLOW_CODE_ALIAS_ALLOCATION_ATTEMPTS {
+            let alias = if attempt == 0 {
+                "generated_agents".to_string()
+            } else {
+                format!("generated_agents-{}", attempt + 1)
+            };
+            app.session_state_store()
+                .write()
+                .create_workflow(session.id(), Some(alias))
+                .expect("workflow alias candidate should be created");
+        }
+        let agent_count_before = app.agents().get_session_agents(session.id()).len();
+        let workflow_count_before = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist")
+            .workflows()
+            .len();
+
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &generated_workflow_code_definition(),
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect_err("workflow-code should reject exhausted alias allocation before spawning");
+
+        let message = format!("{error}");
+        assert!(message.contains("workflow_alias_unavailable"), "{message}");
+        assert_eq!(
+            app.agents().get_session_agents(session.id()).len(),
+            agent_count_before
+        );
+        let session_after = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert_eq!(session_after.workflows().len(), workflow_count_before);
+    }
+
+    #[test]
     fn workflow_code_apply_rejects_missing_node_extension_requirement() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1999,6 +2048,24 @@ impl<'a> KernelSessionService<'a> {
                 None,
             );
         }
+        if !workflow_code_alias_can_allocate(&session, definition.workflow.alias.as_deref()) {
+            let alias = definition
+                .workflow
+                .alias
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase();
+            push_workflow_code_target_validation_error(
+                validation,
+                "workflow_alias_unavailable",
+                format!(
+                    "workflow-code alias `{alias}` cannot allocate a unique workflow alias after {} attempts",
+                    crate::workflow_code::WORKFLOW_CODE_ALIAS_ALLOCATION_ATTEMPTS
+                ),
+                None,
+            );
+        }
         for node in &definition.nodes {
             match &node.agent {
                 WorkflowCodeAgentBinding::Create(agent) => {
@@ -2407,6 +2474,30 @@ impl<'a> KernelSessionService<'a> {
 
         self.app.pty.resize(provider_run_id, cols, rows)
     }
+}
+
+fn workflow_code_alias_can_allocate(
+    session: &crate::session::RuntimeSession,
+    requested_alias: Option<&str>,
+) -> bool {
+    let Some(alias) = requested_alias else {
+        return true;
+    };
+    let trimmed_alias = alias.trim().to_lowercase();
+    if trimmed_alias.is_empty() {
+        return true;
+    }
+    (0..crate::workflow_code::WORKFLOW_CODE_ALIAS_ALLOCATION_ATTEMPTS).any(|attempt| {
+        let candidate_alias = if attempt == 0 {
+            trimmed_alias.clone()
+        } else {
+            format!("{trimmed_alias}-{}", attempt + 1)
+        };
+        !session
+            .workflows()
+            .iter()
+            .any(|workflow| workflow.alias() == Some(candidate_alias.as_str()))
+    })
 }
 
 fn push_workflow_code_target_validation_error(

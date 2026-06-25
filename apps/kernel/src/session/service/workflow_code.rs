@@ -268,7 +268,7 @@ impl SessionService {
             );
         }
 
-        for attempt in 0..1000 {
+        for attempt in 0..crate::workflow_code::WORKFLOW_CODE_ALIAS_ALLOCATION_ATTEMPTS {
             let candidate_alias = if attempt == 0 {
                 trimmed_alias.to_string()
             } else {

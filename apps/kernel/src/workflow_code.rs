@@ -21,6 +21,7 @@ use crate::session::{
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 2;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
+pub(crate) const WORKFLOW_CODE_ALIAS_ALLOCATION_ATTEMPTS: usize = 1000;
 const WORKFLOW_CODE_ARTIFACT_HISTORY_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Copy)]
