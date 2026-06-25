@@ -417,6 +417,26 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .expect("workflow turn ack should validate");
     assert!(acked.ok, "{:?}", acked.payload);
 
+    let invalid_intermediate = harness
+        .dispatch_runtime_tool(
+            &runtime_mcp_auth_token,
+            crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
+            serde_json::json!({
+                "delivery_token": delivery_token.clone(),
+                "workflow_output_json": "{\"value\":\"not-a-number\"}"
+            }),
+        )
+        .expect("invalid intermediate workflow output should return a validation result");
+    assert!(
+        invalid_intermediate.ok,
+        "{:?}",
+        invalid_intermediate.payload
+    );
+    assert_eq!(invalid_intermediate.payload["valid"], false);
+    assert!(invalid_intermediate.payload["warning"]
+        .as_str()
+        .is_some_and(|warning| !warning.trim().is_empty()));
+
     let intermediate = harness
         .dispatch_runtime_tool(
             &runtime_mcp_auth_token,
@@ -429,6 +449,22 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .expect("intermediate workflow output should validate");
     assert!(intermediate.ok, "{:?}", intermediate.payload);
     assert_eq!(intermediate.payload["valid"], true);
+
+    let invalid_final = harness
+        .dispatch_runtime_tool(
+            &runtime_mcp_auth_token,
+            crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+            serde_json::json!({
+                "delivery_token": delivery_token.clone(),
+                "workflow_output_json": "{\"value\":\"not-a-number\"}"
+            }),
+        )
+        .expect("invalid final workflow output should return a validation result");
+    assert!(invalid_final.ok, "{:?}", invalid_final.payload);
+    assert_eq!(invalid_final.payload["valid"], false);
+    assert!(invalid_final.payload["warning"]
+        .as_str()
+        .is_some_and(|warning| !warning.trim().is_empty()));
 
     let final_submission = harness
         .dispatch_runtime_tool(
