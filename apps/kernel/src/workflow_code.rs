@@ -1323,6 +1323,7 @@ impl<'a> WorkflowCodeValidator<'a> {
                 );
             }
         }
+        self.validate_alias(definition.workflow.alias.as_deref(), "workflow.alias", None);
 
         let schema_handles = self.validate_schemas(definition);
         let node_handles = collect_unique_handles(
@@ -1349,6 +1350,7 @@ impl<'a> WorkflowCodeValidator<'a> {
             definition.queues.iter().map(|queue| queue.handle.as_str()),
         );
         queue_handles.insert("default".to_string());
+        self.validate_queues(definition);
         collect_unique_handles(
             self,
             "watchdog",
@@ -1418,6 +1420,11 @@ impl<'a> WorkflowCodeValidator<'a> {
                 "endpoint.entry_node",
                 Some(endpoint.handle.clone()),
             );
+            self.validate_alias(
+                endpoint.alias.as_deref(),
+                "endpoint.alias",
+                Some(endpoint.handle.clone()),
+            );
         }
 
         for watchdog in &definition.watchdogs {
@@ -1462,6 +1469,29 @@ impl<'a> WorkflowCodeValidator<'a> {
         }
 
         let _ = edge_handles;
+    }
+
+    fn validate_queues(&mut self, definition: &WorkflowCodeDefinition) {
+        let mut aliases = BTreeMap::<String, String>::new();
+        for queue in &definition.queues {
+            let Some(normalized) = self.validate_alias(
+                Some(queue.alias.as_str()),
+                "queue.alias",
+                Some(queue.handle.clone()),
+            ) else {
+                continue;
+            };
+            if let Some(existing_handle) = aliases.insert(normalized.clone(), queue.handle.clone())
+            {
+                self.error(
+                    "duplicate_queue_alias",
+                    format!(
+                        "queue alias `{normalized}` is already used by queue `{existing_handle}`"
+                    ),
+                    Some(queue.handle.clone()),
+                );
+            }
+        }
     }
 
     fn validate_schemas(&mut self, definition: &WorkflowCodeDefinition) -> BTreeSet<String> {
@@ -1625,6 +1655,35 @@ impl<'a> WorkflowCodeValidator<'a> {
         if let Some(value) = value {
             self.validate_ref(schema_handles, value, field, handle);
         }
+    }
+
+    fn validate_alias(
+        &mut self,
+        value: Option<&str>,
+        field: &'static str,
+        handle: Option<String>,
+    ) -> Option<String> {
+        let value = value?;
+        let normalized = value.trim().to_lowercase();
+        if normalized.is_empty() {
+            self.error(
+                "invalid_alias",
+                format!("{field} must not be empty"),
+                handle,
+            );
+            return None;
+        }
+        if !normalized.chars().all(|char| {
+            char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' || char == '_'
+        }) {
+            self.error(
+                "invalid_alias",
+                format!("{field} must use lowercase letters, digits, `-`, or `_`"),
+                handle,
+            );
+            return None;
+        }
+        Some(normalized)
     }
 
     fn error(&mut self, code: &'static str, message: impl Into<String>, handle: Option<String>) {
@@ -2039,6 +2098,61 @@ mod tests {
 
         assert!(report.ok, "{:?}", report.diagnostics);
         assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_aliases_and_duplicate_queue_aliases() {
+        let mut definition = minimal_definition();
+        definition.workflow.alias = Some("bad alias".to_string());
+        definition.endpoints[0].alias = Some("bad/endpoint".to_string());
+        definition.queues = vec![
+            WorkflowCodeQueueDefinition {
+                handle: "urgent".to_string(),
+                alias: "urgent".to_string(),
+                priority: 10,
+                enabled: true,
+            },
+            WorkflowCodeQueueDefinition {
+                handle: "urgent_copy".to_string(),
+                alias: "URGENT".to_string(),
+                priority: 5,
+                enabled: true,
+            },
+            WorkflowCodeQueueDefinition {
+                handle: "default".to_string(),
+                alias: "default".to_string(),
+                priority: 0,
+                enabled: true,
+            },
+            WorkflowCodeQueueDefinition {
+                handle: "default_copy".to_string(),
+                alias: "default".to_string(),
+                priority: -1,
+                enabled: true,
+            },
+            WorkflowCodeQueueDefinition {
+                handle: "empty".to_string(),
+                alias: " ".to_string(),
+                priority: 0,
+                enabled: true,
+            },
+        ];
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+        let invalid_alias_count = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "invalid_alias")
+            .count();
+        let duplicate_queue_alias_count = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "duplicate_queue_alias")
+            .count();
+
+        assert!(!report.ok);
+        assert_eq!(invalid_alias_count, 3, "{:?}", report.diagnostics);
+        assert_eq!(duplicate_queue_alias_count, 2, "{:?}", report.diagnostics);
     }
 
     #[test]

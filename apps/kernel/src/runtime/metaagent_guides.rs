@@ -375,6 +375,7 @@ mod tests {
             "Supported `kind` values are `\"mcp\"`, `\"skill\"`, `\"script\"`, and `\"connector\"`",
             "Script grants must include `environment`",
             "If no queues are defined",
+            "Queue aliases must be unique after normalization",
             "with `endpoint`, optional `queue`, and `prompt`",
             "`run` may pass `endpoint`, `queue`, and `prompt`",
             "`validationPolicy` (`\"warn\"` or `\"halt\"`)",

@@ -687,7 +687,7 @@ workflow.watchdog(start, {
       <ol>
         <li>Parse the artifact and execute it in a deterministic workflow-code runtime with no filesystem, shell, network, provider, or kernel mutation access except approved schema file imports.</li>
         <li>Collect a typed compiler IR containing schemas, nodes, agent specs, edges, endpoints, queues, watchdogs, extension requirements, and canvas layout.</li>
-        <li>Validate shape: required fields, enum values, graph references, endpoint entry nodes, no duplicate agent bindings, no metaagent worker nodes, no impossible queue/watchdog references.</li>
+        <li>Validate shape: required fields, enum values, graph references, endpoint entry nodes, workflow/endpoint/queue aliases using the same lowercase alias rules as slash commands, no duplicate normalized queue aliases, no duplicate agent bindings, no metaagent worker nodes, no impossible queue/watchdog references.</li>
         <li>Validate policy: caller authority, metaagent ownership, provider/model availability or replacement bindings, extension availability, configured limits, and max generated prompt bytes.</li>
         <li>Allocate fresh kernel ids for workflow graph objects and generated agents.</li>
         <li>Expose outgoing edge contracts at run time with allocated <code>edge_id</code>, <code>to_node_id</code>, target label, bounded <code>target_instructions</code>, handoff schema ref, and validation policy.</li>

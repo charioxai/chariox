@@ -79,6 +79,8 @@ Canvas points are optional. Use `{ x, y }` for nodes/endpoints. Use `{ points: [
 
 If no queues are defined, the kernel creates the workflow default prompt queue and returns it in `queue_ids`. Define queues only when the workflow needs named priorities or disabled queues. Watchdogs reference endpoint and optional queue handles, not runtime ids.
 
+Workflow, endpoint, and queue aliases use the same rules as manual workflow commands: after trimming and lowercase normalization, aliases must contain only lowercase letters, digits, `-`, or `_`. Queue aliases must be unique after normalization; define at most one queue with alias `default` when you need to configure the implicit default queue.
+
 Workflow-code scripts only define workflow structure. They do not call `run` or `enqueue` during compilation. To invoke the generated workflow, call `arroba.meta.workflow_code.run` with `endpoint`, optional `queue`, and `prompt`; the kernel starts the run or enqueues the prompt through normal workflow scheduling.
 
 ## Schemas and Outputs
