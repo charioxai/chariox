@@ -196,6 +196,7 @@ function automationTranscriptEntry(entry: TranscriptEntry): Record<string, unkno
     text: entry.text,
     promptId: entry.promptId ?? null,
     sourceAttachmentId: entry.sourceAttachmentId ?? null,
+    attachments: entry.attachments?.map((attachment) => ({ ...attachment })) ?? null,
     queuedPrompt: entry.queuedPrompt
       ? {
         promptId: entry.queuedPrompt.promptId,

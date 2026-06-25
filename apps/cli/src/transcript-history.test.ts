@@ -193,6 +193,12 @@ test("hydrateTranscriptEntries preserves prompt identity, attachment identity, a
         kind: "user_prompt",
         text: "build\n",
         source_attachment_id: "attachment-1",
+        attachments: [{
+          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          mime: "image/png",
+          filename: "Screenshot.png",
+          preview_url: "data:image/png;base64,aW1hZ2U=",
+        }],
       },
     },
     {
@@ -217,6 +223,12 @@ test("hydrateTranscriptEntries preserves prompt identity, attachment identity, a
 
   assert.equal(entries[0]?.promptId, "prompt-1")
   assert.equal(entries[0]?.sourceAttachmentId, "attachment-1")
+  assert.deepEqual(entries[0]?.attachments, [{
+    url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+    mime: "image/png",
+    filename: "Screenshot.png",
+    preview_url: "data:image/png;base64,aW1hZ2U=",
+  }])
   assert.equal(entries[1]?.promptId, "prompt-1")
   assert.deepEqual(entries[1]?.externalObservation, {
     settles_active_prompt: true,
@@ -231,20 +243,46 @@ test("mergeAdjacentHistoryPageEntries preserves attachment identity across stitc
       fragment_start: 0,
       fragment_end: 3,
       total_chars: 6,
-      entry: { kind: "user_prompt", text: "hel", source_attachment_id: "attachment-1" },
+      entry: {
+        kind: "user_prompt",
+        text: "hel",
+        source_attachment_id: "attachment-1",
+        attachments: [{
+          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          mime: "image/png",
+          filename: "Screenshot.png",
+          preview_url: "data:image/png;base64,aW1hZ2U=",
+        }],
+      },
     },
     {
       entry_index: 0,
       fragment_start: 3,
       fragment_end: 6,
       total_chars: 6,
-      entry: { kind: "user_prompt", text: "lo\n", source_attachment_id: "attachment-1" },
+      entry: {
+        kind: "user_prompt",
+        text: "lo\n",
+        source_attachment_id: "attachment-1",
+        attachments: [{
+          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          mime: "image/png",
+          filename: "Screenshot.png",
+          preview_url: "data:image/png;base64,aW1hZ2U=",
+        }],
+      },
     },
   ])
 
   assert.equal(merged.length, 1)
   assert.equal(merged[0]?.entry.text, "hello\n")
   assert.equal(merged[0]?.entry.source_attachment_id, "attachment-1")
+  assert.deepEqual(merged[0]?.entry.attachments, [{
+    url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+    mime: "image/png",
+    filename: "Screenshot.png",
+    preview_url: "data:image/png;base64,aW1hZ2U=",
+  }])
 })
 
 test("stitchPrependedHistory merges adjacent assistant fragments", () => {

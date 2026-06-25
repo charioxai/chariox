@@ -936,6 +936,7 @@ export type SessionHistoryEntry = {
   external_provider_turn_id?: string | null
   observed_at_ms?: number | null
   external_observation?: SessionHistoryExternalObservation | null
+  attachments?: SessionHistoryPromptAttachment[]
   text: string
   timestamp_ms?: number
   source_attachment_id?: string | null
@@ -944,6 +945,13 @@ export type SessionHistoryEntry = {
 export type SessionHistoryExternalObservation = {
   settles_active_prompt: boolean
   passive_telemetry: boolean
+}
+
+export type SessionHistoryPromptAttachment = {
+  url: string
+  mime: string
+  filename?: string | null
+  preview_url?: string | null
 }
 
 export type SessionHistoryOutline = {
@@ -1006,6 +1014,7 @@ export type TranscriptEntry = {
   text: string
   promptId?: string | null
   sourceAttachmentId?: string | null
+  attachments?: SessionHistoryPromptAttachment[]
   queuedPrompt?: {
     promptId: string
     agentId: string

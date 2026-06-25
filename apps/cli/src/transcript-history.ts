@@ -135,6 +135,7 @@ export function mergeAdjacentHistoryPageEntries(historyEntries: SessionHistoryPa
         ...(entry.entry.observed_at_ms !== undefined ? { observed_at_ms: entry.entry.observed_at_ms } : {}),
         ...(entry.entry.external_observation !== undefined ? { external_observation: entry.entry.external_observation } : {}),
         ...(entry.entry.source_attachment_id !== undefined ? { source_attachment_id: entry.entry.source_attachment_id } : {}),
+        ...(entry.entry.attachments !== undefined ? { attachments: entry.entry.attachments.map((attachment) => ({ ...attachment })) } : {}),
       },
     })
   }
@@ -166,6 +167,7 @@ export function hydrateTranscriptEntries(
       externalObservation?: TranscriptEntry["externalObservation"]
       promptId?: string | null
       sourceAttachmentId?: string | null
+      attachments?: TranscriptEntry["attachments"]
       emphasis?: TranscriptEntry["emphasis"]
       historyEntryIndex?: number
       historyFragmentStart?: number
@@ -201,6 +203,7 @@ export function hydrateTranscriptEntries(
           if (options.externalObservation !== undefined) candidate.externalObservation = options.externalObservation
           if (options.promptId !== undefined) candidate.promptId = options.promptId
           if (options.sourceAttachmentId !== undefined) candidate.sourceAttachmentId = options.sourceAttachmentId
+          if (options.attachments !== undefined) candidate.attachments = cloneHistoryAttachments(options.attachments)
           if (options.historyEntryIndex !== undefined) candidate.historyEntryIndex = options.historyEntryIndex
           if (options.historyFragmentStart !== undefined) candidate.historyFragmentStart = options.historyFragmentStart
           if (options.historyFragmentEnd !== undefined) candidate.historyFragmentEnd = options.historyFragmentEnd
@@ -231,6 +234,7 @@ export function hydrateTranscriptEntries(
     if (options.externalObservation !== undefined) nextEntry.externalObservation = options.externalObservation
     if (options.promptId !== undefined) nextEntry.promptId = options.promptId
     if (options.sourceAttachmentId !== undefined) nextEntry.sourceAttachmentId = options.sourceAttachmentId
+    if (options.attachments !== undefined) nextEntry.attachments = cloneHistoryAttachments(options.attachments)
     if (options.emphasis !== undefined) nextEntry.emphasis = options.emphasis
     if (options.historyEntryIndex !== undefined) nextEntry.historyEntryIndex = options.historyEntryIndex
     if (options.historyFragmentStart !== undefined) nextEntry.historyFragmentStart = options.historyFragmentStart
@@ -348,6 +352,7 @@ function applyEntryMetadata(
   if (options.externalObservation !== undefined) entry.externalObservation = options.externalObservation
   if (options.promptId !== undefined) entry.promptId = options.promptId
   if (options.sourceAttachmentId !== undefined) entry.sourceAttachmentId = options.sourceAttachmentId
+  if (options.attachments !== undefined) entry.attachments = cloneHistoryAttachments(options.attachments)
   if (options.historyEntryIndex !== undefined) entry.historyEntryIndex = options.historyEntryIndex
   if (options.historyFragmentStart !== undefined) entry.historyFragmentStart = options.historyFragmentStart
   if (options.historyFragmentEnd !== undefined) entry.historyFragmentEnd = options.historyFragmentEnd
@@ -363,6 +368,7 @@ type TranscriptEntryMetadataOptions = {
   externalObservation?: TranscriptEntry["externalObservation"] | undefined
   promptId?: string | null | undefined
   sourceAttachmentId?: string | null | undefined
+  attachments?: TranscriptEntry["attachments"] | undefined
   historyEntryIndex?: number | undefined
   historyFragmentStart?: number | undefined
   historyFragmentEnd?: number | undefined
@@ -390,7 +396,14 @@ function historyEntryIdentityOptions(
   return {
     ...(turnPromptId !== undefined ? { promptId: turnPromptId } : {}),
     ...(entry.source_attachment_id !== undefined ? { sourceAttachmentId: entry.source_attachment_id } : {}),
+    ...(entry.attachments !== undefined ? { attachments: cloneHistoryAttachments(entry.attachments) } : {}),
   }
+}
+
+function cloneHistoryAttachments(
+  attachments: NonNullable<TranscriptEntry["attachments"]>,
+): NonNullable<TranscriptEntry["attachments"]> {
+  return attachments.map((attachment) => ({ ...attachment }))
 }
 
 export function previewLineForHistoryEntry(entry: SessionHistoryEntry) {
