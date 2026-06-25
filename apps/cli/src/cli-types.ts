@@ -1023,6 +1023,7 @@ export type TranscriptEntry = {
   }
   sourceText?: string
   mergeKey?: string
+  providerRunId?: string | null
   source?: "external_provider_observed" | string | null
   externalProvider?: string | null
   externalProviderSessionId?: string | null

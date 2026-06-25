@@ -111,6 +111,58 @@ test("mergeAdjacentHistoryPageEntries preserves merge keys across stitched fragm
   assert.equal(merged[0]?.entry.merge_key, "a-1")
 })
 
+test("hydrateTranscriptEntries keeps repeated merge keys scoped to their turn", () => {
+  const entries = hydrateTranscriptEntries([
+    {
+      entry_index: 0,
+      fragment_start: 0,
+      fragment_end: 6,
+      total_chars: 6,
+      entry: { kind: "user_prompt", text: "first\n", provider_run_id: "run-1" },
+    },
+    {
+      entry_index: 1,
+      fragment_start: 0,
+      fragment_end: 12,
+      total_chars: 12,
+      entry: {
+        kind: "provider_output",
+        text: "first reply\n",
+        provider_run_id: "run-1",
+        merge_key: "assistant",
+      },
+    },
+    {
+      entry_index: 2,
+      fragment_start: 0,
+      fragment_end: 7,
+      total_chars: 7,
+      entry: { kind: "user_prompt", text: "second\n", provider_run_id: "run-2" },
+    },
+    {
+      entry_index: 3,
+      fragment_start: 0,
+      fragment_end: 13,
+      total_chars: 13,
+      entry: {
+        kind: "provider_output",
+        text: "second reply\n",
+        provider_run_id: "run-2",
+        merge_key: "assistant",
+      },
+    },
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.text), [
+    "first",
+    "first reply\n",
+    "second",
+    "second reply\n",
+  ])
+  assert.deepEqual(entries.map((entry) => entry.turnId), [1, 1, 3, 3])
+  assert.deepEqual(entries.map((entry) => entry.providerRunId), ["run-1", "run-1", "run-2", "run-2"])
+})
+
 test("hydrateTranscriptEntries preserves external provider observed metadata", () => {
   const entries = hydrateTranscriptEntries([
     {

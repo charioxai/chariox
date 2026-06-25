@@ -161,6 +161,7 @@ export function hydrateTranscriptEntries(
     chunk: string,
     options: {
       mergeKey?: string
+      providerRunId?: string | null
       sourceText?: string
       source?: TranscriptEntry["source"]
       externalProvider?: string | null
@@ -187,7 +188,11 @@ export function hydrateTranscriptEntries(
     if (options.mergeKey) {
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const candidate = entries[index]
-        if (candidate?.role === role && candidate.mergeKey === options.mergeKey) {
+        if (
+          candidate?.role === role
+          && candidate.mergeKey === options.mergeKey
+          && sameTranscriptHistoryIdentity(candidate, options)
+        ) {
           if (role === "assistant" || role === "reasoning") {
             candidate.text += normalized
             if (options.sourceText !== undefined) {
@@ -198,6 +203,7 @@ export function hydrateTranscriptEntries(
             if (options.sourceText !== undefined) candidate.sourceText = options.sourceText
           }
           if (options.emphasis !== undefined) candidate.emphasis = options.emphasis
+          if (options.providerRunId !== undefined) candidate.providerRunId = options.providerRunId
           if (options.source !== undefined) candidate.source = options.source
           if (options.externalProvider !== undefined) candidate.externalProvider = options.externalProvider
           if (options.externalProviderSessionId !== undefined) candidate.externalProviderSessionId = options.externalProviderSessionId
@@ -228,6 +234,7 @@ export function hydrateTranscriptEntries(
     if (options.mergeKey) {
       nextEntry.mergeKey = options.mergeKey
     }
+    if (options.providerRunId !== undefined) nextEntry.providerRunId = options.providerRunId
     if (options.sourceText !== undefined) nextEntry.sourceText = options.sourceText
     if (options.source !== undefined) nextEntry.source = options.source
     if (options.externalProvider !== undefined) nextEntry.externalProvider = options.externalProvider
@@ -253,6 +260,7 @@ export function hydrateTranscriptEntries(
       historyFragmentStart: number
       historyFragmentEnd: number
       historyTotalChars: number
+      providerRunId?: string | null
       turnId?: number
     } = {
       historyEntryIndex: pageEntry.entry_index,
@@ -260,6 +268,7 @@ export function hydrateTranscriptEntries(
       historyFragmentEnd: pageEntry.fragment_end,
       historyTotalChars: pageEntry.total_chars,
     }
+    if (pageEntry.entry.provider_run_id !== undefined) entryOptions.providerRunId = pageEntry.entry.provider_run_id
     if (currentTurnId > 0) entryOptions.turnId = currentTurnId
     const observedOptions = externalProviderObservedOptions(pageEntry.entry)
     const identityOptions = historyEntryIdentityOptions(pageEntry.entry, hydrateOptions.promptId)
@@ -347,6 +356,7 @@ function applyEntryMetadata(
   entry: TranscriptEntry,
   options: TranscriptEntryMetadataOptions,
 ) {
+  if (options.providerRunId !== undefined) entry.providerRunId = options.providerRunId
   if (options.source !== undefined) entry.source = options.source
   if (options.externalProvider !== undefined) entry.externalProvider = options.externalProvider
   if (options.externalProviderSessionId !== undefined) entry.externalProviderSessionId = options.externalProviderSessionId
@@ -363,6 +373,7 @@ function applyEntryMetadata(
 }
 
 type TranscriptEntryMetadataOptions = {
+  providerRunId?: string | null | undefined
   source?: TranscriptEntry["source"] | undefined
   externalProvider?: string | null | undefined
   externalProviderSessionId?: string | null | undefined
@@ -376,6 +387,19 @@ type TranscriptEntryMetadataOptions = {
   historyFragmentStart?: number | undefined
   historyFragmentEnd?: number | undefined
   historyTotalChars?: number | undefined
+}
+
+function sameTranscriptHistoryIdentity(
+  candidate: TranscriptEntry,
+  options: Pick<TranscriptEntryMetadataOptions, "providerRunId"> & { turnId?: number },
+) {
+  if (options.providerRunId !== undefined && candidate.providerRunId !== options.providerRunId) {
+    return false
+  }
+  if (options.turnId !== undefined && candidate.turnId !== options.turnId) {
+    return false
+  }
+  return true
 }
 
 function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {
