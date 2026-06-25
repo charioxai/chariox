@@ -909,8 +909,31 @@ mod tests {
     use super::{
         HistoryEvent, HistoryEventKind, HistoryEventQuery, HistoryEventRole,
         HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry,
-        SessionHistoryEntryKind, SessionHistoryStore,
+        SessionHistoryEntryKind, SessionHistoryEntrySource, SessionHistoryStore,
     };
+
+    #[test]
+    fn session_history_entry_source_metadata_line_matches_serialized_source() {
+        let serialized = serde_json::to_value(SessionHistoryEntrySource::ExternalProviderObserved)
+            .expect("source should serialize");
+        assert_eq!(serialized, serde_json::json!("external_provider_observed"));
+        assert_eq!(
+            SessionHistoryEntrySource::ExternalProviderObserved.metadata_line(),
+            serialized
+                .as_str()
+                .expect("serialized source should be a string")
+        );
+        assert!(
+            SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+                "merge-key\nexternal_provider_observed\nturn-id",
+            )
+        );
+        assert!(
+            !SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+                "merge-key\nexternal_provider_observed_extra",
+            )
+        );
+    }
 
     #[test]
     fn appends_and_loads_session_history() {
@@ -1091,6 +1114,59 @@ mod tests {
                 .max_prompt_number()
                 .expect("max prompt number should load"),
             17
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn operational_history_store_excludes_external_observed_prompts_from_arroba_owned_prompts() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-arroba-prompts-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let store =
+            OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+        let arroba_prompt =
+            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+        let external_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        for (sequence, entry) in [(1, arroba_prompt), (2, external_prompt)] {
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &entry,
+                    HistoryEventTurnContext {
+                        turn_id: Some(format!("turn-{sequence}")),
+                        prompt_id: Some(format!("prompt-{sequence}")),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ))
+                .expect("prompt event should append");
+        }
+
+        assert_eq!(
+            store
+                .load_arroba_owned_prompt_texts("session-1", "agent-1")
+                .expect("arroba-owned prompts should load"),
+            vec!["arroba".to_string()]
         );
 
         drop(store);

@@ -5,7 +5,10 @@ use rusqlite::params;
 use crate::error::DaemonError;
 use crate::session::prompt_id_number;
 
-use super::{HistoryEvent, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind};
+use super::{
+    HistoryEvent, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
+    SessionHistoryEntrySource,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalImportHistoryIndex {
@@ -332,9 +335,9 @@ impl OperationalHistoryStore {
             })?;
             let metadata_text = metadata_text.unwrap_or_default();
             if kind == "user_prompt"
-                && !metadata_text
-                    .lines()
-                    .any(|line| line == "external_provider_observed")
+                && !SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+                    &metadata_text,
+                )
             {
                 if let Some(content) = content {
                     arroba_owned_prompts.push(content);
@@ -428,9 +431,10 @@ impl OperationalHistoryStore {
                 .ok()
                 .and_then(|event| event.to_session_history_entry())
                 .and_then(|entry| entry.external_observation);
-            let is_external_observed = metadata_text
-                .lines()
-                .any(|line| line == "external_provider_observed");
+            let is_external_observed =
+                SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+                    &metadata_text,
+                );
             if kind == "user_prompt" && !is_external_observed {
                 if let Some(content) = content.clone() {
                     arroba_owned_prompts.push(content);
@@ -518,11 +522,9 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 }
             })?;
-            if metadata_text
-                .unwrap_or_default()
-                .lines()
-                .any(|line| line == "external_provider_observed")
-            {
+            if SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
+                &metadata_text.unwrap_or_default(),
+            ) {
                 continue;
             }
             if let Some(content) = content {

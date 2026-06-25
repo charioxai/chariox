@@ -166,6 +166,26 @@ pub enum SessionHistoryEntrySource {
     ExternalProviderObserved,
 }
 
+impl SessionHistoryEntrySource {
+    pub const EXTERNAL_PROVIDER_OBSERVED_METADATA_LINE: &'static str = "external_provider_observed";
+
+    pub fn metadata_line(self) -> &'static str {
+        match self {
+            Self::ExternalProviderObserved => Self::EXTERNAL_PROVIDER_OBSERVED_METADATA_LINE,
+        }
+    }
+
+    pub fn metadata_text_contains(metadata_text: &str, source: Self) -> bool {
+        metadata_text
+            .lines()
+            .any(|line| line == source.metadata_line())
+    }
+
+    pub fn metadata_text_contains_external_provider_observed(metadata_text: &str) -> bool {
+        Self::metadata_text_contains(metadata_text, Self::ExternalProviderObserved)
+    }
+}
+
 impl SessionHistoryEntry {
     pub fn user_prompt(
         session_id: &str,
