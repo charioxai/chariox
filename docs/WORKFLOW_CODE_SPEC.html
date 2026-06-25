@@ -270,7 +270,7 @@
 
       <h2>Slash Command Parity</h2>
       <p>
-        Workflow code should be able to define every persistent component that slash commands can define.
+        Workflow code defines every persistent workflow component covered by slash-command construction.
         Read-only commands, run inspection, cancellation, resume, and publication export stay outside the
         static design artifact.
       </p>
@@ -351,7 +351,7 @@
 
       <h2>Limits And Configuration</h2>
       <p>
-        Kernel configuration should set large but bounded defaults so generated workflows can fan out without
+        Kernel configuration sets large but bounded defaults so generated workflows can fan out without
         making the runtime unbounded.
       </p>
       <pre><code>[workflow]
@@ -372,7 +372,7 @@ script_memory_bytes = 268435456</code></pre>
       <ul>
         <li>The session agent cap is TOML-backed at <code>workflow.session_default_max_agents</code> with default <code>1024</code>.</li>
         <li><code>maxConcurrent</code> defaults to <code>32</code> through <code>workflow.code.max_concurrent</code> and may be lowered or raised per workflow-code artifact up to the configured kernel limit.</li>
-        <li>Compile validation must enforce max nodes, generated agents, edges, endpoints, queues, watchdogs, concurrency, schemas, and generated prompt bytes before the workflow is accepted.</li>
+        <li>Compile validation enforces max nodes, generated agents, edges, endpoints, queues, watchdogs, concurrency, schemas, and generated prompt bytes before the workflow is accepted.</li>
       </ul>
 
       <h2>First-Class Schemas</h2>
@@ -382,7 +382,7 @@ script_memory_bytes = 268435456</code></pre>
         reads those refs as JSON schema paths. That is not strong enough for portable workflow code.
       </p>
       <p>
-        The workflow schema refactor should introduce kernel-owned schema definitions:
+        Workflow-code apply creates kernel-owned schema definitions:
       </p>
       <pre><code>WorkflowSchemaDefinition {
   id: String,
@@ -397,14 +397,14 @@ script_memory_bytes = 268435456</code></pre>
         <li>Workflow code defines schemas inline with <code>workflow.schema({ alias, description, schema })</code>.</li>
         <li>Optional <code>schemaFromFile(path)</code> is authoring sugar only. The compiler embeds the JSON value into the workflow-code artifact or compiled IR.</li>
         <li>Exported workflow-code packages include <code>source_sha256</code> and <code>definition_sha256</code>; import verifies both hashes before saving the artifact.</li>
-        <li>Workflow, node, edge, and publication schema fields should migrate from <code>*_schema_ref: String</code> to schema ids or schema handles.</li>
-        <li>Compiled workflow snapshots should export schemas with the workflow so another kernel can import without local filesystem dependencies.</li>
-        <li>Validation tools should validate against schema definitions resolved by id, while preserving a compatibility shim for old path refs during migration.</li>
+        <li>Workflow-code handles are resolved to generated schema ids in workflow, node, and edge <code>*_schema_ref</code> fields during apply.</li>
+        <li>Compiled workflow-code artifacts and exported packages carry embedded schemas so another kernel can import without local filesystem dependencies.</li>
+        <li>Runtime validation tools validate against schema definitions resolved by id, while existing string refs remain compatible for non-workflow-code workflows.</li>
       </ul>
 
       <h2>Agents And Ownership</h2>
       <p>
-        A workflow node has an agent. The script should express that directly instead of building a separate
+        A workflow node has an agent. The script expresses that directly instead of building a separate
         agent action list.
       </p>
       <ul>
@@ -413,13 +413,13 @@ script_memory_bytes = 268435456</code></pre>
         <li>A metaagent may only bind an existing agent it spawned or controls. It must not attach arbitrary session agents.</li>
         <li>A user may bind agents according to normal session ownership policy.</li>
         <li>The compiler must reject metaagents as workflow worker nodes and reject the same agent appearing in more than one node.</li>
-        <li>If a provider or model is unavailable in the target kernel, apply should produce a binding error with a provider/model replacement map.</li>
+        <li>If a provider or model is unavailable in the target kernel, validate/apply reports a target diagnostic. Callers pass <code>provider_rebindings</code> keyed by node handle to replace provider, model, effort, or account profile for generated-agent nodes.</li>
       </ul>
 
       <h2>Extensions</h2>
       <p>
         Workflow code may declare node extensions because extensions are part of what makes a worker node
-        function. Applying a workflow-code artifact should translate extension declarations into the same
+        function. Applying a workflow-code artifact translates extension declarations into the same
         kernel extension grants used outside workflows.
       </p>
       <pre><code>extensions: [
@@ -465,7 +465,7 @@ script_memory_bytes = 268435456</code></pre>
 
       <h2>Workflow Code API Shape</h2>
       <p>
-        The JavaScript API should be small and builder-oriented. Handles are compile-time references only.
+        The JavaScript API is small and builder-oriented. Handles are compile-time references only.
         They are not durable Arroba ids.
       </p>
       <pre><code>workflow.define({
@@ -682,7 +682,7 @@ workflow.watchdog(start, {
 
       <h2>Compilation And Validation</h2>
       <p>
-        Applying workflow code should be an atomic kernel operation with explicit phases.
+        Applying workflow code is an atomic kernel operation with explicit phases.
       </p>
       <ol>
         <li>Parse the artifact and execute it in a deterministic workflow-code runtime with no filesystem, shell, network, provider, or kernel mutation access except approved schema file imports.</li>
@@ -696,7 +696,7 @@ workflow.watchdog(start, {
         <li>Return a compile report with created ids, warnings, binding requirements, and a graph summary.</li>
       </ol>
       <p>
-        Dry-run validation should return the same report without mutating state. A failed compile must leave no
+        Dry-run validation returns the same compile report without mutating state. A failed compile leaves no
         partial workflow, generated agent, extension grant, queue, or watchdog behind.
       </p>
 
@@ -737,13 +737,13 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       </p>
       <p>
         This is what makes the same script reusable: applying it twice yields the same graph shape but different
-        kernel ids. Subsequent operations should use the returned creation report, workflow aliases, endpoint
+        kernel ids. Subsequent operations use the returned creation report, workflow aliases, endpoint
         aliases, node public labels, or normal resolve/list commands to inspect the concrete instance.
       </p>
 
       <h2>Metaagent Authoring</h2>
       <p>
-        Metaagents are normally in plan mode, so they should not depend on direct file writes or shell access
+        Metaagents are normally in plan mode, so they do not depend on direct file writes or shell access
         to author workflow code. The kernel exposes runtime MCP endpoints that create and manage
         workflow-code artifacts.
       </p>
@@ -810,19 +810,19 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       <ul>
         <li>Source, schemas, graph topology, prompts, watchdog definitions, queue definitions, canvas hints, and extension requirements are portable.</li>
         <li>Existing agent ids, local filesystem schema paths, credentials, provider login state, and connector secrets are not portable.</li>
-        <li>Provider/model replacement should be explicit at apply time, for example <code>{ "codex:gpt-5": "claude:opus-4.1" }</code> when policy permits.</li>
-        <li>Imported artifacts should validate against the target kernel's feature version and list missing capabilities before any mutation.</li>
+        <li>Provider/model replacement is explicit at validate/apply/run time through <code>provider_rebindings</code>, for example <code>{ "node": "planner", "provider": "dev-stub", "model": "default" }</code>.</li>
+        <li>Imported artifacts validate package integrity, workflow-code schema version, configured limits, and embedded schema validity before being saved.</li>
       </ul>
 
-      <h2>Implementation Phases</h2>
+      <h2>Implemented Surfaces</h2>
       <ol>
-        <li>Extend workflow turn prompts and add drills for multi-edge routing with <code>workflow_handoffs</code>.</li>
-        <li>Add TOML-backed defaults for session max agents and workflow max concurrency.</li>
-        <li>Introduce first-class workflow schemas with compatibility support for existing <code>*_schema_ref</code> strings.</li>
-        <li>Add the workflow-code artifact type and compiler IR.</li>
-        <li>Add runtime MCP endpoints under the existing metaagent bundle: <code>arroba.meta.workflow_code.create</code>, <code>arroba.meta.workflow_code.read</code>, <code>arroba.meta.workflow_code.list</code>, <code>arroba.meta.workflow_code.update</code>, <code>arroba.meta.workflow_code.delete</code>, <code>arroba.meta.workflow_code.validate</code>, <code>arroba.meta.workflow_code.apply</code>, <code>arroba.meta.workflow_code.run</code>, <code>arroba.meta.workflow_code.import</code>, and <code>arroba.meta.workflow_code.export</code>.</li>
-        <li>Compile nodes-first workflow scripts into existing workflow services atomically.</li>
-        <li>Add the metaagent workflow-code skill/guide and make it available to metaagents by default.</li>
+        <li>Workflow turn prompts include outgoing edge contracts and drills for multi-edge routing with <code>workflow_handoffs</code>.</li>
+        <li>TOML-backed defaults cover session max agents and workflow-code max concurrency.</li>
+        <li>Workflow-code schemas are embedded in artifacts/packages and applied as kernel workflow schemas while existing <code>*_schema_ref</code> strings remain compatible.</li>
+        <li>The kernel has a workflow-code artifact type, compiler IR, validation report, apply report, and run result.</li>
+        <li>Runtime MCP endpoints exist under the metaagent bundle: <code>arroba.meta.workflow_code.create</code>, <code>arroba.meta.workflow_code.read</code>, <code>arroba.meta.workflow_code.list</code>, <code>arroba.meta.workflow_code.update</code>, <code>arroba.meta.workflow_code.delete</code>, <code>arroba.meta.workflow_code.validate</code>, <code>arroba.meta.workflow_code.apply</code>, <code>arroba.meta.workflow_code.run</code>, <code>arroba.meta.workflow_code.import</code>, and <code>arroba.meta.workflow_code.export</code>.</li>
+        <li>Nodes-first workflow scripts compile into existing workflow services atomically.</li>
+        <li>Metaagent workflow-code authoring and pattern guides are built into the meta guide surface and searchable by workflow-code tool and pattern names.</li>
       </ol>
 
       <h2>Protocol Impact</h2>
