@@ -55,6 +55,13 @@ pub const WORKFLOW_CODE_PATTERN_EXAMPLES: &[WorkflowCodePatternExample] = &[
         source: include_str!("../../../examples/workflow-code/fan-out-synthesize.js"),
     },
     WorkflowCodePatternExample {
+        slug: "parallelization",
+        title: "Parallelization",
+        summary: "A dispatcher sends the same task to two reviewers, then an aggregator waits for both votes.",
+        path: "examples/workflow-code/parallelization.js",
+        source: include_str!("../../../examples/workflow-code/parallelization.js"),
+    },
+    WorkflowCodePatternExample {
         slug: "adversarial-verification",
         title: "Adversarial verification",
         summary: "A proposer, critic, and judge collaborate with a critique loop.",

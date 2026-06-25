@@ -230,7 +230,7 @@ workflow.endpoint(router, {
 
 ## Dynamic Pattern Starters
 
-Read `workflows/workflow-code-patterns` for canonical, kernel-compiled scripts covering prompt chaining, routing, fan-out and synthesize, adversarial verification, generate and filter, tournament, loop until done, orchestrator-workers, and evaluator-optimizer.
+Read `workflows/workflow-code-patterns` for canonical, kernel-compiled scripts covering prompt chaining, routing, parallelization, fan-out and synthesize, adversarial verification, generate and filter, tournament, loop until done, orchestrator-workers, and evaluator-optimizer.
 
 Keep toy drills small. For prompt chaining use two generated agents and one edge. For routing use one router and two workers. For parallel fan-out use one planner, two workers, and one synthesizer. For adversarial workflows use one proposer and one critic with a loop edge plus a finalizer when needed. For tournament workflows use a seeder, two contestants, and one judge when a single endpoint must start both branches. For evaluator-optimizer workflows use one optimizer and one evaluator with a loop edge. For orchestrator-worker workflows use one orchestrator, one or two workers, and one synthesizer.
 
