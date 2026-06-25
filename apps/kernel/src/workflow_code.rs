@@ -1408,6 +1408,13 @@ impl<'a> WorkflowCodeValidator<'a> {
                 "edge.to_node",
                 Some(edge.handle.clone()),
             );
+            if edge.from_node == edge.to_node {
+                self.error(
+                    "invalid_edge",
+                    "edge source and target nodes must be different",
+                    Some(edge.handle.clone()),
+                );
+            }
             self.validate_schema_ref(
                 &schema_handles,
                 edge.handoff_schema.as_deref(),
@@ -1415,6 +1422,7 @@ impl<'a> WorkflowCodeValidator<'a> {
                 Some(edge.handle.clone()),
             );
         }
+        self.validate_edge_pairs(definition);
 
         for endpoint in &definition.endpoints {
             self.validate_ref(
@@ -1492,6 +1500,23 @@ impl<'a> WorkflowCodeValidator<'a> {
                         "queue alias `{normalized}` is already used by queue `{existing_handle}`"
                     ),
                     Some(queue.handle.clone()),
+                );
+            }
+        }
+    }
+
+    fn validate_edge_pairs(&mut self, definition: &WorkflowCodeDefinition) {
+        let mut pairs = BTreeMap::<(&str, &str), &str>::new();
+        for edge in &definition.edges {
+            let pair = (edge.from_node.as_str(), edge.to_node.as_str());
+            if let Some(existing_handle) = pairs.insert(pair, edge.handle.as_str()) {
+                self.error(
+                    "duplicate_edge",
+                    format!(
+                        "edge `{}` duplicates source-target pair from edge `{existing_handle}`",
+                        edge.handle
+                    ),
+                    Some(edge.handle.clone()),
                 );
             }
         }
@@ -2222,6 +2247,75 @@ mod tests {
         assert!(!report.ok);
         assert!(codes.contains(&"unknown_reference"));
         assert!(codes.contains(&"duplicate_existing_agent"));
+    }
+
+    #[test]
+    fn rejects_self_edges_and_duplicate_edge_pairs() {
+        let mut definition = minimal_definition();
+        definition.nodes.push(WorkflowCodeNodeDefinition {
+            handle: "reviewer".to_string(),
+            agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                alias: Some("Reviewer".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                account_profile: None,
+            }),
+            public_label: None,
+            instructions: None,
+            can_complete_workflow_run: None,
+            can_emit_intermediate_run_output: None,
+            wait_for_all_inputs: None,
+            intermediate_output_schema: None,
+            max_turns: None,
+            extensions: Vec::new(),
+            canvas: None,
+        });
+        definition.edges.push(WorkflowCodeEdgeDefinition {
+            handle: "planner_self".to_string(),
+            from_node: "planner".to_string(),
+            to_node: "planner".to_string(),
+            source_side: None,
+            target_side: None,
+            handoff_schema: None,
+            validation_policy: None,
+            canvas: None,
+        });
+        definition.edges.push(WorkflowCodeEdgeDefinition {
+            handle: "plan_to_review".to_string(),
+            from_node: "planner".to_string(),
+            to_node: "reviewer".to_string(),
+            source_side: None,
+            target_side: None,
+            handoff_schema: None,
+            validation_policy: None,
+            canvas: None,
+        });
+        definition.edges.push(WorkflowCodeEdgeDefinition {
+            handle: "plan_to_review_again".to_string(),
+            from_node: "planner".to_string(),
+            to_node: "reviewer".to_string(),
+            source_side: None,
+            target_side: None,
+            handoff_schema: None,
+            validation_policy: None,
+            canvas: None,
+        });
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+        let codes = report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!report.ok);
+        assert!(codes.contains(&"invalid_edge"), "{:?}", report.diagnostics);
+        assert!(
+            codes.contains(&"duplicate_edge"),
+            "{:?}",
+            report.diagnostics
+        );
     }
 
     #[test]
