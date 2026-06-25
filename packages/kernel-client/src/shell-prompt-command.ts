@@ -28,7 +28,7 @@ import {
   expectSessionState,
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
-import { sessionHasActivePrompt } from "./shell-agent-activity.js"
+import { sessionHasActivePrompt, sessionPromptForAgent } from "./shell-agent-activity.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -170,12 +170,7 @@ function extractSubmittedPrompt(payload: PromptSubmittedPayload, targetAgentId: 
       if (prompt) return prompt
     }
   }
-  const state = payload.session.prompt_states?.[targetAgentId]
-  return state?.active_prompt
-    ?? state?.queued_prompts?.[state.queued_prompts.length - 1]
-    ?? (payload.session.active_prompt?.target_agent_id === targetAgentId ? payload.session.active_prompt : null)
-    ?? [...payload.session.queued_prompts].reverse().find((prompt) => prompt.target_agent_id === targetAgentId)
-    ?? null
+  return sessionPromptForAgent(payload.session, targetAgentId)
 }
 
 async function waitForPromptCompletion(
