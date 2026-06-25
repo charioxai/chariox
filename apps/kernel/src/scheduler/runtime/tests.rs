@@ -5,7 +5,8 @@ use crate::agent::CreateAgentRequest;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
-    CreateSessionRequest, RuntimeSession, WorkflowMessage, WorkflowRun, WorkflowRunStatus,
+    CreateSessionRequest, RuntimeSession, WorkflowHandoffValidationPolicy, WorkflowMessage,
+    WorkflowRun, WorkflowRunStatus,
 };
 use crate::{DaemonApp, DaemonConfig};
 
@@ -322,6 +323,161 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
         std::env::remove_var("ARROBA_HOME");
     }
     let _ = fs::remove_dir_all(PathBuf::from(workdir));
+}
+
+#[test]
+fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
+    let _guard = crate::env_lock::lock();
+    let home = std::env::temp_dir().join(format!(
+        "arroba-workflow-routing-prompt-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).expect("test home should exist");
+    let previous_arroba_home = std::env::var_os("ARROBA_HOME");
+    std::env::set_var("ARROBA_HOME", &home);
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, router_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-scheduler-routing");
+    let analyst_agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("analyst-agent")
+                .with_model("test-model"),
+        )
+        .expect("analyst agent should spawn")
+        .id()
+        .to_string();
+    let reviewer_agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("reviewer-agent")
+                .with_model("test-model"),
+        )
+        .expect("reviewer agent should spawn")
+        .id()
+        .to_string();
+    let workflow_id = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("wf-routing-contracts".to_string()))
+        .expect("workflow should exist")
+        .id()
+        .to_string();
+    let router_node_id = app
+        .sessions_mut()
+        .add_workflow_node_owned(
+            session.id(),
+            &workflow_id,
+            &router_agent_id,
+            "local".to_string(),
+            "local".to_string(),
+            "Router".to_string(),
+        )
+        .expect("router node should be added")
+        .id()
+        .to_string();
+    let analyst_node_id = app
+        .sessions_mut()
+        .add_workflow_node_owned(
+            session.id(),
+            &workflow_id,
+            &analyst_agent_id,
+            "local".to_string(),
+            "local".to_string(),
+            "Analyst".to_string(),
+        )
+        .expect("analyst node should be added")
+        .id()
+        .to_string();
+    let reviewer_node_id = app
+        .sessions_mut()
+        .add_workflow_node_owned(
+            session.id(),
+            &workflow_id,
+            &reviewer_agent_id,
+            "local".to_string(),
+            "local".to_string(),
+            "Reviewer".to_string(),
+        )
+        .expect("reviewer node should be added")
+        .id()
+        .to_string();
+    let analyst_edge_id = app
+        .sessions_mut()
+        .add_workflow_edge(
+            session.id(),
+            &workflow_id,
+            &router_node_id,
+            &analyst_node_id,
+            Some("schema:analysis".to_string()),
+            Some(WorkflowHandoffValidationPolicy::Halt),
+        )
+        .expect("analysis edge should be added")
+        .id()
+        .to_string();
+    let reviewer_edge_id = app
+        .sessions_mut()
+        .add_workflow_edge(
+            session.id(),
+            &workflow_id,
+            &router_node_id,
+            &reviewer_node_id,
+            Some("schema:review".to_string()),
+            Some(WorkflowHandoffValidationPolicy::Warn),
+        )
+        .expect("review edge should be added")
+        .id()
+        .to_string();
+    app.sessions_mut()
+        .set_workflow_flush_agent_context_before_run(session.id(), &workflow_id, false)
+        .expect("workflow flush context should update");
+    app.sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            &workflow_id,
+            &router_node_id,
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should exist");
+    let workflow_run = app
+        .invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            &workflow_id,
+            "entry",
+            Some("route this task".to_string()),
+        )
+        .expect("workflow should invoke")
+        .0;
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+
+    let prompt = prepare_workflow_turn_prompt(
+        &app,
+        session.id(),
+        workflow_run.id(),
+        &node_run_id,
+        &router_node_id,
+        "route this task",
+        Option::<&[WorkflowMessage]>::None,
+    )
+    .expect("prompt should build");
+
+    assert!(prompt.contains("Outgoing edge contracts:"));
+    assert!(prompt.contains(&format!(
+        "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), handoff_schema_ref: schema:analysis, validation_policy: halt"
+    )));
+    assert!(prompt.contains(&format!(
+        "- edge {reviewer_edge_id} -> {reviewer_node_id} (Reviewer), handoff_schema_ref: schema:review, validation_policy: warn"
+    )));
+    assert!(prompt.contains("workflow_handoffs"));
+    assert!(prompt.contains("edge_id"));
+    assert!(prompt.contains("to_node_id"));
+    assert!(prompt.contains("validate the routed message for each selected edge"));
+    if let Some(previous_arroba_home) = previous_arroba_home {
+        std::env::set_var("ARROBA_HOME", previous_arroba_home);
+    } else {
+        std::env::remove_var("ARROBA_HOME");
+    }
+    let _ = fs::remove_dir_all(home);
 }
 
 #[test]
