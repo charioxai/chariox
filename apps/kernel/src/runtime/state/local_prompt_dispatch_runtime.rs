@@ -12,8 +12,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<bool, DaemonError> {
         let session = self.session_store.get_session(&dispatch.session_id)?;
         let prompt_is_dispatch_prompt = |prompt: &crate::session::PromptQueueItem| {
-            prompt.prompt_origin() != crate::session::PromptOrigin::External
-                && prompt.id() == dispatch.prompt_id
+            prompt.is_arroba_owned() && prompt.id() == dispatch.prompt_id
         };
         if let Some(active_prompt) = session.active_prompt_for_agent(&dispatch.agent_id) {
             return Ok(prompt_is_dispatch_prompt(active_prompt));

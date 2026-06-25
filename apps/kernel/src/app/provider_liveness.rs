@@ -2,7 +2,7 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{ProviderRunLivenessReconciliation, RuntimeProviderRun};
 use crate::pty::PtyProcessState;
-use crate::session::{PromptOrigin, PromptStatus};
+use crate::session::PromptStatus;
 
 use super::provider_processes::ProviderProcessTracker;
 use super::provider_run_read::ProviderRunReadService;
@@ -164,9 +164,7 @@ impl ProviderRunLivenessSessionEffects {
     ) -> Result<ProviderRunExitSessionOutcome, DaemonError> {
         let active_prompt_status = app
             .prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
-            .and_then(|prompt| {
-                (prompt.prompt_origin() != PromptOrigin::External).then(|| prompt.status())
-            });
+            .and_then(|prompt| prompt.is_arroba_owned().then(|| prompt.status()));
         let had_active_prompt = active_prompt_status.is_some();
         let started_next_prompt = match ProviderRunExitPromptSettlement::from_active_prompt_status(
             active_prompt_status,

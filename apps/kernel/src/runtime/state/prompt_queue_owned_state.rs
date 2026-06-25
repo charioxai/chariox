@@ -72,7 +72,7 @@ impl KernelRuntimeOwnedState {
         if self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
-            .is_some_and(|prompt| prompt.prompt_origin() == crate::session::PromptOrigin::External)
+            .is_some_and(|prompt| prompt.is_external())
         {
             return Ok(None);
         }
@@ -161,7 +161,7 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
             });
         };
-        if active_prompt.prompt_origin() == crate::session::PromptOrigin::External {
+        if active_prompt.is_external() {
             return Err(DaemonError::LocalTransport {
                 operation: "steer queued prompt",
                 message: "queued prompts cannot be steered into externally started provider turns"

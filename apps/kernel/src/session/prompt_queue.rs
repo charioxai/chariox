@@ -155,6 +155,14 @@ impl PromptQueueItem {
         self.prompt_origin
     }
 
+    pub fn is_external(&self) -> bool {
+        self.prompt_origin == PromptOrigin::External
+    }
+
+    pub fn is_arroba_owned(&self) -> bool {
+        self.prompt_origin == PromptOrigin::Arroba
+    }
+
     pub fn workflow_run_id(&self) -> Option<&str> {
         self.workflow_run_id.as_deref()
     }
@@ -261,5 +269,24 @@ mod tests {
 
         assert_eq!(item.prompt(), "VISIBLE_PROMPT_TOKEN");
         assert_eq!(item.hidden_system_context(), "");
+    }
+
+    #[test]
+    fn prompt_queue_item_classifies_prompt_ownership() {
+        let arroba_prompt = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "prompt",
+            PromptStatus::Queued,
+        );
+        let external_prompt = arroba_prompt
+            .clone()
+            .with_prompt_origin(PromptOrigin::External);
+
+        assert!(arroba_prompt.is_arroba_owned());
+        assert!(!arroba_prompt.is_external());
+        assert!(external_prompt.is_external());
+        assert!(!external_prompt.is_arroba_owned());
     }
 }

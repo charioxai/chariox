@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::error::DaemonError;
-use crate::session::{
-    PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession,
-};
+use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
 
@@ -357,7 +355,7 @@ impl PromptStateOwner {
                 if state
                     .active_prompt
                     .as_ref()
-                    .is_some_and(|active| active.prompt_origin() != PromptOrigin::External)
+                    .is_some_and(|active| active.is_arroba_owned())
                 {
                     return false;
                 }
@@ -372,7 +370,7 @@ impl PromptStateOwner {
                 if state
                     .active_prompt
                     .as_ref()
-                    .is_some_and(|active| active.prompt_origin() == PromptOrigin::External)
+                    .is_some_and(|active| active.is_external())
                 {
                     state.active_prompt = None;
                     return true;

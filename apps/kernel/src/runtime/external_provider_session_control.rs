@@ -771,14 +771,14 @@ fn append_observed_external_turns_for_import_with_options(
         .collect::<BTreeSet<_>>();
     if let Some(prompt_state) = session.prompt_states().get(agent.id()) {
         if let Some(active_prompt) = prompt_state.active_prompt() {
-            if active_prompt.prompt_origin() != PromptOrigin::External {
+            if active_prompt.is_arroba_owned() {
                 if let Some(text) = normalized_observed_prompt_text(active_prompt.prompt()) {
                     arroba_owned_prompt_texts.insert(text);
                 }
             }
         }
         for queued_prompt in prompt_state.queued_prompts() {
-            if queued_prompt.prompt_origin() != PromptOrigin::External {
+            if queued_prompt.is_arroba_owned() {
                 if let Some(text) = normalized_observed_prompt_text(queued_prompt.prompt()) {
                     arroba_owned_prompt_texts.insert(text);
                 }

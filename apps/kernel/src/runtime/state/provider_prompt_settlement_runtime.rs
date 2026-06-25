@@ -61,7 +61,7 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         };
-        if active_prompt.prompt_origin() == crate::session::PromptOrigin::External {
+        if active_prompt.is_external() {
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "settle provider prompt ignored external active prompt",
