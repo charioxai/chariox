@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 
 import {
   LocalIpcClient,
@@ -36,10 +37,16 @@ import {
 } from '@arroba/kernel-client'
 
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import {
+  assertHetznerArrobaBinaries,
+  runHetznerCommand,
+  shellQuote,
+} from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
+const execFileAsync = promisify(execFile)
 const DEFAULT_TIMEOUT_MS = 120_000
 const WORKFLOW_CODE_ARTIFACT_SKILL_PREFIX = 'workflow-code-artifact-skill'
 
@@ -60,6 +67,11 @@ function parseArgs(argv) {
     dryRun: false,
     exampleSuite: false,
     secondKernel: false,
+    hetznerSecondKernel: false,
+    hetznerHost: process.env.ARROBA_WORKFLOW_CODE_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.ARROBA_WORKFLOW_CODE_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
+    hetznerRepo: process.env.ARROBA_WORKFLOW_CODE_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+    hetznerRemoteRoot: process.env.ARROBA_WORKFLOW_CODE_HETZNER_ROOT ?? '/tmp/arroba-workflow-code-second-kernel',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -79,6 +91,11 @@ function parseArgs(argv) {
     else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--example-suite') options.exampleSuite = true
     else if (arg === '--second-kernel') options.secondKernel = true
+    else if (arg === '--hetzner-second-kernel') options.hetznerSecondKernel = true
+    else if (arg === '--hetzner-host') options.hetznerHost = argv[++index]
+    else if (arg === '--hetzner-key') options.hetznerKey = argv[++index]
+    else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++index]
+    else if (arg === '--hetzner-remote-root') options.hetznerRemoteRoot = argv[++index]
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--help' || arg === '-h') {
       printHelp()
@@ -115,6 +132,11 @@ function printHelp() {
     '  --discard-artifacts-on-success',
     '  --example-suite',
     '  --second-kernel',
+    '  --hetzner-second-kernel',
+    '  --hetzner-host HOST',
+    '  --hetzner-key PATH',
+    '  --hetzner-repo PATH',
+    '  --hetzner-remote-root PATH',
     '  --dry-run',
   ].join('\n'))
 }
@@ -836,6 +858,495 @@ async function validateSecondKernelDistribution({
   }
 }
 
+async function validateHetznerSecondKernelDistribution({
+  packageExport,
+  inlineSource,
+  directorySource,
+  sourceWorkflowId,
+  skillSourceDir,
+  skillName,
+  generatedRoot,
+  timeoutMs,
+  options,
+}) {
+  const localBundle = path.join(generatedRoot, 'hetzner-second-kernel-bundle')
+  const remoteBundle = path.posix.join(
+    options.hetznerRemoteRoot,
+    `workflow-code-second-kernel-${process.pid}-${Date.now()}`,
+  )
+  await writeHetznerWorkflowCodeBundle(localBundle, {
+    packageExport,
+    inlineSource,
+    directorySource,
+    sourceWorkflowId,
+    skillName,
+    skillSourceDir,
+  })
+  await assertHetznerCheckoutMatchesLocal(options)
+  await assertHetznerArrobaBinaries({
+    hetznerHost: options.hetznerHost,
+    hetznerKey: options.hetznerKey,
+    hetznerRepo: options.hetznerRepo,
+  })
+  await runHetznerCommand(options, [
+    `rm -rf ${shellQuote(remoteBundle)}`,
+    `mkdir -p ${shellQuote(remoteBundle)}`,
+  ].join(' && '))
+  await execFileAsync('scp', [
+    '-i',
+    options.hetznerKey,
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    '-r',
+    `${localBundle}/.`,
+    `${options.hetznerHost}:${remoteBundle}/`,
+  ], { maxBuffer: 4 * 1024 * 1024 })
+  try {
+    const command = [
+      `cd ${shellQuote(options.hetznerRepo)}`,
+      `runner_cmd=${shellQuote(`node ${shellQuote(path.posix.join(remoteBundle, 'remote-runner.mjs'))} --repo ${shellQuote(options.hetznerRepo)} --bundle ${shellQuote(remoteBundle)} --timeout-ms ${Number(timeoutMs)}`)}`,
+      `if command -v timeout >/dev/null 2>&1; then timeout --kill-after=5s ${Math.ceil(Number(timeoutMs) / 1000) + 90}s bash -lc "$runner_cmd"; else bash -lc "$runner_cmd"; fi`,
+    ].join(' && ')
+    const stdout = await runHetznerCommand(options, command)
+    const jsonStart = stdout.lastIndexOf('\n{')
+    const summaryText = (jsonStart >= 0 ? stdout.slice(jsonStart + 1) : stdout).trim()
+    const summary = JSON.parse(summaryText)
+    assert(summary?.packageApplyWorkflowId !== sourceWorkflowId, 'Hetzner package apply workflow id must be fresh', summary)
+    assert(summary?.inline?.applyWorkflowId !== sourceWorkflowId, 'Hetzner inline source workflow id must be fresh', summary)
+    assert(summary?.directory?.applyWorkflowId !== sourceWorkflowId, 'Hetzner directory source workflow id must be fresh', summary)
+    return {
+      remoteHost: options.hetznerHost,
+      remoteRepo: options.hetznerRepo,
+      remoteBundle,
+      ...summary,
+    }
+  } finally {
+    await runHetznerCommand(options, `rm -rf ${shellQuote(remoteBundle)}`).catch(() => {})
+  }
+}
+
+async function assertHetznerCheckoutMatchesLocal(options) {
+  const [{ stdout: localHeadRaw }, { stdout: localCommitEpochRaw }] = await Promise.all([
+    execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    execFileAsync('git', ['show', '-s', '--format=%ct', 'HEAD'], { cwd: repoRoot }),
+  ])
+  const localHead = localHeadRaw.trim()
+  const localCommitEpoch = Number(localCommitEpochRaw.trim())
+  const remoteInfo = await runHetznerCommand(options, [
+    `cd ${shellQuote(options.hetznerRepo)}`,
+    `printf 'head=%s\\n' "$(git rev-parse HEAD)"`,
+    `printf 'kernel_mtime=%s\\n' "$(stat -c %Y apps/kernel/target/debug/arroba-kernel 2>/dev/null || printf 0)"`,
+  ].join(' && '))
+  const info = Object.fromEntries(remoteInfo
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf('=')
+      return [line.slice(0, separator), line.slice(separator + 1)]
+    }))
+  if (info.head !== localHead) {
+    throw new Error([
+      `Hetzner checkout ${options.hetznerRepo} is not on the local workflow-code validation commit.`,
+      `local HEAD: ${localHead}`,
+      `remote HEAD: ${info.head ?? 'unknown'}`,
+      'Update/build the remote checkout before running --hetzner-second-kernel.',
+    ].join('\n'))
+  }
+  const kernelMtime = Number(info.kernel_mtime ?? 0)
+  if (!Number.isFinite(kernelMtime) || kernelMtime < localCommitEpoch) {
+    throw new Error([
+      `Hetzner kernel binary is older than local HEAD at ${options.hetznerRepo}.`,
+      `local HEAD epoch: ${localCommitEpoch}`,
+      `remote kernel mtime: ${info.kernel_mtime ?? 'unknown'}`,
+      'Rebuild apps/kernel/target/debug/arroba-kernel on Hetzner before running --hetzner-second-kernel.',
+    ].join('\n'))
+  }
+}
+
+async function writeHetznerWorkflowCodeBundle(localBundle, {
+  packageExport,
+  inlineSource,
+  directorySource,
+  sourceWorkflowId,
+  skillName,
+  skillSourceDir,
+}) {
+  await rm(localBundle, { recursive: true, force: true })
+  await mkdir(localBundle, { recursive: true })
+  await writeFile(path.join(localBundle, 'package-export.json'), JSON.stringify(packageExport, null, 2), 'utf8')
+  await writeFile(path.join(localBundle, 'package.json'), JSON.stringify({ type: 'module' }, null, 2), 'utf8')
+  await writeFile(path.join(localBundle, 'inline-source.json'), JSON.stringify(inlineSource, null, 2), 'utf8')
+  await writeFile(path.join(localBundle, 'directory-source.json'), JSON.stringify(directorySource, null, 2), 'utf8')
+  await writeFile(path.join(localBundle, 'metadata.json'), JSON.stringify({ sourceWorkflowId, skillName }, null, 2), 'utf8')
+  await copyDirectory(skillSourceDir, path.join(localBundle, 'skill', path.basename(skillSourceDir)))
+  await cp(path.join(repoRoot, 'packages/kernel-client/dist'), path.join(localBundle, 'kernel-client-dist'), {
+    recursive: true,
+    force: true,
+  })
+  await mkdir(path.join(localBundle, 'node_modules'), { recursive: true })
+  await cp(path.join(repoRoot, 'packages/kernel-client/node_modules/ws'), path.join(localBundle, 'node_modules/ws'), {
+    recursive: true,
+    dereference: true,
+    force: true,
+  })
+  await writeFile(path.join(localBundle, 'remote-runner.mjs'), remoteWorkflowCodeRunnerSource(), 'utf8')
+}
+
+async function copyDirectory(sourceDir, targetDir) {
+  await mkdir(targetDir, { recursive: true })
+  for (const entry of await readdir(sourceDir, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceDir, entry.name)
+    const targetPath = path.join(targetDir, entry.name)
+    if (entry.isDirectory()) {
+      await copyDirectory(sourcePath, targetPath)
+    } else if (entry.isFile()) {
+      await writeFile(targetPath, await readFile(sourcePath), 'utf8')
+    }
+  }
+}
+
+function remoteWorkflowCodeRunnerSource() {
+  return String.raw`#!/usr/bin/env node
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { closeSync, openSync, readFileSync } from 'node:fs'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+function parseArgs(argv) {
+  const options = { repo: null, bundle: null, timeoutMs: 120_000 }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--repo') options.repo = argv[++index]
+    else if (arg === '--bundle') options.bundle = argv[++index]
+    else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
+    else throw new Error('unknown option: ' + arg)
+  }
+  if (!options.repo || !options.bundle) throw new Error('--repo and --bundle are required')
+  return options
+}
+
+function assert(condition, message, details) {
+  if (!condition) throw new Error(message + (details ? '\n' + JSON.stringify(details, null, 2) : ''))
+}
+
+function unwrap(response, key) {
+  return response?.[key] ?? response
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const sha256Hex = (value) => createHash('sha256').update(value).digest('hex')
+
+function stage(message) {
+  console.error('[workflow-code-hetzner] ' + message)
+}
+
+function expectationFromDefinition(definition) {
+  return {
+    nodes: definition.nodes?.length ?? 0,
+    agents: definition.nodes?.length ?? 0,
+    edges: definition.edges?.length ?? 0,
+    endpoints: definition.endpoints?.length ?? 0,
+    queues: (definition.queues?.length ?? 0) || 1,
+    watchdogs: definition.watchdogs?.length ?? 0,
+    requiredSchemas: (definition.schemas ?? []).map((schema) => schema.handle),
+  }
+}
+
+function rebindingsForDefinition(definition) {
+  return (definition.nodes ?? []).map((node) => ({ node: node.handle, provider: 'dev-stub', model: 'default' }))
+}
+
+function validateApplyResult(result, label, expected) {
+  assert(result?.compile?.validation?.ok, label + ' compile validation failed', result?.compile?.validation)
+  const apply = result.apply
+  assert(apply?.workflow_id, label + ' did not return workflow id', result)
+  assert(Object.keys(apply.node_ids ?? {}).length === expected.nodes, label + ' node count mismatch', apply)
+  assert(Object.keys(apply.agent_ids ?? {}).length === expected.agents, label + ' agent count mismatch', apply)
+  assert(Object.keys(apply.edge_ids ?? {}).length === expected.edges, label + ' edge count mismatch', apply)
+  assert(Object.keys(apply.endpoint_ids ?? {}).length === expected.endpoints, label + ' endpoint count mismatch', apply)
+  assert(Object.keys(apply.queue_ids ?? {}).length === expected.queues, label + ' queue count mismatch', apply)
+  assert(Object.keys(apply.watchdog_ids ?? {}).length === expected.watchdogs, label + ' watchdog count mismatch', apply)
+  for (const schemaHandle of expected.requiredSchemas) {
+    assert(apply.schema_refs?.[schemaHandle], label + ' missing schema ' + schemaHandle, apply)
+  }
+  assert(apply.canvas_layout_applied === true, label + ' should apply canvas layout', apply)
+  return apply
+}
+
+function validateSessionProjection(session, apply, label) {
+  const workflow = (session.workflows ?? []).find((entry) => entry.id === apply.workflow_id)
+  assert(workflow, label + ' workflow should appear in session projection', { workflowId: apply.workflow_id })
+  assert(workflow.canvas_layout, label + ' workflow should include canvas layout', workflow)
+}
+
+async function waitForKernel(client, requests, workspace, worktree, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const session = unwrap(
+        await withTimeout(
+          client.send(requests.createSessionRequest(workspace, worktree, 'workflow-code-hetzner-ready-probe', undefined, null, 'off')),
+          3_000,
+          'kernel readiness request timed out',
+        ),
+        'SessionCreated',
+      ).session
+      await client.send(requests.endSessionRequest(session.id)).catch(() => {})
+      return
+    } catch (error) {
+      lastError = error
+      await sleep(250)
+    }
+  }
+  throw new Error('kernel did not become ready: ' + (lastError?.message ?? 'unknown error'))
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer = null
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer)
+    }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    }),
+  ])
+}
+
+async function send(client, request, label, timeoutMs = 30_000) {
+  stage(label)
+  return await withTimeout(client.send(request), timeoutMs, label + ' timed out')
+}
+
+async function startKernel(repo, bundle, timeoutMs, LocalIpcClient, requests) {
+  stage('starting isolated kernel')
+  const port = 52000 + Math.floor(Math.random() * 1000)
+  const runId = 'workflow-code-hetzner-second-kernel-' + process.pid + '-' + Date.now()
+  const root = path.join(bundle, 'remote-kernel-root')
+  const workspace = path.join(bundle, 'workspace')
+  const worktree = path.join(bundle, 'worktree')
+  const stdoutPath = path.join(bundle, 'kernel.stdout.log')
+  const stderrPath = path.join(bundle, 'kernel.stderr.log')
+  await mkdir(workspace, { recursive: true })
+  await mkdir(worktree, { recursive: true })
+  const stdoutFd = openSync(stdoutPath, 'a')
+  const stderrFd = openSync(stderrPath, 'a')
+  const child = spawn(path.join(repo, 'apps/kernel/target/debug/arroba-kernel'), [], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      HOME: path.join(root, 'home'),
+      XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
+      XDG_STATE_HOME: path.join(root, 'xdg-state'),
+      XDG_CACHE_HOME: path.join(root, 'xdg-cache'),
+      ARROBA_HOME: path.join(root, 'arroba-home'),
+      ARROBA_KERNEL_PORT: String(port),
+      ARROBA_MCP_PORT: String(port + 1000),
+      ARROBA_OPENCODE_PORT: String(port + 2000),
+      ARROBA_CODEX_PORT: String(port + 2001),
+      ARROBA_DAEMON_SOCKET: path.join(os.tmpdir(), runId + '.sock'),
+      ARROBA_DAEMON_ID: runId,
+    },
+    stdio: ['ignore', stdoutFd, stderrFd],
+  })
+  closeSync(stdoutFd)
+  closeSync(stderrFd)
+  const client = new LocalIpcClient('ws://127.0.0.1:' + port, {
+    kernelPingIntervalMs: 60_000,
+    kernelMaxMissedPongs: 10,
+  })
+  try {
+    await waitForKernel(client, requests, workspace, worktree, timeoutMs)
+    stage('isolated kernel ready on ws://127.0.0.1:' + port)
+    return { child, client, kernelUrl: 'ws://127.0.0.1:' + port, workspace, worktree, stdoutPath, stderrPath }
+  } catch (error) {
+    child.kill('SIGTERM')
+    await client.close().catch(() => {})
+    throw error
+  }
+}
+
+function printKernelLogTail(kernel) {
+  for (const [label, filePath] of [['stdout', kernel.stdoutPath], ['stderr', kernel.stderrPath]]) {
+    try {
+      const contents = readFileSync(filePath, 'utf8')
+      if (contents.trim()) {
+        console.error('[workflow-code-hetzner] kernel ' + label + ' tail:')
+        console.error(contents.slice(-8000))
+      }
+    } catch {
+      // Best-effort diagnostics only.
+    }
+  }
+}
+
+async function writeSourceDirectoryExport(workspace, exportResult, label) {
+  stage(label + ': writing source directory export')
+  const files = exportResult.files ?? []
+  assert(files.some((file) => file.path === 'workflow.js'), label + ' source directory should include workflow.js', exportResult)
+  assert(files.some((file) => file.path === 'manifest.json'), label + ' source directory should include manifest.json', exportResult)
+  for (const file of files) {
+    assert(sha256Hex(file.contents) === file.sha256, label + ' file hash mismatch for ' + file.path, file)
+    const target = path.join(workspace, file.path)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, file.contents, 'utf8')
+  }
+}
+
+async function validateSourceExportOnKernel(client, requests, session, nodePath, exportResult, label) {
+  assert(exportResult?.source, label + ' should include source', exportResult)
+  assert(sha256Hex(exportResult.source) === exportResult.source_sha256, label + ' source hash mismatch', exportResult)
+  const validated = unwrap(
+    await send(client, requests.validateWorkflowCodeRequest(session.id, nodePath, exportResult.source), label + ': validate source'),
+    'WorkflowCodeValidated',
+  ).result
+  assert(validated?.validation?.ok, label + ' should validate', validated?.validation)
+  const expected = expectationFromDefinition(validated.definition)
+  const endpointHandle = validated.definition.endpoints?.[0]?.handle
+  assert(endpointHandle, label + ' should define an endpoint handle', validated.definition)
+  const appliedResponse = unwrap(
+    await send(client, requests.applyWorkflowCodeRequest(session.id, nodePath, exportResult.source), label + ': apply source'),
+    'WorkflowCodeApplied',
+  )
+  const apply = validateApplyResult(appliedResponse.result, label + ' apply', expected)
+  validateSessionProjection(appliedResponse.session, apply, label + ' apply')
+  const runResponse = unwrap(
+    await send(
+      client,
+      requests.runWorkflowCodeRequest(session.id, nodePath, exportResult.source, 'Run ' + label + '.', { endpoint: endpointHandle }),
+      label + ': run source',
+      60_000,
+    ),
+    'WorkflowCodeRun',
+  )
+  const runApply = validateApplyResult(runResponse.result.apply, label + ' run', expected)
+  validateSessionProjection(runResponse.session, runApply, label + ' run')
+  assert(runResponse.result.invocation?.workflow_run || runResponse.result.invocation?.queued_prompt, label + ' should invoke or enqueue', runResponse.result.invocation)
+  assert(apply.workflow_id !== runApply.workflow_id, label + ' run should apply a fresh workflow', { apply, runApply })
+  return {
+    validatedAlias: validated.definition.workflow?.alias ?? null,
+    applyWorkflowId: apply.workflow_id,
+    runWorkflowId: runApply.workflow_id,
+    runInvocation: runResponse.result.invocation.workflow_run ? 'started' : 'enqueued',
+  }
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  stage('loading bundled kernel client and workflow-code exports')
+  const ipcModule = await import(pathToFileURL(path.join(options.bundle, 'kernel-client-dist/ipc.js')))
+  const requests = await import(pathToFileURL(path.join(options.bundle, 'kernel-client-dist/ipc-requests.js')))
+  const packageExport = JSON.parse(await readFile(path.join(options.bundle, 'package-export.json'), 'utf8'))
+  const inlineSource = JSON.parse(await readFile(path.join(options.bundle, 'inline-source.json'), 'utf8'))
+  const directorySource = JSON.parse(await readFile(path.join(options.bundle, 'directory-source.json'), 'utf8'))
+  const metadata = JSON.parse(await readFile(path.join(options.bundle, 'metadata.json'), 'utf8'))
+  const kernel = await startKernel(options.repo, options.bundle, options.timeoutMs, ipcModule.LocalIpcClient, requests)
+  let sessionId = null
+  let installedSkill = false
+  try {
+    const session = unwrap(
+      await send(
+        kernel.client,
+        requests.createSessionRequest(kernel.workspace, kernel.worktree, 'workflow-code-hetzner-second-kernel', undefined, null, 'off'),
+        'create validation session',
+      ),
+      'SessionCreated',
+    ).session
+    sessionId = session.id
+    const skillRoot = path.join(options.bundle, 'skill')
+    const skillDirs = await readdir(skillRoot)
+    const skillSourceDir = path.join(skillRoot, skillDirs[0])
+    const skillInstall = unwrap(
+      await send(kernel.client, requests.installSkillRequest(kernel.workspace, skillSourceDir), 'install bundled drill skill'),
+      'SkillInstalled',
+    )
+    assert(skillInstall?.skill?.name === metadata.skillName, 'Hetzner kernel should install workflow-code drill skill', skillInstall)
+    installedSkill = true
+    const nodePath = process.execPath
+    const importedName = 'hetzner-package-' + Date.now()
+    const imported = unwrap(
+      await send(
+        kernel.client,
+        requests.importWorkflowCodePackageRequest(session.id, packageExport, nodePath, { name: importedName, overwrite: false }),
+        'import workflow-code package',
+        120_000,
+      ),
+      'WorkflowCodePackageImported',
+    ).artifact
+    assert(imported?.metadata?.validation?.ok, 'Hetzner package import should validate', imported?.metadata?.validation)
+    const packageExpected = expectationFromDefinition(packageExport.definition)
+    const packageRebindings = rebindingsForDefinition(packageExport.definition)
+    const packageApplyResponse = unwrap(
+      await send(
+        kernel.client,
+        requests.applyWorkflowCodeArtifactRequest(session.id, importedName, packageRebindings),
+        'apply workflow-code package',
+      ),
+      'WorkflowCodeApplied',
+    )
+    const packageApply = validateApplyResult(packageApplyResponse.result, 'Hetzner package', packageExpected)
+    validateSessionProjection(packageApplyResponse.session, packageApply, 'Hetzner package')
+    const packageRun = unwrap(
+      await send(
+        kernel.client,
+        requests.runWorkflowCodeArtifactRequest(session.id, importedName, 'Run the Hetzner package workflow.', { endpoint: 'entry', providerRebindings: packageRebindings }),
+        'run workflow-code package',
+        60_000,
+      ),
+      'WorkflowCodeRun',
+    )
+    const packageRunApply = validateApplyResult(packageRun.result.apply, 'Hetzner package run', packageExpected)
+    validateSessionProjection(packageRun.session, packageRunApply, 'Hetzner package run')
+    assert(packageApply.workflow_id !== metadata.sourceWorkflowId, 'Hetzner package workflow id must be fresh', { packageApply, metadata })
+    assert(packageRunApply.workflow_id !== metadata.sourceWorkflowId, 'Hetzner package run workflow id must be fresh', { packageRunApply, metadata })
+
+    const inline = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, inlineSource, 'Hetzner inline source')
+    await writeSourceDirectoryExport(kernel.workspace, directorySource, 'Hetzner source directory')
+    const directory = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, directorySource, 'Hetzner source directory')
+    console.log(JSON.stringify({
+      kernelUrl: kernel.kernelUrl,
+      sessionId: session.id,
+      packageImportedArtifact: importedName,
+      packageApplyWorkflowId: packageApply.workflow_id,
+      packageRunWorkflowId: packageRunApply.workflow_id,
+      inline,
+      directory,
+    }, null, 2))
+  } catch (error) {
+    printKernelLogTail(kernel)
+    throw error
+  } finally {
+    if (sessionId) {
+      if (installedSkill) {
+        await send(
+          kernel.client,
+          requests.uninstallSkillRequest(kernel.workspace, metadata.skillName),
+          'uninstall bundled drill skill',
+          10_000,
+        ).catch(() => {})
+      }
+      await send(kernel.client, requests.endSessionRequest(sessionId), 'end validation session', 10_000).catch(() => {})
+    }
+    await kernel.client.close().catch(() => {})
+    kernel.child.kill('SIGTERM')
+    await sleep(1000)
+  }
+}
+
+main().catch((error) => {
+  console.error(error)
+  process.exit(1)
+})
+`
+}
+
 async function applyExistingAgentArtifact(client, session, nodePath, workspace) {
   const existingAgent = unwrap(
     await client.send(spawnAgentRequest(
@@ -1021,6 +1532,10 @@ async function main() {
       providerRebindings: providerRebindings(),
       exampleSuite: options.exampleSuite,
       secondKernel: options.secondKernel,
+      hetznerSecondKernel: options.hetznerSecondKernel,
+      hetznerHost: options.hetznerHost,
+      hetznerRepo: options.hetznerRepo,
+      hetznerRemoteRoot: options.hetznerRemoteRoot,
     }, null, 2))
     return
   }
@@ -1193,7 +1708,7 @@ async function main() {
     const exampleSuite = options.exampleSuite
       ? await applyExampleSuite(client, session.id, nodePath, workspace)
       : []
-    if (options.secondKernel && installedSkill) {
+    if ((options.secondKernel || options.hetznerSecondKernel) && installedSkill) {
       await client.send(uninstallSkillRequest(workspace, skillName)).catch(() => {})
       installedSkill = false
     }
@@ -1208,6 +1723,19 @@ async function main() {
         generatedRoot,
         nodePath,
         timeoutMs: options.timeoutMs,
+      })
+      : null
+    const hetznerSecondKernel = options.hetznerSecondKernel
+      ? await validateHetznerSecondKernelDistribution({
+        packageExport: exported,
+        inlineSource: liveInlineSource,
+        directorySource: liveDirectorySource,
+        sourceWorkflowId: firstApply.workflow_id,
+        skillSourceDir,
+        skillName,
+        generatedRoot,
+        timeoutMs: options.timeoutMs,
+        options,
       })
       : null
 
@@ -1225,6 +1753,7 @@ async function main() {
       outputSchemaArtifact,
       exampleSuite,
       secondKernel,
+      hetznerSecondKernel,
     }
     console.log(JSON.stringify(summary, null, 2))
 

@@ -133,6 +133,40 @@ pnpm --filter @arroba/cli run shell:drill
 pnpm --filter @arroba/cli run embedded-shell:drill
 ```
 
+## Workflow-Code Artifact Drill
+
+`workflow-code-artifact-drill.mjs` validates workflow-code artifact creation,
+package export/import, generated source export, source-directory export with
+external JSON schemas, existing-agent source export, schema-backed outputs, and
+canonical workflow-code examples. The local second-kernel path proves package,
+single-source, and source-directory portability in a clean local kernel:
+
+```bash
+node apps/cli/scripts/workflow-code-artifact-drill.mjs --example-suite --second-kernel --discard-artifacts-on-success
+```
+
+Use `--hetzner-second-kernel` to copy the generated package, inline source, and
+source-directory bundle to the configured Hetzner checkout, launch a clean
+kernel there, import/apply/run each export form, and assert fresh workflow ids.
+The remote host must have the Arroba checkout, built kernel binary, and a built
+`@arroba/kernel-client` package or working pnpm install. The checkout must be
+on the same commit as the local workspace and the kernel binary must be newer
+than that commit; the drill fails fast on version skew before running exports.
+
+```bash
+node apps/cli/scripts/workflow-code-artifact-drill.mjs \
+  --second-kernel \
+  --hetzner-second-kernel \
+  --timeout-ms 180000 \
+  --discard-artifacts-on-success
+```
+
+Override the remote target with `ARROBA_WORKFLOW_CODE_HETZNER_HOST`,
+`ARROBA_WORKFLOW_CODE_HETZNER_KEY`, `ARROBA_WORKFLOW_CODE_HETZNER_REPO`, and
+`ARROBA_WORKFLOW_CODE_HETZNER_ROOT`, or the matching `--hetzner-*` flags. Use
+`--dry-run --hetzner-second-kernel` to inspect the remote target selection
+without opening SSH or starting kernels.
+
 ## Workspace live sync Identity
 
 Workspace live sync drills coordinate only while the provider run remains in the same repo/branch/head identity captured by the kernel. If a drill or concurrent developer action changes that identity mid-run, `workspace_identity_changed` is a valid failure mode. Restart the drill from a stable workspace identity rather than treating that rejection as a file-edit collision.
