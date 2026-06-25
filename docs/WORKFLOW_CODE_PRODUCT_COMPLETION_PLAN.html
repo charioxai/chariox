@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workflow Code Product Completion Plan</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --ink: #17202f;
+        --muted: #596579;
+        --line: #d8deea;
+        --panel: #ffffff;
+        --accent: #0f766e;
+        --accent-soft: #e7f4f2;
+        --warn: #8a4b09;
+        --warn-soft: #fff3df;
+        --code: #f0f3f8;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 22px;
+        margin-top: 34px;
+        padding-top: 28px;
+        border-top: 1px solid var(--line);
+      }
+
+      h3 {
+        font-size: 17px;
+        margin-top: 22px;
+      }
+
+      p {
+        margin: 10px 0;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0 22px;
+        padding: 0;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: var(--code);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.93em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 14px 0 0;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #101827;
+        color: #edf2ff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #eef2f8;
+        font-weight: 700;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .hero,
+      .callout,
+      .warning {
+        border-radius: 8px;
+      }
+
+      .hero {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 28px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .summary {
+        margin-top: 14px;
+        color: var(--muted);
+        max-width: 900px;
+      }
+
+      .callout {
+        margin-top: 18px;
+        border: 1px solid #b7d8d3;
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        padding: 14px 16px;
+      }
+
+      .warning {
+        margin-top: 18px;
+        border: 1px solid #e5c08f;
+        border-left: 4px solid var(--warn);
+        background: var(--warn-soft);
+        padding: 14px 16px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Arroba implementation plan</p>
+        <h1>Workflow Code Product Completion</h1>
+        <p class="summary">
+          This plan completes workflow-code as a professional product feature: clear export naming,
+          source export from manually built workflows, always-on metaagent guides, a documented canvas
+          contract, human-facing commands in TUI/shell/web, and full end-to-end validation across local,
+          web, TUI, real-provider, and second-kernel distribution paths.
+        </p>
+        <div class="callout">
+          <strong>Completion criterion:</strong> a workflow can be built manually or from JavaScript,
+          exported as a portable package and as source code, transferred to an isolated second kernel
+          such as the Hetzner runner, imported or validated there, rendered in the product surfaces, and
+          run successfully with the intended topology behavior.
+        </div>
+      </section>
+
+      <h2>Public Naming And Exports</h2>
+      <p>
+        Avoid the overloaded word <code>export</code> by making the object being exported explicit in
+        every command and UI label.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>User action</th>
+            <th>Meaning</th>
+            <th>Output</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>workflow publication export</code></td>
+            <td>Existing deployable publication export.</td>
+            <td>Publication package directory for deployment/runtime invocation.</td>
+          </tr>
+          <tr>
+            <td><code>workflow code package export</code></td>
+            <td>Portable workflow-code artifact exchange.</td>
+            <td>Single <code>.workflow-code.json</code> package containing source, compiled definition, hashes, and validation metadata.</td>
+          </tr>
+          <tr>
+            <td><code>workflow code source export</code></td>
+            <td>Readable JavaScript generator export from a saved artifact or an existing workflow.</td>
+            <td>One <code>.js</code> file with inline schemas by default.</td>
+          </tr>
+          <tr>
+            <td><code>workflow code source export-dir</code></td>
+            <td>Readable JavaScript generator export with external schema files.</td>
+            <td>Directory containing <code>workflow.js</code>, <code>schemas/*.json</code>, and <code>manifest.json</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Protocol And Meta Tools</h3>
+      <ul>
+        <li>Add explicit package-named request/tool aliases for workflow-code package export/import while preserving existing <code>ExportWorkflowCodeArtifact</code> compatibility.</li>
+        <li>Add source export requests for both saved artifact refs and existing workflow refs.</li>
+        <li>Because serialized protocol shapes change, bump the local daemon protocol version and update protocol snapshot/hash tests.</li>
+        <li>Expose metaagent tools under <code>arroba.meta.workflow_code.*</code>: <code>package_export</code>, <code>package_import</code>, <code>source_export</code>, <code>source_export_dir</code>, and keep older <code>export/import</code> as documented compatibility aliases.</li>
+      </ul>
+
+      <h3>Source Export From Existing Workflows</h3>
+      <ul>
+        <li>Implement a workflow-to-code serializer that walks the kernel <code>WorkflowDefinition</code> and emits canonical JavaScript builder code.</li>
+        <li>Include workflow settings, schemas, nodes, generated-agent definitions, edges, endpoints, queues, watchdogs, validation policies, edge sides, output schemas, and canvas coordinates.</li>
+        <li>Default to portable generated agents by emitting <code>workflow.newAgent({ alias, provider, model, effort, accountProfile })</code>.</li>
+        <li>Support a non-portable <code>--existing-agents</code> mode that emits <code>workflow.existingAgent(agent_id)</code>.</li>
+        <li>For <code>source export-dir</code>, write schemas to <code>schemas/&lt;handle&gt;.json</code> and emit <code>workflow.schemaFromFile(...)</code> calls.</li>
+        <li>Every exported source file or source directory must compile and apply as a new workflow with fresh runtime ids.</li>
+      </ul>
+
+      <h2>Always-On Metaagent Guides</h2>
+      <p>
+        Guides are always available. There is no opt-in/out configuration. Distribution should copy
+        built-in guide files into user-visible Arroba home while keeping embedded binary guides as a fallback.
+      </p>
+      <ul>
+        <li>On install or first kernel startup, seed built-in guides to <code>~/.arroba/metaagent-guides/builtin/...</code>.</li>
+        <li>Users can copy a built-in guide into <code>&lt;workspace&gt;/.arroba/metaagent-guides/...</code> and edit it for project-specific behavior.</li>
+        <li>Guide lookup order is workspace, then user-wide, then built-in copies, then embedded fallback.</li>
+        <li>If multiple guides share the same id, the higher-precedence guide replaces lower-precedence versions for <code>read_guide</code>; <code>search_guides</code> and <code>list_guides</code> return the effective guide plus <code>source_scope</code>.</li>
+        <li>Expose <code>source_scope</code> values: <code>workspace</code>, <code>user</code>, <code>builtin_copy</code>, and <code>embedded</code>.</li>
+        <li>Keep embedded guides in the binary so pnpm/binary distributions remain self-contained even before the user-wide copy is seeded.</li>
+      </ul>
+
+      <h2>Canvas Contract</h2>
+      <p>
+        Metaagents need explicit canvas dimensions so they can design readable workflow graphs without
+        overlapping boxes. The web workflow canvas is the authoritative visual coordinate space.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Dimensions / placement</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Coordinate space</td>
+            <td><code>workflow-canvas-v1</code></td>
+          </tr>
+          <tr>
+            <td>Workflow node</td>
+            <td><code>232 x 96</code></td>
+          </tr>
+          <tr>
+            <td>Endpoint</td>
+            <td><code>180 x 78</code></td>
+          </tr>
+          <tr>
+            <td>Exit marker</td>
+            <td><code>120 x 72</code>, positioned at <code>node.x + 268</code>, <code>node.y + 28</code></td>
+          </tr>
+          <tr>
+            <td>Minimum gap</td>
+            <td><code>36</code> canvas units between boxes</td>
+          </tr>
+          <tr>
+            <td>Recommended node grid</td>
+            <td><code>320</code> horizontal step and <code>160</code> vertical step</td>
+          </tr>
+          <tr>
+            <td>Default endpoint offset</td>
+            <td><code>node.x - 220</code>, <code>node.y</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <ul>
+        <li>Add <code>arroba.meta.workflow_code.canvas_contract</code> so metaagents can retrieve the current dimensions programmatically.</li>
+        <li>Document the same dimensions in workflow-code authoring and pattern guides.</li>
+        <li>Add validation diagnostics for explicit canvas overlap between nodes, endpoints, and generated exit markers.</li>
+        <li>Keep omitted coordinates valid; kernel/web auto-layout can still assign positions.</li>
+        <li>Update all canonical workflow-code examples to satisfy the canvas contract.</li>
+      </ul>
+
+      <h2>Human And Web Product Commands</h2>
+      <h3>TUI And Shell Commands</h3>
+      <pre><code>/workflow code validate &lt;file&gt; [--provider-rebinding node=provider/model]
+/workflow code apply &lt;file&gt; [--provider-rebinding ...]
+/workflow code run &lt;file&gt; --endpoint &lt;handle&gt; [--queue &lt;handle&gt;] --prompt "..."
+/workflow code save &lt;name&gt; &lt;file&gt;
+/workflow code artifact list
+/workflow code artifact get &lt;name&gt;
+/workflow code artifact delete &lt;name&gt;
+/workflow code artifact apply &lt;name&gt; [--provider-rebinding ...]
+/workflow code artifact run &lt;name&gt; --endpoint &lt;handle&gt; [--queue &lt;handle&gt;] --prompt "..."
+/workflow code package export &lt;name&gt; --out &lt;file.workflow-code.json&gt;
+/workflow code package import &lt;file.workflow-code.json&gt; [--name &lt;name&gt;] [--overwrite]
+/workflow code source export &lt;workflow-ref|artifact-name&gt; --out &lt;file.js&gt; [--existing-agents]
+/workflow code source export-dir &lt;workflow-ref|artifact-name&gt; --out &lt;directory&gt; [--existing-agents]</code></pre>
+
+      <h3>Web Terminal And Workflow UI</h3>
+      <ul>
+        <li>Add the same workflow-code commands to the web terminal command parser and command center.</li>
+        <li>Add workflow UI actions beside existing publish/distribute actions: <strong>Export as code</strong>, <strong>Export code directory</strong>, and <strong>Export workflow-code package</strong>.</li>
+        <li>Labels must distinguish package export, source export, source directory export, and publication export.</li>
+        <li>The web export UI should download the returned file or directory archive and show the command-equivalent action in confirmation text.</li>
+        <li>For source directory export in web, download a zip containing <code>workflow.js</code>, <code>schemas/*.json</code>, and <code>manifest.json</code>.</li>
+      </ul>
+
+      <h2>Second-Kernel Distribution Validation</h2>
+      <p>
+        Workflow-code portability must be validated on an isolated second kernel, preferably the Hetzner
+        runner used by existing remote/native drills.
+      </p>
+      <ol>
+        <li>Create and run each topology locally from its source file.</li>
+        <li>Export the applied workflow as a workflow-code package JSON.</li>
+        <li>Export the same existing workflow as a single JavaScript source file.</li>
+        <li>Export the same existing workflow as a source directory with external schema JSON files.</li>
+        <li>Copy all three export forms to the Hetzner machine or another isolated second-kernel workspace.</li>
+        <li>Start a clean second kernel with its own <code>ARROBA_HOME</code>, workspace, worktree, provider catalog, and relay/socket configuration.</li>
+        <li>Import and run the package JSON on the second kernel.</li>
+        <li>Validate, apply, and run the single JavaScript source on the second kernel.</li>
+        <li>Validate, apply, and run the source directory on the second kernel, proving <code>schemaFromFile</code> works with package-relative schema paths.</li>
+        <li>Use provider/model rebindings where the second kernel lacks a provider/model from the source workflow.</li>
+        <li>Assert every second-kernel run creates a new workflow with fresh workflow graph ids and expected generated agents.</li>
+      </ol>
+      <div class="warning">
+        The second-kernel drill must not reuse the local artifact registry, local session ids, local agent ids
+        except in explicit non-portable negative tests, or local provider process state.
+      </div>
+
+      <h2>Topology Validation Matrix</h2>
+      <p>
+        Validate every canonical workflow-code topology as a toy but relevant workflow, not merely as a
+        compile/apply fixture.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Topology</th>
+            <th>Runtime assertion</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Prompt chaining</td>
+            <td>Draft handoff reaches refiner; final output matches schema.</td>
+          </tr>
+          <tr>
+            <td>Routing</td>
+            <td>Router selects exactly one specialist edge for each routed prompt.</td>
+          </tr>
+          <tr>
+            <td>Fan-out and synthesize</td>
+            <td>Planner sends work to both workers; synthesizer waits for both and completes.</td>
+          </tr>
+          <tr>
+            <td>Parallelization</td>
+            <td>Independent branches run and return comparable structured outputs.</td>
+          </tr>
+          <tr>
+            <td>Adversarial verification</td>
+            <td>Proposer and critic exchange at least one critique before finalization.</td>
+          </tr>
+          <tr>
+            <td>Generate and filter</td>
+            <td>Generator emits candidates; filter chooses accepted output and rejects weak candidates.</td>
+          </tr>
+          <tr>
+            <td>Tournament</td>
+            <td>Contestants produce alternatives; judge selects one winner with rationale.</td>
+          </tr>
+          <tr>
+            <td>Loop until done</td>
+            <td>Workflow loops until done condition, then completes without infinite dispatch.</td>
+          </tr>
+          <tr>
+            <td>Orchestrator-workers</td>
+            <td>Orchestrator assigns worker tasks; worker outputs are consolidated.</td>
+          </tr>
+          <tr>
+            <td>Evaluator-optimizer</td>
+            <td>Optimizer revises based on evaluator feedback, then emits accepted final output.</td>
+          </tr>
+        </tbody>
+      </table>
+      <ul>
+        <li>Deterministic CI lane may rebind all nodes to <code>dev-stub</code> and assert exact structured behavior.</li>
+        <li>Real-provider lane must run representative three-plus-node examples with Codex, OpenCode, and Claude when credentials are available.</li>
+        <li>If real-provider credentials are missing, the drill must fail as a prerequisite failure for release validation, not silently pass.</li>
+      </ul>
+
+      <h2>Product Surface Validation</h2>
+      <h3>TUI</h3>
+      <ul>
+        <li>Launch the real TUI test harness and apply every topology.</li>
+        <li>Assert <code>/workflow list</code> includes the generated workflow.</li>
+        <li>Assert the workflow outline/list shows every node, edge, endpoint, queue, watchdog, schema reference, and run status expected for that topology.</li>
+        <li>Run each workflow and assert final status/output appears in the TUI projection.</li>
+        <li>Do not validate canvas overlaps or collisions in TUI; TUI is a list/outline projection for this acceptance path.</li>
+      </ul>
+
+      <h3>Web Terminal And Canvas</h3>
+      <ul>
+        <li>Extend the Cloud workflow canvas visual drill to create workflows from workflow-code exports.</li>
+        <li>Open the product web terminal/workflow route for every topology.</li>
+        <li>Assert every <code>data-workflow-node</code>, <code>data-workflow-endpoint</code>, exit marker, and edge hit target renders.</li>
+        <li>Assert no DOM overlaps between nodes, endpoints, or exit markers.</li>
+        <li>Capture screenshots for every topology and include them in the drill artifact index.</li>
+        <li>Run every topology and assert run status/final output appears in the web product UI.</li>
+        <li>Validate web command-center and terminal commands for package export/import, source export, and source directory export.</li>
+      </ul>
+
+      <h2>Implementation Steps</h2>
+      <ol>
+        <li>Update protocol types, versioning, client request helpers, and meta tool aliases for explicit package/source export names.</li>
+        <li>Implement workflow-to-JS and workflow-to-source-directory serialization in the kernel/service layer.</li>
+        <li>Add always-on guide seeding and layered lookup with source scopes.</li>
+        <li>Add the canvas contract tool, documentation, overlap validation, and update canonical examples.</li>
+        <li>Add TUI/shell workflow-code commands and tests.</li>
+        <li>Add web terminal command support, command-center entries, and workflow UI export actions in <code>arroba-cloud</code>.</li>
+        <li>Extend OSS artifact/topology drills to cover package export, source export, source-directory export, and round-trip apply/run.</li>
+        <li>Add the second-kernel Hetzner distribution drill for package, single-source, and source-directory forms.</li>
+        <li>Extend Cloud visual drills for all workflow-code topologies, screenshots, no-overlap assertions, and web command/UI export flows.</li>
+      </ol>
+
+      <h2>Acceptance Tests</h2>
+      <ul>
+        <li><code>cargo test -q workflow_code --lib</code></li>
+        <li><code>cargo test -q workflow_code_apply --lib</code></li>
+        <li>Kernel protocol snapshot/hash tests for the new request and response shapes.</li>
+        <li>Kernel-client and CLI command parser/executor tests for all workflow-code commands.</li>
+        <li>Guide registry tests for workspace, user, built-in-copy, and embedded fallback precedence.</li>
+        <li>Workflow-code export round-trip tests for artifact package, workflow source file, and workflow source directory.</li>
+        <li>OSS workflow-code artifact drill with <code>--example-suite</code>.</li>
+        <li>New second-kernel distribution drill against Hetzner or equivalent isolated kernel.</li>
+        <li>TUI topology projection and run drill.</li>
+        <li>Cloud web workflow-code topology visual drill with screenshots and overlap assertions.</li>
+      </ul>
+    </main>
+  </body>
+</html>
