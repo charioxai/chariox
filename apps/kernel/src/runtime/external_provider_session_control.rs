@@ -9,7 +9,7 @@ use crate::app::{
     external_session_id_for_provider_session, DaemonApp, ExternalProviderObservationPolicy,
 };
 use crate::error::DaemonError;
-use crate::history::{ExternalImportHistoryEntry, SessionHistoryEntry, SessionHistoryEntryKind};
+use crate::history::{ExternalImportHistoryEntry, SessionHistoryEntry};
 use crate::local::{
     ExternalProviderSessionRecord, ImportExternalProviderAgentRequest,
     ImportExternalProviderSessionRequest, ListExternalProviderSessionsRequest, LocalDaemonRequest,
@@ -793,45 +793,22 @@ fn append_observed_external_turns_for_import_with_options(
     let candidate_turns =
         latest_observed_external_turns_by_merge_key(&read.turns, &external_merge_key_prefix);
     for turn in &candidate_turns {
-        let kind = match turn.role {
-            crate::app::ObservedExternalProviderTurnRole::User => {
-                SessionHistoryEntryKind::UserPrompt
-            }
-            crate::app::ObservedExternalProviderTurnRole::Assistant => {
-                SessionHistoryEntryKind::ProviderOutput
-            }
-            crate::app::ObservedExternalProviderTurnRole::Reasoning => {
-                SessionHistoryEntryKind::ProviderReasoning
-            }
-            crate::app::ObservedExternalProviderTurnRole::Tool => {
-                SessionHistoryEntryKind::ProviderTool
-            }
-            crate::app::ObservedExternalProviderTurnRole::Status => {
-                SessionHistoryEntryKind::ProviderStatus
-            }
-        };
-        let merge_turn_id = turn
-            .provider_turn_id
-            .clone()
-            .or_else(|| Some(turn.stable_fallback_id()));
+        let kind = turn.role.session_history_kind();
+        let merge_turn_id = turn.provider_turn_id_or_fallback();
         if turn.role == crate::app::ObservedExternalProviderTurnRole::User {
-            visible_provider_turn_id = merge_turn_id.clone();
+            visible_provider_turn_id = Some(merge_turn_id.clone());
         }
         let provider_turn_id = visible_provider_turn_id
             .clone()
-            .or_else(|| merge_turn_id.clone());
-        let merge_key = merge_turn_id
-            .as_ref()
-            .map(|turn_id| format!("external:{provider}:{provider_session_id}:{turn_id}"));
+            .unwrap_or_else(|| merge_turn_id.clone());
+        let merge_key = turn.external_merge_key(&external_merge_key_prefix);
         if turn.role == crate::app::ObservedExternalProviderTurnRole::User {
             current_observed_turn_is_arroba_owned = normalized_observed_prompt_text(&turn.text)
                 .is_some_and(|text| arroba_owned_prompt_texts.contains(&text));
         }
         if current_observed_turn_is_arroba_owned {
-            if let Some(merge_key) = merge_key {
-                last_cursor.last_observed_merge_key = Some(merge_key);
-            }
-            last_cursor.last_observed_turn_id = merge_turn_id;
+            last_cursor.last_observed_merge_key = Some(merge_key);
+            last_cursor.last_observed_turn_id = Some(merge_turn_id);
             last_cursor.last_observed_at_ms =
                 turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
             continue;
@@ -844,35 +821,31 @@ fn append_observed_external_turns_for_import_with_options(
             turn.text.clone(),
             &provider,
             &provider_session_id,
-            merge_key.clone(),
-            provider_turn_id.clone(),
+            Some(merge_key.clone()),
+            Some(provider_turn_id.clone()),
             turn.observed_at_ms,
         );
         entry.external_observation =
             ExternalProviderObservationPolicy::for_provider(&provider).observation_for_turn(turn);
-        let has_observable_change = merge_key.as_ref().is_none_or(|merge_key| {
+        let has_observable_change = {
             existing_entries_by_merge_key
-                .get(merge_key)
+                .get(&merge_key)
                 .is_none_or(|existing| !external_observed_history_entry_matches(existing, &entry))
-        });
+        };
         if has_observable_change {
-            if let Some(merge_key) = merge_key.as_deref() {
-                app.replace_history_entry_by_merge_key_or_append(
-                    &read.target.session_id,
-                    merge_key,
-                    entry.clone(),
-                );
-                existing_entries_by_merge_key.insert(
-                    merge_key.to_string(),
-                    ExternalImportHistoryEntry {
-                        kind: entry.kind,
-                        text: entry.text.clone(),
-                        external_observation: entry.external_observation.clone(),
-                    },
-                );
-            } else {
-                app.append_history_entry(&read.target.session_id, entry.clone());
-            }
+            app.replace_history_entry_by_merge_key_or_append(
+                &read.target.session_id,
+                &merge_key,
+                entry.clone(),
+            );
+            existing_entries_by_merge_key.insert(
+                merge_key.clone(),
+                ExternalImportHistoryEntry {
+                    kind: entry.kind,
+                    text: entry.text.clone(),
+                    external_observation: entry.external_observation.clone(),
+                },
+            );
             emit_observed_external_history_signal(
                 app,
                 &read.target,
@@ -886,10 +859,8 @@ fn append_observed_external_turns_for_import_with_options(
                 active_relevant_appended += 1;
             }
         }
-        if let Some(merge_key) = merge_key {
-            last_cursor.last_observed_merge_key = Some(merge_key);
-        }
-        last_cursor.last_observed_turn_id = merge_turn_id;
+        last_cursor.last_observed_merge_key = Some(merge_key);
+        last_cursor.last_observed_turn_id = Some(merge_turn_id);
         last_cursor.last_observed_at_ms = turn.observed_at_ms.or(last_cursor.last_observed_at_ms);
     }
     let changed = appended;
@@ -955,9 +926,8 @@ fn latest_observed_external_turns_by_merge_key(
 ) -> Vec<crate::app::ObservedExternalProviderTurn> {
     let mut latest_indices_by_merge_key = BTreeMap::new();
     for (index, turn) in turns.iter().enumerate() {
-        if let Some(merge_key) = observed_external_turn_merge_key(external_merge_key_prefix, turn) {
-            latest_indices_by_merge_key.insert(merge_key, index);
-        }
+        latest_indices_by_merge_key
+            .insert(turn.external_merge_key(external_merge_key_prefix), index);
     }
     let latest_indices = latest_indices_by_merge_key
         .into_values()
@@ -967,16 +937,6 @@ fn latest_observed_external_turns_by_merge_key(
         .enumerate()
         .filter_map(|(index, turn)| latest_indices.contains(&index).then_some(turn.clone()))
         .collect()
-}
-
-fn observed_external_turn_merge_key(
-    external_merge_key_prefix: &str,
-    turn: &crate::app::ObservedExternalProviderTurn,
-) -> Option<String> {
-    turn.provider_turn_id
-        .clone()
-        .or_else(|| Some(turn.stable_fallback_id()))
-        .map(|turn_id| format!("{external_merge_key_prefix}{turn_id}"))
 }
 
 fn external_observed_history_entry_matches(
@@ -1040,10 +1000,7 @@ fn external_active_prompt_from_turns(
     {
         return None;
     }
-    let provider_turn_id = latest
-        .provider_turn_id
-        .clone()
-        .unwrap_or_else(|| latest.stable_fallback_id());
+    let provider_turn_id = latest.provider_turn_id_or_fallback();
     Some(
         PromptQueueItem::new(
             format!(
@@ -1068,11 +1025,7 @@ fn latest_observed_user_turn_id(
         .iter()
         .rev()
         .find(|turn| turn.role == crate::app::ObservedExternalProviderTurnRole::User)
-        .map(|turn| {
-            turn.provider_turn_id
-                .clone()
-                .unwrap_or_else(|| turn.stable_fallback_id())
-        })
+        .map(|turn| turn.provider_turn_id_or_fallback())
 }
 
 fn emit_observed_external_history_signal(
@@ -1388,6 +1341,7 @@ fn short_alias_suffix(slug: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::DaemonConfig;
+    use crate::history::SessionHistoryEntryKind;
     use crate::local::{
         ExternalProviderSessionCapabilities, ImportExternalProviderAgentRequest,
         ImportExternalProviderSessionRequest,

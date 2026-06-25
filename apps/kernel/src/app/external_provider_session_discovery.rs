@@ -10,6 +10,7 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
+use crate::history::SessionHistoryEntryKind;
 use crate::local::{ExternalProviderSessionCapabilities, ExternalProviderSessionRecord};
 use crate::session::unix_epoch_ms;
 
@@ -41,6 +42,20 @@ impl ObservedExternalProviderTurn {
         self.observed_at_ms.hash(&mut hasher);
         format!("observed-{}-{:016x}", role_text(self.role), hasher.finish())
     }
+
+    pub(crate) fn provider_turn_id_or_fallback(&self) -> String {
+        self.provider_turn_id
+            .clone()
+            .unwrap_or_else(|| self.stable_fallback_id())
+    }
+
+    pub(crate) fn external_merge_key(&self, external_merge_key_prefix: &str) -> String {
+        format!(
+            "{}{}",
+            external_merge_key_prefix,
+            self.provider_turn_id_or_fallback()
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +78,18 @@ pub(crate) enum ObservedExternalProviderTurnRole {
     Reasoning,
     Tool,
     Status,
+}
+
+impl ObservedExternalProviderTurnRole {
+    pub(crate) fn session_history_kind(self) -> SessionHistoryEntryKind {
+        match self {
+            Self::User => SessionHistoryEntryKind::UserPrompt,
+            Self::Assistant => SessionHistoryEntryKind::ProviderOutput,
+            Self::Reasoning => SessionHistoryEntryKind::ProviderReasoning,
+            Self::Tool => SessionHistoryEntryKind::ProviderTool,
+            Self::Status => SessionHistoryEntryKind::ProviderStatus,
+        }
+    }
 }
 
 pub(crate) fn discover_external_provider_sessions(
@@ -2153,6 +2180,55 @@ fn deduplicate_external_sessions(
 mod tests {
     use super::*;
     use std::io;
+
+    #[test]
+    fn observed_turn_model_derives_history_kind_and_external_keys() {
+        let user = ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::User,
+            text: "external prompt".to_string(),
+            provider_turn_id: Some("provider-user-1".to_string()),
+            observed_at_ms: Some(1_000),
+        };
+        assert_eq!(
+            user.role.session_history_kind(),
+            SessionHistoryEntryKind::UserPrompt
+        );
+        assert_eq!(user.provider_turn_id_or_fallback(), "provider-user-1");
+        assert_eq!(
+            user.external_merge_key("external:codex:thread-1:"),
+            "external:codex:thread-1:provider-user-1"
+        );
+
+        let tool = ObservedExternalProviderTurn {
+            role: ObservedExternalProviderTurnRole::Tool,
+            text: "tool output".to_string(),
+            provider_turn_id: None,
+            observed_at_ms: Some(1_100),
+        };
+        assert_eq!(
+            tool.role.session_history_kind(),
+            SessionHistoryEntryKind::ProviderTool
+        );
+        let fallback_id = tool.provider_turn_id_or_fallback();
+        assert!(fallback_id.starts_with("observed-tool-"));
+        assert_eq!(
+            tool.external_merge_key("external:claude:thread-2:"),
+            format!("external:claude:thread-2:{fallback_id}")
+        );
+
+        assert_eq!(
+            ObservedExternalProviderTurnRole::Assistant.session_history_kind(),
+            SessionHistoryEntryKind::ProviderOutput
+        );
+        assert_eq!(
+            ObservedExternalProviderTurnRole::Reasoning.session_history_kind(),
+            SessionHistoryEntryKind::ProviderReasoning
+        );
+        assert_eq!(
+            ObservedExternalProviderTurnRole::Status.session_history_kind(),
+            SessionHistoryEntryKind::ProviderStatus
+        );
+    }
 
     #[test]
     fn discovers_codex_jsonl_sessions_with_first_real_prompt_title() {
