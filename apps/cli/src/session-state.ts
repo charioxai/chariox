@@ -166,9 +166,13 @@ export function activePromptIdForAgent(
   agentId: string | null | undefined,
 ): string | null {
   if (agentId) {
-    const projectedPromptId = session.agent_activity?.[agentId]?.active_turn?.prompt_id
+    const projectedActivity = session.agent_activity?.[agentId]
+    const projectedPromptId = projectedActivity?.active_turn?.prompt_id
     if (projectedPromptId) {
       return projectedPromptId
+    }
+    if (session.agent_activity && !agentRuntimeActivityIsBusy(projectedActivity)) {
+      return null
     }
     return agentPromptState(session, agentId)?.active_prompt?.id ?? null
   }
