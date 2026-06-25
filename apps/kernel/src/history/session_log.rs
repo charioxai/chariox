@@ -187,6 +187,16 @@ impl SessionHistoryEntrySource {
 }
 
 impl SessionHistoryEntry {
+    pub fn is_external_provider_observed(&self) -> bool {
+        self.source == Some(SessionHistoryEntrySource::ExternalProviderObserved)
+    }
+
+    pub fn external_provider_observed_turn_id(&self) -> Option<&str> {
+        self.is_external_provider_observed()
+            .then_some(self.external_provider_turn_id.as_deref())
+            .flatten()
+    }
+
     pub fn user_prompt(
         session_id: &str,
         source_attachment_id: &str,
@@ -413,7 +423,7 @@ impl SessionHistoryStore {
     ) -> Result<(), DaemonError> {
         if matches!(entry.kind, SessionHistoryEntryKind::UserPrompt)
             && entry.source_attachment_id.is_none()
-            && entry.source != Some(SessionHistoryEntrySource::ExternalProviderObserved)
+            && !entry.is_external_provider_observed()
         {
             return Err(DaemonError::SessionHistoryFailed {
                 session_id: Some(session.id().to_string()),

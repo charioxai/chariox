@@ -933,6 +933,28 @@ mod tests {
                 "merge-key\nexternal_provider_observed_extra",
             )
         );
+
+        let observed = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "external output",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(1_000),
+        );
+        assert!(observed.is_external_provider_observed());
+        assert_eq!(
+            observed.external_provider_observed_turn_id(),
+            Some("turn-1")
+        );
+
+        let arroba_owned =
+            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+        assert!(!arroba_owned.is_external_provider_observed());
+        assert_eq!(arroba_owned.external_provider_observed_turn_id(), None);
     }
 
     #[test]
@@ -1167,6 +1189,117 @@ mod tests {
                 .load_arroba_owned_prompt_texts("session-1", "agent-1")
                 .expect("arroba-owned prompts should load"),
             vec!["arroba".to_string()]
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn operational_history_store_indexes_external_import_history() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-operational-history-external-index-{}-{}.db",
+            std::process::id(),
+            super::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+
+        let store =
+            OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+        let arroba_prompt =
+            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+        let external_prompt = SessionHistoryEntry::external_provider_observed_with_merge_key(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external prompt",
+            "codex",
+            "thread-1",
+            Some("external:codex:thread-1:turn-1:prompt".to_string()),
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        let external_output = SessionHistoryEntry::external_provider_observed_with_merge_key(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            "external output",
+            "codex",
+            "thread-1",
+            Some("external:codex:thread-1:turn-1:output".to_string()),
+            Some("turn-1".to_string()),
+            Some(2_100),
+        );
+        let mut external_status = SessionHistoryEntry::external_provider_observed_with_merge_key(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::ProviderStatus,
+            "external settled",
+            "codex",
+            "thread-1",
+            Some("external:codex:thread-1:turn-1:status".to_string()),
+            Some("turn-1".to_string()),
+            Some(2_200),
+        );
+        external_status.external_observation =
+            Some(crate::history::SessionHistoryExternalObservation {
+                settles_active_prompt: true,
+                passive_telemetry: false,
+            });
+
+        for (sequence, entry) in [
+            (1, arroba_prompt),
+            (2, external_prompt),
+            (3, external_output),
+            (4, external_status),
+        ] {
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &entry,
+                    HistoryEventTurnContext {
+                        turn_id: entry
+                            .external_provider_observed_turn_id()
+                            .map(str::to_string),
+                        prompt_id: Some(format!("prompt-{sequence}")),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ))
+                .expect("history event should append");
+        }
+
+        let index = store
+            .load_external_import_history_index("session-1", "agent-1", "external:codex:thread-1")
+            .expect("external import index should load");
+        assert_eq!(index.arroba_owned_prompts, vec!["arroba".to_string()]);
+        assert_eq!(
+            index
+                .external_entries_by_merge_key
+                .get("external:codex:thread-1:turn-1:prompt")
+                .map(|entry| (entry.kind, entry.text.as_str())),
+            Some((SessionHistoryEntryKind::UserPrompt, "external prompt"))
+        );
+        assert_eq!(
+            index
+                .external_entries_by_merge_key
+                .get("external:codex:thread-1:turn-1:output")
+                .map(|entry| (entry.kind, entry.text.as_str())),
+            Some((SessionHistoryEntryKind::ProviderOutput, "external output"))
+        );
+        assert_eq!(
+            index
+                .external_entries_by_merge_key
+                .get("external:codex:thread-1:turn-1:status")
+                .and_then(|entry| entry.external_observation.as_ref())
+                .map(|observation| observation.settles_active_prompt),
+            Some(true)
         );
 
         drop(store);

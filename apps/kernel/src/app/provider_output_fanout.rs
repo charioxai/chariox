@@ -407,10 +407,9 @@ impl ProviderOutputFanout {
                     .active_prompt_for_agent(&session, agent_id)
             });
             let prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
-            let external_turn_id = (entry.source
-                == Some(crate::history::SessionHistoryEntrySource::ExternalProviderObserved))
-            .then(|| entry.external_provider_turn_id.clone())
-            .flatten();
+            let external_turn_id = entry
+                .external_provider_observed_turn_id()
+                .map(str::to_string);
             let turn_id = external_turn_id.clone().or_else(|| prompt_id.clone());
             let context = HistoryEventTurnContext {
                 session_id: Some(entry.session_id.clone()),
