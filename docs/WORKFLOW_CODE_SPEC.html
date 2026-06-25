@@ -803,6 +803,84 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
         rules, schema rules, and the required validate-before-apply loop.
       </p>
 
+      <h2>Dynamic Pattern Suite</h2>
+      <p>
+        Arroba ships canonical workflow-code scripts for the workflow patterns that matter for
+        metaagent-authored orchestration. The base vocabulary follows Anthropic's agent workflow
+        taxonomy: prompt chaining, routing, parallelization, orchestrator-workers, and
+        evaluator-optimizer. The suite also covers Claude Code dynamic-workflow shapes used for
+        larger scripted runs: fan-out and synthesize, adversarial verification, generate and filter,
+        tournament, and loop until done.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Pattern</th>
+            <th>Canonical Script</th>
+            <th>Arroba Shape</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Prompt chaining</td>
+            <td><code>examples/workflow-code/prompt-chaining.js</code></td>
+            <td>Two generated agents connected by one schema-validated edge.</td>
+          </tr>
+          <tr>
+            <td>Routing</td>
+            <td><code>examples/workflow-code/routing.js</code></td>
+            <td>A classifier node with two outgoing edges selects one specialist by emitting <code>workflow_handoffs</code>.</td>
+          </tr>
+          <tr>
+            <td>Fan-out and synthesize</td>
+            <td><code>examples/workflow-code/fan-out-synthesize.js</code></td>
+            <td>A planner fans out to two workers; a synthesizer waits for all inputs before final output.</td>
+          </tr>
+          <tr>
+            <td>Parallelization</td>
+            <td><code>examples/workflow-code/parallelization.js</code></td>
+            <td>A dispatcher sends the same task to two reviewers; an aggregator waits for both votes.</td>
+          </tr>
+          <tr>
+            <td>Adversarial verification</td>
+            <td><code>examples/workflow-code/adversarial-verification.js</code></td>
+            <td>A proposer, critic, and judge use a critique loop plus a final judge edge.</td>
+          </tr>
+          <tr>
+            <td>Generate and filter</td>
+            <td><code>examples/workflow-code/generate-filter.js</code></td>
+            <td>A generator creates candidates, a filter selects them, and a finisher completes.</td>
+          </tr>
+          <tr>
+            <td>Tournament</td>
+            <td><code>examples/workflow-code/tournament.js</code></td>
+            <td>A seeder fans out to two contestants; a judge waits for both entries and picks a winner.</td>
+          </tr>
+          <tr>
+            <td>Loop until done</td>
+            <td><code>examples/workflow-code/loop-until-done.js</code></td>
+            <td>A worker and checker loop through revision feedback until the checker accepts final output.</td>
+          </tr>
+          <tr>
+            <td>Orchestrator-workers</td>
+            <td><code>examples/workflow-code/orchestrator-workers.js</code></td>
+            <td>An orchestrator delegates a subtask to a worker and a synthesizer produces final output.</td>
+          </tr>
+          <tr>
+            <td>Evaluator-optimizer</td>
+            <td><code>examples/workflow-code/evaluator-optimizer.js</code></td>
+            <td>An optimizer proposes candidates and an evaluator either loops feedback or completes.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        The built-in <code>workflows/workflow-code-patterns</code> meta guide embeds these scripts
+        verbatim so a metaagent can read, adapt, validate, apply, run, export, and import them through
+        <code>arroba.meta.workflow_code.*</code>. Kernel tests compile every script, apply it with
+        provider/model rebindings to <code>dev-stub/default</code>, verify node/agent/edge/endpoint/schema
+        id allocation, check canvas application, and assert final output schema materialization.
+      </p>
+
       <h2>Portability</h2>
       <p>
         Portable workflow code must separate stable intent from local bindings.
