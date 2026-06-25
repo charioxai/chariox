@@ -26,6 +26,16 @@ fn find_node_for_workflow_code_local_api_test() -> Option<PathBuf> {
     })
 }
 
+fn node_supports_workflow_code_typescript(node: &std::path::Path) -> bool {
+    std::process::Command::new(node)
+        .arg("--no-warnings")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg("const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)")
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 #[test]
 fn local_request_api_validates_and_applies_workflow_code() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
@@ -891,6 +901,84 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     }
 
     std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
+fn local_request_api_creates_typescript_workflow_code_artifact() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping workflow-code TypeScript artifact test because node is not available");
+        return;
+    };
+    if !node_supports_workflow_code_typescript(&node_path) {
+        eprintln!(
+            "skipping workflow-code TypeScript artifact test because Node.js cannot strip TypeScript"
+        );
+        return;
+    }
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-workflow-code-ts", "worktree-workflow-code-ts"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let name = format!("ts-flow-{}", crate::session::unix_epoch_ms());
+    let source = r#"
+type ProviderName = "dev-stub";
+const provider: ProviderName = "dev-stub";
+const final = workflow.schema({
+  handle: "final",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: { answer: { type: "string" } },
+    additionalProperties: false
+  }
+})
+workflow.define({ alias: "typescript_artifact_flow", runOutputSchema: final })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "ts-worker", provider, model: "default" }),
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+    let created = harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowCodeArtifact(
+            crate::local::CreateWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.clone(),
+                language: crate::workflow_code::WorkflowCodeLanguage::TypeScript,
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+            },
+        ))
+        .expect("TypeScript workflow-code artifact should create");
+
+    match created {
+        LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact } => {
+            assert_eq!(artifact.metadata.name, name);
+            assert_eq!(
+                artifact.metadata.language,
+                crate::workflow_code::WorkflowCodeLanguage::TypeScript
+            );
+            assert!(artifact.metadata.validation.ok);
+            assert_eq!(
+                artifact.definition.workflow.alias.as_deref(),
+                Some("typescript_artifact_flow")
+            );
+            assert_eq!(
+                artifact.definition.workflow.run_output_schema.as_deref(),
+                Some("final")
+            );
+        }
+        _ => panic!("unexpected local response"),
+    }
 }
 
 #[test]

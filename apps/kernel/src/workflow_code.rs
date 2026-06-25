@@ -324,6 +324,14 @@ function createBuilder() {
 }
 
 try {
+  let source = String(input.source || "")
+  if (input.language === "typescript") {
+    const mod = await import("node:module")
+    if (typeof mod.stripTypeScriptTypes !== "function") {
+      throw new Error("TypeScript workflow-code requires Node.js with node:module stripTypeScriptTypes support")
+    }
+    source = mod.stripTypeScriptTypes(source, { mode: "transform" })
+  }
   const workflow = createBuilder()
   const context = vm.createContext({
     workflow,
@@ -332,7 +340,7 @@ try {
       error: (...values) => logs.push(values.map(String).join(" "))
     }
   })
-  const wrapped = `(async () => {\n${input.source || ""}\nif (typeof defineWorkflow === "function") await defineWorkflow(workflow)\nreturn workflow.export()\n})()`
+  const wrapped = `(async () => {\n${source}\nif (typeof defineWorkflow === "function") await defineWorkflow(workflow)\nreturn workflow.export()\n})()`
   const script = new vm.Script(wrapped, { filename: "workflow-code.js" })
   const definition = await script.runInContext(context, { timeout: Math.max(1, Number(input.timeout_ms || 30000)) })
   console.log(JSON.stringify({ ok: true, definition, source_spans: workflow.__sourceSpans(), logs: logs.join("\n") }))
@@ -427,6 +435,7 @@ pub struct WorkflowCodeProviderRebinding {
 #[derive(Debug, Serialize)]
 struct WorkflowCodeCompilerInput<'a> {
     source: &'a str,
+    language: &'static str,
     timeout_ms: u64,
     max_schema_bytes: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -541,7 +550,17 @@ pub struct WorkflowCodeArtifactPackage {
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowCodeLanguage {
     JavaScript,
+    #[serde(rename = "typescript", alias = "type_script")]
     TypeScript,
+}
+
+impl WorkflowCodeLanguage {
+    fn compiler_name(self) -> &'static str {
+        match self {
+            Self::JavaScript => "javascript",
+            Self::TypeScript => "typescript",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -860,12 +879,34 @@ pub fn compile_workflow_code_javascript(
     source: &str,
     limits: &WorkflowCodeLimitsConfig,
 ) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
-    compile_workflow_code_javascript_with_schema_import_root(node_path, source, limits, None)
+    compile_workflow_code_source_with_schema_import_root(
+        node_path,
+        source,
+        WorkflowCodeLanguage::JavaScript,
+        limits,
+        None,
+    )
 }
 
 pub fn compile_workflow_code_javascript_with_schema_import_root(
     node_path: impl AsRef<Path>,
     source: &str,
+    limits: &WorkflowCodeLimitsConfig,
+    schema_import_root: Option<&Path>,
+) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
+    compile_workflow_code_source_with_schema_import_root(
+        node_path,
+        source,
+        WorkflowCodeLanguage::JavaScript,
+        limits,
+        schema_import_root,
+    )
+}
+
+pub fn compile_workflow_code_source_with_schema_import_root(
+    node_path: impl AsRef<Path>,
+    source: &str,
+    language: WorkflowCodeLanguage,
     limits: &WorkflowCodeLimitsConfig,
     schema_import_root: Option<&Path>,
 ) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
@@ -886,6 +927,7 @@ pub fn compile_workflow_code_javascript_with_schema_import_root(
 
     let input = serde_json::to_vec(&WorkflowCodeCompilerInput {
         source,
+        language: language.compiler_name(),
         timeout_ms: limits.script_timeout_ms,
         max_schema_bytes: limits.max_schema_bytes,
         schema_import_root,
@@ -2176,6 +2218,93 @@ workflow.endpoint(planner, { alias: "entry" })
         assert_eq!(result.definition.nodes.len(), 1);
         assert_eq!(result.definition.endpoints.len(), 1);
         assert_eq!(result.definition.schemas.len(), 1);
+    }
+
+    #[test]
+    fn workflow_code_language_serializes_canonical_typescript_name() {
+        assert_eq!(
+            serde_json::to_value(WorkflowCodeLanguage::TypeScript)
+                .expect("language should serialize"),
+            serde_json::json!("typescript")
+        );
+        assert_eq!(
+            serde_json::from_value::<WorkflowCodeLanguage>(serde_json::json!("type_script"))
+                .expect("legacy spelling should decode"),
+            WorkflowCodeLanguage::TypeScript
+        );
+    }
+
+    #[test]
+    fn compiles_typescript_builder_source() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code TS compiler test because node is not available");
+            return;
+        };
+        if !Command::new(&node)
+            .arg("--no-warnings")
+            .arg("--input-type=module")
+            .arg("-e")
+            .arg("const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)")
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            eprintln!("skipping workflow-code TS compiler test because Node.js cannot strip TypeScript");
+            return;
+        }
+
+        let source = r#"
+type ProviderName = "dev-stub";
+interface FinalAnswer {
+  answer: string;
+}
+const provider: ProviderName = "dev-stub";
+const finalSchema = workflow.schema({
+  handle: "final",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: { answer: { type: "string" } },
+    additionalProperties: false
+  }
+})
+workflow.define({ alias: "compiled_ts", maxConcurrent: 2, runOutputSchema: finalSchema })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "ts-worker", provider, model: "default" }),
+  instructions: "Return a FinalAnswer.",
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+        let result = compile_workflow_code_source_with_schema_import_root(
+            node,
+            source,
+            WorkflowCodeLanguage::TypeScript,
+            &WorkflowCodeLimitsConfig::default(),
+            None,
+        )
+        .expect("workflow-code TS source should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert_eq!(
+            result.definition.workflow.alias.as_deref(),
+            Some("compiled_ts")
+        );
+        assert_eq!(
+            result.definition.workflow.run_output_schema.as_deref(),
+            Some("final")
+        );
+        assert_eq!(
+            result.definition.nodes[0].agent,
+            WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                alias: Some("ts-worker".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                account_profile: None,
+            })
+        );
     }
 
     #[test]

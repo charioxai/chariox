@@ -507,9 +507,10 @@ impl KernelRuntimeState {
             let schema_import_root =
                 workflow_code_schema_import_root_for_session(app, &request.session_id)?;
             let compile =
-                crate::workflow_code::compile_workflow_code_javascript_with_schema_import_root(
+                crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
                     &request.node_path,
                     &request.source,
+                    request.language,
                     &limits,
                     schema_import_root.as_deref(),
                 )?;
@@ -547,9 +548,10 @@ impl KernelRuntimeState {
             let schema_import_root =
                 workflow_code_schema_import_root_for_session(app, &request.session_id)?;
             let compile =
-                crate::workflow_code::compile_workflow_code_javascript_with_schema_import_root(
+                crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
                     &request.node_path,
                     &request.source,
+                    request.language,
                     &limits,
                     schema_import_root.as_deref(),
                 )?;
