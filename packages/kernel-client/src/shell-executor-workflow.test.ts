@@ -152,12 +152,12 @@ test("executeShellCommand exports and imports workflow-code packages and source"
       },
     }
     const context = createDefaultShellContext({ workspace: root, worktree: root, sessionId: "session-1" })
-    const packageExport = await executeShellCommand(parseShellCommand("workflow code package export toy-flow exports/toy.workflow-code.json"), context, { client: fake.client })
-    const packageImport = await executeShellCommand(parseShellCommand("workflow code package import exports/toy.workflow-code.json imported-toy --overwrite"), context, { client: fake.client })
-    const sourceInline = await executeShellCommand(parseShellCommand("workflow code source export toy-flow exports/toy.js"), context, { client: fake.client })
-    const sourceDirectory = await executeShellCommand(parseShellCommand("workflow code source export toy-flow exports/toy-source --format directory"), context, { client: fake.client })
-    const sourceDirectoryAlias = await executeShellCommand(parseShellCommand("workflow code source export-dir toy-flow exports/toy-source-alias"), context, { client: fake.client })
-    const workflowSource = await executeShellCommand(parseShellCommand("workflow code source export workflow-1 exports/workflow.js --workflow"), context, { client: fake.client })
+    const packageExport = await executeShellCommand(parseShellCommand("workflow code package export toy-flow --out exports/toy.workflow-code.json"), context, { client: fake.client })
+    const packageImport = await executeShellCommand(parseShellCommand("workflow code package import exports/toy.workflow-code.json --name imported-toy --overwrite"), context, { client: fake.client })
+    const sourceInline = await executeShellCommand(parseShellCommand("workflow code source export toy-flow --out exports/toy.js"), context, { client: fake.client })
+    const sourceDirectory = await executeShellCommand(parseShellCommand("workflow code source export toy-flow --out exports/toy-source --format directory"), context, { client: fake.client })
+    const sourceDirectoryAlias = await executeShellCommand(parseShellCommand("workflow code source export-dir toy-flow --out exports/toy-source-alias"), context, { client: fake.client })
+    const workflowSource = await executeShellCommand(parseShellCommand("workflow code source export workflow-1 --out exports/workflow.js --workflow"), context, { client: fake.client })
 
     assert.equal(packageExport.ok, true)
     assert.equal(packageImport.ok, true)

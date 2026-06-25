@@ -273,10 +273,9 @@ async function exportWorkflowCodePackage(
   context: ShellContext,
   deps: ShellWorkflowCodeCommandDeps,
 ): Promise<ShellCommandResult> {
-  const [name, outputFile] = args
-  if (!name || !outputFile) {
-    return { ok: false, message: "usage: workflow code package export <artifact-name> <file>" }
-  }
+  const parsed = parseNameAndOutput(args, "usage: workflow code package export <artifact-name> --out <file.workflow-code.json>")
+  if (!parsed.ok) return { ok: false, message: parsed.message }
+  const { name, outputPath: outputFile } = parsed
   const response = await deps.client.send(exportWorkflowCodePackageRequest(sessionId, name))
   const workflowCodePackage = expectVariant<{ package: WorkflowCodeArtifactPackage }>(response, "WorkflowCodePackageExported").package
   const resolved = resolveShellPath(context, outputFile)
@@ -294,17 +293,13 @@ async function importWorkflowCodePackage(
   context: ShellContext,
   deps: ShellWorkflowCodeCommandDeps,
 ): Promise<ShellCommandResult> {
-  const [inputFile, maybeName, ...rest] = args
-  if (!inputFile) {
-    return { ok: false, message: "usage: workflow code package import <file> [name] [--overwrite]" }
-  }
-  const overwrite = rest.includes("--overwrite") || maybeName === "--overwrite"
-  const name = maybeName && maybeName !== "--overwrite" ? maybeName : undefined
-  const resolved = resolveShellPath(context, inputFile)
+  const parsed = parsePackageImportArgs(args)
+  if (!parsed.ok) return { ok: false, message: parsed.message }
+  const resolved = resolveShellPath(context, parsed.inputFile)
   const payload = JSON.parse(await readFile(resolved, "utf8")) as WorkflowCodeArtifactPackage
   const response = await deps.client.send(importWorkflowCodePackageRequest(sessionId, payload, "node", {
-    ...(name !== undefined ? { name } : {}),
-    overwrite,
+    ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+    overwrite: parsed.overwrite,
   }))
   const artifact = expectVariant<{ artifact: WorkflowCodeArtifact }>(response, "WorkflowCodePackageImported").artifact
   return {
@@ -320,19 +315,15 @@ async function exportWorkflowCodeSource(
   context: ShellContext,
   deps: ShellWorkflowCodeCommandDeps,
 ): Promise<ShellCommandResult> {
-  const [name, outputPath, ...optionArgs] = args
-  if (!name || !outputPath) {
-    return { ok: false, message: "usage: workflow code source export <artifact-or-workflow-ref> <file|directory> [--workflow] [--format inline|directory]" }
-  }
-  const parsed = parseSourceExportOptions(optionArgs)
+  const parsed = parseSourceExportOptions(args)
   if (!parsed.ok) return { ok: false, message: parsed.message }
   const response = await deps.client.send(exportWorkflowCodeSourceRequest(
     sessionId,
-    parsed.target === "workflow" ? { kind: "workflow", workflow_ref: name } : { kind: "artifact", name },
+    parsed.target === "workflow" ? { kind: "workflow", workflow_ref: parsed.name } : { kind: "artifact", name: parsed.name },
     parsed.format,
   ))
   const exportResult = expectVariant<{ export: WorkflowCodeSourceExport }>(response, "WorkflowCodeSourceExported").export
-  const resolved = resolveShellPath(context, outputPath)
+  const resolved = resolveShellPath(context, parsed.outputPath)
   if (exportResult.format === "directory") {
     for (const file of exportResult.files ?? []) {
       await writeTextFile(resolvePath(resolved, file.path), file.contents)
@@ -356,11 +347,21 @@ async function exportWorkflowCodeSourceDirectory(
   return exportWorkflowCodeSource(sessionId, [...args, "--format", "directory"], context, deps)
 }
 
-function parseSourceExportOptions(args: string[]): { ok: true; format: WorkflowCodeSourceExportFormat; target: "artifact" | "workflow" } | { ok: false; message: string } {
+function parseSourceExportOptions(args: string[]): { ok: true; name: string; outputPath: string; format: WorkflowCodeSourceExportFormat; target: "artifact" | "workflow" } | { ok: false; message: string } {
+  const usage = "usage: workflow code source export <artifact-or-workflow-ref> --out <file|directory> [--workflow] [--format inline|directory]"
+  const positionals: string[] = []
   let format: WorkflowCodeSourceExportFormat = "inline"
   let target: "artifact" | "workflow" = "artifact"
+  let outputPath: string | undefined
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
+    if (arg === undefined) continue
+    if (arg === "--out") {
+      outputPath = args[index + 1]
+      if (!outputPath) return { ok: false, message: usage }
+      index += 1
+      continue
+    }
     if (arg === "--directory" || arg === "--dir") {
       format = "directory"
       continue
@@ -372,15 +373,75 @@ function parseSourceExportOptions(args: string[]): { ok: true; format: WorkflowC
     if (arg === "--format") {
       const value = args[index + 1]
       if (value !== "inline" && value !== "directory") {
-        return { ok: false, message: "usage: workflow code source export ... [--workflow] [--format inline|directory]" }
+        return { ok: false, message: usage }
       }
       format = value
       index += 1
       continue
     }
-    return { ok: false, message: "usage: workflow code source export ... [--workflow] [--format inline|directory]" }
+    if (arg.startsWith("--")) return { ok: false, message: usage }
+    positionals.push(arg)
   }
-  return { ok: true, format, target }
+  const [name, positionalOutput, ...extra] = positionals
+  if (!name || extra.length > 0) return { ok: false, message: usage }
+  outputPath ??= positionalOutput
+  if (!outputPath) return { ok: false, message: usage }
+  return { ok: true, name, outputPath, format, target }
+}
+
+function parseNameAndOutput(args: string[], usage: string): { ok: true; name: string; outputPath: string } | { ok: false; message: string } {
+  const positionals: string[] = []
+  let outputPath: string | undefined
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === undefined) continue
+    if (arg === "--out") {
+      outputPath = args[index + 1]
+      if (!outputPath) return { ok: false, message: usage }
+      index += 1
+      continue
+    }
+    if (arg.startsWith("--")) return { ok: false, message: usage }
+    positionals.push(arg)
+  }
+  const [name, positionalOutput, ...extra] = positionals
+  if (!name || extra.length > 0) return { ok: false, message: usage }
+  outputPath ??= positionalOutput
+  if (!outputPath) return { ok: false, message: usage }
+  return { ok: true, name, outputPath }
+}
+
+function parsePackageImportArgs(args: string[]): { ok: true; inputFile: string; name?: string; overwrite: boolean } | { ok: false; message: string } {
+  const usage = "usage: workflow code package import <file.workflow-code.json> [--name <name>] [--overwrite]"
+  let inputFile: string | undefined
+  let name: string | undefined
+  let overwrite = false
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === undefined) continue
+    if (arg === "--name") {
+      name = args[index + 1]
+      if (!name) return { ok: false, message: usage }
+      index += 1
+      continue
+    }
+    if (arg === "--overwrite") {
+      overwrite = true
+      continue
+    }
+    if (arg.startsWith("--")) return { ok: false, message: usage }
+    if (!inputFile) {
+      inputFile = arg
+      continue
+    }
+    if (!name) {
+      name = arg
+      continue
+    }
+    return { ok: false, message: usage }
+  }
+  if (!inputFile) return { ok: false, message: usage }
+  return { ok: true, inputFile, ...(name !== undefined ? { name } : {}), overwrite }
 }
 
 function parseWorkflowCodeCommonOptions(args: string[]): { ok: true; providerRebindings: WorkflowCodeProviderRebinding[] } | { ok: false; message: string } {
