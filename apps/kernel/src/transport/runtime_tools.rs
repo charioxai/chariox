@@ -1518,7 +1518,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_IMPORT_TOOL.to_string(),
-            description: "Import a portable workflow-code package after recompiling and validating it on this kernel. name overrides the package name; overwrite replaces an existing saved artifact with the target name.".to_string(),
+            description: "Import a portable workflow-code package after checking package integrity and validating the embedded workflow definition on this kernel. name overrides the package name; overwrite replaces an existing saved artifact with the target name.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["package"],

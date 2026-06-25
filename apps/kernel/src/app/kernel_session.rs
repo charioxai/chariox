@@ -13,9 +13,10 @@ use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
 use crate::workflow_code::{
-    compile_workflow_code_javascript, WorkflowCodeAgentBinding, WorkflowCodeApplyReport,
-    WorkflowCodeCompileAndApplyResult, WorkflowCodeCompileResult, WorkflowCodeDefinition,
-    WorkflowCodeValidationDiagnostic, WorkflowCodeValidationReport, WorkflowCodeValidationSeverity,
+    compile_workflow_code_javascript_with_schema_import_root, WorkflowCodeAgentBinding,
+    WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult, WorkflowCodeCompileResult,
+    WorkflowCodeDefinition, WorkflowCodeValidationDiagnostic, WorkflowCodeValidationReport,
+    WorkflowCodeValidationSeverity,
 };
 
 pub(crate) struct KernelSessionService<'a> {
@@ -1537,7 +1538,13 @@ impl<'a> KernelSessionService<'a> {
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
         caller_metaagent_id: Option<&str>,
     ) -> Result<WorkflowCodeCompileResult, DaemonError> {
-        let mut compile = compile_workflow_code_javascript(node_path, source, limits)?;
+        let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
+        let mut compile = compile_workflow_code_javascript_with_schema_import_root(
+            node_path,
+            source,
+            limits,
+            schema_import_root.as_deref(),
+        )?;
         let mut definition = compile.definition.clone();
         crate::workflow_code::apply_workflow_code_provider_rebindings(
             &mut definition,
@@ -1569,7 +1576,13 @@ impl<'a> KernelSessionService<'a> {
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
-        let compile = compile_workflow_code_javascript(node_path, source, limits)?;
+        let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
+        let compile = compile_workflow_code_javascript_with_schema_import_root(
+            node_path,
+            source,
+            limits,
+            schema_import_root.as_deref(),
+        )?;
         let mut rebound_definition = compile.definition.clone();
         crate::workflow_code::apply_workflow_code_provider_rebindings(
             &mut rebound_definition,
@@ -1592,6 +1605,20 @@ impl<'a> KernelSessionService<'a> {
             },
             apply,
         })
+    }
+
+    fn workflow_code_schema_import_root(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<std::path::PathBuf>, DaemonError> {
+        let session =
+            SessionStateReader::new(self.app.session_state_store()).get_session(session_id)?;
+        let workspace = std::path::PathBuf::from(session.workspace_id());
+        if workspace.is_absolute() {
+            Ok(Some(workspace))
+        } else {
+            Ok(None)
+        }
     }
 
     fn append_workflow_code_target_validation(

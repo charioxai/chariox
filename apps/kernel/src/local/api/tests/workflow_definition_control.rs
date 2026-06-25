@@ -695,6 +695,14 @@ fn local_request_api_persists_workflow_code_artifacts() {
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    std::fs::create_dir_all(workspace_root.join("schemas"))
+        .expect("temporary schema directory should be created");
+    let schema_path = workspace_root.join("schemas/final.json");
+    std::fs::write(
+        &schema_path,
+        r#"{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}},"additionalProperties":false}"#,
+    )
+    .expect("temporary schema file should be written");
 
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -709,6 +717,12 @@ fn local_request_api_persists_workflow_code_artifacts() {
     let name = format!("toy-{}", crate::session::unix_epoch_ms());
     let source = r#"
 workflow.define({ alias: "artifact_flow" })
+const final = workflow.schemaFromFile({
+  handle: "final",
+  path: "schemas/final.json",
+  alias: "Final output"
+})
+workflow.define({ runOutputSchema: final })
 const planner = workflow.node({
   handle: "planner",
   agent: workflow.newAgent({ alias: "planner", provider: "dev-stub", model: "default" }),
@@ -737,6 +751,14 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             assert_eq!(
                 artifact.definition.workflow.alias.as_deref(),
                 Some("artifact_flow")
+            );
+            assert_eq!(
+                artifact.definition.workflow.run_output_schema.as_deref(),
+                Some("final")
+            );
+            assert_eq!(
+                artifact.definition.schemas[0].schema["properties"]["answer"]["type"],
+                "string"
             );
         }
         _ => panic!("unexpected local response"),
@@ -809,10 +831,16 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 package.definition.workflow.alias.as_deref(),
                 Some("artifact_flow_updated")
             );
+            assert_eq!(
+                package.definition.schemas[0].schema["properties"]["answer"]["type"],
+                "string"
+            );
             package
         }
         _ => panic!("unexpected local response"),
     };
+    std::fs::remove_file(&schema_path)
+        .expect("source schema file should be removable before portable import");
 
     let deleted = harness
         .dispatch(LocalDaemonRequest::DeleteWorkflowCodeArtifact(
@@ -852,6 +880,10 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             assert_eq!(
                 artifact.definition.workflow.alias.as_deref(),
                 Some("artifact_flow_updated")
+            );
+            assert_eq!(
+                artifact.definition.schemas[0].schema["properties"]["answer"]["type"],
+                "string"
             );
             assert!(artifact.metadata.validation.ok);
         }

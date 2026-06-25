@@ -99,6 +99,8 @@ pub const WORKFLOW_CODE_PATTERN_EXAMPLES: &[WorkflowCodePatternExample] = &[
 ];
 
 const NODE_WORKFLOW_CODE_COMPILER: &str = r#"
+import fs from "node:fs"
+import path from "node:path"
 import vm from "node:vm"
 
 const chunks = []
@@ -142,6 +144,40 @@ function createBuilder() {
     const span = sourceSpan()
     if (span) sourceSpans[handle] = span
   }
+  function loadSchemaFromFile(schemaPath) {
+    if (typeof schemaPath !== "string" || schemaPath.trim() === "") {
+      throw new Error("schemaFromFile path must be a non-empty string")
+    }
+    if (!input.schema_import_root) {
+      throw new Error("schemaFromFile requires an approved schema import root")
+    }
+    if (path.isAbsolute(schemaPath)) {
+      throw new Error("schemaFromFile path must be relative to the approved import root")
+    }
+    const normalized = path.normalize(schemaPath)
+    if (normalized === "." || normalized.startsWith("..") || path.isAbsolute(normalized)) {
+      throw new Error("schemaFromFile path must stay inside the approved import root")
+    }
+    const root = fs.realpathSync(String(input.schema_import_root))
+    const candidate = path.resolve(root, normalized)
+    const resolved = fs.realpathSync(candidate)
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      throw new Error("schemaFromFile path resolves outside the approved import root")
+    }
+    const stat = fs.statSync(resolved)
+    if (!stat.isFile()) {
+      throw new Error("schemaFromFile path must point to a JSON schema file")
+    }
+    const maxBytes = Math.max(1, Number(input.max_schema_bytes || 1048576))
+    if (stat.size > maxBytes) {
+      throw new Error(`schemaFromFile ${schemaPath} exceeds configured schema byte limit of ${maxBytes}`)
+    }
+    try {
+      return JSON.parse(fs.readFileSync(resolved, "utf8"))
+    } catch (error) {
+      throw new Error(`schemaFromFile failed to parse ${schemaPath}: ${error && error.message ? error.message : error}`)
+    }
+  }
   function ref(value, expected) {
     if (typeof value === "string") return value
     if (value && value.__workflowCodeHandle === expected) return value.handle
@@ -170,6 +206,20 @@ function createBuilder() {
         ...(options.alias !== undefined ? { alias: options.alias } : {}),
         ...(options.description !== undefined ? { description: options.description } : {}),
         schema: options.schema
+      }
+      recordSourceSpan(item.handle)
+      state.schemas.push(item)
+      return { __workflowCodeHandle: "schema", handle: item.handle }
+    },
+    schemaFromFile(pathOrOptions, maybeOptions = {}) {
+      const options = typeof pathOrOptions === "string"
+        ? { ...maybeOptions, path: pathOrOptions }
+        : { ...(pathOrOptions || {}) }
+      const item = {
+        handle: handle("schema", options.handle),
+        ...(options.alias !== undefined ? { alias: options.alias } : {}),
+        ...(options.description !== undefined ? { description: options.description } : {}),
+        schema: loadSchemaFromFile(options.path)
       }
       recordSourceSpan(item.handle)
       state.schemas.push(item)
@@ -378,6 +428,9 @@ pub struct WorkflowCodeProviderRebinding {
 struct WorkflowCodeCompilerInput<'a> {
     source: &'a str,
     timeout_ms: u64,
+    max_schema_bytes: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_import_root: Option<&'a Path>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -807,6 +860,15 @@ pub fn compile_workflow_code_javascript(
     source: &str,
     limits: &WorkflowCodeLimitsConfig,
 ) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
+    compile_workflow_code_javascript_with_schema_import_root(node_path, source, limits, None)
+}
+
+pub fn compile_workflow_code_javascript_with_schema_import_root(
+    node_path: impl AsRef<Path>,
+    source: &str,
+    limits: &WorkflowCodeLimitsConfig,
+    schema_import_root: Option<&Path>,
+) -> Result<WorkflowCodeCompileResult, crate::DaemonError> {
     let max_old_space_mb = u64::max(16, limits.script_memory_bytes.div_ceil(1024 * 1024));
     let mut child = Command::new(node_path.as_ref())
         .arg(format!("--max-old-space-size={max_old_space_mb}"))
@@ -825,6 +887,8 @@ pub fn compile_workflow_code_javascript(
     let input = serde_json::to_vec(&WorkflowCodeCompilerInput {
         source,
         timeout_ms: limits.script_timeout_ms,
+        max_schema_bytes: limits.max_schema_bytes,
+        schema_import_root,
     })
     .map_err(|error| crate::DaemonError::LocalTransport {
         operation: "workflow_code.compile",
@@ -2226,6 +2290,88 @@ workflow.define({ alias: "bad", runOutputSchema: final })
         .expect_err("script error should be returned");
 
         assert!(format!("{error}").contains("boom"));
+    }
+
+    #[test]
+    fn javascript_compiler_embeds_schema_from_approved_file() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-code-schema-import-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        fs::create_dir_all(root.join("schemas")).expect("schema directory should create");
+        fs::write(
+            root.join("schemas/final.json"),
+            r#"{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}},"additionalProperties":false}"#,
+        )
+        .expect("schema file should write");
+
+        let result = compile_workflow_code_javascript_with_schema_import_root(
+            node,
+            r#"
+workflow.define({ alias: "imported_schema" })
+const final = workflow.schemaFromFile({
+  handle: "final",
+  path: "schemas/final.json",
+  alias: "Final output"
+})
+workflow.define({ runOutputSchema: final })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ provider: "dev-stub" }),
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(worker, { handle: "entry" })
+"#,
+            &WorkflowCodeLimitsConfig::default(),
+            Some(&root),
+        )
+        .expect("workflow-code schema import should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert_eq!(result.definition.schemas.len(), 1);
+        assert_eq!(result.definition.schemas[0].handle, "final");
+        assert_eq!(
+            result.definition.schemas[0].schema["properties"]["answer"]["type"],
+            "string"
+        );
+        assert_eq!(
+            result.definition.workflow.run_output_schema.as_deref(),
+            Some("final")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn javascript_compiler_rejects_schema_file_escape() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-code-schema-escape-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        fs::create_dir_all(&root).expect("schema root should create");
+
+        let error = compile_workflow_code_javascript_with_schema_import_root(
+            node,
+            r#"
+workflow.schemaFromFile({ handle: "final", path: "../outside.json" })
+"#,
+            &WorkflowCodeLimitsConfig::default(),
+            Some(&root),
+        )
+        .expect_err("schema import should reject parent traversal");
+
+        assert!(format!("{error}").contains("approved import root"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -504,11 +504,15 @@ impl KernelRuntimeState {
         let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
         self.with_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
-            let compile = crate::workflow_code::compile_workflow_code_javascript(
-                &request.node_path,
-                &request.source,
-                &limits,
-            )?;
+            let schema_import_root =
+                workflow_code_schema_import_root_for_session(app, &request.session_id)?;
+            let compile =
+                crate::workflow_code::compile_workflow_code_javascript_with_schema_import_root(
+                    &request.node_path,
+                    &request.source,
+                    &limits,
+                    schema_import_root.as_deref(),
+                )?;
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact = registry.save(
                 &request.name,
@@ -540,11 +544,15 @@ impl KernelRuntimeState {
         let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
         self.with_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
-            let compile = crate::workflow_code::compile_workflow_code_javascript(
-                &request.node_path,
-                &request.source,
-                &limits,
-            )?;
+            let schema_import_root =
+                workflow_code_schema_import_root_for_session(app, &request.session_id)?;
+            let compile =
+                crate::workflow_code::compile_workflow_code_javascript_with_schema_import_root(
+                    &request.node_path,
+                    &request.source,
+                    &limits,
+                    schema_import_root.as_deref(),
+                )?;
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact = registry.update(
                 &request.name,
@@ -652,17 +660,14 @@ impl KernelRuntimeState {
         self.with_app_side_effect(move |app| {
             request.package.validate_integrity()?;
             let limits = app.config().workflow_code_limits();
-            let compile = crate::workflow_code::compile_workflow_code_javascript(
-                &request.node_path,
-                &request.package.source,
-                &limits,
-            )?;
+            let validation = request.package.definition.validate_with_limits(&limits);
+            let definition = request.package.definition.clone();
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact = registry.import_package(
                 request.name.as_deref(),
                 request.package,
-                compile.definition,
-                compile.validation,
+                definition,
+                validation,
                 actor,
                 request.overwrite,
             )?;
@@ -699,6 +704,19 @@ fn workflow_code_registry_for_session(
     Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
         roots,
     ))
+}
+
+fn workflow_code_schema_import_root_for_session(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+) -> Result<Option<std::path::PathBuf>, DaemonError> {
+    let session = app.sessions().get_session(session_id)?;
+    let workspace = std::path::PathBuf::from(session.workspace_id());
+    if workspace.is_absolute() {
+        Ok(Some(workspace))
+    } else {
+        Ok(None)
+    }
 }
 
 fn workflow_code_artifact_actor(
