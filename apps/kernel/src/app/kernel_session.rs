@@ -37,8 +37,8 @@ mod tests {
     use crate::workflow_code::{
         WorkflowCodeAgentBinding, WorkflowCodeAgentCreate, WorkflowCodeDefinition,
         WorkflowCodeEndpointDefinition, WorkflowCodeExistingAgent, WorkflowCodeNodeDefinition,
-        WorkflowCodeProviderRebinding, WorkflowCodeWorkflow, WORKFLOW_CODE_PATTERN_EXAMPLES,
-        WORKFLOW_CODE_SCHEMA_VERSION,
+        WorkflowCodeProviderRebinding, WorkflowCodeQueueDefinition, WorkflowCodeWorkflow,
+        WORKFLOW_CODE_PATTERN_EXAMPLES, WORKFLOW_CODE_SCHEMA_VERSION,
     };
     use crate::{DaemonApp, DaemonConfig};
     use std::collections::BTreeMap;
@@ -464,6 +464,49 @@ mod tests {
             .expect("planner agent should exist");
         assert_eq!(planner.provider(), "codex");
         assert_eq!(planner.model(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn workflow_code_apply_rejects_runtime_queue_limit_before_spawning_agents() {
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.workflow.max_queues_per_workflow = Some(1);
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        let mut definition = generated_workflow_code_definition();
+        definition.queues.push(WorkflowCodeQueueDefinition {
+            handle: "urgent".to_string(),
+            alias: "urgent".to_string(),
+            priority: 5,
+            enabled: true,
+        });
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect_err("runtime queue limit should reject before spawning generated agents");
+
+        let message = format!("{error:?}");
+        assert!(message.contains("limit_exceeded"), "{message}");
+        assert!(
+            message.contains("runtime workflow queue limit 1"),
+            "{message}"
+        );
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 1);
+        let session_after = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(!session_after
+            .workflows()
+            .iter()
+            .any(|workflow| workflow.alias() == Some("generated_agents")));
     }
 
     #[test]
@@ -1939,6 +1982,19 @@ impl<'a> KernelSessionService<'a> {
                 format!(
                     "workflow-code would create {generated_agent_count} agents but session `{session_id}` has {current_agent_count}/{} agents",
                     session.max_agents()
+                ),
+                None,
+            );
+        }
+        let runtime_queue_limit = self.app.config().max_workflow_queues_per_workflow();
+        let materialized_queue_count =
+            crate::workflow_code::workflow_code_materialized_queue_count(definition);
+        if materialized_queue_count > runtime_queue_limit {
+            push_workflow_code_target_validation_error(
+                validation,
+                "limit_exceeded",
+                format!(
+                    "queues count {materialized_queue_count} exceeds configured runtime workflow queue limit {runtime_queue_limit}"
                 ),
                 None,
             );

@@ -2093,7 +2093,7 @@ fn workflow_code_generated_prompt_bytes(definition: &WorkflowCodeDefinition) -> 
     total
 }
 
-fn workflow_code_materialized_queue_count(definition: &WorkflowCodeDefinition) -> usize {
+pub(crate) fn workflow_code_materialized_queue_count(definition: &WorkflowCodeDefinition) -> usize {
     1 + definition
         .queues
         .iter()
