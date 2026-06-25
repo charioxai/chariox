@@ -33,6 +33,7 @@ function parseArgs(argv) {
         'Runs an isolated local dev-stub drill for metaagent capabilities:',
         '- verifies metaagent runtime tool policy: meta tools, read-only workspace, and recall',
         '- verifies scoped metaagent task and plan artifacts',
+        '- verifies workflow-code artifact create/validate/apply/run/export/import/delete through meta runtime tools',
         '- verifies MCP install/grant/revoke/uninstall via arroba.meta.run_command',
         '- verifies skill install/grant/revoke/uninstall via arroba.meta.run_command',
         '- verifies credential handle and vault status commands without passing secrets',
@@ -144,6 +145,42 @@ function assert(condition, message, details) {
   }
 }
 
+function metaWorkflowCodeSource() {
+  return `
+workflow.define({
+  alias: "meta_capabilities_workflow_code",
+  prompt: "Complete the isolated metaagent workflow-code drill.",
+  maxConcurrent: 2,
+});
+
+const finalOutput = workflow.schema({
+  handle: "final_output",
+  alias: "Final output",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: {
+      answer: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+});
+
+workflow.define({ runOutputSchema: finalOutput });
+
+const worker = workflow.node({
+  handle: "workflow_worker",
+  agent: workflow.newAgent({ alias: "meta-workflow-worker", provider: "codex", model: "gpt-5" }),
+  publicLabel: "Workflow worker",
+  instructions: "Submit final output matching final_output.",
+  canCompleteWorkflowRun: true,
+  canvas: { x: 0, y: 80 },
+});
+
+workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 80 } });
+`.trim()
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function launchRuntime(client, requests, sessionId, agentId, model, timeoutMs, pollMs) {
@@ -242,6 +279,103 @@ async function waitForMetaagentTask(client, requests, sessionId, metaagentId, pr
   throw new Error(`timed out waiting for metaagent task projection\n${JSON.stringify(last, null, 2)}`)
 }
 
+async function verifyMetaWorkflowCodeTools(metaRun) {
+  const name = `meta-capabilities-flow-${Date.now()}`
+  const importedName = `${name}-imported`
+  const source = metaWorkflowCodeSource()
+  const providerRebindings = [{
+    node: 'workflow_worker',
+    provider: 'dev-stub',
+    model: 'default',
+  }]
+
+  const created = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.create', {
+    name,
+    source,
+  })
+  assert(created.ok, 'metaagent should create workflow-code artifacts through runtime MCP', created.payload)
+  const createdArtifact = unwrap(created.payload, 'WorkflowCodeArtifactCreated').artifact
+  assert(createdArtifact?.metadata?.validation?.ok, 'created workflow-code artifact should validate', created.payload)
+
+  const listed = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.list')
+  assert(
+    listed.ok && (unwrap(listed.payload, 'WorkflowCodeArtifactsListed').artifacts ?? [])
+      .some((artifact) => artifact.name === name),
+    'workflow-code list should include the created artifact',
+    listed.payload,
+  )
+
+  const validated = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.validate', { name })
+  assert(
+    validated.ok
+      && unwrap(validated.payload, 'WorkflowCodeValidated').result?.validation?.ok,
+    'metaagent should validate saved workflow-code artifacts through runtime MCP',
+    validated.payload,
+  )
+
+  const applied = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.apply', {
+    name,
+    provider_rebindings: providerRebindings,
+  })
+  assert(applied.ok, 'metaagent should apply saved workflow-code artifacts through runtime MCP', applied.payload)
+  const appliedPayload = unwrap(applied.payload, 'WorkflowCodeApplied')
+  const appliedWorkflowId = appliedPayload.result?.apply?.workflow_id
+  const appliedWorkerAgentId = appliedPayload.result?.apply?.agent_ids?.workflow_worker
+  assert(appliedWorkflowId, 'workflow-code apply should return a workflow id', applied.payload)
+  assert(appliedWorkerAgentId, 'workflow-code apply should return the generated node agent id', applied.payload)
+  assert(
+    (appliedPayload.session?.workflows ?? []).some((workflow) => workflow.id === appliedWorkflowId),
+    'workflow-code apply should project the created workflow into the session',
+    applied.payload,
+  )
+  assert(
+    (appliedPayload.session?.agents ?? []).some((agent) => (
+      agent.id === appliedWorkerAgentId
+      && agent.provider === 'dev-stub'
+      && agent.model === 'default'
+    )),
+    'workflow-code apply should create a rebound dev-stub/default node agent',
+    applied.payload,
+  )
+
+  const exported = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.export', { name })
+  assert(exported.ok, 'metaagent should export workflow-code artifacts through runtime MCP', exported.payload)
+  const exportedPackage = unwrap(exported.payload, 'WorkflowCodeArtifactExported').package
+  assert(exportedPackage?.source_sha256, 'workflow-code export should include package source hash', exported.payload)
+
+  const imported = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.import', {
+    name: importedName,
+    package: exportedPackage,
+  })
+  assert(imported.ok, 'metaagent should import workflow-code packages through runtime MCP', imported.payload)
+
+  const run = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.run', {
+    name: importedName,
+    endpoint: 'entry',
+    prompt: 'Run the imported workflow-code artifact from the metaagent capabilities drill.',
+    provider_rebindings: providerRebindings,
+  })
+  assert(run.ok, 'metaagent should run workflow-code artifacts through runtime MCP', run.payload)
+  const runPayload = unwrap(run.payload, 'WorkflowCodeRun')
+  assert(
+    runPayload.result?.invocation?.kind === 'started' || runPayload.result?.invocation?.kind === 'enqueued',
+    'workflow-code run should start or enqueue a workflow invocation',
+    run.payload,
+  )
+
+  const deletedOriginal = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.delete', { name })
+  assert(deletedOriginal.ok, 'metaagent should delete original workflow-code artifact', deletedOriginal.payload)
+  const deletedImported = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.delete', { name: importedName })
+  assert(deletedImported.ok, 'metaagent should delete imported workflow-code artifact', deletedImported.payload)
+
+  return {
+    artifactName: name,
+    importedName,
+    appliedWorkflowId,
+    runInvocation: runPayload.result?.invocation?.kind,
+  }
+}
+
 async function cleanupSession(kernelUrl, sessionId) {
   if (!sessionId) return
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -327,7 +461,6 @@ async function main() {
       'set model metaagent-capabilities-default',
       'session new --meta $workspace as session',
       'session permissions yolo',
-      'agent spawn worker metaagent-capabilities-worker as worker',
       'agent list',
     ].join('\n'), 'utf8')
     const setup = await run(process.execPath, [
@@ -347,11 +480,8 @@ async function main() {
       throw new Error(`setup script failed\nstdout:\n${setup.stdout}\nstderr:\n${setup.stderr}`)
     }
     requireOutput(setup.stdout, /created metaagent session /, 'metaagent session creation')
-    requireOutput(setup.stdout, /spawned agent .*worker/, 'regular worker spawn')
     sessionId = setup.stdout.match(/bound \$session = (\S+)/)?.[1] ?? null
-    const workerId = setup.stdout.match(/bound \$worker = (\S+)/)?.[1] ?? null
     assert(sessionId, 'setup script did not bind session id', { stdout: setup.stdout })
-    assert(workerId, 'setup script did not bind worker id', { stdout: setup.stdout })
 
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
     const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
@@ -362,15 +492,13 @@ async function main() {
     const sessionState = unwrapVariant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState', 'SessionStateLoaded').session
     const agents = sessionState.agents ?? []
     const metaagent = agents.find((agent) => agent.role === 'meta')
-    const worker = agents.find((agent) => agent.id === workerId)
     assert(metaagent, 'session should contain one metaagent', { agents })
-    assert(worker?.role !== 'meta', 'worker should be a standard agent', { worker })
 
     const metaRun = await launchRuntime(client, requests, sessionId, metaagent.id, 'metaagent-capabilities-meta', options.timeoutMs, options.pollMs)
     assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be forced to plan mode', { metaRun })
     assert(
-      metaRun.permission_level == null || metaRun.permission_level === 'yolo',
-      'metaagent provider run must inherit session permission level instead of forcing required',
+      metaRun.permission_level === 'required',
+      'metaagent provider run must be forced to required permission level',
       { metaRun },
     )
 
@@ -386,6 +514,16 @@ async function main() {
       'arroba.read_artifact',
       'arroba.search_recall',
       'arroba.query_recall',
+      'arroba.meta.workflow_code.create',
+      'arroba.meta.workflow_code.read',
+      'arroba.meta.workflow_code.list',
+      'arroba.meta.workflow_code.update',
+      'arroba.meta.workflow_code.delete',
+      'arroba.meta.workflow_code.validate',
+      'arroba.meta.workflow_code.apply',
+      'arroba.meta.workflow_code.run',
+      'arroba.meta.workflow_code.export',
+      'arroba.meta.workflow_code.import',
     ]) {
       assert(metaTools.includes(expectedTool), `metaagent runtime should expose ${expectedTool}`, { metaTools })
     }
@@ -394,6 +532,13 @@ async function main() {
       'metaagent runtime must expose only meta, read-only workspace, and recall tools',
       { metaTools },
     )
+
+    const workerSpawn = await callRuntimeTool(metaRun, 'arroba.meta.run_command', {
+      command: 'agent spawn worker metaagent-capabilities-worker',
+    })
+    assert(workerSpawn.ok, 'metaagent should spawn an owned regular worker', workerSpawn.payload)
+    const worker = workerSpawn.payload?.response?.agent
+    assert(worker?.id && worker.role !== 'meta', 'metaagent worker spawn should return a standard agent', workerSpawn.payload)
 
     const readTaskInitial = await callRuntimeTool(metaRun, 'arroba.meta.read_task')
     assert(readTaskInitial.ok && readTaskInitial.payload?.status === 'none', 'metaagent task should start empty before task update', readTaskInitial.payload)
@@ -445,6 +590,9 @@ async function main() {
     const overview = await callRuntimeTool(metaRun, 'arroba.meta.session_overview')
     assert(overview.ok, 'session_overview should succeed', overview.payload)
     assert((overview.payload?.agents?.owned ?? []).some((agent) => agent.id === worker.id), 'session_overview should include owned worker', overview.payload)
+
+    const workflowCodeSummary = await verifyMetaWorkflowCodeTools(metaRun)
+    log('workflow-code-capabilities-passed', workflowCodeSummary)
 
     const mcpConfig = {
       name: 'iso-mcp',
@@ -549,6 +697,7 @@ async function main() {
       sessionId,
       metaagentId: metaagent.id,
       workerId: worker.id,
+      workflowCode: workflowCodeSummary,
     }, null, 2))
     succeeded = true
   } catch (error) {
