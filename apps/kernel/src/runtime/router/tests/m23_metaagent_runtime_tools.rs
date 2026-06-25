@@ -1111,6 +1111,40 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
         "{:?}",
         peer_validated.payload
     );
+
+    let metaagent_source = workflow_code_existing_agent_source(metaagent.id());
+    let metaagent_validated = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+            serde_json::json!({ "source": metaagent_source }),
+        )
+        .await
+        .expect("metaagent should receive validation diagnostics for metaagent node binding");
+    assert!(metaagent_validated.ok, "{:?}", metaagent_validated.payload);
+    assert_eq!(
+        metaagent_validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/ok")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        metaagent_validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/diagnostics")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
+                diagnostic.get("code").and_then(serde_json::Value::as_str)
+                    == Some("invalid_existing_agent_binding")
+                    && diagnostic.get("handle").and_then(serde_json::Value::as_str)
+                        == Some("worker")
+            })),
+        "{:?}",
+        metaagent_validated.payload
+    );
 }
 
 fn workflow_code_existing_agent_source(agent_id: &str) -> String {

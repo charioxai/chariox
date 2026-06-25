@@ -549,6 +549,46 @@ mod tests {
     }
 
     #[test]
+    fn workflow_code_apply_rejects_metaagent_as_existing_node_agent_without_partial_mutation() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let metaagent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("meta")
+                    .with_role(crate::agent::AgentRole::Meta),
+            )
+            .expect("metaagent should spawn");
+        let agent_count_before = app.agents().get_session_agents(session.id()).len();
+        let definition = existing_agent_workflow_code_definition(metaagent.id());
+
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect_err("workflow-code should reject metaagent as workflow node agent");
+
+        let message = format!("{error}");
+        assert!(message.contains("invalid_existing_agent_binding"));
+        assert!(message.contains(metaagent.id()));
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(session.workflows().is_empty());
+        assert_eq!(
+            app.agents().get_session_agents(session.id()).len(),
+            agent_count_before
+        );
+    }
+
+    #[test]
     fn workflow_code_apply_grants_satisfied_node_extension_requirement() {
         let workspace = unique_workflow_code_test_workspace("extension-satisfied");
         install_test_skill(&workspace, "workflow-code-skill");
@@ -1539,6 +1579,15 @@ impl<'a> KernelSessionService<'a> {
                             ),
                         });
                     }
+                    if agent.is_metaagent() {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "workflow_code.apply",
+                            message: format!(
+                                "invalid_existing_agent_binding: existing agent `{}` is a metaagent and cannot be bound to workflow node `{}`",
+                                existing.agent_ref, node.handle
+                            ),
+                        });
+                    }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
                         if agent.controlled_by_metaagent_id() != Some(metaagent_id) {
                             return Err(DaemonError::LocalTransport {
@@ -1913,7 +1962,17 @@ impl<'a> KernelSessionService<'a> {
                 WorkflowCodeAgentBinding::Existing(existing) => {
                     match self.app.agents.get_agent(&existing.agent_ref) {
                         Ok(agent) if agent.session_id() == session_id => {
-                            if caller_metaagent_id.is_some_and(|metaagent_id| {
+                            if agent.is_metaagent() {
+                                push_workflow_code_target_validation_error(
+                                    validation,
+                                    "invalid_existing_agent_binding",
+                                    format!(
+                                        "existing agent `{}` is a metaagent and cannot be bound to workflow node `{}`",
+                                        existing.agent_ref, node.handle
+                                    ),
+                                    Some(node.handle.clone()),
+                                );
+                            } else if caller_metaagent_id.is_some_and(|metaagent_id| {
                                 agent.controlled_by_metaagent_id() != Some(metaagent_id)
                             }) {
                                 push_workflow_code_target_validation_error(
