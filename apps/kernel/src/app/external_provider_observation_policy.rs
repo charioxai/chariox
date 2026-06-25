@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::{ObservedExternalProviderTurn, ObservedExternalProviderTurnRole};
 use crate::history::SessionHistoryExternalObservation;
 
@@ -55,6 +57,51 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         }
     }
 
+    pub(crate) fn active_external_prompt_turn<'turn>(
+        self,
+        turns: &'turn [ObservedExternalProviderTurn],
+        has_new_observations: bool,
+        arroba_owned_prompt_texts: &BTreeSet<String>,
+    ) -> Option<&'turn ObservedExternalProviderTurn> {
+        if self.latest_effective_turn_settles(turns) {
+            return None;
+        }
+        let latest = if has_new_observations {
+            turns
+                .iter()
+                .rev()
+                .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)?
+        } else {
+            let latest = turns
+                .iter()
+                .rev()
+                .find(|turn| !self.turn_is_passive_telemetry(turn))
+                .or_else(|| turns.last())?;
+            match latest.role {
+                ObservedExternalProviderTurnRole::Assistant if !self.uses_explicit_completion() => {
+                    return None;
+                }
+                ObservedExternalProviderTurnRole::Status if self.status_settles(&latest.text) => {
+                    return None;
+                }
+                ObservedExternalProviderTurnRole::User => latest,
+                ObservedExternalProviderTurnRole::Assistant
+                | ObservedExternalProviderTurnRole::Reasoning
+                | ObservedExternalProviderTurnRole::Tool
+                | ObservedExternalProviderTurnRole::Status => turns
+                    .iter()
+                    .rev()
+                    .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)?,
+            }
+        };
+        if normalized_observed_prompt_text(&latest.text)
+            .is_some_and(|text| arroba_owned_prompt_texts.contains(&text))
+        {
+            return None;
+        }
+        Some(latest)
+    }
+
     pub(crate) fn observation_for_turn(
         self,
         turn: &ObservedExternalProviderTurn,
@@ -66,6 +113,11 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
         }
         .useful()
     }
+}
+
+pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 #[cfg(test)]
@@ -155,5 +207,72 @@ mod tests {
                 observed_at_ms: None,
             },
         ]));
+    }
+
+    #[test]
+    fn normalized_observed_prompt_text_collapses_whitespace_and_ignores_empty() {
+        assert_eq!(
+            normalized_observed_prompt_text("  run   this\nnow\t"),
+            Some("run this now".to_string())
+        );
+        assert_eq!(normalized_observed_prompt_text(" \n\t "), None);
+    }
+
+    #[test]
+    fn active_external_prompt_turn_uses_latest_user_until_explicit_settlement() {
+        let policy = ExternalProviderObservationPolicy::for_provider("codex");
+        let turns = vec![
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::User,
+                text: "first prompt".to_string(),
+                provider_turn_id: Some("user-1".to_string()),
+                observed_at_ms: None,
+            },
+            ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Assistant,
+                text: "working".to_string(),
+                provider_turn_id: Some("assistant-1".to_string()),
+                observed_at_ms: None,
+            },
+        ];
+
+        let latest = policy
+            .active_external_prompt_turn(&turns, false, &BTreeSet::new())
+            .expect("codex should stay active before explicit completion");
+
+        assert_eq!(latest.provider_turn_id.as_deref(), Some("user-1"));
+        let settled = [
+            turns,
+            vec![ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "codex task_complete {}".to_string(),
+                provider_turn_id: Some("done".to_string()),
+                observed_at_ms: None,
+            }],
+        ]
+        .concat();
+        assert!(policy
+            .active_external_prompt_turn(&settled, false, &BTreeSet::new())
+            .is_none());
+    }
+
+    #[test]
+    fn active_external_prompt_turn_filters_arroba_owned_prompt_texts() {
+        let policy = ExternalProviderObservationPolicy::for_provider("claude");
+        let mut arroba_owned = BTreeSet::new();
+        arroba_owned.insert("same prompt".to_string());
+
+        assert!(policy
+            .active_external_prompt_turn(
+                &[ObservedExternalProviderTurn {
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "same   prompt".to_string(),
+                    provider_turn_id: Some("user-1".to_string()),
+                    observed_at_ms: None,
+                }],
+                true,
+                &arroba_owned,
+            )
+            .is_none());
     }
 }

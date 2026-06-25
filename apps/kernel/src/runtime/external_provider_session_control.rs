@@ -6,7 +6,8 @@ use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
-    external_session_id_for_provider_session, DaemonApp, ExternalProviderObservationPolicy,
+    external_session_id_for_provider_session, normalized_observed_prompt_text, DaemonApp,
+    ExternalProviderObservationPolicy,
 };
 use crate::error::DaemonError;
 use crate::history::{ExternalImportHistoryEntry, SessionHistoryEntry};
@@ -946,11 +947,6 @@ fn external_observed_history_entry_matches(
         && existing.external_observation == next.external_observation
 }
 
-fn normalized_observed_prompt_text(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!normalized.is_empty()).then_some(normalized)
-}
-
 fn external_active_prompt_from_turns(
     target: &ImportedExternalObserverTarget,
     turns: &[crate::app::ObservedExternalProviderTurn],
@@ -958,46 +954,11 @@ fn external_active_prompt_from_turns(
     arroba_owned_prompt_texts: &BTreeSet<String>,
 ) -> Option<PromptQueueItem> {
     let policy = ExternalProviderObservationPolicy::for_provider(&target.import.external_provider);
-    if policy.latest_effective_turn_settles(turns) {
-        return None;
-    }
-    let latest = if has_new_observations {
-        turns
-            .iter()
-            .rev()
-            .find(|turn| turn.role == crate::app::ObservedExternalProviderTurnRole::User)?
-    } else {
-        let latest = turns
-            .iter()
-            .rev()
-            .find(|turn| !policy.status_is_passive_telemetry(&turn.text))
-            .or_else(|| turns.last())?;
-        match latest.role {
-            crate::app::ObservedExternalProviderTurnRole::Assistant
-                if !policy.uses_explicit_completion() =>
-            {
-                return None;
-            }
-            crate::app::ObservedExternalProviderTurnRole::Status
-                if policy.status_settles(&latest.text) =>
-            {
-                return None;
-            }
-            crate::app::ObservedExternalProviderTurnRole::User => latest,
-            crate::app::ObservedExternalProviderTurnRole::Assistant
-            | crate::app::ObservedExternalProviderTurnRole::Reasoning
-            | crate::app::ObservedExternalProviderTurnRole::Tool
-            | crate::app::ObservedExternalProviderTurnRole::Status => turns
-                .iter()
-                .rev()
-                .find(|turn| turn.role == crate::app::ObservedExternalProviderTurnRole::User)?,
-        }
-    };
-    if normalized_observed_prompt_text(&latest.text)
-        .is_some_and(|text| arroba_owned_prompt_texts.contains(&text))
-    {
-        return None;
-    }
+    let latest = policy.active_external_prompt_turn(
+        turns,
+        has_new_observations,
+        arroba_owned_prompt_texts,
+    )?;
     let provider_turn_id = latest.provider_turn_id_or_fallback();
     let external_prompt_id = crate::history::external_provider_observed_merge_key(
         &target.import.external_provider,
