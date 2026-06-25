@@ -83,6 +83,7 @@ impl ProviderProcessInfo {
                         .opencode_session_id()
                         .or_else(|| run.resume_state().codex_thread_id())
                         .or_else(|| run.resume_state().claude_session_id())
+                        .or_else(|| run.resume_state().pi_session_id())
                         .map(str::to_string)
                 })
             })

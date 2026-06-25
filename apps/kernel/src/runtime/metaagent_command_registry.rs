@@ -966,11 +966,12 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
             "import provider skill",
             "sync skill from provider",
         ],
-        usage: "skill import <codex|opencode|claude> [skill-name]",
+        usage: "skill import <codex|opencode|claude|pi> [skill-name]",
         examples: &[
             "skill import codex browser-qa",
             "skill import opencode",
             "skill import claude docs-helper",
+            "skill import pi docs-helper",
         ],
         tags: &[
             "extension",
@@ -1003,11 +1004,12 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
             "import all provider capabilities",
             "import provider mcps and skills",
         ],
-        usage: "extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]",
+        usage: "extension import providers [--provider codex|opencode|claude|pi] [--kind all|mcp|skill] [--name <capability>] [--dry-run]",
         examples: &[
             "extension import providers --dry-run",
             "extension import providers --provider codex --provider claude --kind all",
             "extension import providers --provider claude --kind skill --name docs-helper",
+            "extension import providers --provider pi --kind skill --name docs-helper",
         ],
         tags: &[
             "extension",

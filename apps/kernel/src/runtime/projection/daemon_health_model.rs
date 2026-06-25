@@ -1386,6 +1386,80 @@ mod tests {
     }
 
     #[test]
+    fn slice_lifecycle_health_treats_pi_backing_auth_as_pi_coverage() {
+        let mut pi_auth = slice_record(
+            "slice-pi-auth",
+            "dev-pi-auth",
+            crate::slice::SliceStatus::Running,
+            None,
+            None,
+        );
+        pi_auth.providers = vec!["pi".to_string()];
+        pi_auth.provider_auth = vec![crate::slice_provider_auth::SliceProviderAuthSummary {
+            provider: "pi:openai".to_string(),
+            state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
+            auth_type: Some("oauth".to_string()),
+            account_id: Some("acct-pi-openai".to_string()),
+            email: None,
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: Some("pi-openai".to_string()),
+            source: "slice".to_string(),
+        }];
+
+        let snapshot = SliceLifecycleHealthSnapshot::from_slices(&[pi_auth]);
+
+        assert_eq!(snapshot.provider_auth_missing_slices, 0);
+        assert_eq!(snapshot.provider_auth_unconfigured_slices, 0);
+        assert!(snapshot.provider_auth_issues.is_empty());
+    }
+
+    #[test]
+    fn slice_lifecycle_health_reports_stale_pi_backing_auth() {
+        let mut pi_auth = slice_record(
+            "slice-pi-stale-auth",
+            "dev-pi-stale-auth",
+            crate::slice::SliceStatus::Running,
+            None,
+            None,
+        );
+        pi_auth.providers = vec!["pi".to_string()];
+        pi_auth.provider_auth = vec![crate::slice_provider_auth::SliceProviderAuthSummary {
+            provider: "pi:anthropic".to_string(),
+            state: crate::slice_provider_auth::SliceProviderAuthState::NotConfigured,
+            auth_type: Some("claude.ai".to_string()),
+            account_id: None,
+            email: Some("user@example.com".to_string()),
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: None,
+            source: "slice".to_string(),
+        }];
+
+        let snapshot = SliceLifecycleHealthSnapshot::from_slices(&[pi_auth]);
+
+        assert_eq!(snapshot.provider_auth_missing_slices, 0);
+        assert_eq!(snapshot.provider_auth_unconfigured_slices, 1);
+        assert_eq!(snapshot.provider_auth_issues.len(), 1);
+        assert_eq!(
+            snapshot.provider_auth_issues[0].provider.as_deref(),
+            Some("pi:anthropic")
+        );
+        assert_eq!(
+            snapshot.provider_auth_issues[0]
+                .provider_auth_state
+                .as_deref(),
+            Some("not_configured")
+        );
+        assert_eq!(
+            snapshot.provider_auth_issues[0].identity.as_deref(),
+            Some("user@example.com")
+        );
+    }
+
+    #[test]
     fn remote_extension_sync_health_counts_only_home_proxy_grants() {
         let mut synced = remote_agent("agent-synced");
         synced.grant_extension(ExtensionGrant::new(ExtensionKind::Mcp, "filesystem"));

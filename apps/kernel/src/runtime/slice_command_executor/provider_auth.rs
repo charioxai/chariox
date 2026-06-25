@@ -10,11 +10,12 @@ pub(super) fn normalized_slice_provider(provider: &str) -> Result<String, Daemon
         });
     }
     match provider {
-        "all" | "codex" | "opencode" | "claude" => Ok(provider.to_string()),
+        "all" | "codex" | "opencode" | "claude" | "pi" => Ok(provider.to_string()),
         "claude-headless" | "claude-p" => Ok("claude".to_string()),
         value if value.starts_with("opencode:") && value.len() > "opencode:".len() => {
             Ok(value.to_string())
         }
+        value if value.starts_with("pi:") && value.len() > "pi:".len() => Ok(value.to_string()),
         _ => Err(DaemonError::LocalTransport {
             operation: "slice.auth.provider",
             message: format!("unsupported slice provider `{provider}`"),
@@ -70,6 +71,9 @@ pub(super) fn slice_auth_summary_matches_provider(
     if requested_provider == "opencode" {
         return summary_provider == "opencode" || summary_provider.starts_with("opencode:");
     }
+    if requested_provider == "pi" {
+        return summary_provider == "pi" || summary_provider.starts_with("pi:");
+    }
     summary_provider == requested_provider
 }
 
@@ -84,5 +88,11 @@ mod tests {
             "claude"
         );
         assert_eq!(normalized_slice_provider("claude-p").unwrap(), "claude");
+    }
+
+    #[test]
+    fn accepts_pi_provider_and_backing_provider_scope() {
+        assert_eq!(normalized_slice_provider("pi").unwrap(), "pi");
+        assert_eq!(normalized_slice_provider("pi:openai").unwrap(), "pi:openai");
     }
 }

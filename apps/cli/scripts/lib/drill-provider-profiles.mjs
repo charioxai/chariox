@@ -8,6 +8,7 @@ export const DRILL_PROVIDER_IDS = Object.freeze([
   "dev-stub",
   "opencode",
   "opencode-zen",
+  "pi",
 ])
 
 export function isKnownDrillProvider(provider) {
@@ -57,6 +58,7 @@ export function resolveProviderModel(provider, {
   if (explicit) return explicit
   if (provider === "opencode" && !String(defaultModel).includes("/")) return `opencode/${defaultModel}`
   if (provider === "codex" && !String(defaultModel).includes("/")) return codexCliModel(defaultModel)
+  if (provider === "pi" && !String(defaultModel).includes("/")) return `pi/openai-codex/${defaultModel}`
   return defaultModel
 }
 

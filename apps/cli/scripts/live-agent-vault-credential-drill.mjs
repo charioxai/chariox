@@ -11,7 +11,7 @@ const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const artifactsDir = path.join(repoRoot, '.artifacts')
 
-const DEFAULT_PROVIDERS = ['codex', 'claude-p', 'claude-headless']
+const DEFAULT_PROVIDERS = ['codex', 'claude-p', 'claude-headless', 'pi']
 const DEFAULT_MODEL = 'gpt-5.5'
 const DEFAULT_TIMEOUT_MS = 420_000
 const DEFAULT_POLL_MS = 1_000
@@ -70,6 +70,7 @@ function modelForProvider(provider, options) {
   if (explicit) return explicit
   if (provider === 'claude' || provider === 'claude-p' || provider === 'claude-headless') return 'sonnet'
   if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
+  if (provider === 'pi' && !options.model.includes('/')) return `pi/openai-codex/${options.model}`
   return options.model
 }
 

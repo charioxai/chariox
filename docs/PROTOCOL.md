@@ -164,6 +164,7 @@ Provider adapter hidden-context channels:
 - Codex adapters MUST send hidden context through `thread/start.developerInstructions` or `thread/resume.developerInstructions` when a Codex thread is created or resumed. Codex does not accept this context through `turn/start`; for kernel-managed Codex runs, the kernel MUST hot-reload the Codex thread before a turn when the assembled hidden context fingerprint changes.
 - OpenCode adapters MUST send turn-scoped hidden context through the provider session prompt request `system` field, currently `POST /session/{id}/prompt_async` body `system`.
 - Claude Code adapters MUST send turn-scoped hidden context through the `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`.
+- Pi adapters MUST use the official Pi RPC harness (`pi --mode rpc`) for Arroba-managed provider runs. Pi currently has no stable hidden-context channel; Arroba may omit `hidden_system_context` for Pi turns, but MUST NOT prepend it to `visible_user_prompt` or otherwise inject it into provider-visible prompt text.
 - If a provider channel is unavailable, the adapter may run without hidden context for that turn or restart the provider process with an initialization-scoped system prompt only when the caller explicitly accepts that behavior; it must not silently fall back to visible prompt injection.
 - Live provider drills validate direct provider hidden-context channels in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @arroba/cli run provider-context-injection:drill`.
 - End-to-end prompt assembly changes must also keep `pnpm --filter @arroba/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.arroba/prompts/runtime/base.md`, runs real Arroba provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel on successive turns, and verifies Arroba user-prompt history does not contain the hidden token.
@@ -989,6 +990,8 @@ Behavior rules:
 - `account_profile` selects a provider-native local profile or config context
 - if the provider is not logged in, the daemon reports structured auth state instead of attempting to silently fall back to API credentials
 - remote clients may view provider-auth status, but provider login itself remains a host-local provider-native flow
+- Pi provider authentication is the Pi CLI plus its selected backing provider. Arroba identifies the provider as `pi`; UI/catalog model ids use `pi/<backing>/<model>` so sessions and agents can choose the backing path explicitly, while the adapter strips only the leading `pi/` before passing `--provider <backing>` and `--model <backing>/<model>` to `pi --mode rpc`.
+- Pi has no standalone Arroba-owned credential store or first-party login flow. Readiness is derived from `pi` availability plus Pi/backing-provider credential state such as `~/.pi/agent/auth.json`, legacy `~/.pi/auth.json`, `PI_AUTH_FILE`, or backing API-key environment variables. Login remains provider-native through Pi's `/login` flow or the backing provider's normal CLI/account setup.
 
 ## 5.6 Extensions and MCP Runtime
 
@@ -1002,6 +1005,7 @@ Behavior rules:
 - provider-native subagents are not separate extension-binding targets in v1
 - workflow runtime tools such as `ack_workflow_turn` and `validate_workflow_handoff` SHOULD be exposed through an Arroba-managed MCP surface rather than direct daemon/kernel APIs
 - for managed provider runs, MCP attachment SHOULD be automated by Arroba at launch time rather than delegated to end-user provider setup
+- For managed Pi runs, Arroba projects runtime/granted MCP, script, and connector tools through a generated Pi TypeScript extension that calls `pi.registerTool` and forwards execution to the kernel-owned runtime MCP or remote MCP proxy. The generated Pi extension is a provider-facing projection only; grants, tool definitions, credentials, scoping, idempotency, and remote/home execution authority remain owned by the kernel.
 - day-1 implementation MAY statically advertise the workflow runtime tools and enforce turn/schema scope at call time; dynamic per-turn tool advertisement is a later hardening step
 - workflow-console MCP tools SHOULD use the same split:
   - transport owns the MCP surface, authentication, and provider-run scoping

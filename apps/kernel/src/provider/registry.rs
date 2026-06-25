@@ -2,7 +2,7 @@ mod dev_stub_adapter;
 
 use super::{
     apply_workspace_write_fence, plan_claude_launch, plan_codex_launch, plan_opencode_launch,
-    workspace_write_fence_supported, LaunchProviderRequest, ProviderLaunchResult,
+    plan_pi_launch, workspace_write_fence_supported, LaunchProviderRequest, ProviderLaunchResult,
     RuntimeProviderRun,
 };
 use crate::error::DaemonError;
@@ -42,12 +42,12 @@ impl ProviderRegistry {
     pub fn registered_adapter_count(&self) -> usize {
         #[cfg(test)]
         {
-            6
+            7
         }
 
         #[cfg(not(test))]
         {
-            4
+            5
         }
     }
 
@@ -57,6 +57,7 @@ impl ProviderRegistry {
             ClaudeAdapter::KEY => Some(&CLAUDE_ADAPTER),
             CodexAdapter::KEY => Some(&CODEX_ADAPTER),
             OpenCodeAdapter::KEY => Some(&OPENCODE_ADAPTER),
+            PiAdapter::KEY => Some(&PI_ADAPTER),
             #[cfg(test)]
             ManagedDevStubAdapter::KEY => Some(&MANAGED_DEV_STUB_ADAPTER),
             #[cfg(test)]
@@ -71,6 +72,7 @@ impl ProviderRegistry {
             ClaudeAdapter::KEY.to_string(),
             CodexAdapter::KEY.to_string(),
             OpenCodeAdapter::KEY.to_string(),
+            PiAdapter::KEY.to_string(),
         ];
         #[cfg(not(test))]
         return keys;
@@ -90,6 +92,7 @@ impl ProviderRegistry {
             "claude-p".to_string(),
             CodexAdapter::KEY.to_string(),
             OpenCodeAdapter::KEY.to_string(),
+            PiAdapter::KEY.to_string(),
         ];
         #[cfg(not(test))]
         return ids;
@@ -101,6 +104,45 @@ impl ProviderRegistry {
             ids
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct PiAdapter;
+
+impl PiAdapter {
+    const KEY: &'static str = "pi";
+}
+
+static PI_ADAPTER: PiAdapter = PiAdapter;
+
+impl AgentEndpointAdapter for PiAdapter {
+    fn key(&self) -> &'static str {
+        Self::KEY
+    }
+
+    fn supports_workspace_live_sync_write_enforcement(&self) -> bool {
+        workspace_write_fence_supported()
+    }
+
+    fn workspace_live_sync_write_enforcement_unavailable_reason(&self) -> &'static str {
+        "managed workspace live sync needs selective write fencing, which is only implemented on macOS for this adapter; use tracked mode on this worker or run the managed provider on a supported host"
+    }
+
+    fn connect(
+        &self,
+        request: &LaunchProviderRequest,
+    ) -> Result<ProviderLaunchResult, DaemonError> {
+        let mut launch = plan_pi_launch(Some(request))?;
+        launch.process_label = format!("pi:{}:{}", request.provider, request.model);
+        launch.working_directory = request.working_directory.clone();
+        apply_workspace_write_fence(launch, request)
+    }
+
+    fn park(&self, _run: &RuntimeProviderRun) {}
+
+    fn resume(&self, _run: &RuntimeProviderRun) {}
+
+    fn terminate(&self, _run: &RuntimeProviderRun) {}
 }
 
 #[derive(Debug, Default)]

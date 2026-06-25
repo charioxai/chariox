@@ -39,6 +39,10 @@ impl KernelRuntimeOwnedState {
                         provider_session_id,
                     ),
                 );
+            } else if launch_request.adapter_key == "pi" {
+                launch_request = launch_request.with_resume_state(
+                    crate::provider::ProviderResumeState::from_pi_session_id(provider_session_id),
+                );
             }
         }
         let config = self.config_projection.snapshot();

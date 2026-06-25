@@ -61,6 +61,12 @@ test("getProviderCommandCatalogs marks daemon catalog source", async () => {
           discovery: "none",
           commands: [],
         },
+        pi: {
+          provider: "pi",
+          source: "shipped",
+          discovery: "none",
+          commands: [],
+        },
       } satisfies ProviderCommandCatalogs,
     },
   }))

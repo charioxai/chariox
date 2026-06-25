@@ -62,6 +62,7 @@ pub(crate) fn sanitize_resume_state_for_launch(
         "opencode" => resume_state.without_opencode_session_id(),
         "codex" => resume_state.without_codex_thread_id(),
         "claude" => resume_state.without_claude_session_id(),
+        "pi" => resume_state.without_pi_session_id(),
         _ => resume_state,
     }
 }

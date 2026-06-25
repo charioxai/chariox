@@ -1155,6 +1155,7 @@ fn push_resume_state_attachments(
         ("codex", resume_state.codex_thread_id()),
         ("opencode", resume_state.opencode_session_id()),
         ("claude", resume_state.claude_session_id()),
+        ("pi", resume_state.pi_session_id()),
     ] {
         let Some(provider_session_id) = provider_session_id else {
             continue;
@@ -1214,6 +1215,7 @@ fn resume_state_for_external_session(
         "codex" => ProviderResumeState::from_codex_thread_id(provider_session_id),
         "opencode" => ProviderResumeState::from_opencode_session_id(provider_session_id),
         "claude" => ProviderResumeState::from_claude_session_id(provider_session_id),
+        "pi" => ProviderResumeState::from_pi_session_id(provider_session_id),
         _ => ProviderResumeState::default(),
     }
 }

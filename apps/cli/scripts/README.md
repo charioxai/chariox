@@ -10,6 +10,7 @@ These scripts exercise Arroba against real provider sessions. Keep them determin
 - For `opencode`, always pass an explicit `opencode/...` Zen model when running live drills. Do not use the OpenAI-backed OpenCode model path for validation.
 - If an OpenCode drill receives an unqualified model such as `gpt-5.2`, treat it as ambiguous; pass an explicit `opencode/...` override.
 - For `codex`, do not rely on drill-specific bare-model fallback when the exact model matters. Always pass an explicit Codex override such as `--provider-model codex=gpt-5.2` or `--provider-model codex=gpt-5.3`. Several workflow drills map bare `gpt-5.2`/`gpt-5.3` to `gpt-5.2-codex`/`gpt-5.3-codex`; ChatGPT-backed Codex accounts can reject those `*-codex` model ids with HTTP 400, leaving the drill looking stuck with only prompt echo.
+- For `pi`, pass the explicit backing provider in the model id, for example `--provider-model pi=pi/openai-codex/gpt-5.4`. The kernel strips only the leading `pi/` and launches `pi --mode rpc --provider openai-codex --model openai-codex/gpt-5.4`; Pi login/readiness still depends on Pi's own backing-provider credential state. Use `pi/openai/...` only when the Pi OpenAI backing provider and API-key auth are configured.
 - Prefer an explicit override when debugging provider-specific behavior:
 
 ```bash
@@ -17,6 +18,9 @@ node apps/cli/scripts/live-workspace-live-sync-drill.mjs --provider codex --prov
 node apps/cli/scripts/live-mcp-skill-drill.mjs --providers opencode,codex --provider-model opencode=opencode/gpt-5.2 --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs --providers opencode,codex --provider-model opencode=opencode/gpt-5.2 --provider-model codex=gpt-5.2
 node apps/cli/scripts/live-remote-workspace-live-sync-drill.mjs --provider codex --provider-model codex=gpt-5.5 --full
+pnpm --filter @arroba/cli run pi-rpc-extension:drill
+pnpm --filter @arroba/cli run pi-provider:drill
+pnpm --filter @arroba/cli run pi-remote-provider:drill
 ```
 
 Use `opencode/gpt-5.2` for OpenCode workspace live sync drills.
@@ -53,6 +57,14 @@ node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-openco
 ## Wrapper Scripts
 
 Remote wrapper drills must forward `--provider-model PROVIDER=MODEL` to their child drill scripts. This keeps local and remote provider sessions on the same model policy.
+
+## Pi Provider Drills
+
+`pi-rpc-extension:drill` launches the real local Pi CLI in RPC mode with a temporary extension and fake MCP endpoint. It verifies the official Pi RPC/extension seam without submitting an LLM prompt or requiring backing-provider credentials.
+
+`pi-provider:drill` launches an isolated Arroba kernel and points `ARROBA_PI_BIN` at a deterministic Pi-compatible RPC harness. It still uses the normal kernel session, agent, extension grant, provider-run, prompt, cancel, history, process-diagnostics, and teardown paths. The drill verifies Pi model/backing selection, resume metadata, runtime MCP projection into Pi extension args/env, tool-event display, abort recovery, and that hidden Arroba prompt-template context is not inserted into Pi-visible prompt text.
+
+`pi-remote-provider:drill` uses the same deterministic Pi-compatible RPC harness with the existing same-host relay/leased-worker drill. It validates that worker kernels advertise `pi`, remote Pi agents can be leased through the relay, Pi provider turns complete on the worker, and relay restart/resume keeps the remote Pi prompt path usable.
 
 ## Distributed Runtime Validation Gate
 
@@ -202,7 +214,7 @@ Use `--dry-run` to inspect the generated provider prompt and command without lau
 
 `live-script-extension-drill.mjs` validates the v1 script extension control plane. It runs an isolated daemon, registers an external Python environment, validates and registers a realistic vector-lookup script with `run`/`test_run`, lists environments/scripts, creates an agent, grants the script extension with its environment, and verifies the durable `extension_grants` shape. Run it with `pnpm --filter @arroba/cli run script-extension:drill`.
 
-`live-script-extension-agent-drill.mjs` validates script extensions through real provider agents. It registers one Python script and one TypeScript script, grants both to each requested agent, requires the provider to call both tools with fixed inputs, verifies per-run hidden tokens returned by plain `run` return values, and verifies the agent writes those observed values through workspace live sync. Run all local providers with `pnpm --filter @arroba/cli run script-extension-agent:drill -- --providers codex,opencode,claude-p,claude-headless --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --provider-model claude-p=sonnet --provider-model claude-headless=sonnet`.
+`live-script-extension-agent-drill.mjs` validates script extensions through real provider agents. It registers one Python script and one TypeScript script, grants both to each requested agent, requires the provider to call both tools with fixed inputs, verifies per-run hidden tokens returned by plain `run` return values, and verifies the agent writes those observed values through workspace live sync. Run all local providers with `pnpm --filter @arroba/cli run script-extension-agent:drill -- --providers codex,opencode,claude-p,claude-headless,pi --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --provider-model claude-p=sonnet --provider-model claude-headless=sonnet --provider-model pi=pi/openai-codex/gpt-5.2`.
 
 `live-remote-mcp-drill.mjs` is the remote MCP v1 drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Arroba user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. V1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs. Pass `--live-mcp-use` to also require a provider-native remote Playwright/browser MCP tool call on the worker and a marker write through Arroba workspace live sync. Because the drill isolates `HOME` for Arroba registries, it preserves provider auth/config/cache via `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider environment variables.
 

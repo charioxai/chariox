@@ -33,6 +33,7 @@ test("builds distributed runtime matrix command contracts", () => {
       codex: "work_codex",
       "dev-stub": "stub",
       opencode: "zen",
+      pi: "pi_openai",
     },
   })
 
@@ -112,6 +113,8 @@ test("builds distributed runtime matrix command contracts", () => {
     "codex=work_codex",
     "--provider-account",
     "opencode=zen",
+    "--provider-account",
+    "pi=pi_openai",
     "--include-self-hosted-relay",
   ])
   assert.deepEqual(commands[4].args, [
@@ -134,6 +137,8 @@ test("builds distributed runtime matrix command contracts", () => {
     "codex=work_codex",
     "--provider-account",
     "opencode=zen",
+    "--provider-account",
+    "pi=pi_openai",
     "--include-hosted-cloud",
     "--include-vault",
   ])

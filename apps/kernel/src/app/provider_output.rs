@@ -1308,6 +1308,7 @@ pub(crate) fn mark_resume_state_external_provider_sessions_attached(
         ("codex", resume_state.codex_thread_id()),
         ("opencode", resume_state.opencode_session_id()),
         ("claude", resume_state.claude_session_id()),
+        ("pi", resume_state.pi_session_id()),
     ] {
         let Some(provider_session_id) = provider_session_id else {
             continue;

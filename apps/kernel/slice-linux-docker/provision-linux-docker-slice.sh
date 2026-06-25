@@ -45,6 +45,8 @@ SLICE_CLAUDE_SETTINGS="${ARROBA_SLICE_CLAUDE_SETTINGS:-$HOME/.claude/settings.js
 SLICE_CLAUDE_STATS="${ARROBA_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json}"
 SLICE_CLAUDE_CREDENTIALS="${ARROBA_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
 SLICE_CLAUDE_KEYCHAIN_SERVICE="${ARROBA_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
+SLICE_PI_AUTH="${ARROBA_SLICE_PI_AUTH:-$HOME/.pi/agent/auth.json}"
+SLICE_PI_MODELS="${ARROBA_SLICE_PI_MODELS:-$HOME/.pi/agent/models.json}"
 SLICE_OPENCODE_PROVIDER="${ARROBA_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
 SLICE_LOGIN_PROVIDER="${ARROBA_SLICE_LOGIN_PROVIDER:-codex}"
@@ -543,6 +545,7 @@ import_provider_auth() {
       import_codex_auth
       import_opencode_auth
       import_claude_auth
+      import_pi_auth
       ;;
     codex)
       import_codex_auth
@@ -552,6 +555,9 @@ import_provider_auth() {
       ;;
     claude)
       import_claude_auth
+      ;;
+    pi|pi:*)
+      import_pi_auth
       ;;
     *)
       fail "unsupported provider auth import: $SLICE_AUTH_PROVIDER"
@@ -566,6 +572,7 @@ remove_provider_auth() {
       remove_codex_auth
       remove_opencode_auth
       remove_claude_auth
+      remove_pi_auth
       ;;
     codex)
       remove_codex_auth
@@ -575,6 +582,9 @@ remove_provider_auth() {
       ;;
     claude)
       remove_claude_auth
+      ;;
+    pi|pi:*)
+      remove_pi_auth
       ;;
     *)
       fail "unsupported provider auth removal: $SLICE_AUTH_PROVIDER"
@@ -606,24 +616,66 @@ import_claude_auth() {
   copy_provider_auth_file "$SLICE_CLAUDE_STATS" "/home/slice/.claude/stats-cache.json" "Claude stats"
   if [[ -f "$SLICE_CLAUDE_CREDENTIALS" ]]; then
     copy_provider_auth_file "$SLICE_CLAUDE_CREDENTIALS" "/home/slice/.claude/.credentials.json" "Claude credentials"
-  elif command -v security >/dev/null 2>&1; then
-    local credentials_tmp
-    credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/arroba-claude-credentials.XXXXXX")"
-    if security find-generic-password -s "$SLICE_CLAUDE_KEYCHAIN_SERVICE" -w >"$credentials_tmp" 2>/dev/null; then
-      copy_provider_auth_file "$credentials_tmp" "/home/slice/.claude/.credentials.json" "Claude Keychain credentials"
-    else
-      log "Claude credentials not found in Keychain service $SLICE_CLAUDE_KEYCHAIN_SERVICE; skipping"
-    fi
-    rm -f "$credentials_tmp"
   else
     log "Claude credentials not found at $SLICE_CLAUDE_CREDENTIALS; skipping"
   fi
+  copy_claude_keychain_credentials || true
   trust_claude_slice_workspace
+  verify_claude_slice_auth || import_claude_keychain_credentials_and_verify
+}
+
+copy_claude_keychain_credentials() {
+  if ! command -v security >/dev/null 2>&1; then
+    return 1
+  fi
+  local credentials_tmp
+  credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/arroba-claude-credentials.XXXXXX")"
+  if security find-generic-password -s "$SLICE_CLAUDE_KEYCHAIN_SERVICE" -w >"$credentials_tmp" 2>/dev/null; then
+    copy_provider_auth_file "$credentials_tmp" "/home/slice/.claude/.credentials.json" "Claude Keychain credentials"
+    rm -f "$credentials_tmp"
+    return 0
+  fi
+  rm -f "$credentials_tmp"
+  log "Claude credentials not found in Keychain service $SLICE_CLAUDE_KEYCHAIN_SERVICE; skipping"
+  return 1
+}
+
+verify_claude_slice_auth() {
+  run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "HOME=/home/slice claude auth status >/tmp/arroba-claude-auth-status.json 2>/tmp/arroba-claude-auth-status.err && node <<'NODE'
+const fs = require('fs')
+let status = {}
+try {
+  status = JSON.parse(fs.readFileSync('/tmp/arroba-claude-auth-status.json', 'utf8'))
+} catch {}
+process.exit(status && status.loggedIn === true ? 0 : 1)
+NODE"
+}
+
+import_claude_keychain_credentials_and_verify() {
+  if ! copy_claude_keychain_credentials; then
+    log "Claude auth status did not verify and Keychain export is unavailable"
+    return 0
+  fi
+  if verify_claude_slice_auth; then
+    log "verified Claude auth in slice after Keychain credential import"
+  else
+    log "Claude auth status still did not verify after Keychain credential import"
+  fi
 }
 
 remove_claude_auth() {
   exec_slice bash -lc "rm -f /home/slice/.claude.json /home/slice/.claude/settings.json /home/slice/.claude/stats-cache.json /home/slice/.claude/.credentials.json"
   log "removed Claude auth from slice"
+}
+
+import_pi_auth() {
+  copy_provider_auth_file "$SLICE_PI_AUTH" "/home/slice/.pi/agent/auth.json" "Pi"
+  copy_provider_auth_file "$SLICE_PI_MODELS" "/home/slice/.pi/agent/models.json" "Pi models"
+}
+
+remove_pi_auth() {
+  exec_slice bash -lc "rm -f /home/slice/.pi/agent/auth.json /home/slice/.pi/agent/models.json"
+  log "removed Pi auth/config from slice"
 }
 
 print_provider_auth_status() {
@@ -647,6 +699,8 @@ print_provider_auth_status() {
     probe codex codex login status || true
     probe opencode opencode providers list || true
     probe claude claude auth status --text || probe claude claude auth status || true
+    probe pi pi --version || true
+    if [[ -s /home/slice/.pi/agent/auth.json ]]; then echo 'pi auth: configured'; else echo 'pi auth: missing'; fi
   "; then
     log "provider auth status diagnostics unavailable"
   fi
@@ -662,6 +716,9 @@ provider_login_command() {
       ;;
     claude|claude:claudeai)
       printf '%s\n' "claude auth login --claudeai"
+      ;;
+    pi|pi:*)
+      fail "Pi has no headless provider login command; run pi and use /login inside Pi, import ~/.pi/agent/auth.json, or provide backing-provider API keys"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"
@@ -720,6 +777,7 @@ print_status() {
     probe codex codex --version || true
     probe opencode opencode --version || true
     probe claude claude --version || true
+    probe pi pi --version || true
     probe chromium chromium --version || true
     probe tesseract tesseract --version | head -n 1 || true
     echo '--- browser smoke'
@@ -734,7 +792,7 @@ print_status() {
     echo '--- binaries'
     probe binaries ls -l /opt/arroba-slice/bin || true
     echo '--- processes'
-    probe processes pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true
+    probe processes pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve|pi --mode rpc' || true
     echo '--- logs'
     probe logs ls -1 /opt/arroba-slice/logs || true
   "; then
@@ -756,6 +814,7 @@ stop_container() {
       /opt/arroba-slice/slice-screen.sh stop >/dev/null 2>&1 || true
       pkill -f 'codex app-server' >/dev/null 2>&1 || true
       pkill -f 'opencode serve' >/dev/null 2>&1 || true
+      pkill -f 'pi --mode rpc' >/dev/null 2>&1 || true
     " || true
     docker stop "$SLICE_NAME" >/dev/null
   else

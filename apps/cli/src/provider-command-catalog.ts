@@ -58,6 +58,13 @@ const EMPTY_PROVIDER_COMMAND_CATALOGS: ProviderCommandCatalogs = {
     // Claude Code CLI commands are not exposed through Arroba forwarding yet.
     commands: [],
   },
+  pi: {
+    provider: "pi",
+    source: "shipped",
+    discovery: "none",
+    // Pi commands are not exposed through Arroba forwarding yet.
+    commands: [],
+  },
 }
 
 export function providerNamespace(provider: BackendProviderId) {
@@ -97,6 +104,11 @@ export function fallbackProviderCommandCatalogs(
       ...EMPTY_PROVIDER_COMMAND_CATALOGS["claude-p"],
       ...metadata,
       commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS["claude-p"].commands],
+    },
+    pi: {
+      ...EMPTY_PROVIDER_COMMAND_CATALOGS.pi,
+      ...metadata,
+      commands: [...EMPTY_PROVIDER_COMMAND_CATALOGS.pi.commands],
     },
   }
 }

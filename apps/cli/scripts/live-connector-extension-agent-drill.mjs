@@ -9,7 +9,7 @@ import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artif
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
-const DEFAULT_PROVIDERS = ['codex', 'opencode', 'claude-p', 'claude-headless']
+const DEFAULT_PROVIDERS = ['codex', 'opencode', 'claude-p', 'claude-headless', 'pi']
 const DEFAULT_MODEL = 'gpt-5.2'
 const DEFAULT_TIMEOUT_MS = 420_000
 const DEFAULT_POLL_MS = 1_000
@@ -137,6 +137,7 @@ function modelForProvider(provider, options) {
   if (provider === 'claude' || provider === 'claude-p' || provider === 'claude-headless') return 'sonnet'
   if (provider === 'opencode' && options.model === DEFAULT_MODEL) return 'opencode/gpt-5.4'
   if (provider === 'opencode' && !options.model.includes('/')) return `opencode/${options.model}`
+  if (provider === 'pi' && !options.model.includes('/')) return `pi/openai-codex/${options.model}`
   return options.model
 }
 

@@ -172,7 +172,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-self-hosted-relay"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode", "pi"]), "--include-self-hosted-relay"],
       cwd: ossRoot,
       matrix: "slice-runtime-matrix",
       outputDir: ossOutputDir,
@@ -192,7 +192,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--output-artifact-index",
-      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hosted-cloud", "--include-vault"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode", "pi"]), "--include-hosted-cloud", "--include-vault"],
       cwd: cloudRoot,
       matrix: "cloud-slice-runtime-matrix",
       outputDir: cloudOutputDir,

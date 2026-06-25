@@ -2,8 +2,10 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
     claude_provider_catalog, default_provider_command_catalogs, ensure_codex_catalog_endpoint,
-    ensure_opencode_catalog_endpoint, resolve_claude_executable, CodexClient, OpenCodeClient,
-    OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
+    ensure_opencode_catalog_endpoint, pi_provider_auth_status, parse_pi_provider_request,
+    pi_provider_catalog, resolve_claude_executable, CodexClient, OpenCodeClient,
+    OpenCodeProviderCatalog,
+    OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use arroba_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -32,7 +34,7 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = vec![claude_provider_catalog()];
+    let mut catalogs = vec![claude_provider_catalog(), pi_provider_catalog()];
     let mut source_errors = Vec::new();
 
     match ensure_opencode_catalog_endpoint() {
@@ -141,7 +143,8 @@ fn include_local_adapter_providers(catalog: &mut OpenCodeProviderCatalog) {
 pub(crate) fn provider_auth_status_response(
     request: GetProviderAuthStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    match request.provider.as_str() {
+    let provider = request.provider.split('/').next().unwrap_or(request.provider.as_str());
+    match provider {
         "codex" => {
             let endpoint = ensure_codex_catalog_endpoint()?;
             let client = CodexClient::new("provider-auth", endpoint)?;
@@ -149,8 +152,15 @@ pub(crate) fn provider_auth_status_response(
                 status: client.auth_status()?,
             })
         }
-        "claude" | "claude-headless" | "claude-p" => Ok(LocalDaemonResponse::ProviderAuthStatus {
-            status: claude_auth_status(&request.provider)?,
+        "claude" | "claude-headless" | "claude-p" => {
+            Ok(LocalDaemonResponse::ProviderAuthStatus {
+                status: claude_auth_status(&provider)?,
+            })
+        }
+        "pi" => Ok(LocalDaemonResponse::ProviderAuthStatus {
+            status: pi_provider_auth_status(
+                parse_pi_provider_request(request.provider.as_str()).as_deref(),
+            )?,
         }),
         provider => Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -396,6 +406,7 @@ fn display_name_for_provider(provider_id: &str) -> String {
     match provider_id {
         "codex" => "Codex".to_string(),
         "opencode" => "OpenCode".to_string(),
+        "pi" => "Pi".to_string(),
         "dev-stub" => "Dev Stub".to_string(),
         other => other.to_string(),
     }
@@ -537,6 +548,71 @@ exit 2
         assert_eq!(status.auth_state, "not_logged_in");
         assert_eq!(status.account_profile, None);
         assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
+    }
+
+    #[test]
+    fn provider_auth_status_accepts_pi_request_model_hint() {
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!("arroba-pi-auth-status-{}", std::process::id()));
+        let path = root.join("pi");
+        let auth_file = root.join("auth.json");
+        fs::create_dir_all(&root).expect("temp home should exist");
+        fs::write(
+            &path,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"pi 1.2.3\"\n  exit 0\nfi\nsleep 60\n",
+        )
+        .expect("fixture should exist");
+        fs::write(&auth_file, r#"{"openai":{"type":"oauth","accountId":"acct-openai"}}"#)
+            .expect("fixture should exist");
+        let mut perms = fs::metadata(&path).expect("fixture metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).expect("fixture should be executable");
+        std::env::set_var("ARROBA_PI_BIN", &path);
+        std::env::set_var("PI_AUTH_FILE", &auth_file);
+
+        let openai = provider_auth_status_response(GetProviderAuthStatusRequest {
+            provider: "pi/openai/gpt-5.4".to_string(),
+        })
+        .expect("openai Pi request should return status");
+        let anthropic = provider_auth_status_response(GetProviderAuthStatusRequest {
+            provider: "pi/anthropic/claude-sonnet-4-6".to_string(),
+        })
+        .expect("anthropic Pi request should return status");
+        let bare = provider_auth_status_response(GetProviderAuthStatusRequest {
+            provider: "pi".to_string(),
+        })
+        .expect("bare Pi request should return status");
+
+        std::env::remove_var("ARROBA_PI_BIN");
+        std::env::remove_var("PI_AUTH_FILE");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&auth_file);
+        let _ = fs::remove_dir_all(&root);
+
+        match openai {
+            LocalDaemonResponse::ProviderAuthStatus { status } => {
+                assert_eq!(status.provider, "pi");
+                assert_eq!(status.auth_state, "authenticated");
+                assert_eq!(status.account_profile.as_deref(), Some("openai"));
+            }
+            status => panic!("unexpected status: {status:?}"),
+        }
+        match anthropic {
+            LocalDaemonResponse::ProviderAuthStatus { status } => {
+                assert_eq!(status.provider, "pi");
+                assert_eq!(status.auth_state, "not_logged_in");
+                assert_eq!(status.account_profile, None);
+            }
+            status => panic!("unexpected status: {status:?}"),
+        }
+        match bare {
+            LocalDaemonResponse::ProviderAuthStatus { status } => {
+                assert_eq!(status.provider, "pi");
+                assert_eq!(status.auth_state, "not_logged_in");
+                assert_eq!(status.account_profile, None);
+            }
+            status => panic!("unexpected status: {status:?}"),
+        }
     }
 
     #[test]

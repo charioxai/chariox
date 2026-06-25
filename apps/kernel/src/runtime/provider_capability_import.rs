@@ -7,7 +7,7 @@ use crate::local::{
     ProviderCapabilityImportEntry, ProviderCapabilityImportReport, ProviderCapabilityImportSummary,
 };
 
-const DEFAULT_PROVIDERS: &[&str] = &["codex", "opencode", "claude"];
+const DEFAULT_PROVIDERS: &[&str] = &["codex", "opencode", "claude", "pi"];
 
 pub(crate) fn execute_import_provider_capabilities_request(
     request: ImportProviderCapabilitiesRequest,
@@ -80,10 +80,11 @@ fn normalize_providers(providers: &[String]) -> Result<Vec<String>, DaemonError>
             "codex" => "codex",
             "opencode" => "opencode",
             "claude" | "claude-headless" | "claude-p" => "claude",
+            "pi" => "pi",
             _ => {
                 return Err(DaemonError::InvalidConfig {
                     field: "provider",
-                    message: "providers must be Codex, OpenCode, or Claude",
+                    message: "providers must be Codex, OpenCode, Claude, or Pi",
                 });
             }
         };
@@ -501,10 +502,11 @@ mod tests {
             "claude-p".to_string(),
             "claude".to_string(),
             "opencode".to_string(),
+            "pi".to_string(),
         ])
         .unwrap();
 
-        assert_eq!(providers, vec!["codex", "claude", "opencode"]);
+        assert_eq!(providers, vec!["codex", "claude", "opencode", "pi"]);
     }
 
     #[test]

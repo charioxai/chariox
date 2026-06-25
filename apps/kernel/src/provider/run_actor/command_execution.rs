@@ -17,6 +17,7 @@ use super::super::{
         OpenCodeRunSelection,
     },
     opencode_runtime::drain_opencode_events,
+    pi_runtime::{abort_pi_turn, drain_pi_events, submit_pi_prompt},
 };
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
 use super::runtime_slots::ProviderRunRuntimeRegistry;
@@ -44,6 +45,12 @@ pub(super) fn execute_submit_command(
         let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
         let result = submit_claude_prompt(&run, &mut state, &envelope);
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+        return result;
+    }
+    if run.adapter_key() == "pi" {
+        let (slot, mut state) = runtime_registry.take_pi_runtime(&run_id)?;
+        let result = submit_pi_prompt(&run, &mut state, &envelope);
+        runtime_registry.restore_pi_runtime_if_live(&run_id, &slot, state);
         return result;
     }
     if run.adapter_key() != "opencode" {
@@ -78,6 +85,12 @@ pub(super) fn execute_abort_command(
         let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
         let result = abort_claude_turn(&run, &mut state);
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+        return result;
+    }
+    if run.adapter_key() == "pi" {
+        let (slot, mut state) = runtime_registry.take_pi_runtime(&run_id)?;
+        let result = abort_pi_turn(&run, &mut state);
+        runtime_registry.restore_pi_runtime_if_live(&run_id, &slot, state);
         return result;
     }
     if run.adapter_key() != "opencode" {
@@ -175,6 +188,9 @@ pub(super) fn execute_terminate_command(
     if run.adapter_key() == "opencode"
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
     {
+        return Ok(());
+    }
+    if run.adapter_key() == "pi" && runtime_registry.runtime_slot_missing_or_empty_pi(&run_id) {
         return Ok(());
     }
     execute_abort_command(runtime_registry, run)
@@ -281,6 +297,18 @@ pub(super) fn execute_output_poll_command(
         }
         let drain = drain_claude_events(run, &mut state);
         runtime_registry.restore_claude_runtime_if_live(run_id, &slot, state);
+        return drain.map(Some);
+    }
+    if run.adapter_key() == "pi" {
+        let (slot, mut state) = match runtime_registry.take_pi_runtime(run_id) {
+            Ok((slot, state)) => (slot, state),
+            Err(_) => return Ok(None),
+        };
+        if !output_poll_delay.is_zero() {
+            thread::sleep(output_poll_delay);
+        }
+        let drain = drain_pi_events(run, &mut state);
+        runtime_registry.restore_pi_runtime_if_live(run_id, &slot, state);
         return drain.map(Some);
     }
     if run.adapter_key() != "opencode" {

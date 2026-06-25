@@ -139,6 +139,7 @@ impl RuntimeProviderRun {
                         .opencode_session_id()
                         .or_else(|| state.codex_thread_id())
                         .or_else(|| state.claude_session_id())
+                        .or_else(|| state.pi_session_id())
                 })
                 .map(str::to_string),
             terminal_diagnostic: None,

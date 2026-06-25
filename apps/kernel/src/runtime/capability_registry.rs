@@ -302,7 +302,7 @@ pub(crate) fn execute_import_mcp_servers_request(
         _ => {
             return Err(DaemonError::InvalidConfig {
                 field: "provider",
-                message: "only Codex, OpenCode, and Claude MCP import are supported",
+                message: "only Codex, OpenCode, and Claude MCP import are supported; Pi needs a Pi-compatible bridge before MCP import can be enabled",
             });
         }
     };
@@ -519,10 +519,11 @@ pub(crate) fn execute_import_skills_request(
         "claude" | "claude-headless" | "claude-p" => {
             crate::skill::import_claude_skills(&registry, &workspace, request.name.as_deref())?
         }
+        "pi" => crate::skill::import_pi_skills(&registry, &workspace, request.name.as_deref())?,
         _ => {
             return Err(DaemonError::InvalidConfig {
                 field: "provider",
-                message: "only Codex, OpenCode, and Claude skill import are supported",
+                message: "only Codex, OpenCode, Claude, and Pi skill import are supported",
             });
         }
     };

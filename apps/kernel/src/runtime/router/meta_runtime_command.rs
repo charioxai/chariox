@@ -1484,7 +1484,7 @@ fn meta_extension_import_request(
         || args.get(1).map(String::as_str) != Some("providers")
     {
         return Err(meta_command_error(
-            "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]",
+            "usage: extension import providers [--provider codex|opencode|claude|pi] [--kind all|mcp|skill] [--name <capability>] [--dry-run]",
         ));
     }
     let mut providers = Vec::new();

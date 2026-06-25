@@ -3,17 +3,19 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::DaemonError;
 use crate::provider::opencode_runtime::OpenCodeRuntimeState;
-use crate::provider::{ClaudeRuntimeState, CodexRuntimeState};
+use crate::provider::{ClaudeRuntimeState, CodexRuntimeState, PiRuntimeState};
 
 pub(super) type ClaudeRuntimeSlot = Arc<Mutex<Option<ClaudeRuntimeState>>>;
 pub(super) type CodexRuntimeSlot = Arc<Mutex<Option<CodexRuntimeState>>>;
 pub(super) type OpenCodeRuntimeSlot = Arc<Mutex<Option<OpenCodeRuntimeState>>>;
+pub(super) type PiRuntimeSlot = Arc<Mutex<Option<PiRuntimeState>>>;
 
 #[derive(Clone, Default)]
 pub(super) struct ProviderRunRuntimeRegistry {
     claude_runs: Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    pi_runs: Arc<Mutex<BTreeMap<String, PiRuntimeSlot>>>,
     cleared_runs: Arc<Mutex<BTreeSet<String>>>,
 }
 
@@ -42,6 +44,14 @@ impl ProviderRunRuntimeRegistry {
             .insert(run_id, Arc::new(Mutex::new(Some(state))));
     }
 
+    pub(super) fn insert_pi_runtime(&self, run_id: String, state: PiRuntimeState) {
+        self.clear_tombstone(&run_id);
+        self.pi_runs
+            .lock()
+            .expect("pi runtime map poisoned")
+            .insert(run_id, Arc::new(Mutex::new(Some(state))));
+    }
+
     pub(super) fn state_bound(&self, run_id: &str) -> bool {
         if self
             .claude_runs
@@ -61,7 +71,8 @@ impl ProviderRunRuntimeRegistry {
         {
             return true;
         }
-        self.opencode_runs
+        if self
+            .opencode_runs
             .lock()
             .expect("opencode runtime map poisoned")
             .get(run_id)
@@ -70,6 +81,14 @@ impl ProviderRunRuntimeRegistry {
                     .expect("opencode runtime slot poisoned")
                     .is_some()
             })
+        {
+            return true;
+        }
+        self.pi_runs
+            .lock()
+            .expect("pi runtime map poisoned")
+            .get(run_id)
+            .is_some_and(|slot| slot.lock().expect("pi runtime slot poisoned").is_some())
     }
 
     pub(super) fn clear_runtime(&self, run_id: &str, stop_opencode: bool) {
@@ -85,6 +104,7 @@ impl ProviderRunRuntimeRegistry {
             &self.claude_runs,
             &self.codex_runs,
             &self.opencode_runs,
+            &self.pi_runs,
             run_id,
             stop_opencode,
         );
@@ -111,6 +131,13 @@ impl ProviderRunRuntimeRegistry {
         take_opencode_runtime(&self.opencode_runs, run_id)
     }
 
+    pub(super) fn take_pi_runtime(
+        &self,
+        run_id: &str,
+    ) -> Result<(PiRuntimeSlot, PiRuntimeState), DaemonError> {
+        take_pi_runtime(&self.pi_runs, run_id)
+    }
+
     pub(super) fn opencode_slot(&self, run_id: &str) -> Result<OpenCodeRuntimeSlot, DaemonError> {
         opencode_slot(&self.opencode_runs, run_id)
     }
@@ -125,6 +152,10 @@ impl ProviderRunRuntimeRegistry {
 
     pub(super) fn runtime_slot_missing_or_empty_opencode(&self, run_id: &str) -> bool {
         runtime_slot_missing_or_empty_opencode(&self.opencode_runs, run_id)
+    }
+
+    pub(super) fn runtime_slot_missing_or_empty_pi(&self, run_id: &str) -> bool {
+        runtime_slot_missing_or_empty_pi(&self.pi_runs, run_id)
     }
 
     pub(super) fn restore_claude_runtime_if_live(
@@ -158,6 +189,15 @@ impl ProviderRunRuntimeRegistry {
             slot,
             state,
         );
+    }
+
+    pub(super) fn restore_pi_runtime_if_live(
+        &self,
+        run_id: &str,
+        slot: &PiRuntimeSlot,
+        state: PiRuntimeState,
+    ) {
+        restore_pi_runtime_if_live(&self.pi_runs, &self.cleared_runs, run_id, slot, state);
     }
 
     fn clear_tombstone(&self, run_id: &str) {
@@ -216,6 +256,22 @@ pub(super) fn opencode_slot(
         })
 }
 
+fn pi_slot(
+    pi_runs: &Arc<Mutex<BTreeMap<String, PiRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<PiRuntimeSlot, DaemonError> {
+    pi_runs
+        .lock()
+        .expect("pi runtime map poisoned")
+        .get(run_id)
+        .cloned()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "pi_session_missing",
+            message: "no Pi session is bound to this provider run".to_string(),
+        })
+}
+
 pub(super) fn take_claude_runtime(
     claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     run_id: &str,
@@ -267,6 +323,23 @@ pub(super) fn take_opencode_runtime(
     Ok((slot, state))
 }
 
+pub(super) fn take_pi_runtime(
+    pi_runs: &Arc<Mutex<BTreeMap<String, PiRuntimeSlot>>>,
+    run_id: &str,
+) -> Result<(PiRuntimeSlot, PiRuntimeState), DaemonError> {
+    let slot = pi_slot(pi_runs, run_id)?;
+    let state = slot
+        .lock()
+        .expect("pi runtime slot poisoned")
+        .take()
+        .ok_or_else(|| DaemonError::ProviderProtocol {
+            provider_run_id: run_id.to_string(),
+            operation: "pi_session_missing",
+            message: "no Pi session is bound to this provider run".to_string(),
+        })?;
+    Ok((slot, state))
+}
+
 pub(super) fn runtime_slot_missing_or_empty_claude(
     claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     run_id: &str,
@@ -296,6 +369,16 @@ pub(super) fn runtime_slot_missing_or_empty_opencode(
             .lock()
             .expect("opencode runtime slot poisoned")
             .is_none(),
+        Err(_) => true,
+    }
+}
+
+pub(super) fn runtime_slot_missing_or_empty_pi(
+    pi_runs: &Arc<Mutex<BTreeMap<String, PiRuntimeSlot>>>,
+    run_id: &str,
+) -> bool {
+    match pi_slot(pi_runs, run_id) {
+        Ok(slot) => slot.lock().expect("pi runtime slot poisoned").is_none(),
         Err(_) => true,
     }
 }
@@ -338,6 +421,18 @@ pub(super) fn restore_opencode_runtime_if_live(
     }
 }
 
+pub(super) fn restore_pi_runtime_if_live(
+    pi_runs: &Arc<Mutex<BTreeMap<String, PiRuntimeSlot>>>,
+    cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
+    run_id: &str,
+    slot: &PiRuntimeSlot,
+    state: PiRuntimeState,
+) {
+    if runtime_should_restore(cleared_runs, pi_runs, run_id, slot) {
+        *slot.lock().expect("pi runtime slot poisoned") = Some(state);
+    }
+}
+
 pub(super) fn runtime_should_restore<T>(
     cleared_runs: &Arc<Mutex<BTreeSet<String>>>,
     runs: &Arc<Mutex<BTreeMap<String, Arc<Mutex<Option<T>>>>>>,
@@ -361,6 +456,7 @@ pub(super) fn clear_runtime_state(
     claude_runs: &Arc<Mutex<BTreeMap<String, ClaudeRuntimeSlot>>>,
     codex_runs: &Arc<Mutex<BTreeMap<String, CodexRuntimeSlot>>>,
     opencode_runs: &Arc<Mutex<BTreeMap<String, OpenCodeRuntimeSlot>>>,
+    pi_runs: &Arc<Mutex<BTreeMap<String, PiRuntimeSlot>>>,
     run_id: &str,
     stop_opencode: bool,
 ) {
@@ -389,6 +485,13 @@ pub(super) fn clear_runtime_state(
                 state.stop();
             }
         }
+    }
+    if let Some(slot) = pi_runs
+        .lock()
+        .expect("pi runtime map poisoned")
+        .remove(run_id)
+    {
+        let _ = slot.lock().expect("pi runtime slot poisoned").take();
     }
 }
 

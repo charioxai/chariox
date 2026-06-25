@@ -68,6 +68,13 @@ pub fn inspect_home_provider_auth(home_dir: &Path) -> Vec<SliceProviderAuthSumma
             summaries.push(summary);
         }
     }
+    if let Ok(text) = std::fs::read_to_string(home_dir.join(".pi").join("agent").join("auth.json"))
+    {
+        summaries.extend(parse_pi_auth_json(&text));
+    }
+    if let Ok(text) = std::fs::read_to_string(home_dir.join(".pi").join("auth.json")) {
+        summaries.extend(parse_pi_auth_json(&text));
+    }
     merge_provider_auth_summaries(summaries)
 }
 
@@ -136,6 +143,80 @@ pub fn parse_opencode_auth_json(text: &str) -> Vec<SliceProviderAuthSummary> {
             })
         })
         .collect()
+}
+
+pub fn parse_pi_auth_json(text: &str) -> Vec<SliceProviderAuthSummary> {
+    let value: Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    object
+        .iter()
+        .filter_map(|(provider, config)| parse_pi_auth_provider(provider, config))
+        .collect()
+}
+
+fn parse_pi_auth_provider(provider: &str, config: &Value) -> Option<SliceProviderAuthSummary> {
+    if config.is_null() {
+        return None;
+    }
+    let provider = normalize_pi_auth_provider(provider);
+    let auth_type = string_field(
+        config,
+        &["type", "auth_type", "authType", "mode", "auth_mode"],
+    );
+    let account_id = string_field(
+        config,
+        &[
+            "accountId",
+            "account_id",
+            "userId",
+            "user_id",
+            "id",
+            "organizationId",
+            "organization_id",
+        ],
+    );
+    let email = string_field(config, &["email", "login", "username"]);
+    let configured = match config.as_object() {
+        Some(object) => !object.is_empty(),
+        None => config
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty()),
+    };
+    if !configured && auth_type.is_none() && account_id.is_none() && email.is_none() {
+        return None;
+    }
+    Some(SliceProviderAuthSummary {
+        provider: format!("pi:{provider}"),
+        state: SliceProviderAuthState::Configured,
+        auth_type,
+        account_id,
+        email,
+        organization_id: None,
+        organization_name: None,
+        subscription_type: None,
+        alias: None,
+        source: "home_pi_auth_json".to_string(),
+    })
+}
+
+fn normalize_pi_auth_provider(provider: &str) -> String {
+    match provider {
+        "claude" => "anthropic".to_string(),
+        "codex" | "openai-codex" => "openai-codex".to_string(),
+        "copilot" | "autopilot" => "github-copilot".to_string(),
+        value => value.to_string(),
+    }
+}
+
+fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .map(str::to_string)
 }
 
 pub fn parse_claude_status_json(text: &str) -> Option<SliceProviderAuthSummary> {
@@ -342,6 +423,28 @@ mod tests {
         assert_eq!(summaries[0].account_id.as_deref(), Some("acct-1"));
         assert_eq!(summaries[1].provider, "opencode:opencode");
         assert_eq!(summaries[1].auth_type.as_deref(), Some("api"));
+        let serialized = serde_json::to_string(&summaries).unwrap();
+        assert!(!serialized.contains("secret-token"));
+        assert!(!serialized.contains("secret-key"));
+    }
+
+    #[test]
+    fn pi_parser_extracts_backing_provider_accounts_without_secrets() {
+        let summaries = parse_pi_auth_json(
+            r#"{"openai-codex":{"type":"oauth","accountId":"acct-1","accessToken":"secret-token"},"claude":{"apiKey":"secret-key","email":"user@example.com"}}"#,
+        );
+
+        assert_eq!(summaries.len(), 2);
+        let openai = summaries
+            .iter()
+            .find(|summary| summary.provider == "pi:openai-codex")
+            .expect("openai-codex Pi backing provider summary");
+        let anthropic = summaries
+            .iter()
+            .find(|summary| summary.provider == "pi:anthropic")
+            .expect("anthropic Pi backing provider summary");
+        assert_eq!(openai.account_id.as_deref(), Some("acct-1"));
+        assert_eq!(anthropic.email.as_deref(), Some("user@example.com"));
         let serialized = serde_json::to_string(&summaries).unwrap();
         assert!(!serialized.contains("secret-token"));
         assert!(!serialized.contains("secret-key"));

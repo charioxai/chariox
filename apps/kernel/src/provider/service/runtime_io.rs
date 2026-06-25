@@ -11,6 +11,7 @@ use super::super::{
     claude_runtime::{initialize_claude_runtime, ClaudeRunSelection, ClaudeRuntimeBinding},
     codex_runtime::{initialize_codex_runtime, CodexRuntimeBinding},
     opencode_binding::{initialize_opencode_runtime, OpenCodeRunSelection, OpenCodeRuntimeBinding},
+    pi_runtime::{initialize_pi_runtime, PiRunSelection, PiRuntimeBinding},
 };
 use super::ProviderProcessService;
 
@@ -18,6 +19,7 @@ pub(crate) enum ProviderRuntimeBinding {
     Claude(ClaudeRuntimeBinding),
     Codex(CodexRuntimeBinding),
     OpenCode(OpenCodeRuntimeBinding),
+    Pi(PiRuntimeBinding),
 }
 
 impl ProviderProcessService {
@@ -56,6 +58,11 @@ impl ProviderProcessService {
                 .map(ProviderRuntimeBinding::OpenCode)
                 .map(Some);
         }
+        if run.adapter_key() == "pi" {
+            return initialize_pi_runtime(run)
+                .map(ProviderRuntimeBinding::Pi)
+                .map(Some);
+        }
         Ok(None)
     }
 
@@ -88,6 +95,11 @@ impl ProviderProcessService {
                 );
                 self.apply_opencode_run_selection(run_id, binding.selection)?;
             }
+            ProviderRuntimeBinding::Pi(binding) => {
+                self.run_actor_mailbox
+                    .insert_pi_runtime(run_id.to_string(), binding.state);
+                self.apply_pi_run_selection(run_id, binding.selection)?;
+            }
         }
         Ok(())
     }
@@ -98,6 +110,7 @@ impl ProviderProcessService {
                 && run.client_interface().is_arroba()
                 && !crate::provider::provider_run_uses_claude_native_bridge(run))
             || run.adapter_key() == "opencode"
+            || run.adapter_key() == "pi"
             || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
     }
 
@@ -395,6 +408,7 @@ impl ProviderProcessService {
                     .opencode_session_id()
                     .or_else(|| resume_state.codex_thread_id())
                     .or_else(|| resume_state.claude_session_id())
+                    .or_else(|| resume_state.pi_session_id())
                     .map(str::to_string),
             );
         }
@@ -489,6 +503,25 @@ impl ProviderProcessService {
                 .strip_prefix("codex/")
                 .unwrap_or(model.as_str())
                 .to_string();
+            if run.model() != model {
+                run.set_model(model);
+            }
+        }
+        if let Some(variant) = selection.variant {
+            if run.variant() != Some(variant.as_str()) {
+                run.set_variant(Some(variant));
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_pi_run_selection(
+        &mut self,
+        provider_run_id: &str,
+        selection: PiRunSelection,
+    ) -> Result<(), DaemonError> {
+        let run = self.get_run_mut(provider_run_id)?;
+        if let Some(model) = selection.model {
             if run.model() != model {
                 run.set_model(model);
             }

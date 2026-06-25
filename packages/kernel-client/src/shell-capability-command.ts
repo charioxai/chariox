@@ -237,7 +237,7 @@ export async function executeSkillCommand(
       const provider = name
       const importName = parsed.args[2] ?? null
       if (!provider) {
-        return { ok: false, message: "usage: skill import <codex|opencode|claude> [name]" }
+        return { ok: false, message: "usage: skill import <codex|opencode|claude|pi> [name]" }
       }
       const response = await deps.client.send(importSkillsRequest(context.workspace, provider, importName))
       const outcome = expectVariant<{ outcome: SkillImportOutcome }>(response, "SkillsImported").outcome
@@ -469,7 +469,7 @@ export async function executeExtensionCommand(
   const [action, kind, agentRef, name] = parsed.args
   if (action === "import") {
     if (kind !== "providers") {
-      return { ok: false, message: "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]" }
+      return { ok: false, message: "usage: extension import providers [--provider codex|opencode|claude|pi] [--kind all|mcp|skill] [--name <capability>] [--dry-run]" }
     }
     const response = await deps.client.send(importProviderCapabilitiesRequest(context.workspace, {
       providers: readRepeatedOption(parsed.args, "--provider"),
@@ -498,7 +498,7 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatHomeExtensionAuditEvents(events), data: { events } }
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
+    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude|pi] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
   }
   if (!isExtensionKind(kind)) {
     return { ok: false, message: "extension kind must be mcp, skill, script, or connector" }

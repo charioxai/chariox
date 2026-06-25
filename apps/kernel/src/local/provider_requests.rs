@@ -209,7 +209,7 @@ impl DaemonApp {
         request: GetProviderAuthStatusRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request.provider.as_str() {
-            "codex" | "claude" | "claude-headless" | "claude-p" => {
+            "codex" | "claude" | "claude-headless" | "claude-p" | "pi" => {
                 provider_auth_status_response(request)
             }
             provider => Err(DaemonError::LocalTransport {
@@ -406,6 +406,10 @@ pub(crate) fn launch_provider_request_from_local(
         } else if launch_request.adapter_key == "claude" {
             launch_request = launch_request.with_resume_state(
                 crate::provider::ProviderResumeState::from_claude_session_id(provider_session_id),
+            );
+        } else if launch_request.adapter_key == "pi" {
+            launch_request = launch_request.with_resume_state(
+                crate::provider::ProviderResumeState::from_pi_session_id(provider_session_id),
             );
         }
     }

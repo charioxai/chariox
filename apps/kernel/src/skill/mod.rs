@@ -597,6 +597,14 @@ pub fn import_claude_skills(
     import_skills_from_roots(registry, claude_skill_roots(workspace), requested_name)
 }
 
+pub fn import_pi_skills(
+    registry: &ArrobaSkillRegistry,
+    workspace: &Path,
+    requested_name: Option<&str>,
+) -> Result<SkillImportOutcome, DaemonError> {
+    import_skills_from_roots(registry, pi_skill_roots(workspace), requested_name)
+}
+
 pub fn discover_provider_skill_import_candidates(
     provider: &str,
     workspace: &Path,
@@ -606,10 +614,11 @@ pub fn discover_provider_skill_import_candidates(
         "codex" => codex_skill_roots(workspace),
         "opencode" => opencode_skill_roots(workspace),
         "claude" | "claude-headless" | "claude-p" => claude_skill_roots(workspace),
+        "pi" => pi_skill_roots(workspace),
         _ => {
             return Err(DaemonError::InvalidConfig {
                 field: "provider",
-                message: "only Codex, OpenCode, and Claude skill import are supported",
+                message: "only Codex, OpenCode, Claude, and Pi skill import are supported",
             });
         }
     };
@@ -788,6 +797,24 @@ fn claude_skill_roots(workspace: &Path) -> Vec<PathBuf> {
         roots.push(PathBuf::from(claude_home).join("skills"));
     } else if let Some(home) = home_dir() {
         roots.push(home.join(".claude").join("skills"));
+    }
+    roots
+}
+
+fn pi_skill_roots(workspace: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![
+        workspace.join(".pi").join("agent").join("skills"),
+        workspace.join(".pi").join("skills"),
+        workspace.join(".agents").join("skills"),
+    ];
+    if let Some(pi_home) = std::env::var_os("PI_HOME") {
+        let pi_home = PathBuf::from(pi_home);
+        roots.push(pi_home.join("agent").join("skills"));
+        roots.push(pi_home.join("skills"));
+    } else if let Some(home) = home_dir() {
+        roots.push(home.join(".pi").join("agent").join("skills"));
+        roots.push(home.join(".pi").join("skills"));
+        roots.push(home.join(".agents").join("skills"));
     }
     roots
 }

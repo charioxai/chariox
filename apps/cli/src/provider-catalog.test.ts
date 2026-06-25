@@ -56,6 +56,7 @@ test("fallback catalog exposes Claude headless and Claude -p as isolated backend
 
   assert.equal(backendProviderLabel("claude-headless"), "Claude headless")
   assert.equal(backendProviderLabel("claude-p"), "Claude -p")
+  assert.equal(backendProviderLabel("pi"), "Pi")
   assert.equal(normalizeBackendProviderId("claude"), "claude-p")
 
   const claudeHeadlessOptions = catalogModelOptions(catalog, "claude-headless")
@@ -68,6 +69,13 @@ test("fallback catalog exposes Claude headless and Claude -p as isolated backend
 
   const opencodeOptions = catalogModelOptions(catalog, "opencode")
   assert.equal(opencodeOptions.some((option) => option.providerId.startsWith("claude")), false)
+
+  const piOptions = catalogModelOptions(catalog, "pi")
+  assert.deepEqual(piOptions.map((option) => option.providerId), ["pi", "pi"])
+  assert.deepEqual(piOptions.map((option) => option.id), [
+    "pi/openai-codex/gpt-5.4",
+    "pi/openai/gpt-5.4",
+  ])
 })
 
 test("fallback catalog can be marked as local fallback metadata", () => {

@@ -16,8 +16,9 @@ import {
 } from "./drill-provider-profiles.mjs"
 
 test("defines known drill provider ids", () => {
-  assert.deepEqual(DRILL_PROVIDER_IDS, ["claude", "claude-headless", "claude-p", "codex", "dev-stub", "opencode", "opencode-zen"])
+  assert.deepEqual(DRILL_PROVIDER_IDS, ["claude", "claude-headless", "claude-p", "codex", "dev-stub", "opencode", "opencode-zen", "pi"])
   assert.equal(isKnownDrillProvider("codex"), true)
+  assert.equal(isKnownDrillProvider("pi"), true)
   assert.equal(isKnownDrillProvider("cdoex"), false)
   assert.doesNotThrow(() => validateDrillProvider("codex", "provider"))
   assert.throws(() => validateDrillProvider("cdoex", "provider"), /provider has unknown provider "cdoex"/)
@@ -37,7 +38,7 @@ test("defines known drill provider ids", () => {
 
 test("parses provider lists", () => {
   assert.deepEqual(parseProviderList("codex, opencode,,claude"), ["codex", "opencode", "claude"])
-  assert.deepEqual(parseProviderList("dev-stub, claude-headless, opencode-zen"), ["dev-stub", "claude-headless", "opencode-zen"])
+  assert.deepEqual(parseProviderList("dev-stub, claude-headless, opencode-zen, pi"), ["dev-stub", "claude-headless", "opencode-zen", "pi"])
   assert.throws(() => parseProviderList(" , "), /at least one provider/)
   assert.throws(() => parseProviderList("codex,cdoex"), /provider list\[1\] has unknown provider "cdoex"/)
 })
@@ -51,6 +52,7 @@ test("parses provider model overrides", () => {
 test("parses provider account aliases without accepting secrets", () => {
   assert.deepEqual(parseProviderAccountAlias("codex=work-account"), { provider: "codex", alias: "work-account" })
   assert.deepEqual(applyProviderAccountAlias({}, "opencode=zen_profile"), { opencode: "zen_profile" })
+  assert.deepEqual(parseProviderAccountAlias("pi=pi_openai"), { provider: "pi", alias: "pi_openai" })
   assert.throws(() => parseProviderAccountAlias("codex"), /provider=alias/)
   assert.throws(() => parseProviderAccountAlias("codex=sk-this-should-not-persist"), /provider account alias/)
   assert.throws(() => parseProviderAccountAlias("codex=user@example.test"), /provider account alias/)
@@ -61,6 +63,7 @@ test("resolves provider-specific model defaults", () => {
   assert.equal(codexCliModel("gpt-5.2-codex"), "gpt-5.2-codex")
   assert.equal(resolveProviderModel("codex", { defaultModel: "gpt-5.2" }), "gpt-5.2-codex")
   assert.equal(resolveProviderModel("opencode", { defaultModel: "gpt-5.2" }), "opencode/gpt-5.2")
+  assert.equal(resolveProviderModel("pi", { defaultModel: "gpt-5.2" }), "pi/openai-codex/gpt-5.2")
   assert.equal(resolveProviderModel("claude", { defaultModel: "sonnet" }), "sonnet")
   assert.equal(resolveProviderModel("codex", {
     defaultModel: "gpt-5.2",
@@ -70,16 +73,16 @@ test("resolves provider-specific model defaults", () => {
 
 test("summarizes provider profile metadata without account secrets", () => {
   assert.deepEqual(providerProfileMetadata({
-    providers: ["codex", "opencode"],
+    providers: ["codex", "opencode", "pi"],
     defaultModel: "gpt-5.2",
-    providerModels: { opencode: "opencode/gpt-5.4", codex: "gpt-5.5" },
-    providerAccounts: { opencode: "zen", codex: "work" },
+    providerModels: { opencode: "opencode/gpt-5.4", codex: "gpt-5.5", pi: "pi/openai-codex/gpt-5.4" },
+    providerAccounts: { opencode: "zen", codex: "work", pi: "pi_openai" },
   }), {
-    providerCount: 2,
-    providers: "codex,opencode",
+    providerCount: 3,
+    providers: "codex,opencode,pi",
     defaultModel: "gpt-5.2",
-    providerModelOverrides: "codex,opencode",
-    providerAccountAliases: "codex=work,opencode=zen",
+    providerModelOverrides: "codex,opencode,pi",
+    providerAccountAliases: "codex=work,opencode=zen,pi=pi_openai",
   })
   assert.throws(() => providerProfileMetadata({
     providers: ["codex", "opencode"],

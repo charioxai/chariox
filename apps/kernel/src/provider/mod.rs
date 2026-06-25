@@ -10,6 +10,8 @@ mod opencode;
 mod opencode_binding;
 mod opencode_client;
 mod opencode_runtime;
+mod pi;
+mod pi_runtime;
 mod process_info;
 mod prompt_signals;
 mod registry;
@@ -53,6 +55,9 @@ pub use opencode_client::{
     OpenCodeProviderModel, OpenCodeProviderModelLimit, OpenCodeSelectedModel,
     OpenCodeSessionSnapshot, OpenCodeToolState,
 };
+pub use pi::{pi_provider_auth_status, pi_provider_catalog, plan_pi_launch, resolve_pi_executable};
+pub(crate) use pi::parse_pi_provider_request;
+pub(crate) use pi_runtime::PiRuntimeState;
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,

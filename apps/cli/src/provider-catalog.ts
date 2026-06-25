@@ -33,7 +33,7 @@ export type CatalogModelOption = {
   variants: string[]
 }
 
-export const BACKEND_PROVIDER_IDS = ["opencode", "codex", "claude-headless", "claude-p"] as const
+export const BACKEND_PROVIDER_IDS = ["opencode", "codex", "claude-headless", "claude-p", "pi"] as const
 
 export type BackendProviderId = typeof BACKEND_PROVIDER_IDS[number]
 
@@ -56,6 +56,8 @@ export function backendProviderLabel(providerId: BackendProviderId) {
       return "Claude headless"
     case "claude-p":
       return "Claude -p"
+    case "pi":
+      return "Pi"
     case "opencode":
       return "OpenCode"
   }
@@ -140,14 +142,44 @@ export function fallbackProviderCatalog(options: {
           },
         },
       },
+      {
+        id: "pi",
+        name: "Pi",
+        remote_machine_aliases: [],
+        models: {
+          "openai-codex/gpt-5.4": {
+            id: "openai-codex/gpt-5.4",
+            name: "ChatGPT GPT-5.4 via Pi",
+            status: "active",
+            variants: {
+              low: {},
+              medium: {},
+              high: {},
+              xhigh: {},
+            },
+          },
+          "openai/gpt-5.4": {
+            id: "openai/gpt-5.4",
+            name: "OpenAI GPT-5.4 via Pi",
+            status: "active",
+            variants: {
+              low: {},
+              medium: {},
+              high: {},
+              xhigh: {},
+            },
+          },
+        },
+      },
     ],
     default: {
       codex: "gpt-5.4",
       opencode: "gpt-5.4",
       "claude-headless": "claude-sonnet-4-6",
       "claude-p": "claude-sonnet-4-6",
+      pi: "openai-codex/gpt-5.4",
     },
-    connected: ["codex", "opencode", "claude-headless", "claude-p"],
+    connected: ["codex", "opencode", "claude-headless", "claude-p", "pi"],
     ...(options.source ? { source: options.source } : {}),
     ...(options.unavailableReason ? { unavailable_reason: options.unavailableReason } : {}),
   } satisfies ProviderCatalog
@@ -247,6 +279,9 @@ function providerBelongsToBackend(
   }
   if (backendProviderId === "claude-p") {
     return providerId === "claude-p" || providerId === "claude"
+  }
+  if (backendProviderId === "pi") {
+    return providerId === "pi"
   }
   return providerId === "opencode"
 }

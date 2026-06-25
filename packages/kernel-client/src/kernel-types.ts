@@ -1445,6 +1445,13 @@ export type WorkspacePullRequestRecord = {
   generated_at_ms: number
 }
 
+export type ProviderResumeState = {
+  opencode_session_id?: string | null
+  codex_thread_id?: string | null
+  claude_session_id?: string | null
+  pi_session_id?: string | null
+}
+
 export type RuntimeProviderRun = {
   id: string
   session_id: string
@@ -1474,10 +1481,11 @@ export type RuntimeProviderRun = {
     operation: string
     mode: string
   }[]
+  resume_state?: ProviderResumeState
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 184
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 188
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

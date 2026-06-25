@@ -43,7 +43,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y nodejs \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
+RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code \
+  && npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 RUN useradd -m -s /bin/bash slice
 USER slice
@@ -53,11 +54,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
 ENV PATH="/home/slice/.cargo/bin:${PATH}"
 
 USER root
-RUN mkdir -p /opt/arroba-source/apps /opt/arroba-slice/bin /opt/arroba-slice/logs \
+RUN mkdir -p /opt/arroba-source/apps /opt/arroba-source/examples /opt/arroba-slice/bin /opt/arroba-slice/logs \
   && chown -R slice:slice /opt/arroba-source /opt/arroba-slice
 
 COPY --chown=slice:slice apps/kernel /opt/arroba-source/apps/kernel
 COPY --chown=slice:slice apps/relay /opt/arroba-source/apps/relay
+COPY --chown=slice:slice examples/workflow-code /opt/arroba-source/examples/workflow-code
 
 USER slice
 RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/arroba-kernel-target \

@@ -65,5 +65,14 @@ pub fn default_provider_command_catalogs() -> BTreeMap<String, ProviderCommandCa
                 commands: Vec::new(),
             },
         ),
+        (
+            "pi".to_string(),
+            ProviderCommandCatalog {
+                provider: "pi".to_string(),
+                source: ProviderCommandCatalogSource::Shipped,
+                discovery: ProviderCommandCatalogDiscovery::Driver,
+                commands: Vec::new(),
+            },
+        ),
     ])
 }

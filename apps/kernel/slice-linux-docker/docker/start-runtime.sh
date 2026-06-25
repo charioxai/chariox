@@ -73,6 +73,8 @@ else
 fi
 
 screen -dmS arroba-slice-kernel env \
+  HOME=/home/slice \
+  USER=slice \
   ARROBA_KERNEL_PORT="$KERNEL_PORT" \
   ARROBA_MCP_PORT="$MCP_PORT" \
   ARROBA_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \

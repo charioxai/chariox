@@ -279,15 +279,37 @@ async function waitForEvent(bucket, predicate, timeoutMs, description) {
   throw new Error(`timed out waiting for ${description}`)
 }
 
-async function waitForCompletion(client, sessionId, attachmentId, bucket, baselineCount, timeoutMs, pollMs) {
+function countCompletions(buckets) {
+  return buckets.reduce((count, bucket) => (
+    count + bucket.filter((event) => event.event === 'assistant_message_completed').length
+  ), 0)
+}
+
+async function waitForCompletion(clients, sessionId, attachmentIds, buckets, baselineCount, timeoutMs, pollMs) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
-    const completions = bucket.filter((event) => event.event === 'assistant_message_completed')
-    if (completions.length > baselineCount) return completions.at(-1)
-    await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+    const completions = countCompletions(buckets)
+    if (completions > baselineCount) return completions
+    await Promise.all(
+      clients.map((client, index) => {
+        const attachmentId = attachmentIds[index]
+        return client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+      }),
+    )
     await sleep(pollMs)
   }
   throw new Error('timed out waiting for assistant completion')
+}
+
+async function waitForTransportResumed(client, sessionId, attachmentId, bucket, timeoutMs, pollMs) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const match = bucket.find((event) => event.event === 'transport_resumed')
+    if (match) return match
+    await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
+    await sleep(pollMs)
+  }
+  throw new Error('timed out waiting for transport_resumed')
 }
 
 function remoteSpawnAgentRequest(sessionId, provider, alias, model, kernelRef) {
@@ -496,8 +518,8 @@ async function main() {
 
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
-      const localBaseline = localEvents.filter((event) => event.event === 'assistant_message_completed').length
-      const remoteBaseline = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
+      const localBaseline = countCompletions([localEvents])
+      const remoteBaseline = countCompletions([remoteEvents])
       const targetAgent = index % 2 === 0 ? localSidecars[index] : remoteAgents[index]
       const submitClient = index % 2 === 0 ? remoteClient : localClient
       const attachment = index % 2 === 0 ? remoteAttachment : localAttachment
@@ -508,7 +530,15 @@ async function main() {
         `Reply with exactly ${provider.toUpperCase()}_BEFORE_RELAY_OK and nothing else.`,
         [],
       ))
-      await waitForCompletion(submitClient, session.id, attachment.id, index % 2 === 0 ? remoteEvents : localEvents, index % 2 === 0 ? remoteBaseline : localBaseline, options.timeoutMs, options.pollMs)
+      await waitForCompletion(
+        [submitClient],
+        session.id,
+        [attachment.id],
+        index % 2 === 0 ? [remoteEvents] : [localEvents],
+        index % 2 === 0 ? remoteBaseline : localBaseline,
+        options.timeoutMs,
+        options.pollMs,
+      )
       beforeReconnectResults.push({
         provider,
         targetAgentId: targetAgent.id,
@@ -522,11 +552,19 @@ async function main() {
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     await waitForRelayTarget(relayUrl, relayToken, 'home')
     await waitForRelayTarget(relayUrl, relayToken, 'worker')
-    resumed = await waitForEvent(remoteEvents, (event) => event.event === 'transport_resumed', 45_000, 'transport_resumed')
+    await remoteClient.restartKernelEventStream()
+    resumed = await waitForTransportResumed(
+      remoteClient,
+      session.id,
+      remoteAttachment.id,
+      remoteEvents,
+      options.timeoutMs,
+      options.pollMs,
+    )
 
     for (let index = 0; index < remoteAgents.length; index += 1) {
       const provider = options.providers[index]
-      const baselineRemote = remoteEvents.filter((event) => event.event === 'assistant_message_completed').length
+      const baselineCompletions = countCompletions([localEvents, remoteEvents])
       await remoteClient.send(submitPromptRequest(
         session.id,
         remoteAttachment.id,
@@ -534,7 +572,15 @@ async function main() {
         `Reply with exactly ${provider.toUpperCase()}_AFTER_RELAY_OK and nothing else.`,
         [],
       ))
-      await waitForCompletion(remoteClient, session.id, remoteAttachment.id, remoteEvents, baselineRemote, options.timeoutMs, options.pollMs)
+      await waitForCompletion(
+        [localClient, remoteClient],
+        session.id,
+        [localAttachment.id, remoteAttachment.id],
+        [localEvents, remoteEvents],
+        baselineCompletions,
+        options.timeoutMs,
+        options.pollMs,
+      )
       afterReconnectResults.push({
         provider,
         targetAgentId: remoteAgents[index].id,

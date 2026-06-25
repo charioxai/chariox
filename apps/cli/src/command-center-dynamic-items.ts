@@ -127,6 +127,13 @@ export function buildProviderItems(input: string, providerNode: CommandNode, con
       value: "claude-p",
     },
     {
+      id: "provider-pi",
+      label: backendProviderLabel("pi"),
+      description: providerSelectionDescription("Pi", localFallback),
+      kind: "provider",
+      value: "pi",
+    },
+    {
       id: "provider-status",
       label: "status",
       description: "Show auth status for the current or named provider",

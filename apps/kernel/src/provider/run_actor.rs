@@ -34,7 +34,7 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 
 use super::{
-    opencode_runtime::OpenCodeRuntimeState, ClaudeRuntimeState, CodexRuntimeState,
+    opencode_runtime::OpenCodeRuntimeState, ClaudeRuntimeState, CodexRuntimeState, PiRuntimeState,
     RuntimeProviderRun,
 };
 
@@ -80,6 +80,10 @@ impl ProviderRunActorMailbox {
 
     pub(crate) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
         self.runtime_registry.insert_opencode_runtime(run_id, state);
+    }
+
+    pub(crate) fn insert_pi_runtime(&self, run_id: String, state: PiRuntimeState) {
+        self.runtime_registry.insert_pi_runtime(run_id, state);
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {

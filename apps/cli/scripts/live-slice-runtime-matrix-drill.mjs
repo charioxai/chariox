@@ -40,9 +40,9 @@ const MATRIX = [
     classification: "slice-auth",
     runtimeSignals: ["slice-auth-state"],
     deployment: "local",
-    providers: ["claude", "codex", "opencode"],
+    providers: ["claude", "codex", "opencode", "pi"],
     exitCriteria: [
-      "Codex, OpenCode, and Claude account summaries are extracted for a slice",
+      "Codex, OpenCode, Claude, and Pi account summaries are extracted for a slice",
       "provider auth alias, login, import, and removal flow through kernel requests",
     ],
   }),

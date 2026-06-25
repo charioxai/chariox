@@ -21,6 +21,8 @@ pub struct ProviderResumeState {
     codex_thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pi_session_id: Option<String>,
 }
 
 impl ProviderResumeState {
@@ -28,6 +30,7 @@ impl ProviderResumeState {
         self.opencode_session_id.is_none()
             && self.codex_thread_id.is_none()
             && self.claude_session_id.is_none()
+            && self.pi_session_id.is_none()
     }
 
     pub fn from_opencode_session_id(session_id: impl Into<String>) -> Self {
@@ -48,6 +51,12 @@ impl ProviderResumeState {
         state
     }
 
+    pub fn from_pi_session_id(session_id: impl Into<String>) -> Self {
+        let mut state = Self::default();
+        state.set_pi_session_id(session_id);
+        state
+    }
+
     pub fn opencode_session_id(&self) -> Option<&str> {
         self.opencode_session_id.as_deref()
     }
@@ -58,6 +67,10 @@ impl ProviderResumeState {
 
     pub fn claude_session_id(&self) -> Option<&str> {
         self.claude_session_id.as_deref()
+    }
+
+    pub fn pi_session_id(&self) -> Option<&str> {
+        self.pi_session_id.as_deref()
     }
 
     pub fn set_opencode_session_id(&mut self, session_id: impl Into<String>) {
@@ -72,11 +85,16 @@ impl ProviderResumeState {
         self.claude_session_id = Some(session_id.into());
     }
 
+    pub fn set_pi_session_id(&mut self, session_id: impl Into<String>) {
+        self.pi_session_id = Some(session_id.into());
+    }
+
     pub fn without_opencode_session_id(&self) -> Self {
         Self {
             opencode_session_id: None,
             codex_thread_id: self.codex_thread_id.clone(),
             claude_session_id: self.claude_session_id.clone(),
+            pi_session_id: self.pi_session_id.clone(),
         }
     }
 
@@ -85,6 +103,7 @@ impl ProviderResumeState {
             opencode_session_id: self.opencode_session_id.clone(),
             codex_thread_id: None,
             claude_session_id: self.claude_session_id.clone(),
+            pi_session_id: self.pi_session_id.clone(),
         }
     }
 
@@ -93,6 +112,16 @@ impl ProviderResumeState {
             opencode_session_id: self.opencode_session_id.clone(),
             codex_thread_id: self.codex_thread_id.clone(),
             claude_session_id: None,
+            pi_session_id: self.pi_session_id.clone(),
+        }
+    }
+
+    pub fn without_pi_session_id(&self) -> Self {
+        Self {
+            opencode_session_id: self.opencode_session_id.clone(),
+            codex_thread_id: self.codex_thread_id.clone(),
+            claude_session_id: self.claude_session_id.clone(),
+            pi_session_id: None,
         }
     }
 }

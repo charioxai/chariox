@@ -102,6 +102,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 "claude" => request.with_resume_state(ProviderResumeState::from_claude_session_id(
                     provider_session_id,
                 )),
+                "pi" => request.with_resume_state(ProviderResumeState::from_pi_session_id(
+                    provider_session_id,
+                )),
                 _ => request,
             };
         }

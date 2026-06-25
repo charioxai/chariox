@@ -209,6 +209,7 @@ fi
 
 log "installing provider CLIs"
 need_sudo npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
+need_sudo npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 if ! command -v cargo >/dev/null; then
   log "installing Rust toolchain"
@@ -275,6 +276,7 @@ node --version
 npm --version
 codex --version || true
 opencode --version || true
+pi --version || true
 "$REMOTE_ROOT/bin/arroba-kernel" --version >/dev/null 2>&1 || true
 "$REMOTE_ROOT/bin/arroba-relay" --version >/dev/null 2>&1 || true
 
@@ -295,7 +297,7 @@ package_arroba_source() {
     -C "$REPO_ROOT" \
     --exclude='apps/kernel/target' \
     --exclude='apps/relay/target' \
-    apps/kernel apps/relay
+    apps/kernel apps/relay examples/workflow-code
 }
 
 provision_guest() {
@@ -322,7 +324,7 @@ provision_guest() {
 print_status() {
   local ip="$1"
   log "VM: $SLICE_NAME ip=$ip"
-  expect_ssh "$ip" "set -e; echo '--- versions'; command -v codex && codex --version || true; command -v opencode && opencode --version || true; test -x '$SLICE_REMOTE_ROOT/bin/arroba-kernel' && echo '$SLICE_REMOTE_ROOT/bin/arroba-kernel' || true; test -x '$SLICE_REMOTE_ROOT/bin/arroba-relay' && echo '$SLICE_REMOTE_ROOT/bin/arroba-relay' || true; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true; echo '--- logs'; ls -1 '$SLICE_REMOTE_ROOT/logs' 2>/dev/null || true"
+  expect_ssh "$ip" "set -e; echo '--- versions'; command -v codex && codex --version || true; command -v opencode && opencode --version || true; command -v pi && pi --version || true; test -x '$SLICE_REMOTE_ROOT/bin/arroba-kernel' && echo '$SLICE_REMOTE_ROOT/bin/arroba-kernel' || true; test -x '$SLICE_REMOTE_ROOT/bin/arroba-relay' && echo '$SLICE_REMOTE_ROOT/bin/arroba-relay' || true; echo '--- processes'; pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve|pi --mode rpc' || true; echo '--- logs'; ls -1 '$SLICE_REMOTE_ROOT/logs' 2>/dev/null || true"
 }
 
 main() {

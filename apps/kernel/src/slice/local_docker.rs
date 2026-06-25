@@ -932,7 +932,7 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
             &container,
             "bash",
             "-lc",
-            "screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true; screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true",
+            "screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true; screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true; pkill -f 'pi --mode rpc' >/dev/null 2>&1 || true",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

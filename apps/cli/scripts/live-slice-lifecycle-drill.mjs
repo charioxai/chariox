@@ -192,10 +192,20 @@ async function writeClaudeAuth(home) {
   }), 'utf8')
 }
 
+async function writePiAuth(home) {
+  const authDir = path.join(home, '.pi', 'agent')
+  await mkdir(authDir, { recursive: true })
+  await writeFile(path.join(authDir, 'auth.json'), JSON.stringify({
+    openai: { type: 'oauth', accountId: 'slice-drill-pi-openai' },
+    claude: { type: 'claude.ai', email: 'slice-drill-pi-anthropic@example.com' },
+  }), 'utf8')
+}
+
 async function writeProviderAuthFixtures(home, codexAccountId) {
   await writeCodexAuth(home, codexAccountId)
   await writeOpenCodeAuth(home)
   await writeClaudeAuth(home)
+  await writePiAuth(home)
 }
 
 function providerAuth(slice, provider, predicate) {
@@ -427,6 +437,8 @@ async function main() {
     assert(providerAuth(imported.slice, 'opencode:openai', (auth) => auth.account_id === 'slice-drill-opencode-openai' && auth.auth_type === 'oauth'), 'OpenCode OpenAI account summary should be recorded on the slice')
     assert(providerAuth(imported.slice, 'opencode:opencode', (auth) => auth.account_id === 'slice-drill-opencode-api' && auth.auth_type === 'api'), 'OpenCode native account summary should be recorded on the slice')
     assert(providerAuth(imported.slice, 'claude', (auth) => auth.account_id === 'slice-drill-claude-user' && auth.organization_id === 'slice-drill-claude-org' && auth.subscription_type === 'pro'), 'Claude account summary should be recorded on the slice')
+    assert(providerAuth(imported.slice, 'pi:openai', (auth) => auth.account_id === 'slice-drill-pi-openai' && auth.auth_type === 'oauth'), 'Pi OpenAI backing account summary should be recorded on the slice')
+    assert(providerAuth(imported.slice, 'pi:anthropic', (auth) => auth.email === 'slice-drill-pi-anthropic@example.com' && auth.auth_type === 'claude.ai'), 'Pi Anthropic backing account summary should be recorded on the slice')
     log('auth-imported', { provider: imported.provider, summaries: imported.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
 
     const login = variant(await client.send(startSliceProviderLoginRequest(created.id, 'codex')), 'SliceProviderLoginStarted').login
@@ -445,6 +457,7 @@ async function main() {
     assert(!removedOpenCode.slice.provider_auth?.some((auth) => auth.provider.startsWith('opencode')), 'OpenCode provider family should be removed from the slice')
     assert(providerAuth(removedOpenCode.slice, 'codex'), 'provider auth removal should preserve other providers')
     assert(providerAuth(removedOpenCode.slice, 'claude'), 'provider auth removal should preserve Claude auth')
+    assert(providerAuth(removedOpenCode.slice, 'pi:openai'), 'provider auth removal should preserve Pi backing provider auth')
     log('auth-removed', { provider: removedOpenCode.provider, remaining: removedOpenCode.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
 
     await runSliceSlashCommandDrill(client, workspace, created.id, created.name)
