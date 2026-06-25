@@ -35,7 +35,8 @@ mod tests {
     use crate::workflow_code::{
         WorkflowCodeAgentBinding, WorkflowCodeAgentCreate, WorkflowCodeDefinition,
         WorkflowCodeEndpointDefinition, WorkflowCodeExistingAgent, WorkflowCodeNodeDefinition,
-        WorkflowCodeProviderRebinding, WorkflowCodeWorkflow, WORKFLOW_CODE_SCHEMA_VERSION,
+        WorkflowCodeProviderRebinding, WorkflowCodeWorkflow, WORKFLOW_CODE_PATTERN_EXAMPLES,
+        WORKFLOW_CODE_SCHEMA_VERSION,
     };
     use crate::{DaemonApp, DaemonConfig};
     use std::fs;
@@ -537,6 +538,149 @@ workflow.endpoint(planner, { alias: "entry" })
         assert_eq!(workflow.alias(), Some("js_coded_flow"));
         assert_eq!(workflow.nodes().len(), 2);
         assert_eq!(app.agents().get_session_agents(session.id()).len(), 3);
+    }
+
+    #[test]
+    fn workflow_code_canonical_patterns_compile_and_apply_with_provider_rebindings() {
+        let Some(node_path) = find_node_for_workflow_code_test() else {
+            eprintln!("skipping workflow-code pattern apply test because node is not available");
+            return;
+        };
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let limits = WorkflowCodeLimitsConfig::default();
+
+        for example in WORKFLOW_CODE_PATTERN_EXAMPLES {
+            let compiled = crate::workflow_code::compile_workflow_code_javascript(
+                &node_path,
+                example.source,
+                &limits,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "workflow-code pattern `{}` at `{}` should compile: {error}",
+                    example.slug, example.path
+                )
+            });
+            assert!(
+                compiled.validation.ok,
+                "workflow-code pattern `{}` should validate before apply: {:?}",
+                example.slug, compiled.validation.diagnostics
+            );
+            let provider_rebindings = compiled
+                .definition
+                .nodes
+                .iter()
+                .map(|node| WorkflowCodeProviderRebinding {
+                    node: node.handle.clone(),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                })
+                .collect::<Vec<_>>();
+
+            let result = app
+                .compile_and_apply_workflow_code_javascript_with_rebindings(
+                    session.id(),
+                    &node_path,
+                    example.source,
+                    &limits,
+                    "local-user".to_string(),
+                    None,
+                    &provider_rebindings,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "workflow-code pattern `{}` should apply after provider rebinding: {error}",
+                        example.slug
+                    )
+                });
+
+            assert!(
+                result.compile.validation.ok,
+                "workflow-code pattern `{}` should compile with valid diagnostics",
+                example.slug
+            );
+            assert_eq!(
+                result.apply.node_ids.len(),
+                result.compile.definition.nodes.len(),
+                "workflow-code pattern `{}` should report every node id",
+                example.slug
+            );
+            assert_eq!(
+                result.apply.agent_ids.len(),
+                result.compile.definition.nodes.len(),
+                "workflow-code pattern `{}` should report every node agent id",
+                example.slug
+            );
+            assert_eq!(
+                result.apply.edge_ids.len(),
+                result.compile.definition.edges.len(),
+                "workflow-code pattern `{}` should report every edge id",
+                example.slug
+            );
+            assert_eq!(
+                result.apply.endpoint_ids.len(),
+                result.compile.definition.endpoints.len(),
+                "workflow-code pattern `{}` should report every endpoint id",
+                example.slug
+            );
+            assert_eq!(
+                result.apply.schema_refs.len(),
+                result.compile.definition.schemas.len(),
+                "workflow-code pattern `{}` should report every schema id",
+                example.slug
+            );
+            assert!(
+                result.apply.canvas_layout_applied,
+                "workflow-code pattern `{}` should apply canvas layout",
+                example.slug
+            );
+
+            let session_snapshot = app
+                .sessions()
+                .get_session(session.id())
+                .expect("session should still exist");
+            let workflow = session_snapshot
+                .workflow(&result.apply.workflow_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "workflow-code pattern `{}` should create a workflow",
+                        example.slug
+                    )
+                });
+            assert_eq!(
+                workflow.nodes().len(),
+                result.compile.definition.nodes.len(),
+                "workflow-code pattern `{}` should materialize all nodes",
+                example.slug
+            );
+            assert_eq!(
+                workflow.edges().len(),
+                result.compile.definition.edges.len(),
+                "workflow-code pattern `{}` should materialize all edges",
+                example.slug
+            );
+            assert_eq!(
+                workflow.endpoints().len(),
+                result.compile.definition.endpoints.len(),
+                "workflow-code pattern `{}` should materialize all endpoints",
+                example.slug
+            );
+            assert_eq!(
+                workflow.schemas().len(),
+                result.compile.definition.schemas.len(),
+                "workflow-code pattern `{}` should materialize all schemas",
+                example.slug
+            );
+            assert!(
+                workflow.run_output_schema_ref().is_some(),
+                "workflow-code pattern `{}` should have final output schema",
+                example.slug
+            );
+        }
     }
 
     #[test]
