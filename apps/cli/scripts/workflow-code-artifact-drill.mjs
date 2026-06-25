@@ -18,6 +18,7 @@ import {
   getWorkflowCodeArtifactRequest,
   importWorkflowCodeArtifactRequest,
   runWorkflowCodeArtifactRequest,
+  spawnAgentRequest,
 } from '@arroba/kernel-client'
 
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
@@ -245,6 +246,77 @@ function providerRebindings() {
   }))
 }
 
+function existingAgentWorkflowCodeSource(agentId) {
+  return `
+workflow.define({
+  alias: "workflow_code_existing_agent_artifact_drill",
+  prompt: "Use one pre-existing worker and one generated finisher.",
+  maxConcurrent: 2,
+});
+
+const handoff = workflow.schema({
+  handle: "existing_handoff",
+  alias: "Existing-agent handoff",
+  schema: {
+    type: "object",
+    required: ["summary"],
+    properties: {
+      summary: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+});
+
+const finalOutput = workflow.schema({
+  handle: "final_output",
+  alias: "Existing-agent final output",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: {
+      answer: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+});
+
+workflow.define({ runOutputSchema: finalOutput });
+
+const existingWorker = workflow.node({
+  handle: "existing_worker",
+  agent: workflow.existingAgent("${agentId}"),
+  publicLabel: "Existing worker",
+  instructions: "Use the endpoint prompt to produce an existing_handoff payload.",
+  canCompleteWorkflowRun: false,
+  canvas: { x: 0, y: 120 },
+});
+
+const generatedFinisher = workflow.node({
+  handle: "generated_finisher",
+  agent: workflow.newAgent({ alias: "artifact-generated-finisher", provider: "codex", model: "gpt-5" }),
+  publicLabel: "Generated finisher",
+  instructions: "Finish the workflow and submit final output matching final_output.",
+  canCompleteWorkflowRun: true,
+  canvas: { x: 280, y: 120 },
+});
+
+workflow.edge(existingWorker, generatedFinisher, {
+  handle: "existing_to_generated",
+  handoffSchema: handoff,
+  validationPolicy: "warn",
+});
+workflow.endpoint(existingWorker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+`.trim()
+}
+
+function existingAgentRebindings() {
+  return [{
+    node: 'generated_finisher',
+    provider: 'dev-stub',
+    model: 'default',
+  }]
+}
+
 function defaultToyExpectation() {
   return {
     nodes: 3,
@@ -278,7 +350,7 @@ function validateApplyResult(result, label, expected = defaultToyExpectation()) 
   const apply = result.apply
   assert(apply?.workflow_id, `${label} did not return workflow id`, result)
   assert(Object.keys(apply.node_ids ?? {}).length === expected.nodes, `${label} should create ${expected.nodes} nodes`, apply)
-  assert(Object.keys(apply.agent_ids ?? {}).length === expected.agents, `${label} should create ${expected.agents} generated agents`, apply)
+  assert(Object.keys(apply.agent_ids ?? {}).length === expected.agents, `${label} should resolve ${expected.agents} node agents`, apply)
   assert(Object.keys(apply.edge_ids ?? {}).length === expected.edges, `${label} should create ${expected.edges} edges`, apply)
   assert(Object.keys(apply.endpoint_ids ?? {}).length === expected.endpoints, `${label} should create ${expected.endpoints} endpoints`, apply)
   for (const schemaHandle of expected.requiredSchemas) {
@@ -300,9 +372,9 @@ function validateSessionProjection(session, apply, label, expected = defaultToyE
   }
   for (const [handle, agentId] of Object.entries(apply.agent_ids ?? {})) {
     const agent = (session.agents ?? []).find((entry) => entry.id === agentId)
-    assert(agent, `${label} generated agent ${handle} should appear in session`, { agentId })
-    assert(agent.provider === 'dev-stub', `${label} generated agent ${handle} should be rebound to dev-stub`, agent)
-    assert(agent.model === 'default', `${label} generated agent ${handle} should use rebound default model`, agent)
+    assert(agent, `${label} node agent ${handle} should appear in session`, { agentId })
+    assert(agent.provider === 'dev-stub', `${label} node agent ${handle} should use dev-stub`, agent)
+    assert(agent.model === 'default', `${label} node agent ${handle} should use default model`, agent)
   }
 }
 
@@ -357,6 +429,58 @@ function validateArtifactHistory(artifact, expectedActions) {
   const actions = (artifact?.metadata?.history ?? []).map((entry) => entry.action)
   for (const action of expectedActions) {
     assert(actions.includes(action), `artifact history should include ${action}`, actions)
+  }
+}
+
+async function applyExistingAgentArtifact(client, session, nodePath, workspace) {
+  const existingAgent = unwrap(
+    await client.send(spawnAgentRequest(
+      session.id,
+      'dev-stub',
+      'artifact-existing-worker',
+      'default',
+      workspace,
+      'low',
+    )),
+    'AgentSpawned',
+  ).agent
+  const artifactName = `existing-agent-artifact-${Date.now()}`
+  const source = existingAgentWorkflowCodeSource(existingAgent.id)
+  const created = unwrap(
+    await client.send(createWorkflowCodeArtifactRequest(session.id, artifactName, nodePath, source)),
+    'WorkflowCodeArtifactCreated',
+  ).artifact
+  assert(created?.metadata?.validation?.ok, 'existing-agent artifact should validate', created?.metadata?.validation)
+
+  const expected = {
+    nodes: 2,
+    agents: 2,
+    edges: 1,
+    endpoints: 1,
+    requiredSchemas: ['existing_handoff', 'final_output'],
+  }
+  const appliedResponse = unwrap(
+    await client.send(applyWorkflowCodeArtifactRequest(session.id, artifactName, existingAgentRebindings())),
+    'WorkflowCodeApplied',
+  )
+  const apply = validateApplyResult(appliedResponse.result, 'existing-agent artifact apply', expected)
+  validateSessionProjection(appliedResponse.session, apply, 'existing-agent artifact apply', expected)
+  assert(
+    apply.agent_ids?.existing_worker === existingAgent.id,
+    'existing-agent artifact should preserve the pre-existing agent id for its node',
+    { apply, existingAgent },
+  )
+  const generatedAgentId = apply.agent_ids?.generated_finisher
+  assert(
+    generatedAgentId && generatedAgentId !== existingAgent.id,
+    'existing-agent artifact should create a distinct generated node agent',
+    { apply, existingAgent },
+  )
+  return {
+    artifactName,
+    workflowId: apply.workflow_id,
+    existingAgentId: existingAgent.id,
+    generatedAgentId,
   }
 }
 
@@ -476,6 +600,7 @@ async function main() {
     const state = unwrap(stateResponse, 'SessionStateLoaded')?.session
       ?? unwrap(stateResponse, 'SessionState')?.session
     assert((state?.workflows ?? []).some((workflow) => workflow.id === runApply.workflow_id), 'run workflow should be in loaded session state')
+    const existingAgentArtifact = await applyExistingAgentArtifact(client, session, nodePath, workspace)
     const exampleSuite = options.exampleSuite
       ? await applyExampleSuite(client, session.id, nodePath)
       : []
@@ -490,6 +615,7 @@ async function main() {
       runInvocation: invocation.workflow_run ? 'started' : 'enqueued',
       generatedAgents: Object.values(runApply.agent_ids ?? {}),
       schemaRefs: runApply.schema_refs,
+      existingAgentArtifact,
       exampleSuite,
     }
     console.log(JSON.stringify(summary, null, 2))
