@@ -1393,6 +1393,60 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
             "applying an existing-agent workflow-code source should not spawn a new agent"
         );
     }
+    let owned_run = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL,
+            serde_json::json!({
+                "source": owned_source,
+                "endpoint": "entry",
+                "prompt": "Run the existing worker workflow."
+            }),
+        )
+        .await
+        .expect("metaagent should run owned existing-agent workflow-code");
+    assert!(owned_run.ok, "{:?}", owned_run.payload);
+    assert_eq!(
+        owned_run
+            .payload
+            .pointer("/WorkflowCodeRun/result/apply/apply/agent_ids/worker")
+            .and_then(serde_json::Value::as_str),
+        Some(owned_worker.id())
+    );
+    assert_eq!(
+        owned_run
+            .payload
+            .pointer("/WorkflowCodeRun/result/invocation/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("started")
+    );
+    assert_eq!(
+        owned_run
+            .payload
+            .pointer("/WorkflowCodeRun/result/invocation/workflow/controlled_by_metaagent_id")
+            .and_then(serde_json::Value::as_str),
+        Some(metaagent.id())
+    );
+    {
+        let app = router.app.lock().await;
+        assert_eq!(
+            app.agents().get_session_agents(session.id()).len(),
+            agent_count_before_apply,
+            "running an existing-agent workflow-code source should not spawn a generated agent"
+        );
+        let session_after_run = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve after existing-agent workflow run");
+        assert!(
+            session_after_run
+                .active_prompt_for_agent(owned_worker.id())
+                .is_some(),
+            "existing bound worker should receive the workflow run prompt"
+        );
+    }
 
     let peer_source = workflow_code_existing_agent_source(peer_worker.id());
     let peer_validated = router
