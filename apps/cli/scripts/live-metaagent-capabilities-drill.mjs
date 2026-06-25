@@ -269,16 +269,29 @@ async function verifyMetaWorkflowCodeGuides(metaRun) {
     guideSearch.payload,
   )
 
-  const listedGuides = await callRuntimeTool(metaRun, 'arroba.meta.list_guides', {
-    command: 'arroba.meta.workflow_code.apply',
-    limit: 10,
-  })
-  assert(listedGuides.ok, 'metaagent should list guides by workflow-code command', listedGuides.payload)
-  assert(
-    (listedGuides.payload?.guides ?? []).some((guide) => guide.id === 'workflows/workflow-code-authoring'),
-    'workflow-code guide list should include the authoring guide for apply',
-    listedGuides.payload,
-  )
+  for (const command of [
+    'arroba.meta.workflow_code.create',
+    'arroba.meta.workflow_code.read',
+    'arroba.meta.workflow_code.list',
+    'arroba.meta.workflow_code.update',
+    'arroba.meta.workflow_code.delete',
+    'arroba.meta.workflow_code.validate',
+    'arroba.meta.workflow_code.apply',
+    'arroba.meta.workflow_code.run',
+    'arroba.meta.workflow_code.export',
+    'arroba.meta.workflow_code.import',
+  ]) {
+    const listedGuides = await callRuntimeTool(metaRun, 'arroba.meta.list_guides', {
+      command,
+      limit: 10,
+    })
+    assert(listedGuides.ok, `metaagent should list guides by workflow-code command ${command}`, listedGuides.payload)
+    assert(
+      (listedGuides.payload?.guides ?? []).some((guide) => guide.id === 'workflows/workflow-code-authoring'),
+      `workflow-code guide list should include the authoring guide for ${command}`,
+      listedGuides.payload,
+    )
+  }
 
   const authoringGuide = await callRuntimeTool(metaRun, 'arroba.meta.read_guide', {
     guide: 'workflows/workflow-code-authoring',
@@ -342,6 +355,10 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
   const name = `meta-capabilities-flow-${Date.now()}`
   const importedName = `${name}-imported`
   const source = metaWorkflowCodeSource()
+  const updatedSource = source.replace(
+    'alias: "meta_capabilities_workflow_code"',
+    'alias: "meta_capabilities_workflow_code_updated"',
+  )
   const providerRebindings = [{
     node: 'workflow_worker',
     provider: 'dev-stub',
@@ -362,6 +379,32 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
       .some((artifact) => artifact.name === name),
     'workflow-code list should include the created artifact',
     listed.payload,
+  )
+
+  const read = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.read', { name })
+  assert(read.ok, 'metaagent should read workflow-code artifacts through runtime MCP', read.payload)
+  const readArtifact = unwrap(read.payload, 'WorkflowCodeArtifact').artifact
+  assert(
+    readArtifact?.definition?.workflow?.alias === 'meta_capabilities_workflow_code',
+    'workflow-code read should return the saved artifact definition',
+    read.payload,
+  )
+
+  const updated = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.update', {
+    name,
+    source: updatedSource,
+  })
+  assert(updated.ok, 'metaagent should update workflow-code artifacts through runtime MCP', updated.payload)
+  const updatedArtifact = unwrap(updated.payload, 'WorkflowCodeArtifactUpdated').artifact
+  assert(
+    updatedArtifact?.definition?.workflow?.alias === 'meta_capabilities_workflow_code_updated',
+    'workflow-code update should replace the saved artifact source and definition',
+    updated.payload,
+  )
+  assert(
+    (updatedArtifact?.metadata?.history ?? []).some((entry) => entry.action === 'updated'),
+    'workflow-code update should record artifact history',
+    updated.payload,
   )
 
   const validated = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.validate', { name })
