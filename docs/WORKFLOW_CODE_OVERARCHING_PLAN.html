@@ -318,7 +318,7 @@
       <h2>Phase 3: Metaagent Infrastructure</h2>
       <h3>Runtime MCP tools</h3>
       <ul>
-        <li>Add workflow-code tools under the existing metaagent bundle: <code>meta.workflow_code.create</code>, <code>meta.workflow_code.read</code>, <code>meta.workflow_code.update</code>, <code>meta.workflow_code.validate</code>, <code>meta.workflow_code.apply</code>, <code>meta.workflow_code.run</code>, <code>meta.workflow_code.export</code>, and <code>meta.workflow_code.import</code>.</li>
+        <li>Add workflow-code tools under the existing metaagent runtime MCP bundle, using the <code>meta.workflow_code.*</code> namespace: <code>meta.workflow_code.create</code>, <code>meta.workflow_code.read</code>, <code>meta.workflow_code.update</code>, <code>meta.workflow_code.validate</code>, <code>meta.workflow_code.apply</code>, <code>meta.workflow_code.run</code>, <code>meta.workflow_code.export</code>, and <code>meta.workflow_code.import</code>.</li>
         <li>Expose these tools only to users and authorized metaagents.</li>
         <li>Keep existing manual workflow construction/editing commands available to metaagents.</li>
         <li>Record provenance for metaagent-created workflow-code artifacts and applied workflows.</li>
@@ -328,7 +328,7 @@
       <ul>
         <li>Metaagents may bind only agents they spawned or agents explicitly authorized for their control scope.</li>
         <li>Metaagents must pass the same kernel validation as users before workflow-code can be applied.</li>
-        <li>Metaagents may choose between workflow-code and existing manual workflow commands based on task fit.</li>
+        <li>Metaagents may choose between workflow-code and existing manual workflow commands based on task fit; workflow-code validation does not remove or weaken their existing manual edit path.</li>
         <li>All workflow-code apply/run operations emit auditable session events.</li>
       </ul>
 
