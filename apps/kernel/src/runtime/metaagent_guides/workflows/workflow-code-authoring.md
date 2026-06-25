@@ -19,6 +19,12 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
   - `description`
   - `schema`
 
+- `workflow.schemaFromFile(options)` loads a JSON Schema file from the session schema import root and returns a schema handle:
+  - `handle`
+  - `path`
+  - `alias`
+  - `description`
+
 - `workflow.newAgent(options)` defines a generated agent for a node:
   - `alias`
   - `provider`
@@ -26,7 +32,7 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
   - `effort`
   - `accountProfile`
 
-- `workflow.existingAgent(agentRef)` binds a node to an already spawned session agent. In metaagent apply/run, the existing agent must be controlled by that metaagent.
+- `workflow.existingAgent(agentRef)` binds a node to an already spawned session agent. In metaagent apply/run, the existing agent must be controlled by that metaagent. Provider rebindings cannot target existing-agent nodes.
 
 - `workflow.node(options)` defines one workflow node and returns a node handle:
   - `handle`
@@ -46,7 +52,7 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
   - `sourceSide`
   - `targetSide`
   - `handoffSchema`
-  - `validationPolicy`
+  - `validationPolicy` (`"warn"` or `"halt"`)
   - `canvas`
 
 - `workflow.endpoint(entryNode, options)` defines an invocation endpoint and returns an endpoint handle:
@@ -65,10 +71,12 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
   - `queue`
   - `intervalSeconds`
   - `invocationPrompt`
-  - `policy`
+  - `policy` (`"skip"` or `"queue"`)
   - `maxWakeups`
 
-Canvas points are optional. Use `{ x, y }` for nodes/endpoints. Use `{ points: [{ x, y }] }` for edge waypoints. If canvas coordinates are absent, the session canvas layout service can auto-place components later.
+Canvas points are optional. Use `{ x, y }` for nodes/endpoints. Use `{ points: [{ x, y }] }` for edge waypoints. If canvas coordinates are absent, the kernel applies the session canvas auto-layout service during apply.
+
+If no queues are defined, the kernel creates the workflow default prompt queue and returns it in `queue_ids`. Define queues only when the workflow needs named priorities or disabled queues. Watchdogs reference endpoint and optional queue handles, not runtime ids.
 
 ## Schemas and Outputs
 
@@ -79,11 +87,41 @@ Define workflow schemas directly in the script so the artifact is portable. Use 
 - `workflow.node({ intermediateOutputSchema })` for a node-specific intermediate output.
 - `workflow.edge(..., { handoffSchema })` for edge handoff validation.
 
+Use `workflow.schemaFromFile({ handle, path, alias, description })` only when the JSON file is part of the workspace or imported package context available to the compiler. The file path must be relative, stay inside the approved import root, end in `.json`, and obey the configured schema byte limit.
+
 Agents complete routed fan-out by emitting final fenced JSON containing `workflow_handoffs`. Each item selects an edge by real `edge_id` or a target by real `to_node_id`. The kernel resolves real ids during apply/run and exposes them in runtime context and apply reports.
 
 ## Extensions
 
-Use node `extensions` when the node's agent needs MCP, skill, script, credential, or other extension grants supported by Arroba extension definitions. Keep extension grants on the node that needs them; generated agents receive those grants during apply, and existing agents receive them when the binding is authorized.
+Use node `extensions` when the node's agent needs MCP, skill, script, connector, credential-backed access, or other extension grants supported by Arroba extension definitions. Keep extension grants on the node that needs them; generated agents receive those grants during apply, and existing agents receive them when the binding is authorized.
+
+Extension grant shape:
+
+```js
+extensions: [
+  { kind: "skill", name: "workflow-code-skill" },
+  { kind: "mcp", name: "repo-tools" },
+  { kind: "script", name: "release-script", environment: "node" },
+  { kind: "connector", name: "linear", credential: "linear-api", maxSafety: "read" },
+]
+```
+
+Supported `kind` values are `"mcp"`, `"skill"`, `"script"`, and `"connector"`. Script grants must include `environment`. Connector grants may include `credential` and `maxSafety`; the kernel rejects unavailable or invalid extension requirements before applying the workflow.
+
+## Existing Agents and Portability
+
+Prefer `workflow.newAgent` when a script should be portable across users and kernels. Use `workflow.existingAgent(agentRef)` only when the caller intentionally binds a session-local agent; exported scripts with existing-agent refs are not portable unless the target kernel has a compatible agent ref and authorization. In metaagent apply/run, the bound existing agent must already be controlled by that metaagent.
+
+Provider/model choices on `workflow.newAgent` are preferences. When importing or applying on another kernel, use `provider_rebindings` keyed by node handle:
+
+```json
+[
+  { "node": "planner", "provider": "dev-stub", "model": "default" },
+  { "node": "reviewer", "provider": "codex", "model": "gpt-5", "effort": "high" }
+]
+```
+
+Do not include runtime ids in provider rebindings. Do not rebind existing-agent nodes.
 
 ## Metaagent Tool Flow
 
@@ -94,6 +132,8 @@ Use node `extensions` when the node's agent needs MCP, skill, script, credential
 5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.
 
 Use `provider_rebindings` with apply/run when a generated-agent provider, model, effort, or account profile is unavailable or should be replaced in the target kernel. Rebindings target node handles, not generated runtime ids, and can only rebind nodes using `workflow.newAgent`.
+
+Generated runtime ids are never authored in the script. The script provides stable handles; the apply/run result returns the generated `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids` maps keyed by those handles.
 
 ## Small Routing Example
 

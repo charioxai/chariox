@@ -322,6 +322,7 @@ mod tests {
         for expected in [
             "workflow.define",
             "workflow.schema",
+            "workflow.schemaFromFile",
             "workflow.newAgent",
             "workflow.existingAgent",
             "workflow.node",
@@ -329,6 +330,28 @@ mod tests {
             "workflow.endpoint",
             "workflow.queue",
             "workflow.watchdog",
+        ] {
+            assert!(body.contains(expected), "missing `{expected}` from guide");
+        }
+    }
+
+    #[test]
+    fn workflow_code_guide_documents_portability_and_extension_rules() {
+        let guide = read_guide("workflows/workflow-code-authoring").expect("guide should exist");
+        let body = guide
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .expect("guide body should be markdown");
+        for expected in [
+            "provider_rebindings",
+            "Do not include runtime ids in provider rebindings",
+            "Do not rebind existing-agent nodes",
+            "Generated runtime ids are never authored in the script",
+            "Supported `kind` values are `\"mcp\"`, `\"skill\"`, `\"script\"`, and `\"connector\"`",
+            "Script grants must include `environment`",
+            "If no queues are defined",
+            "`validationPolicy` (`\"warn\"` or `\"halt\"`)",
+            "`policy` (`\"skip\"` or `\"queue\"`)",
         ] {
             assert!(body.contains(expected), "missing `{expected}` from guide");
         }
