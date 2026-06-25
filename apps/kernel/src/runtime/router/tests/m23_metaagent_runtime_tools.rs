@@ -297,6 +297,69 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code(
             "authoring guide should teach `{expected}`"
         );
     }
+    let pattern_guide_search = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_SEARCH_GUIDES_TOOL,
+            serde_json::json!({
+                "query": "workflow-code tournament adversarial evaluator optimizer",
+                "tag": "workflow-code",
+                "command": "arroba.meta.workflow_code.validate",
+                "limit": 5
+            }),
+        )
+        .await
+        .expect("metaagent should discover workflow-code pattern guide");
+    assert!(
+        pattern_guide_search.ok,
+        "{:?}",
+        pattern_guide_search.payload
+    );
+    assert!(
+        pattern_guide_search
+            .payload
+            .get("guides")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|guides| guides.iter().any(|guide| {
+                guide.get("id").and_then(serde_json::Value::as_str)
+                    == Some("workflows/workflow-code-patterns")
+                    && guide.get("body").is_none()
+            })),
+        "workflow-code guide search should surface pattern guide summaries without bodies: {:?}",
+        pattern_guide_search.payload
+    );
+    let pattern_guide = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_READ_GUIDE_TOOL,
+            serde_json::json!({
+                "guide": "workflows/workflow-code-patterns"
+            }),
+        )
+        .await
+        .expect("metaagent should read workflow-code pattern guide");
+    assert!(pattern_guide.ok, "{:?}", pattern_guide.payload);
+    let pattern_body = pattern_guide
+        .payload
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .expect("pattern guide should include body");
+    for example in crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES {
+        assert!(
+            pattern_body.contains(example.path),
+            "pattern guide should include `{}`",
+            example.path
+        );
+        assert!(
+            pattern_body.contains(example.source.trim()),
+            "pattern guide should embed `{}` source",
+            example.slug
+        );
+    }
     let source = r#"
 workflow.define({ alias: "meta_scripted_flow", maxConcurrent: 2 })
 const final = workflow.schemaFromFile({
