@@ -626,19 +626,11 @@ fn external_session_or_refresh(
 fn ensure_external_session_is_attachable(
     external: &ExternalProviderSessionRecord,
 ) -> Result<(), DaemonError> {
-    if !external.attached_to_arroba {
+    if external.is_attachable_to_arroba() {
         return Ok(());
     }
-    let session_label = external
-        .attached_session_ids
-        .first()
-        .map(String::as_str)
-        .unwrap_or("unknown");
-    let agent_label = external
-        .attached_agent_ids
-        .first()
-        .map(String::as_str)
-        .unwrap_or("unknown");
+    let session_label = external.first_attached_session_id().unwrap_or("unknown");
+    let agent_label = external.first_attached_agent_id().unwrap_or("unknown");
     Err(DaemonError::LocalTransport {
         operation: "import external provider session",
         message: format!(
@@ -1473,12 +1465,10 @@ mod tests {
                     .external_provider,
                 "dev-stub"
             );
-            assert!(
-                store
-                    .get("dev-stub:external-1")
-                    .expect("record should remain indexed")
-                    .attached_to_arroba
-            );
+            assert!(store
+                .get("dev-stub:external-1")
+                .expect("record should remain indexed")
+                .is_attached_to_arroba());
         });
     }
 
@@ -1681,9 +1671,9 @@ mod tests {
         let attached = store
             .get("codex:thread-owned-by-arroba")
             .expect("record should remain indexed");
-        assert!(attached.attached_to_arroba);
-        assert_eq!(attached.attached_session_ids, vec![session.id()]);
-        assert_eq!(attached.attached_agent_ids, vec![agent.id()]);
+        assert!(attached.is_attached_to_arroba());
+        assert_eq!(attached.first_attached_session_id(), Some(session.id()));
+        assert_eq!(attached.first_attached_agent_id(), Some(agent.id()));
     }
 
     #[test]

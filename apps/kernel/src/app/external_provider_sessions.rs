@@ -166,7 +166,7 @@ impl ExternalProviderSessionIndexStore {
             .sessions
             .values()
             .filter(|session| {
-                if session.attached_to_arroba {
+                if !session.is_attachable_to_arroba() {
                     return false;
                 }
                 request
@@ -212,15 +212,14 @@ fn apply_attachment_marker(
     session: &mut ExternalProviderSessionRecord,
     attachment: &ExternalProviderSessionAttachment,
 ) {
-    session.attached_to_arroba = true;
-    session.attached_session_ids = attachment.session_ids.iter().cloned().collect();
-    session.attached_agent_ids = attachment.agent_ids.iter().cloned().collect();
+    session.mark_attached_to_arroba(
+        attachment.session_ids.iter().cloned().collect(),
+        attachment.agent_ids.iter().cloned().collect(),
+    );
 }
 
 fn clear_attachment_marker(session: &mut ExternalProviderSessionRecord) {
-    session.attached_to_arroba = false;
-    session.attached_session_ids.clear();
-    session.attached_agent_ids.clear();
+    session.clear_arroba_attachment();
 }
 
 fn parse_external_provider_session_cursor(cursor: &str) -> Option<usize> {
@@ -286,9 +285,9 @@ mod tests {
         let session = store
             .get("codex:thread-1")
             .expect("session should remain indexed");
-        assert!(session.attached_to_arroba);
-        assert_eq!(session.attached_session_ids, vec!["session-1"]);
-        assert_eq!(session.attached_agent_ids, vec!["agent-1"]);
+        assert!(session.is_attached_to_arroba());
+        assert_eq!(session.first_attached_session_id(), Some("session-1"));
+        assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
         assert_eq!(session.last_modified_at_ms, 40);
     }
 
@@ -310,9 +309,9 @@ mod tests {
         let session = store
             .get("codex:thread-1")
             .expect("session should be indexed");
-        assert!(session.attached_to_arroba);
-        assert_eq!(session.attached_session_ids, vec!["session-1"]);
-        assert_eq!(session.attached_agent_ids, vec!["agent-1"]);
+        assert!(session.is_attached_to_arroba());
+        assert_eq!(session.first_attached_session_id(), Some("session-1"));
+        assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
     }
 
     #[test]
@@ -361,9 +360,9 @@ mod tests {
         });
         assert_eq!(page.sessions.len(), 1);
         assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
-        assert!(!page.sessions[0].attached_to_arroba);
-        assert!(page.sessions[0].attached_session_ids.is_empty());
-        assert!(page.sessions[0].attached_agent_ids.is_empty());
+        assert!(page.sessions[0].is_attachable_to_arroba());
+        assert_eq!(page.sessions[0].first_attached_session_id(), None);
+        assert_eq!(page.sessions[0].first_attached_agent_id(), None);
     }
 
     fn record(

@@ -34,6 +34,36 @@ pub struct ExternalProviderSessionRecord {
     pub attached_agent_ids: Vec<String>,
 }
 
+impl ExternalProviderSessionRecord {
+    pub fn is_attached_to_arroba(&self) -> bool {
+        self.attached_to_arroba
+    }
+
+    pub fn is_attachable_to_arroba(&self) -> bool {
+        !self.is_attached_to_arroba()
+    }
+
+    pub fn mark_attached_to_arroba(&mut self, session_ids: Vec<String>, agent_ids: Vec<String>) {
+        self.attached_to_arroba = true;
+        self.attached_session_ids = session_ids;
+        self.attached_agent_ids = agent_ids;
+    }
+
+    pub fn clear_arroba_attachment(&mut self) {
+        self.attached_to_arroba = false;
+        self.attached_session_ids.clear();
+        self.attached_agent_ids.clear();
+    }
+
+    pub fn first_attached_session_id(&self) -> Option<&str> {
+        self.attached_session_ids.first().map(String::as_str)
+    }
+
+    pub fn first_attached_agent_id(&self) -> Option<&str> {
+        self.attached_agent_ids.first().map(String::as_str)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalProviderSessionPage {
     pub sessions: Vec<ExternalProviderSessionRecord>,
@@ -89,4 +119,45 @@ pub struct ImportExternalProviderAgentRequest {
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_provider_session_record_tracks_arroba_attachment_state() {
+        let mut record = ExternalProviderSessionRecord {
+            external_session_id: "codex:thread-1".to_string(),
+            provider: "codex".to_string(),
+            provider_session_id: "thread-1".to_string(),
+            title: None,
+            title_source: None,
+            first_prompt_preview: None,
+            created_at_ms: None,
+            last_modified_at_ms: 42,
+            worktree_path: None,
+            account_profile: None,
+            capabilities: ExternalProviderSessionCapabilities::default(),
+            attached_to_arroba: false,
+            attached_session_ids: Vec::new(),
+            attached_agent_ids: Vec::new(),
+        };
+
+        assert!(record.is_attachable_to_arroba());
+        assert!(!record.is_attached_to_arroba());
+
+        record.mark_attached_to_arroba(vec!["session-1".to_string()], vec!["agent-1".to_string()]);
+
+        assert!(record.is_attached_to_arroba());
+        assert!(!record.is_attachable_to_arroba());
+        assert_eq!(record.first_attached_session_id(), Some("session-1"));
+        assert_eq!(record.first_attached_agent_id(), Some("agent-1"));
+
+        record.clear_arroba_attachment();
+
+        assert!(record.is_attachable_to_arroba());
+        assert_eq!(record.first_attached_session_id(), None);
+        assert_eq!(record.first_attached_agent_id(), None);
+    }
 }
