@@ -391,7 +391,7 @@ impl KernelRuntimeState {
                 request.language,
                 request.source,
                 compile.definition,
-                &limits,
+                compile.validation,
             )?;
             app.durable_state_store().append_event(
                 "workflow_code_artifact.created",
@@ -422,7 +422,7 @@ impl KernelRuntimeState {
                 request.language,
                 request.source,
                 compile.definition,
-                &limits,
+                compile.validation,
             )?;
             app.durable_state_store().append_event(
                 "workflow_code_artifact.updated",
@@ -528,7 +528,7 @@ impl KernelRuntimeState {
                 request.name.as_deref(),
                 request.package,
                 compile.definition,
-                &limits,
+                compile.validation,
                 request.overwrite,
             )?;
             app.durable_state_store().append_event(

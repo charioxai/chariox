@@ -112,6 +112,7 @@ function createBuilder() {
   let nextEndpoint = 1
   let nextQueue = 1
   let nextWatchdog = 1
+  const sourceSpans = {}
   const state = {
     schema_version: 1,
     workflow: {},
@@ -124,6 +125,21 @@ function createBuilder() {
   }
   function handle(kind, explicit) {
     return explicit || `${kind}:${kind === "schema" ? nextSchema++ : kind === "node" ? nextNode++ : kind === "edge" ? nextEdge++ : kind === "endpoint" ? nextEndpoint++ : kind === "queue" ? nextQueue++ : nextWatchdog++}`
+  }
+  function sourceSpan() {
+    const stack = String(new Error().stack || "")
+    const frame = stack
+      .split("\n")
+      .map((line) => line.match(/workflow-code\.js:(\d+):(\d+)/))
+      .find(Boolean)
+    if (!frame) return undefined
+    const line = Math.max(1, Number(frame[1]) - 1)
+    const column = Math.max(1, Number(frame[2]))
+    return { start_line: line, start_column: column, end_line: line, end_column: column }
+  }
+  function recordSourceSpan(handle) {
+    const span = sourceSpan()
+    if (span) sourceSpans[handle] = span
   }
   function ref(value, expected) {
     if (typeof value === "string") return value
@@ -154,6 +170,7 @@ function createBuilder() {
         ...(options.description !== undefined ? { description: options.description } : {}),
         schema: options.schema
       }
+      recordSourceSpan(item.handle)
       state.schemas.push(item)
       return { __workflowCodeHandle: "schema", handle: item.handle }
     },
@@ -190,6 +207,7 @@ function createBuilder() {
         ...(options.extensions !== undefined ? { extensions: options.extensions } : {}),
         ...(options.canvas !== undefined ? { canvas: options.canvas } : {})
       }
+      recordSourceSpan(item.handle)
       state.nodes.push(item)
       return { __workflowCodeHandle: "node", handle: item.handle }
     },
@@ -204,6 +222,7 @@ function createBuilder() {
         ...(options.validationPolicy !== undefined ? { validation_policy: options.validationPolicy } : {}),
         ...(options.canvas !== undefined ? { canvas: options.canvas } : {})
       }
+      recordSourceSpan(item.handle)
       state.edges.push(item)
       return { __workflowCodeHandle: "edge", handle: item.handle }
     },
@@ -214,6 +233,7 @@ function createBuilder() {
         ...(options.alias !== undefined ? { alias: options.alias } : {}),
         ...(options.canvas !== undefined ? { canvas: options.canvas } : {})
       }
+      recordSourceSpan(item.handle)
       state.endpoints.push(item)
       return { __workflowCodeHandle: "endpoint", handle: item.handle }
     },
@@ -224,6 +244,7 @@ function createBuilder() {
         ...(options.priority !== undefined ? { priority: options.priority } : {}),
         ...(options.enabled !== undefined ? { enabled: options.enabled } : {})
       }
+      recordSourceSpan(item.handle)
       state.queues.push(item)
       return { __workflowCodeHandle: "queue", handle: item.handle }
     },
@@ -237,11 +258,15 @@ function createBuilder() {
         policy: options.policy,
         ...(options.maxWakeups !== undefined ? { max_wakeups: options.maxWakeups } : {})
       }
+      recordSourceSpan(item.handle)
       state.watchdogs.push(item)
       return { __workflowCodeHandle: "watchdog", handle: item.handle }
     },
     export() {
       return state
+    },
+    __sourceSpans() {
+      return sourceSpans
     }
   }
   return api
@@ -259,7 +284,7 @@ try {
   const wrapped = `(async () => {\n${input.source || ""}\nif (typeof defineWorkflow === "function") await defineWorkflow(workflow)\nreturn workflow.export()\n})()`
   const script = new vm.Script(wrapped, { filename: "workflow-code.js" })
   const definition = await script.runInContext(context, { timeout: Math.max(1, Number(input.timeout_ms || 30000)) })
-  console.log(JSON.stringify({ ok: true, definition, logs: logs.join("\n") }))
+  console.log(JSON.stringify({ ok: true, definition, source_spans: workflow.__sourceSpans(), logs: logs.join("\n") }))
 } catch (error) {
   console.log(JSON.stringify({
     ok: false,
@@ -274,6 +299,8 @@ pub struct WorkflowCodeCompileResult {
     pub definition: WorkflowCodeDefinition,
     pub validation: WorkflowCodeValidationReport,
     pub logs: String,
+    #[serde(skip)]
+    pub source_spans: BTreeMap<String, WorkflowCodeSourceSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +351,8 @@ struct WorkflowCodeCompilerOutput {
     ok: bool,
     #[serde(default)]
     definition: Option<WorkflowCodeDefinition>,
+    #[serde(default)]
+    source_spans: BTreeMap<String, WorkflowCodeSourceSpan>,
     #[serde(default)]
     error: Option<String>,
     #[serde(default)]
@@ -406,7 +435,7 @@ impl WorkflowCodeArtifactRegistry {
         language: WorkflowCodeLanguage,
         source: impl Into<String>,
         definition: WorkflowCodeDefinition,
-        limits: &WorkflowCodeLimitsConfig,
+        validation: WorkflowCodeValidationReport,
     ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
         validate_registry_name(name, "workflow-code artifact name")?;
         if self.find_path(name)?.is_some() {
@@ -415,7 +444,6 @@ impl WorkflowCodeArtifactRegistry {
                 message: format!("workflow-code artifact `{name}` is already saved"),
             });
         }
-        let validation = definition.validate_with_limits(limits);
         let source = source.into();
         let now = crate::session::unix_epoch_ms();
         let source_sha256 = sha256_hex(source.as_bytes());
@@ -443,7 +471,7 @@ impl WorkflowCodeArtifactRegistry {
         language: WorkflowCodeLanguage,
         source: impl Into<String>,
         definition: WorkflowCodeDefinition,
-        limits: &WorkflowCodeLimitsConfig,
+        validation: WorkflowCodeValidationReport,
     ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
         validate_registry_name(name, "workflow-code artifact name")?;
         let path = self
@@ -454,7 +482,6 @@ impl WorkflowCodeArtifactRegistry {
             })?;
         let previous = read_stored_artifact(&path)?;
         let source = source.into();
-        let validation = definition.validate_with_limits(limits);
         let stored = StoredWorkflowCodeArtifact {
             name: name.to_string(),
             language,
@@ -527,7 +554,7 @@ impl WorkflowCodeArtifactRegistry {
         name_override: Option<&str>,
         package: WorkflowCodeArtifactPackage,
         definition: WorkflowCodeDefinition,
-        limits: &WorkflowCodeLimitsConfig,
+        validation: WorkflowCodeValidationReport,
         overwrite: bool,
     ) -> Result<WorkflowCodeArtifact, crate::DaemonError> {
         package.validate_integrity()?;
@@ -535,9 +562,21 @@ impl WorkflowCodeArtifactRegistry {
         validate_registry_name(name, "workflow-code artifact name")?;
         let existing = self.get(name)?.is_some();
         if overwrite && existing {
-            self.update(name, package.language, package.source, definition, limits)
+            self.update(
+                name,
+                package.language,
+                package.source,
+                definition,
+                validation,
+            )
         } else {
-            self.save(name, package.language, package.source, definition, limits)
+            self.save(
+                name,
+                package.language,
+                package.source,
+                definition,
+                validation,
+            )
         }
     }
 
@@ -695,11 +734,14 @@ pub fn compile_workflow_code_javascript(
                 operation: "workflow_code.compile",
                 message: "Node workflow-code compiler did not return a definition".to_string(),
             })?;
-    let validation = definition.validate_with_limits(limits);
+    let source_spans = compiler_output.source_spans;
+    let mut validation = definition.validate_with_limits(limits);
+    attach_workflow_code_diagnostic_spans(&mut validation, &source_spans);
     Ok(WorkflowCodeCompileResult {
         definition,
         validation,
         logs,
+        source_spans,
     })
 }
 
@@ -892,12 +934,22 @@ pub struct WorkflowCodeValidationReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeSourceSpan {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowCodeValidationDiagnostic {
     pub severity: WorkflowCodeValidationSeverity,
     pub code: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_span: Option<WorkflowCodeSourceSpan>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1295,6 +1347,7 @@ impl<'a> WorkflowCodeValidator<'a> {
             code: code.to_string(),
             message: message.into(),
             handle,
+            source_span: None,
         });
     }
 
@@ -1306,6 +1359,23 @@ impl<'a> WorkflowCodeValidator<'a> {
         WorkflowCodeValidationReport {
             ok,
             diagnostics: self.diagnostics,
+        }
+    }
+}
+
+pub(crate) fn attach_workflow_code_diagnostic_spans(
+    validation: &mut WorkflowCodeValidationReport,
+    source_spans: &BTreeMap<String, WorkflowCodeSourceSpan>,
+) {
+    for diagnostic in &mut validation.diagnostics {
+        if diagnostic.source_span.is_some() {
+            continue;
+        }
+        let Some(handle) = diagnostic.handle.as_deref() else {
+            continue;
+        };
+        if let Some(source_span) = source_spans.get(handle) {
+            diagnostic.source_span = Some(source_span.clone());
         }
     }
 }
@@ -1889,6 +1959,50 @@ workflow.endpoint(planner, { alias: "entry" })
     }
 
     #[test]
+    fn javascript_compiler_attaches_source_spans_to_validation_diagnostics() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let result = compile_workflow_code_javascript(
+            node,
+            r#"
+const final = workflow.schema({
+  handle: "final",
+  schema: { type: "object", additionalProperties: false }
+})
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ provider: "dev-stub" }),
+  canCompleteWorkflowRun: true,
+  maxTurns: 0
+})
+workflow.endpoint(worker, { handle: "entry" })
+workflow.define({ alias: "bad", runOutputSchema: final })
+"#,
+            &WorkflowCodeLimitsConfig::default(),
+        )
+        .expect("workflow-code script should compile");
+
+        let diagnostic = result
+            .validation
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "invalid_max_turns")
+            .expect("invalid max_turns diagnostic should exist");
+        assert_eq!(diagnostic.handle.as_deref(), Some("worker"));
+        let source_span = diagnostic
+            .source_span
+            .as_ref()
+            .expect("diagnostic should carry a source span");
+        assert!(source_span.start_line >= 1);
+        assert!(source_span.start_column >= 1);
+        assert_eq!(source_span.end_line, source_span.start_line);
+        assert_eq!(source_span.end_column, source_span.start_column);
+    }
+
+    #[test]
     fn javascript_compiler_reports_script_errors() {
         let Some(node) = find_node() else {
             eprintln!("skipping workflow-code JS compiler test because node is not available");
@@ -1913,8 +2027,8 @@ workflow.endpoint(planner, { alias: "entry" })
             crate::session::unix_epoch_ms()
         ));
         let registry = WorkflowCodeArtifactRegistry::new(vec![root.clone()]);
-        let limits = WorkflowCodeLimitsConfig::default();
         let definition = minimal_definition();
+        let validation = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
 
         let created = registry
             .save(
@@ -1922,7 +2036,7 @@ workflow.endpoint(planner, { alias: "entry" })
                 WorkflowCodeLanguage::JavaScript,
                 "workflow.define({ alias: 'toy' })",
                 definition.clone(),
-                &limits,
+                validation,
             )
             .expect("workflow-code artifact should save");
 
@@ -1945,7 +2059,7 @@ workflow.endpoint(planner, { alias: "entry" })
                 WorkflowCodeLanguage::TypeScript,
                 "workflow.define({ alias: 'toy-2' })",
                 minimal_definition(),
-                &limits,
+                minimal_definition().validate_with_limits(&WorkflowCodeLimitsConfig::default()),
             )
             .expect("workflow-code artifact should update");
         assert_eq!(updated.metadata.language, WorkflowCodeLanguage::TypeScript);
@@ -1972,6 +2086,7 @@ workflow.endpoint(planner, { alias: "entry" })
         let registry = WorkflowCodeArtifactRegistry::new(vec![root.clone()]);
         let mut definition = minimal_definition();
         definition.endpoints.clear();
+        let validation = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
 
         let artifact = registry
             .save(
@@ -1979,7 +2094,7 @@ workflow.endpoint(planner, { alias: "entry" })
                 WorkflowCodeLanguage::JavaScript,
                 "workflow.define({ alias: 'invalid' })",
                 definition,
-                &WorkflowCodeLimitsConfig::default(),
+                validation,
             )
             .expect("invalid workflow-code artifact should still save diagnostics");
 

@@ -1476,7 +1476,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 178
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 179
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1973,6 +1973,14 @@ export type WorkflowCodeValidationDiagnostic = {
   code: string
   message: string
   handle?: string | null
+  source_span?: WorkflowCodeSourceSpan | null
+}
+
+export type WorkflowCodeSourceSpan = {
+  start_line: number
+  start_column: number
+  end_line: number
+  end_column: number
 }
 
 export type WorkflowCodeCompileResult = {

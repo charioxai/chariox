@@ -1376,6 +1376,10 @@ impl<'a> KernelSessionService<'a> {
                 &mut compile.validation,
                 caller_metaagent_id,
             )?;
+            crate::workflow_code::attach_workflow_code_diagnostic_spans(
+                &mut compile.validation,
+                &compile.source_spans,
+            );
         }
         compile.definition = definition;
         Ok(compile)
@@ -1410,6 +1414,7 @@ impl<'a> KernelSessionService<'a> {
                 definition: rebound_definition,
                 validation: compile.validation,
                 logs: compile.logs,
+                source_spans: compile.source_spans,
             },
             apply,
         })
@@ -1817,5 +1822,6 @@ fn push_workflow_code_target_validation_error(
             code: code.to_string(),
             message: message.into(),
             handle,
+            source_span: None,
         });
 }
