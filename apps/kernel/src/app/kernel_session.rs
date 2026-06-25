@@ -1566,6 +1566,31 @@ impl<'a> KernelSessionService<'a> {
         Ok(compile)
     }
 
+    pub(crate) fn validate_workflow_code_definition_with_rebindings(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        caller_metaagent_id: Option<&str>,
+    ) -> Result<(WorkflowCodeDefinition, WorkflowCodeValidationReport), DaemonError> {
+        let mut definition = definition.clone();
+        crate::workflow_code::apply_workflow_code_provider_rebindings(
+            &mut definition,
+            provider_rebindings,
+        )?;
+        let mut validation = definition.validate_with_limits(limits);
+        if validation.ok {
+            self.append_workflow_code_target_validation(
+                session_id,
+                &definition,
+                &mut validation,
+                caller_metaagent_id,
+            )?;
+        }
+        Ok((definition, validation))
+    }
+
     pub(crate) fn compile_and_apply_workflow_code_javascript_with_rebindings(
         &mut self,
         session_id: &str,

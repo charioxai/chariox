@@ -193,6 +193,13 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code(
     let env = TestMetaRuntimeEnv::new("workflow-code");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    std::fs::create_dir_all(workspace.join("schemas")).expect("schema directory should be created");
+    let schema_path = workspace.join("schemas/final.json");
+    std::fs::write(
+        &schema_path,
+        r#"{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}},"additionalProperties":false}"#,
+    )
+    .expect("schema file should be written");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
@@ -210,6 +217,12 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code(
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let source = r#"
 workflow.define({ alias: "meta_scripted_flow", maxConcurrent: 2 })
+const final = workflow.schemaFromFile({
+  handle: "final",
+  path: "schemas/final.json",
+  alias: "Final output"
+})
+workflow.define({ runOutputSchema: final })
 const planner = workflow.node({
   handle: "planner",
   agent: workflow.newAgent({ alias: "planner", provider: "codex", model: "gpt-5" }),
@@ -257,6 +270,17 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .and_then(serde_json::Value::as_str),
         Some("created")
     );
+    assert_eq!(
+        created
+            .payload
+            .pointer(
+                "/WorkflowCodeArtifactCreated/artifact/definition/schemas/0/schema/properties/answer/type"
+            )
+            .and_then(serde_json::Value::as_str),
+        Some("string")
+    );
+    std::fs::remove_file(&schema_path)
+        .expect("schema source file should be removable after artifact creation");
 
     let validated = router
         .runtime_state
@@ -275,6 +299,13 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .pointer("/WorkflowCodeValidated/result/validation/ok")
             .and_then(serde_json::Value::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/definition/workflow/run_output_schema")
+            .and_then(serde_json::Value::as_str),
+        Some("final")
     );
 
     let applied = router
@@ -299,6 +330,13 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .pointer("/WorkflowCodeApplied/result/compile/definition/nodes/0/agent/provider")
             .and_then(serde_json::Value::as_str),
         Some("dev-stub")
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/workflow/run_output_schema")
+            .and_then(serde_json::Value::as_str),
+        Some("final")
     );
     let workflow_id = applied
         .payload
