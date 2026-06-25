@@ -1495,6 +1495,13 @@ impl<'a> WorkflowCodeValidator<'a> {
             ) else {
                 continue;
             };
+            if queue.handle == "default" && normalized != "default" {
+                self.error(
+                    "reserved_queue_handle",
+                    "queue handle `default` is reserved for the kernel default queue; use alias `default` or choose another handle",
+                    Some(queue.handle.clone()),
+                );
+            }
             if let Some(existing_handle) = aliases.insert(normalized.clone(), queue.handle.clone())
             {
                 self.error(
@@ -2248,6 +2255,31 @@ mod tests {
             "{:?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn reserves_default_queue_handle_for_default_queue() {
+        let mut definition = minimal_definition();
+        definition.queues = vec![WorkflowCodeQueueDefinition {
+            handle: "default".to_string(),
+            alias: "urgent".to_string(),
+            priority: 10,
+            enabled: true,
+        }];
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+
+        assert!(!report.ok);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "reserved_queue_handle"
+                && diagnostic.handle.as_deref() == Some("default")
+                && diagnostic.message.contains("kernel default queue")
+        }));
+
+        definition.queues[0].alias = " Default ".to_string();
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+
+        assert!(report.ok, "{:?}", report.diagnostics);
     }
 
     #[test]
