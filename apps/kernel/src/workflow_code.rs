@@ -2253,6 +2253,63 @@ workflow.endpoint(planner, { alias: "entry" })
     }
 
     #[test]
+    fn compiles_javascript_queues_and_watchdogs() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let source = r#"
+const finalSchema = workflow.schema({
+  handle: "final",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: { answer: { type: "string" } },
+    additionalProperties: false
+  }
+})
+workflow.define({ alias: "queued_watchdog_flow", runOutputSchema: finalSchema })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
+  canCompleteWorkflowRun: true
+})
+const entry = workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+const urgent = workflow.queue({ handle: "urgent", alias: "urgent", priority: 5, enabled: false })
+workflow.watchdog(entry, {
+  handle: "wake_entry",
+  queue: urgent,
+  intervalSeconds: 60,
+  invocationPrompt: "Check for queued work.",
+  policy: "skip",
+  maxWakeups: 2
+})
+"#;
+
+        let result =
+            compile_workflow_code_javascript(node, source, &WorkflowCodeLimitsConfig::default())
+                .expect("workflow-code JS source should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert_eq!(result.definition.queues.len(), 1);
+        assert_eq!(result.definition.queues[0].handle, "urgent");
+        assert_eq!(result.definition.queues[0].priority, 5);
+        assert!(!result.definition.queues[0].enabled);
+        assert_eq!(result.definition.watchdogs.len(), 1);
+        assert_eq!(result.definition.watchdogs[0].endpoint, "entry");
+        assert_eq!(
+            result.definition.watchdogs[0].queue.as_deref(),
+            Some("urgent")
+        );
+        assert_eq!(
+            result.definition.watchdogs[0].policy,
+            WorkflowWatchdogPolicy::Skip
+        );
+        assert_eq!(result.definition.watchdogs[0].max_wakeups, Some(2));
+    }
+
+    #[test]
     fn workflow_code_language_serializes_canonical_typescript_name() {
         assert_eq!(
             serde_json::to_value(WorkflowCodeLanguage::TypeScript)
