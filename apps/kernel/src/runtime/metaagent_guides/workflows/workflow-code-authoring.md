@@ -143,11 +143,11 @@ Do not include runtime ids in provider rebindings. Do not rebind existing-agent 
 2. Call `arroba.meta.workflow_code.validate` with `source`, or save it with `arroba.meta.workflow_code.create` and validate by `name`. Include `language: "typescript"` when the inline or saved source uses TypeScript syntax.
 3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `endpoint`, `queue`, and `prompt`; endpoint and queue values may be script handles, and when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
 4. Inspect the apply report. It contains `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids`.
-5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.
+5. Use `arroba.meta.workflow_code.package_export` and `arroba.meta.workflow_code.package_import` to exchange portable workflow-code packages across kernels. Use `arroba.meta.workflow_code.source_export` for a single source file and `arroba.meta.workflow_code.source_export_dir` for a source-directory package with `workflow.js`, `schemas/*.json`, and `manifest.json`.
 
 Use `provider_rebindings` with apply/run when a generated-agent provider, model, effort, or account profile is unavailable or should be replaced in the target kernel. Rebindings target node handles, not generated runtime ids, and can only rebind nodes using `workflow.newAgent`.
 
-Exported workflow-code packages include `source_sha256` and `definition_sha256`. Import verifies both before saving the artifact, then validates the compiled definition against the target kernel limits and feature version. This preserves portability for embedded schemas while rejecting tampered or inconsistent packages.
+Exported workflow-code packages include `source_sha256` and `definition_sha256`. Import verifies both before saving the artifact, then validates the compiled definition against the target kernel limits and feature version. Source-directory export includes file hashes in `manifest.json`; validate the directory before applying it on another kernel. This preserves portability for embedded and external schema files while rejecting tampered or inconsistent packages.
 
 Generated runtime ids are never authored in the script. The script provides stable handles; the apply/run result returns the generated `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids` maps keyed by those handles.
 

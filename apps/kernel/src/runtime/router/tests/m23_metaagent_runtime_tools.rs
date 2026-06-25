@@ -870,11 +870,11 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .dispatch_meta_runtime_tool_call_for_agent(
             session.id(),
             metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL,
-            serde_json::json!({ "name": "meta-flow-imported", "format": "directory" }),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL,
+            serde_json::json!({ "name": "meta-flow-imported" }),
         )
         .await
-        .expect("metaagent should export workflow-code source");
+        .expect("metaagent should export workflow-code source directory");
     assert!(source_exported.ok, "{:?}", source_exported.payload);
     assert_eq!(
         source_exported
@@ -882,6 +882,16 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .pointer("/WorkflowCodeSourceExported/export/source_path")
             .and_then(serde_json::Value::as_str),
         Some("workflow.js")
+    );
+    assert!(
+        source_exported
+            .payload
+            .pointer("/WorkflowCodeSourceExported/export/files")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|files| files.iter().any(|file| {
+                file.get("path").and_then(serde_json::Value::as_str) == Some("manifest.json")
+            })),
+        "source_export_dir should return a manifest file"
     );
 
     let deleted = router
