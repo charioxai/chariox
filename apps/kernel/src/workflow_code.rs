@@ -1431,12 +1431,8 @@ impl<'a> WorkflowCodeValidator<'a> {
                 "endpoint.entry_node",
                 Some(endpoint.handle.clone()),
             );
-            self.validate_alias(
-                endpoint.alias.as_deref(),
-                "endpoint.alias",
-                Some(endpoint.handle.clone()),
-            );
         }
+        self.validate_endpoint_aliases(definition);
 
         for watchdog in &definition.watchdogs {
             self.validate_ref(
@@ -1517,6 +1513,30 @@ impl<'a> WorkflowCodeValidator<'a> {
                         edge.handle
                     ),
                     Some(edge.handle.clone()),
+                );
+            }
+        }
+    }
+
+    fn validate_endpoint_aliases(&mut self, definition: &WorkflowCodeDefinition) {
+        let mut aliases = BTreeMap::<String, String>::new();
+        for endpoint in &definition.endpoints {
+            let Some(normalized) = self.validate_alias(
+                endpoint.alias.as_deref(),
+                "endpoint.alias",
+                Some(endpoint.handle.clone()),
+            ) else {
+                continue;
+            };
+            if let Some(existing_handle) =
+                aliases.insert(normalized.clone(), endpoint.handle.clone())
+            {
+                self.error(
+                    "duplicate_endpoint_alias",
+                    format!(
+                        "endpoint alias `{normalized}` is already used by endpoint `{existing_handle}`"
+                    ),
+                    Some(endpoint.handle.clone()),
                 );
             }
         }
@@ -2143,6 +2163,18 @@ mod tests {
         let mut definition = minimal_definition();
         definition.workflow.alias = Some("bad alias".to_string());
         definition.endpoints[0].alias = Some("bad/endpoint".to_string());
+        definition.endpoints.push(WorkflowCodeEndpointDefinition {
+            handle: "duplicate_endpoint".to_string(),
+            entry_node: "planner".to_string(),
+            alias: Some("ENTRY".to_string()),
+            canvas: None,
+        });
+        definition.endpoints.push(WorkflowCodeEndpointDefinition {
+            handle: "duplicate_endpoint_copy".to_string(),
+            entry_node: "planner".to_string(),
+            alias: Some("entry".to_string()),
+            canvas: None,
+        });
         definition.queues = vec![
             WorkflowCodeQueueDefinition {
                 handle: "urgent".to_string(),
@@ -2187,10 +2219,20 @@ mod tests {
             .iter()
             .filter(|diagnostic| diagnostic.code == "duplicate_queue_alias")
             .count();
+        let duplicate_endpoint_alias_count = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "duplicate_endpoint_alias")
+            .count();
 
         assert!(!report.ok);
         assert_eq!(invalid_alias_count, 3, "{:?}", report.diagnostics);
         assert_eq!(duplicate_queue_alias_count, 2, "{:?}", report.diagnostics);
+        assert_eq!(
+            duplicate_endpoint_alias_count, 1,
+            "{:?}",
+            report.diagnostics
+        );
     }
 
     #[test]

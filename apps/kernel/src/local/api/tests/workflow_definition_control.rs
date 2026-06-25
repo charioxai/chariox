@@ -789,6 +789,111 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 }
 
 #[test]
+fn local_request_api_rejects_duplicate_workflow_code_endpoint_aliases_without_applying() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping duplicate workflow-code endpoint alias local API test because node is not available"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-duplicate-endpoint-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let worktree_root = workspace_root.join("worktree");
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+workflow.define({ alias: "duplicate_endpoint_flow" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "duplicate-endpoint-worker", provider: "dev-stub", model: "default" }),
+  instructions: "Complete.",
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(worker, { handle: "entry_a", alias: "entry" })
+workflow.endpoint(worker, { handle: "entry_b", alias: "ENTRY" })
+"#;
+
+    let validated = harness
+        .dispatch(LocalDaemonRequest::ValidateWorkflowCode(
+            crate::local::ValidateWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("duplicate endpoint workflow-code validate should return diagnostics");
+    match validated {
+        LocalDaemonResponse::WorkflowCodeValidated { result } => {
+            assert!(!result.validation.ok);
+            assert!(result
+                .validation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "duplicate_endpoint_alias"
+                    && diagnostic.handle.as_deref() == Some("entry_b")));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let apply_error = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect_err("duplicate endpoint alias workflow-code apply should fail before applying");
+    assert!(
+        format!("{apply_error:?}").contains("duplicate_endpoint_alias"),
+        "{apply_error:?}"
+    );
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed after rejected duplicate endpoint apply");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => {
+            assert!(!workflows
+                .iter()
+                .any(|workflow| workflow.alias() == Some("duplicate_endpoint_flow")));
+        }
+        _ => panic!("unexpected local response"),
+    }
+    let session_after = harness.with_app(|app| {
+        crate::app::KernelSessionReadService::new(app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should load")
+    });
+    assert!(!session_after
+        .agents()
+        .iter()
+        .any(|agent| agent.alias() == Some("duplicate-endpoint-worker")));
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
 fn local_request_api_applies_workflow_code_extensions_to_generated_agents() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!("skipping workflow-code extension local API test because node is not available");
