@@ -265,6 +265,25 @@ It launches two isolated kernels and gateways. Workflow A's published gateway
 uses a custom parser that calls workflow B's published HTTP endpoint, then
 passes B's accepted run id into workflow A's normalized input.
 
+## Workflow-Code Artifact Drill
+
+Use this after touching workflow-code artifacts, source export, source-directory
+export, schema import roots, provider rebindings, or package portability:
+
+```bash
+pnpm --filter @arroba/cli run workflow-code:artifact-drill
+node apps/cli/scripts/workflow-code-artifact-drill.mjs --second-kernel --discard-artifacts-on-success
+```
+
+The default drill launches an isolated kernel, creates and updates a
+workflow-code artifact, applies it with provider/model rebindings, exports and
+imports the package, runs the imported artifact, verifies schema-backed partial
+and final outputs, checks existing-agent bindings, and can apply every
+canonical example with `--example-suite`. The `--second-kernel` variant starts
+a clean second local kernel with its own `ARROBA_HOME`, transfers the exported
+package plus live-workflow single-source and source-directory exports, then
+imports, validates, applies, and runs each form with fresh workflow ids.
+
 Use this to validate the semantic URL renderer application shape on top of
 workflow publication:
 

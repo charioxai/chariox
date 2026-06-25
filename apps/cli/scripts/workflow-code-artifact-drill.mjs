@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   LocalIpcClient,
+  applyWorkflowCodeRequest,
   applyWorkflowCodeArtifactRequest,
   attachToSessionRequest,
   createSessionRequest,
@@ -15,19 +16,23 @@ import {
   deleteWorkflowCodeArtifactRequest,
   endSessionRequest,
   exportWorkflowCodeArtifactRequest,
+  exportWorkflowCodePackageRequest,
   exportWorkflowCodeSourceRequest,
   getSessionStateRequest,
   getWorkflowCodeArtifactRequest,
   getProviderRunRequest,
   importWorkflowCodeArtifactRequest,
+  importWorkflowCodePackageRequest,
   installSkillRequest,
   invokeWorkflowEndpointRequest,
   launchProviderRunRequest,
   listWorkflowCodeArtifactsRequest,
+  runWorkflowCodeRequest,
   runWorkflowCodeArtifactRequest,
   spawnAgentRequest,
   uninstallSkillRequest,
   updateWorkflowCodeArtifactRequest,
+  validateWorkflowCodeRequest,
 } from '@arroba/kernel-client'
 
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
@@ -54,6 +59,7 @@ function parseArgs(argv) {
     preserveOnSuccess: false,
     dryRun: false,
     exampleSuite: false,
+    secondKernel: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -72,6 +78,7 @@ function parseArgs(argv) {
     else if (arg === '--preserve-on-success') options.preserveOnSuccess = true
     else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--example-suite') options.exampleSuite = true
+    else if (arg === '--second-kernel') options.secondKernel = true
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--help' || arg === '-h') {
       printHelp()
@@ -107,6 +114,7 @@ function printHelp() {
     '  --preserve-on-success',
     '  --discard-artifacts-on-success',
     '  --example-suite',
+    '  --second-kernel',
     '  --dry-run',
   ].join('\n'))
 }
@@ -139,20 +147,25 @@ function buildKernel() {
   return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
 }
 
-function spawnedKernel() {
+function spawnedKernel(label = 'workflow-code-drill', rootDir = null) {
   const kernelPort = 45400 + Math.floor(Math.random() * 1000)
-  const socketPath = path.join(os.tmpdir(), `arroba-workflow-code-drill-${process.pid}-${Date.now()}.sock`)
+  const runId = `${label}-${process.pid}-${Date.now()}`
+  const socketPath = path.join(os.tmpdir(), `${runId}.sock`)
+  const env = {
+    ...process.env,
+    ARROBA_KERNEL_PORT: String(kernelPort),
+    ARROBA_MCP_PORT: String(kernelPort + 1000),
+    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
+    ARROBA_CODEX_PORT: String(kernelPort + 2001),
+    ARROBA_DAEMON_SOCKET: socketPath,
+    ARROBA_DAEMON_ID: runId,
+  }
+  if (rootDir) {
+    env.ARROBA_HOME = path.join(rootDir, 'arroba-home')
+  }
   return {
     kernelUrl: `ws://127.0.0.1:${kernelPort}`,
-    env: {
-      ...process.env,
-      ARROBA_KERNEL_PORT: String(kernelPort),
-      ARROBA_MCP_PORT: String(kernelPort + 1000),
-      ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-      ARROBA_CODEX_PORT: String(kernelPort + 2001),
-      ARROBA_DAEMON_SOCKET: socketPath,
-      ARROBA_DAEMON_ID: `workflow-code-drill-${process.pid}-${Date.now()}`,
-    },
+    env,
   }
 }
 
@@ -649,6 +662,180 @@ function validateArtifactHistory(artifact, expectedActions) {
   }
 }
 
+async function startIsolatedKernel(label, rootDir, workspace, worktree, timeoutMs) {
+  await mkdir(workspace, { recursive: true })
+  await mkdir(worktree, { recursive: true })
+  const spawned = spawnedKernel(label, rootDir)
+  const daemonChild = spawn(buildKernel(), [], {
+    cwd: repoRoot,
+    env: spawned.env,
+    stdio: ['ignore', 'ignore', 'inherit'],
+  })
+  const client = new LocalIpcClient(spawned.kernelUrl, {
+    kernelPingIntervalMs: 60_000,
+    kernelMaxMissedPongs: 10,
+  })
+  try {
+    await waitForKernel(client, workspace, worktree, timeoutMs)
+    return { client, daemonChild, kernelUrl: spawned.kernelUrl }
+  } catch (error) {
+    daemonChild.kill('SIGTERM')
+    await client.close().catch(() => {})
+    throw error
+  }
+}
+
+async function validateSourceExportOnKernel(client, session, nodePath, exportResult, label, timeoutMs) {
+  assert(exportResult?.source, `${label} should include source`, exportResult)
+  assert(
+    sha256Hex(exportResult.source) === exportResult.source_sha256,
+    `${label} source hash should match contents`,
+    exportResult,
+  )
+  const validated = unwrap(
+    await client.send(validateWorkflowCodeRequest(session.id, nodePath, exportResult.source)),
+    'WorkflowCodeValidated',
+  ).result
+  assert(validated?.validation?.ok, `${label} should validate on second kernel`, validated?.validation)
+  const expected = expectationFromDefinition(validated.definition)
+  const endpointHandle = validated.definition.endpoints?.[0]?.handle
+  assert(endpointHandle, `${label} should define an endpoint handle`, validated.definition)
+  const appliedResponse = unwrap(
+    await client.send(applyWorkflowCodeRequest(session.id, nodePath, exportResult.source)),
+    'WorkflowCodeApplied',
+  )
+  const apply = validateApplyResult(appliedResponse.result, `${label} apply`, expected)
+  validateSessionProjection(appliedResponse.session, apply, `${label} apply`, expected)
+  const runResponse = unwrap(
+    await client.send(runWorkflowCodeRequest(session.id, nodePath, exportResult.source, `Run ${label}.`, {
+      endpoint: endpointHandle,
+    })),
+    'WorkflowCodeRun',
+  )
+  const runApply = validateApplyResult(runResponse.result.apply, `${label} run`, expected)
+  validateSessionProjection(runResponse.session, runApply, `${label} run`, expected)
+  assert(runResponse.result.invocation?.workflow_run || runResponse.result.invocation?.queued_prompt, `${label} should invoke or enqueue`, runResponse.result.invocation)
+  assert(apply.workflow_id !== runApply.workflow_id, `${label} run should apply a fresh workflow`, { apply, runApply })
+  return {
+    validatedAlias: validated.definition.workflow?.alias ?? null,
+    applyWorkflowId: apply.workflow_id,
+    runWorkflowId: runApply.workflow_id,
+    runInvocation: runResponse.result.invocation.workflow_run ? 'started' : 'enqueued',
+    timeoutMs,
+  }
+}
+
+async function validateSecondKernelDistribution({
+  packageExport,
+  inlineSource,
+  directorySource,
+  sourceWorkflowId,
+  skillSourceDir,
+  skillName,
+  generatedRoot,
+  nodePath,
+  timeoutMs,
+}) {
+  const secondRoot = path.join(generatedRoot, 'second-kernel')
+  const secondWorkspace = path.join(secondRoot, 'workspace')
+  const secondWorktree = path.join(secondRoot, 'worktree')
+  const { client, daemonChild, kernelUrl } = await startIsolatedKernel(
+    'workflow-code-second-kernel-drill',
+    secondRoot,
+    secondWorkspace,
+    secondWorktree,
+    timeoutMs,
+  )
+  let sessionId = null
+  let installedSkill = false
+  try {
+    const session = unwrap(
+      await client.send(createSessionRequest(secondWorkspace, secondWorktree, 'workflow-code-second-kernel-drill', undefined, null, 'off')),
+      'SessionCreated',
+    ).session
+    sessionId = session.id
+    const skillInstall = unwrap(
+      await client.send(installSkillRequest(secondWorkspace, skillSourceDir)),
+      'SkillInstalled',
+    )
+    assert(skillInstall?.skill?.name === skillName, 'second kernel should install workflow-code drill skill', skillInstall)
+    installedSkill = true
+
+    const importedName = `second-kernel-package-${Date.now()}`
+    const imported = unwrap(
+      await client.send(importWorkflowCodePackageRequest(session.id, packageExport, nodePath, {
+        name: importedName,
+        overwrite: false,
+      })),
+      'WorkflowCodePackageImported',
+    ).artifact
+    assert(imported?.metadata?.validation?.ok, 'second kernel package import should validate', imported?.metadata?.validation)
+    const packageExpected = expectationFromDefinition(packageExport.definition)
+    const packageRebindings = rebindingsForDefinition(packageExport.definition)
+    const packageApplyResponse = unwrap(
+      await client.send(applyWorkflowCodeArtifactRequest(session.id, importedName, packageRebindings)),
+      'WorkflowCodeApplied',
+    )
+    const packageApply = validateApplyResult(packageApplyResponse.result, 'second kernel package', packageExpected)
+    validateSessionProjection(packageApplyResponse.session, packageApply, 'second kernel package', packageExpected)
+    const packageRun = unwrap(
+      await client.send(runWorkflowCodeArtifactRequest(session.id, importedName, 'Run the second-kernel package workflow.', {
+        endpoint: 'entry',
+        providerRebindings: packageRebindings,
+      })),
+      'WorkflowCodeRun',
+    )
+    const packageRunApply = validateApplyResult(packageRun.result.apply, 'second kernel package run', packageExpected)
+    validateSessionProjection(packageRun.session, packageRunApply, 'second kernel package run', packageExpected)
+    assert(packageApply.workflow_id !== sourceWorkflowId, 'second kernel package workflow id must be fresh', { packageApply, sourceWorkflowId })
+    assert(packageRunApply.workflow_id !== sourceWorkflowId, 'second kernel package run workflow id must be fresh', { packageRunApply, sourceWorkflowId })
+
+    const inline = await validateSourceExportOnKernel(
+      client,
+      session,
+      nodePath,
+      inlineSource,
+      'second kernel inline source',
+      timeoutMs,
+    )
+
+    const directoryManifest = await writeSourceDirectoryExport(
+      secondWorkspace,
+      directorySource,
+      'second kernel source directory',
+    )
+    const directory = await validateSourceExportOnKernel(
+      client,
+      session,
+      nodePath,
+      directorySource,
+      'second kernel source directory',
+      timeoutMs,
+    )
+
+    return {
+      kernelUrl,
+      sessionId: session.id,
+      packageImportedArtifact: importedName,
+      packageApplyWorkflowId: packageApply.workflow_id,
+      packageRunWorkflowId: packageRunApply.workflow_id,
+      inline,
+      directory,
+      directoryManifest,
+    }
+  } finally {
+    if (client && sessionId) {
+      if (installedSkill) {
+        await client.send(uninstallSkillRequest(secondWorkspace, skillName)).catch(() => {})
+      }
+      await client.send(endSessionRequest(sessionId)).catch(() => {})
+    }
+    await client.close().catch(() => {})
+    daemonChild.kill('SIGTERM')
+    await sleep(1000)
+  }
+}
+
 async function applyExistingAgentArtifact(client, session, nodePath, workspace) {
   const existingAgent = unwrap(
     await client.send(spawnAgentRequest(
@@ -833,6 +1020,7 @@ async function main() {
       source,
       providerRebindings: providerRebindings(),
       exampleSuite: options.exampleSuite,
+      secondKernel: options.secondKernel,
     }, null, 2))
     return
   }
@@ -858,7 +1046,7 @@ async function main() {
 
   try {
     if (options.spawnDaemon) {
-      const spawned = spawnedKernel()
+      const spawned = spawnedKernel('workflow-code-drill', generatedRoot)
       kernelUrl = spawned.kernelUrl
       daemonChild = spawn(buildKernel(), [], {
         cwd: repoRoot,
@@ -934,11 +1122,37 @@ async function main() {
     validateSessionProjection(appliedResponse.session, firstApply, 'artifact apply', defaultExpected)
 
     const exported = unwrap(
-      await client.send(exportWorkflowCodeArtifactRequest(session.id, artifactName)),
-      'WorkflowCodeArtifactExported',
+      await client.send(exportWorkflowCodePackageRequest(session.id, artifactName)),
+      'WorkflowCodePackageExported',
     ).package
     assert(exported?.source_sha256, 'exported package should include source hash', exported)
     assert(exported?.definition_sha256, 'exported package should include compiled definition hash', exported)
+
+    const liveInlineSource = unwrap(
+      await client.send(exportWorkflowCodeSourceRequest(
+        session.id,
+        { kind: 'workflow', workflow_ref: firstApply.workflow_id },
+        'inline',
+      )),
+      'WorkflowCodeSourceExported',
+    ).export
+    assert(liveInlineSource?.source, 'live workflow inline source export should include source', liveInlineSource)
+    assert(liveInlineSource.source_path === 'workflow.js', 'live workflow inline source path should be workflow.js', liveInlineSource)
+
+    const liveDirectorySource = unwrap(
+      await client.send(exportWorkflowCodeSourceRequest(
+        session.id,
+        { kind: 'workflow', workflow_ref: firstApply.workflow_id },
+        'directory',
+      )),
+      'WorkflowCodeSourceExported',
+    ).export
+    assert(liveDirectorySource?.source_path === 'workflow.js', 'live workflow directory source export should include workflow.js', liveDirectorySource)
+    assert(
+      (liveDirectorySource.files ?? []).some((file) => file.path === 'manifest.json'),
+      'live workflow directory source export should include manifest.json',
+      liveDirectorySource,
+    )
 
     await client.send(deleteWorkflowCodeArtifactRequest(session.id, artifactName))
 
@@ -979,6 +1193,23 @@ async function main() {
     const exampleSuite = options.exampleSuite
       ? await applyExampleSuite(client, session.id, nodePath, workspace)
       : []
+    if (options.secondKernel && installedSkill) {
+      await client.send(uninstallSkillRequest(workspace, skillName)).catch(() => {})
+      installedSkill = false
+    }
+    const secondKernel = options.secondKernel
+      ? await validateSecondKernelDistribution({
+        packageExport: exported,
+        inlineSource: liveInlineSource,
+        directorySource: liveDirectorySource,
+        sourceWorkflowId: firstApply.workflow_id,
+        skillSourceDir,
+        skillName,
+        generatedRoot,
+        nodePath,
+        timeoutMs: options.timeoutMs,
+      })
+      : null
 
     summary = {
       sessionId: session.id,
@@ -993,6 +1224,7 @@ async function main() {
       existingAgentArtifact,
       outputSchemaArtifact,
       exampleSuite,
+      secondKernel,
     }
     console.log(JSON.stringify(summary, null, 2))
 
