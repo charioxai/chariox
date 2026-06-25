@@ -248,7 +248,7 @@ fn score_guide(query: &str, guide: &MetaagentGuide) -> usize {
         guide.tags.join(" "),
         guide.commands.join(" ")
     ));
-    let body = normalize_search_text(guide.body);
+    let body = normalize_search_text(&guide_body(guide));
     query
         .split_whitespace()
         .map(|term| {
@@ -408,6 +408,30 @@ mod tests {
                 body.contains(example.source.trim()),
                 "missing source for `{}` from guide",
                 example.slug
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_code_pattern_guide_is_searchable_by_embedded_pattern_names() {
+        for query in [
+            "workflow-code fan-out synthesize",
+            "workflow-code adversarial verification",
+            "workflow-code tournament",
+            "workflow-code evaluator optimizer",
+        ] {
+            let guides = search_guides(MetaagentGuideSearchArgs {
+                query: Some(query.to_string()),
+                tag: Some("workflow-code".to_string()),
+                command: Some("arroba.meta.workflow_code.validate".to_string()),
+                limit: Some(5),
+            });
+            assert!(
+                guides.iter().any(|guide| {
+                    guide.get("id").and_then(serde_json::Value::as_str)
+                        == Some("workflows/workflow-code-patterns")
+                }),
+                "workflow-code pattern guide should be discoverable for `{query}`"
             );
         }
     }
