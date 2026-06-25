@@ -440,6 +440,7 @@ impl KernelRuntimeState {
                     crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
                     "workflow_code_artifact.apply",
                     None,
+                    None,
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
@@ -468,6 +469,7 @@ impl KernelRuntimeState {
                 let node_path = request.node_path.clone();
                 let source = request.source.clone();
                 let endpoint = request.endpoint.clone();
+                let queue_ref = request.queue_ref.clone();
                 let language = request
                     .language
                     .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript);
@@ -492,6 +494,11 @@ impl KernelRuntimeState {
                     workflow_code_run_endpoint_preflight(
                         &compile.definition,
                         endpoint.as_deref(),
+                        "workflow_code.run",
+                    )?;
+                    workflow_code_run_queue_preflight(
+                        &compile.definition,
+                        queue_ref.as_deref(),
                         "workflow_code.run",
                     )?;
                     let apply = crate::app::KernelSessionService::new(app)
@@ -605,6 +612,7 @@ impl KernelRuntimeState {
                 let name = request.name.clone();
                 let provider_rebindings = request.provider_rebindings.clone();
                 let endpoint = request.endpoint.clone();
+                let queue_ref = request.queue_ref.clone();
                 let caller_user_id = caller_user_id.clone();
                 move |app| {
                     workflow_code_artifact_apply_result(
@@ -617,6 +625,7 @@ impl KernelRuntimeState {
                         crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
                         "workflow_code_artifact.run",
                         Some(endpoint.as_deref()),
+                        queue_ref.as_deref(),
                     )
                 }
             })
@@ -967,6 +976,7 @@ fn workflow_code_artifact_apply_result(
     history_action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
     operation: &'static str,
     run_endpoint: Option<Option<&str>>,
+    run_queue: Option<&str>,
 ) -> Result<crate::workflow_code::WorkflowCodeCompileAndApplyResult, DaemonError> {
     let artifact = {
         let registry = workflow_code_registry_for_session(app, session_id)?;
@@ -1004,6 +1014,7 @@ fn workflow_code_artifact_apply_result(
     if let Some(endpoint) = run_endpoint {
         workflow_code_run_endpoint_preflight(&definition, endpoint, operation)?;
     }
+    workflow_code_run_queue_preflight(&definition, run_queue, operation)?;
     let apply = crate::app::KernelSessionService::new(app).apply_workflow_code_definition(
         session_id,
         &definition,
@@ -1130,6 +1141,28 @@ fn workflow_code_run_endpoint_preflight(
             "workflow-code defines {} endpoints; pass endpoint as a script handle",
             definition.endpoints.len()
         ),
+    })
+}
+
+fn workflow_code_run_queue_preflight(
+    definition: &crate::workflow_code::WorkflowCodeDefinition,
+    queue_ref: Option<&str>,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let Some(queue_ref) = queue_ref else {
+        return Ok(());
+    };
+    if queue_ref == "default"
+        || definition
+            .queues
+            .iter()
+            .any(|definition_queue| definition_queue.handle == queue_ref)
+    {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!("workflow-code queue handle `{queue_ref}` is not defined"),
     })
 }
 
