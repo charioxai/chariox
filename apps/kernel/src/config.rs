@@ -445,6 +445,8 @@ pub struct UserWorkflowCodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_edges: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_endpoints: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_queues: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_watchdogs: Option<u32>,
@@ -464,6 +466,7 @@ impl UserWorkflowCodeConfig {
             && self.max_nodes.is_none()
             && self.max_agents.is_none()
             && self.max_edges.is_none()
+            && self.max_endpoints.is_none()
             && self.max_queues.is_none()
             && self.max_watchdogs.is_none()
             && self.max_schema_bytes.is_none()
@@ -486,6 +489,9 @@ impl UserWorkflowCodeConfig {
             max_edges: self
                 .max_edges
                 .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_EDGES),
+            max_endpoints: self
+                .max_endpoints
+                .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS),
             max_queues: self
                 .max_queues
                 .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES),
@@ -514,6 +520,7 @@ pub struct WorkflowCodeLimitsConfig {
     pub max_nodes: u32,
     pub max_agents: u32,
     pub max_edges: u32,
+    pub max_endpoints: u32,
     pub max_queues: u32,
     pub max_watchdogs: u32,
     pub max_schema_bytes: u32,
@@ -1372,6 +1379,7 @@ unlock_policy = "{unlock_policy}"
             "workflow.code.max_nodes",
             "workflow.code.max_agents",
             "workflow.code.max_edges",
+            "workflow.code.max_endpoints",
             "workflow.code.max_queues",
             "workflow.code.max_watchdogs",
             "workflow.code.max_schema_bytes",
@@ -1408,6 +1416,10 @@ unlock_policy = "{unlock_policy}"
             crate::session::DEFAULT_WORKFLOW_CODE_MAX_AGENTS
         );
         assert_eq!(
+            limits.max_endpoints,
+            crate::session::DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS
+        );
+        assert_eq!(
             limits.max_generated_prompt_bytes,
             crate::session::DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES
         );
@@ -1432,11 +1444,15 @@ unlock_policy = "{unlock_policy}"
         config
             .set_user_config_value("workflow.code.max_nodes", "256")
             .expect("workflow-code node cap should update");
+        config
+            .set_user_config_value("workflow.code.max_endpoints", "128")
+            .expect("workflow-code endpoint cap should update");
 
         assert_eq!(config.session_default_max_agents(), 2048);
         let limits = config.workflow_code_limits();
         assert_eq!(limits.max_concurrent, 64);
         assert_eq!(limits.max_nodes, 256);
+        assert_eq!(limits.max_endpoints, 128);
 
         config
             .unset_user_config_value("workflow.code.max_concurrent")

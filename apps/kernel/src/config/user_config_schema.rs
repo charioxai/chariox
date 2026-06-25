@@ -105,6 +105,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("workflow.code.max_nodes", "u32", &[], true, true, "restart_required", "boot", "Maximum nodes accepted in one workflow-code artifact."),
         entry("workflow.code.max_agents", "u32", &[], true, true, "restart_required", "boot", "Maximum generated or bound agents accepted in one workflow-code artifact."),
         entry("workflow.code.max_edges", "u32", &[], true, true, "restart_required", "boot", "Maximum edges accepted in one workflow-code artifact."),
+        entry("workflow.code.max_endpoints", "u32", &[], true, true, "restart_required", "boot", "Maximum endpoints accepted in one workflow-code artifact."),
         entry("workflow.code.max_queues", "u32", &[], true, true, "restart_required", "boot", "Maximum queues accepted in one workflow-code artifact."),
         entry("workflow.code.max_watchdogs", "u32", &[], true, true, "restart_required", "boot", "Maximum watchdogs accepted in one workflow-code artifact."),
         entry("workflow.code.max_schema_bytes", "u32", &[], true, true, "restart_required", "boot", "Maximum total JSON schema bytes accepted in one workflow-code artifact."),

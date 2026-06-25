@@ -82,6 +82,8 @@ If no queues are defined, the kernel creates the workflow default prompt queue a
 
 Workflow, endpoint, and queue aliases use the same rules as manual workflow commands: after trimming and lowercase normalization, aliases must contain only lowercase letters, digits, `-`, or `_`. Queue aliases must be unique after normalization; define at most one queue with alias `default` when you need to configure the implicit default queue.
 
+The kernel validates workflow-code against TOML-backed limits before apply: `workflow.code.max_concurrent`, `max_nodes`, `max_agents`, `max_edges`, `max_endpoints`, `max_queues`, `max_watchdogs`, `max_schema_bytes`, and `max_generated_prompt_bytes`.
+
 Workflow-code scripts only define workflow structure. They do not call `run` or `enqueue` during compilation. To invoke the generated workflow, call `arroba.meta.workflow_code.run` with `endpoint`, optional `queue`, and `prompt`; `endpoint` and `queue` may be script handles returned by `workflow.endpoint` and `workflow.queue`, and the kernel maps them to generated runtime ids before normal workflow scheduling.
 
 ## Schemas and Outputs

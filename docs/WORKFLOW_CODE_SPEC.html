@@ -363,6 +363,7 @@ max_concurrent = 32
 max_nodes = 1024
 max_agents = 1024
 max_edges = 4096
+max_endpoints = 1024
 max_queues = 1024
 max_watchdogs = 1024
 max_schema_bytes = 1048576
@@ -388,10 +389,7 @@ script_memory_bytes = 268435456</code></pre>
   id: String,
   alias: Option&lt;String&gt;,
   description: Option&lt;String&gt;,
-  schema: serde_json::Value,
-  created_by_user_id: String,
-  created_at_ms: u64,
-  revision: u64
+  schema: serde_json::Value
 }</code></pre>
       <ul>
         <li>Workflow code defines schemas inline with <code>workflow.schema({ alias, description, schema })</code>.</li>

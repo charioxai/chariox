@@ -1280,6 +1280,11 @@ impl<'a> WorkflowCodeValidator<'a> {
         self.validate_count("agents", definition.nodes.len(), self.limits.max_agents);
         self.validate_count("edges", definition.edges.len(), self.limits.max_edges);
         self.validate_count(
+            "endpoints",
+            definition.endpoints.len(),
+            self.limits.max_endpoints,
+        );
+        self.validate_count(
             "queues",
             workflow_code_materialized_queue_count(definition),
             self.limits.max_queues,
@@ -2596,6 +2601,23 @@ mod tests {
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "limit_exceeded"
                 && diagnostic.message.contains("queues count 2 exceeds")
+        }));
+    }
+
+    #[test]
+    fn enforces_endpoint_limit() {
+        let definition = minimal_definition();
+        let limits = WorkflowCodeLimitsConfig {
+            max_endpoints: 0,
+            ..WorkflowCodeLimitsConfig::default()
+        };
+
+        let report = definition.validate_with_limits(&limits);
+
+        assert!(!report.ok);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "limit_exceeded"
+                && diagnostic.message.contains("endpoints count 1 exceeds")
         }));
     }
 

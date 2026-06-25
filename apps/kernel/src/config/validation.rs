@@ -103,6 +103,7 @@ fn validate_workflow_code_limits(
     validate_optional_nonzero("workflow.code.max_nodes", code.max_nodes)?;
     validate_optional_nonzero("workflow.code.max_agents", code.max_agents)?;
     validate_optional_nonzero("workflow.code.max_edges", code.max_edges)?;
+    validate_optional_nonzero("workflow.code.max_endpoints", code.max_endpoints)?;
     validate_optional_nonzero("workflow.code.max_queues", code.max_queues)?;
     validate_optional_nonzero("workflow.code.max_watchdogs", code.max_watchdogs)?;
     validate_optional_nonzero("workflow.code.max_schema_bytes", code.max_schema_bytes)?;

@@ -289,6 +289,13 @@ impl ArrobaUserConfig {
                         code.max_edges =
                             Some(parse_config_u32("workflow.code.max_edges", &value, true)?)
                     }
+                    "workflow.code.max_endpoints" => {
+                        code.max_endpoints = Some(parse_config_u32(
+                            "workflow.code.max_endpoints",
+                            &value,
+                            true,
+                        )?)
+                    }
                     "workflow.code.max_queues" => {
                         code.max_queues =
                             Some(parse_config_u32("workflow.code.max_queues", &value, true)?)
@@ -492,6 +499,7 @@ impl ArrobaUserConfig {
                         "workflow.code.max_nodes" => code.max_nodes = None,
                         "workflow.code.max_agents" => code.max_agents = None,
                         "workflow.code.max_edges" => code.max_edges = None,
+                        "workflow.code.max_endpoints" => code.max_endpoints = None,
                         "workflow.code.max_queues" => code.max_queues = None,
                         "workflow.code.max_watchdogs" => code.max_watchdogs = None,
                         "workflow.code.max_schema_bytes" => code.max_schema_bytes = None,
