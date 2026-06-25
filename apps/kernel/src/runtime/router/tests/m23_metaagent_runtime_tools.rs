@@ -206,6 +206,16 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code(
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
     std::fs::create_dir_all(workspace.join("schemas")).expect("schema directory should be created");
+    let skill_dir = workspace
+        .join(".arroba")
+        .join("skills")
+        .join("meta-workflow-code-skill");
+    std::fs::create_dir_all(&skill_dir).expect("workflow-code test skill dir should be created");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: meta-workflow-code-skill\ndescription: Meta workflow-code test skill.\n---\nUse this skill only in meta workflow-code tests.\n",
+    )
+    .expect("workflow-code test skill should be written");
     let schema_path = workspace.join("schemas/final.json");
     std::fs::write(
         &schema_path,
@@ -240,6 +250,9 @@ const planner = workflow.node({
   agent: workflow.newAgent({ alias: "planner", provider: "codex", model: "gpt-5" }),
   instructions: "Plan and complete.",
   canCompleteWorkflowRun: true,
+  extensions: [
+    { kind: "skill", name: "meta-workflow-code-skill" }
+  ],
   canvas: { x: 40, y: 80 }
 })
 workflow.endpoint(planner, { handle: "entry", alias: "entry" })
@@ -421,8 +434,17 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 agent.get("id").and_then(serde_json::Value::as_str) == Some(planner_agent_id)
                     && agent.get("provider").and_then(serde_json::Value::as_str) == Some("dev-stub")
                     && agent.get("model").and_then(serde_json::Value::as_str) == Some("default")
+                    && agent
+                        .get("extension_grants")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|grants| grants.iter().any(|grant| {
+                            grant.get("kind").and_then(serde_json::Value::as_str)
+                                == Some("skill")
+                                && grant.get("name").and_then(serde_json::Value::as_str)
+                                    == Some("meta-workflow-code-skill")
+                        }))
             })),
-        "applied workflow-code should create the planner with the rebound provider/model: {:?}",
+        "applied workflow-code should create the planner with the rebound provider/model and skill grant: {:?}",
         applied.payload
     );
     assert!(
