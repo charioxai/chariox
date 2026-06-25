@@ -92,6 +92,8 @@ Use `workflow.schemaFromFile({ handle, path, alias, description })` only when th
 
 Agents complete routed fan-out by emitting final fenced JSON containing `workflow_handoffs`. Each item selects an edge by real `edge_id` or a target by real `to_node_id`. The kernel resolves real ids during apply/run and exposes them in runtime context and apply reports.
 
+For multi-edge nodes, the runtime prompt lists outgoing edge contracts with real `edge_id`, `to_node_id`, target public label, any target node instruction excerpt as `target_instructions`, handoff schema ref, and validation policy. Use that contract instead of guessing ids or reading workflow metadata from the workspace.
+
 ## Extensions
 
 Use node `extensions` when the node's agent needs MCP, skill, script, connector, credential-backed access, or other extension grants supported by Arroba extension definitions. Keep extension grants on the node that needs them; generated agents receive those grants during apply, and existing agents receive them when the binding is authorized.
@@ -133,6 +135,8 @@ Do not include runtime ids in provider rebindings. Do not rebind existing-agent 
 5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.
 
 Use `provider_rebindings` with apply/run when a generated-agent provider, model, effort, or account profile is unavailable or should be replaced in the target kernel. Rebindings target node handles, not generated runtime ids, and can only rebind nodes using `workflow.newAgent`.
+
+Exported workflow-code packages include `source_sha256` and `definition_sha256`. Import verifies both before saving the artifact, then validates the compiled definition against the target kernel limits and feature version. This preserves portability for embedded schemas while rejecting tampered or inconsistent packages.
 
 Generated runtime ids are never authored in the script. The script provides stable handles; the apply/run result returns the generated `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids` maps keyed by those handles.
 

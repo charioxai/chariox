@@ -566,6 +566,7 @@ async function main() {
       'WorkflowCodeArtifactExported',
     ).package
     assert(exported?.source_sha256, 'exported package should include source hash', exported)
+    assert(exported?.definition_sha256, 'exported package should include compiled definition hash', exported)
 
     await client.send(deleteWorkflowCodeArtifactRequest(session.id, artifactName))
 

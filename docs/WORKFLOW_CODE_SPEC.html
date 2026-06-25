@@ -222,7 +222,7 @@
           <tr>
             <td>Workflow</td>
             <td><code>id</code>, <code>alias</code>, <code>controlled_by_metaagent_id</code>, <code>revision</code>, <code>canvas_layout</code>, <code>flush_agent_context_before_run</code>, <code>run_output_schema_ref</code>, <code>intermediate_output_schema_ref</code>, <code>nodes</code>, <code>edges</code>, <code>endpoints</code></td>
-            <td><code>workflow.define({ alias, flushAgentContextBeforeRun, runOutputSchema, intermediateOutputSchema, maxConcurrency })</code>. <code>maxConcurrency</code> is a proposed scheduler setting, not an existing field.</td>
+            <td><code>workflow.define({ alias, prompt, flushAgentContextBeforeRun, runOutputSchema, intermediateOutputSchema, maxConcurrent })</code>. <code>maxConcurrent</code> maps to the existing workflow scheduler concurrency setting.</td>
           </tr>
           <tr>
             <td>Node</td>
@@ -242,7 +242,7 @@
           <tr>
             <td>Endpoint</td>
             <td><code>id</code>, <code>owner_user_id</code>, <code>alias</code>, <code>entry_node_id</code></td>
-            <td><code>workflow.endpoint({ alias, entryNode })</code>. Endpoint prompt is supplied when invoking, queueing, or watchdog-triggering a run. Endpoint bind maps to changing <code>entryNode</code>.</td>
+            <td><code>workflow.endpoint(entryNode, { alias, canvas })</code>. Endpoint prompt is supplied when invoking, queueing, or watchdog-triggering a run.</td>
           </tr>
           <tr>
             <td>Prompt queue</td>
@@ -257,7 +257,7 @@
           <tr>
             <td>Watchdog</td>
             <td><code>workflow_id</code>, <code>endpoint_id</code>, <code>enabled</code>, <code>interval_seconds</code>, <code>invocation_prompt</code>, <code>policy</code>, <code>max_wakeups</code></td>
-            <td><code>workflow.watchdog({ endpoint, enabled, intervalSeconds, invocationPrompt, policy, maxWakeups })</code>.</td>
+            <td><code>workflow.watchdog(endpoint, { queue, intervalSeconds, invocationPrompt, policy, maxWakeups })</code>.</td>
           </tr>
           <tr>
             <td>Run prompt</td>
@@ -363,7 +363,7 @@ max_edges = 4096
 max_generated_prompt_bytes = 1048576</code></pre>
       <ul>
         <li>The session agent cap should move from a fixed default to TOML-backed configuration with default <code>1024</code>.</li>
-        <li><code>maxConcurrency</code> should default to <code>32</code> and may be lowered or raised per workflow-code artifact if the kernel policy allows it.</li>
+        <li><code>maxConcurrent</code> defaults to <code>32</code> and may be lowered or raised per workflow-code artifact if the kernel policy allows it.</li>
         <li>Compile validation must enforce max nodes, generated agents, edges, endpoints, queues, watchdogs, concurrency, schemas, and generated prompt bytes before the workflow is accepted.</li>
       </ul>
 
@@ -388,6 +388,7 @@ max_generated_prompt_bytes = 1048576</code></pre>
       <ul>
         <li>Workflow code defines schemas inline with <code>workflow.schema({ alias, description, schema })</code>.</li>
         <li>Optional <code>schemaFromFile(path)</code> is authoring sugar only. The compiler embeds the JSON value into the workflow-code artifact or compiled IR.</li>
+        <li>Exported workflow-code packages include <code>source_sha256</code> and <code>definition_sha256</code>; import verifies both hashes before saving the artifact.</li>
         <li>Workflow, node, edge, and publication schema fields should migrate from <code>*_schema_ref: String</code> to schema ids or schema handles.</li>
         <li>Compiled workflow snapshots should export schemas with the workflow so another kernel can import without local filesystem dependencies.</li>
         <li>Validation tools should validate against schema definitions resolved by id, while preserving a compatibility shim for old path refs during migration.</li>
@@ -414,9 +415,9 @@ max_generated_prompt_bytes = 1048576</code></pre>
         kernel extension grants used outside workflows.
       </p>
       <pre><code>extensions: [
-  workflow.mcp("playwright"),
-  workflow.skill("frontend-design"),
-  workflow.scriptExtension("schema-normalizer"),
+  { kind: "mcp", name: "playwright" },
+  { kind: "skill", name: "frontend-design" },
+  { kind: "script", name: "schema-normalizer", environment: "node" },
 ]</code></pre>
       <ul>
         <li>Extension definitions are portability requirements, not hidden script execution privileges.</li>
@@ -459,13 +460,14 @@ max_generated_prompt_bytes = 1048576</code></pre>
         The JavaScript API should be small and builder-oriented. Handles are compile-time references only.
         They are not durable Arroba ids.
       </p>
-      <pre><code>export default workflow.define({
+      <pre><code>workflow.define({
   alias: "triage-review-loop",
+  prompt: "Triage, route, review, and synthesize the requested task.",
   flushAgentContextBeforeRun: true,
-  maxConcurrency: 32,
-}, (workflow) =&gt; {
-  // Define schemas, agents, nodes, edges, endpoints, queues, and watchdogs here.
-});</code></pre>
+  maxConcurrent: 32,
+});
+
+// Define schemas, nodes, edges, endpoints, queues, and watchdogs here.</code></pre>
       <p>
         Mandatory components are a workflow alias, at least one node, at least one endpoint, and an entry node
         for every endpoint. Edges, queues, watchdogs, schemas, extensions, canvas layout, generated agents,
@@ -477,185 +479,197 @@ max_generated_prompt_bytes = 1048576</code></pre>
         This example defines a one-two-one workflow: an intake node fans out to two workers, both feed a
         synthesis node, and the synthesis node can loop back to intake for revision or complete the workflow.
       </p>
-      <pre><code>import { workflow } from "@arroba/workflow-code";
-
-export default workflow.define({
+      <pre><code>workflow.define({
   alias: "one-two-one-loop",
+  prompt: "Coordinate a 1-2-1 workflow with a synthesis loop.",
   flushAgentContextBeforeRun: true,
-  maxConcurrency: 32,
-}, (workflow) =&gt; {
-  const partialOutput = workflow.schema({
-    alias: "partial-output",
-    description: "Intermediate status visible to the endpoint while the run continues.",
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["status", "summary"],
-      properties: {
-        status: { type: "string", enum: ["triaging", "working", "reviewing"] },
-        summary: { type: "string" },
-      },
+  maxConcurrent: 32,
+});
+
+const partialOutput = workflow.schema({
+  handle: "partial_output",
+  alias: "partial-output",
+  description: "Intermediate status visible to the endpoint while the run continues.",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "summary"],
+    properties: {
+      status: { type: "string", enum: ["triaging", "working", "reviewing"] },
+      summary: { type: "string" },
     },
-  });
+  },
+});
 
-  const finalOutput = workflow.schema({
-    alias: "final-output",
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["result", "evidence"],
-      properties: {
-        result: { type: "string", enum: ["complete", "needs_user_input"] },
-        evidence: { type: "array", items: { type: "string" } },
-      },
+const finalOutput = workflow.schema({
+  handle: "final_output",
+  alias: "final-output",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["result", "evidence"],
+    properties: {
+      result: { type: "string", enum: ["complete", "needs_user_input"] },
+      evidence: { type: "array", items: { type: "string" } },
     },
-  });
+  },
+});
 
-  const workerHandoff = workflow.schema({
-    alias: "worker-handoff",
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["task", "constraints"],
-      properties: {
-        task: { type: "string" },
-        constraints: { type: "array", items: { type: "string" } },
-      },
+const workerHandoff = workflow.schema({
+  handle: "worker_handoff",
+  alias: "worker-handoff",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["task", "constraints"],
+    properties: {
+      task: { type: "string" },
+      constraints: { type: "array", items: { type: "string" } },
     },
-  });
+  },
+});
 
-  workflow.outputs({
-    runOutputSchema: finalOutput,
-    intermediateOutputSchema: partialOutput,
-  });
+workflow.define({
+  runOutputSchema: finalOutput,
+  intermediateOutputSchema: partialOutput,
+});
 
-  const intake = workflow.node({
-    publicLabel: "Intake",
-    agent: workflow.newAgent({
-      alias: "wf-intake",
-      provider: "codex",
-      model: "gpt-5",
-      effort: "medium",
-    }),
-    instructions: `
+const intake = workflow.node({
+  handle: "intake",
+  publicLabel: "Intake",
+  agent: workflow.newAgent({
+    alias: "wf-intake",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "medium",
+  }),
+  instructions: `
 Read the workflow-level prompt for the requested task.
 Split the work between the two worker nodes.
-When choosing a downstream route, use the outgoing edge ids listed in the system prompt.
+When choosing a downstream route, use the outgoing edge contracts listed in the system prompt.
 If the synthesis node asks for revision, incorporate its feedback and send updated tasks.
 `,
-    canEmitIntermediateRunOutput: true,
-    intermediateOutputSchema: partialOutput,
-    maxTurns: 4,
-    extensions: [
-      workflow.skill("openai-docs"),
-    ],
-    canvas: { x: 120, y: 240 },
-  });
+  canEmitIntermediateRunOutput: true,
+  intermediateOutputSchema: partialOutput,
+  maxTurns: 4,
+  extensions: [
+    { kind: "skill", name: "openai-docs" },
+  ],
+  canvas: { x: 120, y: 240 },
+});
 
-  const implementer = workflow.node({
-    publicLabel: "Implementer",
-    agent: workflow.newAgent({
-      alias: "wf-implementer",
-      provider: "codex",
-      model: "gpt-5",
-      effort: "high",
-    }),
-    instructions: "Implement or draft the requested change. Hand off concrete files, commands, and unresolved risks.",
-    maxTurns: 3,
-    extensions: [
-      workflow.mcp("node_repl"),
-    ],
-    canvas: { x: 420, y: 120 },
-  });
+const implementer = workflow.node({
+  handle: "implementer",
+  publicLabel: "Implementer",
+  agent: workflow.newAgent({
+    alias: "wf-implementer",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "high",
+  }),
+  instructions: "Implement or draft the requested change. Hand off concrete files, commands, and unresolved risks.",
+  maxTurns: 3,
+  extensions: [
+    { kind: "mcp", name: "node_repl" },
+  ],
+  canvas: { x: 420, y: 120 },
+});
 
-  const reviewer = workflow.node({
-    publicLabel: "Reviewer",
-    agent: workflow.newAgent({
-      alias: "wf-reviewer",
-      provider: "codex",
-      model: "gpt-5",
-      effort: "medium",
-    }),
-    instructions: "Review independently. Hand off only findings, verification status, and recommended next action.",
-    maxTurns: 3,
-    canvas: { x: 420, y: 360 },
-  });
+const reviewer = workflow.node({
+  handle: "reviewer",
+  publicLabel: "Reviewer",
+  agent: workflow.newAgent({
+    alias: "wf-reviewer",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "medium",
+  }),
+  instructions: "Review independently. Hand off only findings, verification status, and recommended next action.",
+  maxTurns: 3,
+  canvas: { x: 420, y: 360 },
+});
 
-  const synthesize = workflow.node({
-    publicLabel: "Synthesis",
-    agent: workflow.newAgent({
-      alias: "wf-synthesis",
-      provider: "codex",
-      model: "gpt-5",
-      effort: "medium",
-    }),
-    instructions: workflow.template`
+const synthesize = workflow.node({
+  handle: "synthesize",
+  publicLabel: "Synthesis",
+  agent: workflow.newAgent({
+    alias: "wf-synthesis",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "medium",
+  }),
+  instructions: `
 Combine both incoming worker results.
 If more work is required, route a revision request back to Intake using the outgoing edge whose target node is Intake.
 If the work is complete, call validate_and_submit_workflow_run_output with the final-output schema.
 `,
-    waitForAllInputs: true,
-    canCompleteWorkflowRun: true,
-    canEmitIntermediateRunOutput: true,
-    intermediateOutputSchema: partialOutput,
-    maxTurns: 5,
-    canvas: { x: 740, y: 240 },
-  });
+  waitForAllInputs: true,
+  canCompleteWorkflowRun: true,
+  canEmitIntermediateRunOutput: true,
+  intermediateOutputSchema: partialOutput,
+  maxTurns: 5,
+  canvas: { x: 740, y: 240 },
+});
 
-  workflow.edge(intake, implementer, {
-    handoffSchema: workerHandoff,
-    validationPolicy: "halt",
-    sourceSide: "right",
-    targetSide: "left",
-  });
+workflow.edge(intake, implementer, {
+  handle: "intake_to_implementer",
+  handoffSchema: workerHandoff,
+  validationPolicy: "halt",
+  sourceSide: "right",
+  targetSide: "left",
+});
 
-  workflow.edge(intake, reviewer, {
-    handoffSchema: workerHandoff,
-    validationPolicy: "halt",
-    sourceSide: "right",
-    targetSide: "left",
-  });
+workflow.edge(intake, reviewer, {
+  handle: "intake_to_reviewer",
+  handoffSchema: workerHandoff,
+  validationPolicy: "halt",
+  sourceSide: "right",
+  targetSide: "left",
+});
 
-  workflow.edge(implementer, synthesize, {
-    sourceSide: "right",
-    targetSide: "left",
-  });
+workflow.edge(implementer, synthesize, {
+  handle: "implementer_to_synthesize",
+  sourceSide: "right",
+  targetSide: "left",
+});
 
-  workflow.edge(reviewer, synthesize, {
-    sourceSide: "right",
-    targetSide: "left",
-  });
+workflow.edge(reviewer, synthesize, {
+  handle: "reviewer_to_synthesize",
+  sourceSide: "right",
+  targetSide: "left",
+});
 
-  const revise = workflow.edge(synthesize, intake, {
-    validationPolicy: "warn",
-    sourceSide: "left",
-    targetSide: "right",
-  });
+workflow.edge(synthesize, intake, {
+  handle: "revision_loop",
+  validationPolicy: "warn",
+  sourceSide: "left",
+  targetSide: "right",
+});
 
-  const start = workflow.endpoint({
-    alias: "start",
-    entryNode: intake,
-  });
+const start = workflow.endpoint(intake, {
+  handle: "start",
+  alias: "start",
+});
 
-  workflow.queue({
-    alias: "urgent",
-    priority: 10,
-    enabled: true,
-  });
+const urgent = workflow.queue({
+  handle: "urgent",
+  alias: "urgent",
+  priority: 10,
+  enabled: true,
+});
 
-  workflow.watchdog({
-    endpoint: start,
-    enabled: false,
-    intervalSeconds: 3600,
-    invocationPrompt: "Check whether queued work needs follow-up.",
-    policy: "queue",
-    maxWakeups: 24,
-  });
+workflow.watchdog(start, {
+  handle: "follow_up",
+  queue: urgent,
+  intervalSeconds: 3600,
+  invocationPrompt: "Check whether queued work needs follow-up.",
+  policy: "queue",
+  maxWakeups: 24,
 });</code></pre>
       <p>
-        If node instructions must include the allocated id of <code>revise</code>, the builder should support
-        instruction templates that are rendered after edge allocation. The handle above is still compile-time
-        only; it does not request or preserve a concrete kernel edge id.
+        Edge handles such as <code>revision_loop</code> are compile-time references only. Apply/run returns
+        the real edge id in <code>edge_ids</code>, and workflow node prompts list the real outgoing edge ids
+        when an agent needs to route with <code>workflow_handoffs</code>.
       </p>
 
       <h2>Compilation And Validation</h2>
@@ -668,8 +682,8 @@ If the work is complete, call validate_and_submit_workflow_run_output with the f
         <li>Validate shape: required fields, enum values, graph references, endpoint entry nodes, no duplicate agent bindings, no metaagent worker nodes, no impossible queue/watchdog references.</li>
         <li>Validate policy: caller authority, metaagent ownership, provider/model availability or replacement bindings, extension availability, configured limits, and max generated prompt bytes.</li>
         <li>Allocate fresh kernel ids for workflow graph objects and generated agents.</li>
-        <li>Render any placeholders such as <code>workflow.ref(edgeHandle)</code> into allocated ids.</li>
-        <li>Validate schemas and prompt templates after placeholder rendering.</li>
+        <li>Expose outgoing edge contracts at run time with allocated <code>edge_id</code>, <code>to_node_id</code>, target label, bounded <code>target_instructions</code>, handoff schema ref, and validation policy.</li>
+        <li>Validate schemas and prompt templates after id allocation.</li>
         <li>Apply state changes through the normal session and workflow services, not through a parallel mutation path.</li>
         <li>Return a compile report with created ids, warnings, binding requirements, and a graph summary.</li>
       </ol>
@@ -687,7 +701,7 @@ If the work is complete, call validate_and_submit_workflow_run_output with the f
       <pre><code>const intake = workflow.node({ ... });
 const reviewer = workflow.node({ ... });
 const reviewEdge = workflow.edge(intake, reviewer, { ... });
-const start = workflow.endpoint({ alias: "start", entryNode: intake });</code></pre>
+const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       <p>
         The compiler turns those handles into an intermediate representation. The IR may name handles with
         compiler-local references such as <code>node#1</code>, <code>edge#3</code>, or <code>endpoint#1</code>,
@@ -729,35 +743,43 @@ const start = workflow.endpoint({ alias: "start", entryNode: intake });</code></
         </thead>
         <tbody>
           <tr>
-            <td><code>meta.workflow_code.create</code></td>
+            <td><code>arroba.meta.workflow_code.create</code></td>
             <td>Create a saved workflow-code artifact from source, language, name, and optional description.</td>
           </tr>
           <tr>
-            <td><code>meta.workflow_code.update</code></td>
+            <td><code>arroba.meta.workflow_code.update</code></td>
             <td>Update a saved artifact revision.</td>
           </tr>
           <tr>
-            <td><code>meta.workflow_code.read</code></td>
+            <td><code>arroba.meta.workflow_code.list</code></td>
+            <td>List saved workflow-code artifact metadata.</td>
+          </tr>
+          <tr>
+            <td><code>arroba.meta.workflow_code.read</code></td>
             <td>Read a saved artifact for review or iteration.</td>
           </tr>
           <tr>
-            <td><code>meta.workflow_code.validate</code></td>
+            <td><code>arroba.meta.workflow_code.delete</code></td>
+            <td>Delete a saved artifact from the session/workspace registry.</td>
+          </tr>
+          <tr>
+            <td><code>arroba.meta.workflow_code.validate</code></td>
             <td>Compile in dry-run mode and return typed errors, warnings, and binding requirements.</td>
           </tr>
           <tr>
-            <td><code>meta.workflow_code.apply</code></td>
+            <td><code>arroba.meta.workflow_code.apply</code></td>
             <td>Compile and instantiate a workflow in the current session, using explicit provider/model/agent/extension bindings.</td>
           </tr>
           <tr>
-            <td><code>meta.workflow_code.run</code></td>
+            <td><code>arroba.meta.workflow_code.run</code></td>
             <td>Apply if needed and invoke an endpoint with a prompt, or run an already-applied artifact instance.</td>
           </tr>
           <tr>
-            <td><code>meta.workflow_code.export</code></td>
-            <td>Export artifact source, embedded schemas, manifest, extension requirements, and compatibility metadata.</td>
+            <td><code>arroba.meta.workflow_code.export</code></td>
+            <td>Export artifact source, embedded schemas, manifest, extension requirements, compatibility metadata, and source/definition hashes.</td>
           </tr>
           <tr>
-            <td><code>meta.workflow_code.import</code></td>
+            <td><code>arroba.meta.workflow_code.import</code></td>
             <td>Import a portable artifact package from another user or kernel without trusting embedded credentials.</td>
           </tr>
         </tbody>
@@ -785,7 +807,7 @@ const start = workflow.endpoint({ alias: "start", entryNode: intake });</code></
         <li>Add TOML-backed defaults for session max agents and workflow max concurrency.</li>
         <li>Introduce first-class workflow schemas with compatibility support for existing <code>*_schema_ref</code> strings.</li>
         <li>Add the workflow-code artifact type and compiler IR.</li>
-        <li>Add runtime MCP endpoints under the existing metaagent bundle: <code>meta.workflow_code.create</code>, <code>meta.workflow_code.read</code>, <code>meta.workflow_code.validate</code>, <code>meta.workflow_code.apply</code>, <code>meta.workflow_code.run</code>, <code>meta.workflow_code.import</code>, and <code>meta.workflow_code.export</code>.</li>
+        <li>Add runtime MCP endpoints under the existing metaagent bundle: <code>arroba.meta.workflow_code.create</code>, <code>arroba.meta.workflow_code.read</code>, <code>arroba.meta.workflow_code.list</code>, <code>arroba.meta.workflow_code.update</code>, <code>arroba.meta.workflow_code.delete</code>, <code>arroba.meta.workflow_code.validate</code>, <code>arroba.meta.workflow_code.apply</code>, <code>arroba.meta.workflow_code.run</code>, <code>arroba.meta.workflow_code.import</code>, and <code>arroba.meta.workflow_code.export</code>.</li>
         <li>Compile nodes-first workflow scripts into existing workflow services atomically.</li>
         <li>Add the metaagent workflow-code skill/guide and make it available to metaagents by default.</li>
       </ol>
