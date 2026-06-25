@@ -490,6 +490,51 @@ mod tests {
     }
 
     #[test]
+    fn workflow_code_apply_grants_extensions_to_authorized_existing_agent() {
+        let workspace = unique_workflow_code_test_workspace("existing-extension-satisfied");
+        install_test_skill(&workspace, "workflow-code-skill");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.display().to_string(),
+                "worktree",
+            ))
+            .expect("session should create");
+        let existing_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
+            .expect("existing worker should spawn");
+        let mut definition = existing_agent_workflow_code_definition(existing_agent.id());
+        definition.nodes[0].extensions.push(ExtensionGrant::new(
+            ExtensionKind::Skill,
+            "workflow-code-skill",
+        ));
+
+        let report = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect("workflow-code should grant extensions to an existing bound agent");
+
+        assert_eq!(
+            report.agent_ids.get("planner").map(String::as_str),
+            Some(existing_agent.id())
+        );
+        let existing_agent = app
+            .agents()
+            .get_agent(existing_agent.id())
+            .expect("existing worker should still exist");
+        assert!(existing_agent
+            .extension_grants()
+            .iter()
+            .any(|grant| grant.matches(&ExtensionKind::Skill, "workflow-code-skill")));
+        let _ = fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
     fn workflow_code_javascript_compile_and_apply_creates_generated_workflow() {
         let Some(node_path) = find_node_for_workflow_code_test() else {
             eprintln!("skipping workflow-code JS apply test because node is not available");
