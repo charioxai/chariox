@@ -15,6 +15,7 @@ import {
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
+import { agentRuntimeActivityIsBusy } from "../session-state.js"
 import {
   extractClaudeNativePromptAttachments,
   formatClaudeAttachmentContext,
@@ -190,9 +191,19 @@ function extractHiddenInstructions(prompt: string): string {
   return prompt.slice(start + hiddenInstructionsStart.length, end).trim()
 }
 
-function promptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
-  return session.prompt_states?.[agentId]?.active_prompt
+export function promptForAgent(session: RuntimeSession, agentId: string): PromptQueueItem | null {
+  const projectedActivity = session.agent_activity?.[agentId]
+  if (session.agent_activity && !agentRuntimeActivityIsBusy(projectedActivity)) {
+    return null
+  }
+
+  const prompt = session.prompt_states?.[agentId]?.active_prompt
     ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
+  const activeTurnPromptId = projectedActivity?.active_turn?.prompt_id
+  if (activeTurnPromptId && prompt?.id !== activeTurnPromptId) {
+    return null
+  }
+  return prompt
 }
 
 function extractSubmittedPromptId(response: Record<string, unknown>, agentId: string): string | null {
