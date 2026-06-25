@@ -175,6 +175,9 @@ function createBuilder() {
     if (!stat.isFile()) {
       throw new Error("schemaFromFile path must point to a JSON schema file")
     }
+    if (path.extname(resolved) !== ".json") {
+      throw new Error("schemaFromFile path must end in .json")
+    }
     const maxBytes = Math.max(1, Number(input.max_schema_bytes || 1048576))
     if (stat.size > maxBytes) {
       throw new Error(`schemaFromFile ${schemaPath} exceeds configured schema byte limit of ${maxBytes}`)
@@ -2703,6 +2706,38 @@ workflow.schemaFromFile({ handle: "final", path: "../outside.json" })
         .expect_err("schema import should reject parent traversal");
 
         assert!(format!("{error}").contains("approved import root"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn javascript_compiler_rejects_schema_file_without_json_extension() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!(
+            "arroba-workflow-code-schema-extension-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        fs::create_dir_all(root.join("schemas")).expect("schema root should create");
+        fs::write(
+            root.join("schemas/final.txt"),
+            r#"{"type":"object","additionalProperties":false}"#,
+        )
+        .expect("schema fixture should write");
+
+        let error = compile_workflow_code_javascript_with_schema_import_root(
+            node,
+            r#"
+workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
+"#,
+            &WorkflowCodeLimitsConfig::default(),
+            Some(&root),
+        )
+        .expect_err("schema import should reject non-json files");
+
+        assert!(format!("{error}").contains("must end in .json"));
         let _ = fs::remove_dir_all(root);
     }
 
