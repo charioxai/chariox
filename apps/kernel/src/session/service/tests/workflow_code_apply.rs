@@ -277,6 +277,70 @@ fn applies_workflow_code_definition_to_session_primitives() {
 }
 
 #[test]
+fn workflow_code_apply_preserves_node_intermediate_schema_override() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let mut definition = workflow_code_definition();
+    definition.schemas.push(WorkflowCodeSchemaDefinition {
+        handle: "node_progress".to_string(),
+        alias: Some("node-progress".to_string()),
+        description: Some("Node-specific progress output".to_string()),
+        schema: serde_json::json!({
+            "type": "object",
+            "required": ["node_value"],
+            "properties": {
+                "node_value": { "type": "number" }
+            },
+            "additionalProperties": false
+        }),
+    });
+    definition.nodes[0].intermediate_output_schema = Some("node_progress".to_string());
+
+    let agent_ids = BTreeMap::from([
+        ("planner".to_string(), "agent-1".to_string()),
+        ("worker".to_string(), "agent-2".to_string()),
+    ]);
+    let report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+        )
+        .expect("workflow-code should apply with node-specific intermediate schema");
+
+    let session = service
+        .get_session(session.id())
+        .expect("session should still exist");
+    let workflow = session
+        .workflow(&report.workflow_id)
+        .expect("workflow should exist");
+    let planner_id = report.node_ids.get("planner").expect("planner id");
+    let planner = workflow
+        .node(planner_id)
+        .expect("planner node should exist");
+
+    assert_eq!(
+        workflow.intermediate_output_schema_ref(),
+        report.schema_refs.get("progress").map(String::as_str)
+    );
+    assert_eq!(
+        planner.intermediate_output_schema_ref(),
+        report.schema_refs.get("node_progress").map(String::as_str)
+    );
+    assert_ne!(
+        workflow.intermediate_output_schema_ref(),
+        planner.intermediate_output_schema_ref()
+    );
+}
+
+#[test]
 fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
     let mut service = SessionService::new(&test_config());
     let session = service
