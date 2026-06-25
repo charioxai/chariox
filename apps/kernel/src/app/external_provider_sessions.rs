@@ -22,8 +22,35 @@ struct ExternalProviderSessionIndex {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ExternalProviderSessionAttachment {
-    session_ids: BTreeSet<String>,
-    agent_ids: BTreeSet<String>,
+    agent_ids_by_session_id: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ExternalProviderSessionAttachment {
+    fn insert(&mut self, session_id: &str, agent_id: &str) {
+        self.agent_ids_by_session_id
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(agent_id.to_string());
+    }
+
+    fn remove_session(&mut self, session_id: &str) -> bool {
+        self.agent_ids_by_session_id.remove(session_id).is_some()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.agent_ids_by_session_id.is_empty()
+    }
+
+    fn session_ids(&self) -> Vec<String> {
+        self.agent_ids_by_session_id.keys().cloned().collect()
+    }
+
+    fn agent_ids(&self) -> Vec<String> {
+        self.agent_ids_by_session_id
+            .values()
+            .flat_map(|agent_ids| agent_ids.iter().cloned())
+            .collect()
+    }
 }
 
 impl ExternalProviderSessionIndexStore {
@@ -101,8 +128,7 @@ impl ExternalProviderSessionIndexStore {
                 .attached
                 .entry(external_session_id.to_string())
                 .or_default();
-            attachment.session_ids.insert(session_id.to_string());
-            attachment.agent_ids.insert(agent_id.to_string());
+            attachment.insert(session_id, agent_id);
             attachment.clone()
         };
         if let Some(session) = index.sessions.get_mut(external_session_id) {
@@ -119,10 +145,10 @@ impl ExternalProviderSessionIndexStore {
             .expect("external provider session index poisoned");
         let mut changed_external_session_ids = Vec::new();
         index.attached.retain(|external_session_id, attachment| {
-            if attachment.session_ids.remove(session_id) {
+            if attachment.remove_session(session_id) {
                 changed_external_session_ids.push(external_session_id.clone());
             }
-            !attachment.session_ids.is_empty()
+            !attachment.is_empty()
         });
         for external_session_id in changed_external_session_ids {
             let attachment = index.attached.get(&external_session_id).cloned();
@@ -212,10 +238,7 @@ fn apply_attachment_marker(
     session: &mut ExternalProviderSessionRecord,
     attachment: &ExternalProviderSessionAttachment,
 ) {
-    session.mark_attached_to_arroba(
-        attachment.session_ids.iter().cloned().collect(),
-        attachment.agent_ids.iter().cloned().collect(),
-    );
+    session.mark_attached_to_arroba(attachment.session_ids(), attachment.agent_ids());
 }
 
 fn clear_attachment_marker(session: &mut ExternalProviderSessionRecord) {
@@ -363,6 +386,31 @@ mod tests {
         assert!(page.sessions[0].is_attachable_to_arroba());
         assert_eq!(page.sessions[0].first_attached_session_id(), None);
         assert_eq!(page.sessions[0].first_attached_agent_id(), None);
+    }
+
+    #[test]
+    fn detach_session_preserves_other_session_attachment_agents() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 30));
+        store.mark_attached("codex:thread-1", "session-1", "agent-1");
+        store.mark_attached("codex:thread-1", "session-2", "agent-2");
+
+        store.detach_session("session-1");
+
+        let session = store
+            .get("codex:thread-1")
+            .expect("session should remain indexed");
+        assert!(session.is_attached_to_arroba());
+        assert_eq!(session.attached_session_ids, vec!["session-2"]);
+        assert_eq!(session.attached_agent_ids, vec!["agent-2"]);
+        assert!(store
+            .list(&ListExternalProviderSessionsRequest {
+                provider: Some("codex".to_string()),
+                cursor: None,
+                limit: None,
+            })
+            .sessions
+            .is_empty());
     }
 
     fn record(
