@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 use crate::local::{
     ExternalProviderSessionPage, ExternalProviderSessionRecord, ListExternalProviderSessionsRequest,
 };
+use crate::provider::ExternalProviderImportMetadata;
 use crate::session::unix_epoch_ms;
 
 const DEFAULT_EXTERNAL_PROVIDER_SESSION_LIMIT: usize = 25;
@@ -111,6 +112,15 @@ impl ExternalProviderSessionIndexStore {
         let external_session_id =
             external_session_id_for_provider_session(provider, provider_session_id)?;
         self.mark_attached(&external_session_id, session_id, agent_id)
+    }
+
+    pub(crate) fn mark_import_attached(
+        &self,
+        import: &ExternalProviderImportMetadata,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<ExternalProviderSessionRecord> {
+        self.mark_attached(&import.external_provider_session_id, session_id, agent_id)
     }
 
     pub(crate) fn mark_attached(
@@ -335,6 +345,22 @@ mod tests {
         assert!(session.is_attached_to_arroba());
         assert_eq!(session.first_attached_session_id(), Some("session-1"));
         assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
+    }
+
+    #[test]
+    fn attachment_marker_can_be_applied_from_external_import_metadata() {
+        let store = ExternalProviderSessionIndexStore::default();
+        store.upsert(record("codex", "thread-1", 40));
+        let import =
+            ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+
+        let attached = store
+            .mark_import_attached(&import, "session-1", "agent-1")
+            .expect("provider session should be indexed");
+
+        assert!(attached.is_attached_to_arroba());
+        assert_eq!(attached.first_attached_session_id(), Some("session-1"));
+        assert_eq!(attached.first_attached_agent_id(), Some("agent-1"));
     }
 
     #[test]

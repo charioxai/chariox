@@ -118,8 +118,8 @@ impl DaemonApp {
 
     fn mark_agent_external_provider_sessions_attached(&self, agent: &AgentInstance) {
         if let Some(import) = agent.external_provider_import() {
-            self.external_provider_sessions.mark_attached(
-                &import.external_provider_session_id,
+            self.external_provider_sessions.mark_import_attached(
+                import,
                 agent.session_id(),
                 agent.id(),
             );
@@ -244,8 +244,8 @@ impl DaemonApp {
     ) -> usize {
         let mut count = 0usize;
         if let Some(import) = agent.external_provider_import() {
-            self.external_provider_sessions.mark_attached(
-                &import.external_provider_session_id,
+            self.external_provider_sessions.mark_import_attached(
+                import,
                 agent.session_id(),
                 agent.id(),
             );
