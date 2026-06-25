@@ -188,7 +188,7 @@
 
       <h2>Goals</h2>
       <ul>
-        <li>Make workflow generation expressible as JavaScript first, with Python possible later if the same compiler IR is preserved.</li>
+        <li>Make workflow generation expressible as JavaScript through a compiler IR that can support additional scripting front ends without changing kernel workflow semantics.</li>
         <li>Cover the same design surface that workflow slash commands cover: workflows, nodes, edges, endpoints, queues, watchdogs, schemas, output capabilities, node limits, canvas layout, and extension grants.</li>
         <li>Keep execution authority in the kernel. The script produces a design IR; it does not mutate runtime state directly.</li>
         <li>Let each application of the same script create a new workflow with fresh workflow, node, edge, endpoint, queue, watchdog, and generated-agent ids.</li>
@@ -199,9 +199,9 @@
 
       <h2>Non-Goals</h2>
       <ul>
-        <li>Do not add edge-level conditional expressions for MVP. Conditional routing is node behavior expressed through normal workflow output.</li>
+        <li>Do not add edge-level conditional expressions. Conditional routing is node behavior expressed through normal workflow output.</li>
         <li>Do not let scripts execute provider runs, shell commands, or direct kernel mutations while compiling.</li>
-        <li>Do not make publication creation part of workflow-code MVP. Publication/export remains a separate operation once a workflow exists.</li>
+        <li>Do not make publication creation part of workflow-code. Publication/export remains a separate operation once a workflow exists.</li>
         <li>Do not reuse graph ids across script applications. Workflow code is a generator, not a durable execution replay format.</li>
       </ul>
 
@@ -253,7 +253,7 @@
           <tr>
             <td>Queued prompt</td>
             <td><code>queue_id</code>, <code>workflow_id</code>, <code>endpoint_id</code>, <code>prompt</code>, <code>source</code>, <code>status</code></td>
-            <td>Not a static builder primitive. Use <code>arroba.meta.workflow_code.run</code> or <code>RunWorkflowCode*</code> with <code>endpoint</code>, <code>queue_ref</code>, and <code>prompt</code>; the kernel starts a run or creates a queued prompt according to current workflow scheduling state.</td>
+            <td>Not a static builder primitive. Use <code>arroba.meta.workflow_code.run</code> with <code>endpoint</code>, <code>queue</code>, and <code>prompt</code>, or <code>RunWorkflowCode*</code> with <code>endpoint</code>, <code>queue_ref</code>, and <code>prompt</code>; the kernel starts a run or creates a queued prompt according to current workflow scheduling state.</td>
           </tr>
           <tr>
             <td>Watchdog</td>
@@ -263,7 +263,7 @@
           <tr>
             <td>Run prompt</td>
             <td><code>WorkflowRun.invocation_prompt</code>, rendered as <code>Workflow-level prompt</code> in the turn prompt.</td>
-            <td>Provided at runtime through <code>arroba.meta.workflow_code.run</code>, <code>RunWorkflowCode*</code>, endpoint invocation, or <code>workflow.watchdog(... invocationPrompt)</code>. There is no current persistent workflow-definition prompt field.</td>
+            <td><code>workflow.define({ prompt })</code> stores the workflow-code default invocation prompt. <code>arroba.meta.workflow_code.run</code> and <code>RunWorkflowCode*</code> use the explicit runtime prompt when present, otherwise this saved default. Endpoint invocation and <code>workflow.watchdog(... invocationPrompt)</code> provide their own runtime prompts.</td>
           </tr>
         </tbody>
       </table>
@@ -453,7 +453,7 @@ max_generated_prompt_bytes = 1048576</code></pre>
         <li>If <code>workflow_handoffs</code> is present, only matching edges receive output.</li>
         <li>A handoff can target by <code>edge_id</code> or <code>to_node_id</code>.</li>
         <li>A handoff with a null message suppresses output for that route.</li>
-        <li>For generated scripts, edge ids are unknown until apply. The builder must support placeholders rendered after allocation, such as <code>workflow.ref(edgeHandle)</code>.</li>
+        <li>Scripts never hard-code generated edge ids. The apply report maps script handles to concrete ids, and node runtime context lists outgoing edge contracts with the real <code>edge_id</code>, <code>to_node_id</code>, target label, target instruction excerpt, handoff schema ref, and validation policy.</li>
       </ul>
 
       <h2>Workflow Code API Shape</h2>
@@ -679,7 +679,7 @@ workflow.watchdog(start, {
       </p>
       <ol>
         <li>Parse the artifact and execute it in a deterministic workflow-code runtime with no filesystem, shell, network, provider, or kernel mutation access except approved schema file imports.</li>
-        <li>Collect a typed compiler IR containing schemas, nodes, agent specs, edges, endpoints, queues, watchdogs, extension requirements, canvas layout, and optional run actions.</li>
+        <li>Collect a typed compiler IR containing schemas, nodes, agent specs, edges, endpoints, queues, watchdogs, extension requirements, and canvas layout.</li>
         <li>Validate shape: required fields, enum values, graph references, endpoint entry nodes, no duplicate agent bindings, no metaagent worker nodes, no impossible queue/watchdog references.</li>
         <li>Validate policy: caller authority, metaagent ownership, provider/model availability or replacement bindings, extension availability, configured limits, and max generated prompt bytes.</li>
         <li>Allocate fresh kernel ids for workflow graph objects and generated agents.</li>
@@ -719,7 +719,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       </ol>
       <p>
         Workflow-code scripts do not execute runs while compiling. Run and queue side effects happen only after
-        validation through <code>workflow_code.run</code> or normal endpoint invocation APIs, which receive the
+        validation through <code>arroba.meta.workflow_code.run</code>, <code>workflow_code.run</code>, or normal endpoint invocation APIs, which receive the
         allocated endpoint and queue references from the apply report.
       </p>
       <p>
@@ -730,7 +730,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       </p>
       <p>
         This is what makes the same script reusable: applying it twice yields the same graph shape but different
-        kernel ids. Any later operation should use the returned creation report, workflow aliases, endpoint
+        kernel ids. Subsequent operations should use the returned creation report, workflow aliases, endpoint
         aliases, node public labels, or normal resolve/list commands to inspect the concrete instance.
       </p>
 

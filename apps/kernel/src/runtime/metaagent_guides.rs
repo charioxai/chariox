@@ -375,11 +375,17 @@ mod tests {
             "Supported `kind` values are `\"mcp\"`, `\"skill\"`, `\"script\"`, and `\"connector\"`",
             "Script grants must include `environment`",
             "If no queues are defined",
+            "with `endpoint`, optional `queue`, and `prompt`",
+            "`run` may pass `endpoint`, `queue`, and `prompt`",
             "`validationPolicy` (`\"warn\"` or `\"halt\"`)",
             "`policy` (`\"skip\"` or `\"queue\"`)",
         ] {
             assert!(body.contains(expected), "missing `{expected}` from guide");
         }
+        assert!(
+            !body.contains("optional `queue_ref`"),
+            "metaagent guide should document the real workflow_code.run `queue` argument, not `queue_ref`"
+        );
     }
 
     #[test]
