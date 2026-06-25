@@ -259,6 +259,66 @@ fn applies_workflow_code_definition_to_session_primitives() {
 }
 
 #[test]
+fn workflow_code_apply_auto_layouts_missing_canvas_coordinates() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let mut definition = workflow_code_definition();
+    for node in &mut definition.nodes {
+        node.canvas = None;
+    }
+    for endpoint in &mut definition.endpoints {
+        endpoint.canvas = None;
+    }
+    for edge in &mut definition.edges {
+        edge.canvas = None;
+    }
+
+    let agent_ids = BTreeMap::from([
+        ("planner".to_string(), "agent-1".to_string()),
+        ("worker".to_string(), "agent-2".to_string()),
+    ]);
+    let report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+        )
+        .expect("workflow-code should apply");
+
+    assert!(report.canvas_layout_applied);
+
+    let session = service
+        .get_session(session.id())
+        .expect("session should still exist");
+    let workflow = session
+        .workflow(&report.workflow_id)
+        .expect("workflow should exist");
+    let layout = workflow
+        .canvas_layout()
+        .expect("auto-layout should create canvas layout");
+    assert_eq!(layout.nodes.len(), 2);
+    assert_eq!(layout.endpoints.len(), 1);
+    assert!(layout.edges.is_empty());
+
+    let planner_id = report.node_ids.get("planner").expect("planner id");
+    let worker_id = report.node_ids.get("worker").expect("worker id");
+    let entry_id = report.endpoint_ids.get("entry").expect("entry id");
+    let planner_point = layout.nodes.get(planner_id).expect("planner point");
+    let worker_point = layout.nodes.get(worker_id).expect("worker point");
+    let entry_point = layout.endpoints.get(entry_id).expect("entry point");
+    assert!(worker_point.x > planner_point.x);
+    assert!(entry_point.x < planner_point.x);
+    assert_eq!(entry_point.y, planner_point.y);
+}
+
+#[test]
 fn workflow_code_apply_rejects_missing_agent_resolution() {
     let mut service = SessionService::new(&test_config());
     let session = service

@@ -464,28 +464,62 @@ fn workflow_code_canvas_patches(
     report: &WorkflowCodeApplyReport,
 ) -> Vec<WorkflowCanvasLayoutPatch> {
     let mut patches = Vec::new();
+    let node_depths = workflow_code_node_depths(definition);
+    let mut rows_by_depth: BTreeMap<i32, i32> = BTreeMap::new();
+    let mut node_points = BTreeMap::new();
+
     for node in &definition.nodes {
-        if let Some(point) = node.canvas {
-            if let Some(node_id) = report.node_ids.get(&node.handle) {
-                patches.push(WorkflowCanvasLayoutPatch::NodePosition {
-                    node_id: node_id.clone(),
-                    x: point.x,
-                    y: point.y,
-                });
-            }
-        }
+        let Some(node_id) = report.node_ids.get(&node.handle) else {
+            continue;
+        };
+        let depth = *node_depths.get(&node.handle).unwrap_or(&0);
+        let row = rows_by_depth.entry(depth).or_insert(0);
+        let auto_point = WorkflowCanvasPoint {
+            x: depth.saturating_mul(300),
+            y: row.saturating_mul(160),
+        };
+        *row = row.saturating_add(1);
+        let point = node.canvas.map_or_else(
+            || auto_point,
+            |point| WorkflowCanvasPoint {
+                x: point.x,
+                y: point.y,
+            },
+        );
+        node_points.insert(node.handle.clone(), point.clone());
+        patches.push(WorkflowCanvasLayoutPatch::NodePosition {
+            node_id: node_id.clone(),
+            x: point.x,
+            y: point.y,
+        });
     }
+
     for endpoint in &definition.endpoints {
-        if let Some(point) = endpoint.canvas {
-            if let Some(endpoint_id) = report.endpoint_ids.get(&endpoint.handle) {
-                patches.push(WorkflowCanvasLayoutPatch::EndpointPosition {
-                    endpoint_id: endpoint_id.clone(),
-                    x: point.x,
-                    y: point.y,
-                });
-            }
-        }
+        let Some(endpoint_id) = report.endpoint_ids.get(&endpoint.handle) else {
+            continue;
+        };
+        let point = endpoint.canvas.map_or_else(
+            || {
+                node_points
+                    .get(&endpoint.entry_node)
+                    .map(|point| WorkflowCanvasPoint {
+                        x: point.x.saturating_sub(180),
+                        y: point.y,
+                    })
+                    .unwrap_or(WorkflowCanvasPoint { x: -180, y: 0 })
+            },
+            |point| WorkflowCanvasPoint {
+                x: point.x,
+                y: point.y,
+            },
+        );
+        patches.push(WorkflowCanvasLayoutPatch::EndpointPosition {
+            endpoint_id: endpoint_id.clone(),
+            x: point.x,
+            y: point.y,
+        });
     }
+
     for edge in &definition.edges {
         if let Some(canvas) = &edge.canvas {
             if let Some(edge_id) = report.edge_ids.get(&edge.handle) {
@@ -504,4 +538,39 @@ fn workflow_code_canvas_patches(
         }
     }
     patches
+}
+
+fn workflow_code_node_depths(definition: &WorkflowCodeDefinition) -> BTreeMap<String, i32> {
+    let mut depths: BTreeMap<String, i32> = BTreeMap::new();
+    let mut queue = Vec::new();
+    for endpoint in &definition.endpoints {
+        if depths.insert(endpoint.entry_node.clone(), 0).is_none() {
+            queue.push(endpoint.entry_node.clone());
+        }
+    }
+
+    let mut cursor = 0;
+    while let Some(node_handle) = queue.get(cursor).cloned() {
+        cursor += 1;
+        let Some(depth) = depths.get(&node_handle).copied() else {
+            continue;
+        };
+        for edge in &definition.edges {
+            if edge.from_node == node_handle {
+                let next_depth = depth.saturating_add(1);
+                let should_update = depths
+                    .get(&edge.to_node)
+                    .is_none_or(|current| next_depth < *current);
+                if should_update {
+                    depths.insert(edge.to_node.clone(), next_depth);
+                    queue.push(edge.to_node.clone());
+                }
+            }
+        }
+    }
+
+    for node in &definition.nodes {
+        depths.entry(node.handle.clone()).or_insert(0);
+    }
+    depths
 }
