@@ -355,6 +355,24 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .pointer("/WorkflowCodeApplied/result/apply/workflow_id")
         .and_then(serde_json::Value::as_str)
         .expect("apply should return workflow id");
+    let planner_agent_id = applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/agent_ids/planner")
+        .and_then(serde_json::Value::as_str)
+        .expect("apply should return planner agent id");
+    assert!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/session/agents")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|agents| agents.iter().any(|agent| {
+                agent.get("id").and_then(serde_json::Value::as_str) == Some(planner_agent_id)
+                    && agent.get("provider").and_then(serde_json::Value::as_str) == Some("dev-stub")
+                    && agent.get("model").and_then(serde_json::Value::as_str) == Some("default")
+            })),
+        "applied workflow-code should create the planner with the rebound provider/model: {:?}",
+        applied.payload
+    );
     assert!(
         applied
             .payload
