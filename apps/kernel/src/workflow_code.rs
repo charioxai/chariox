@@ -1440,7 +1440,8 @@ impl<'a> WorkflowCodeValidator<'a> {
             );
         }
         self.validate_endpoint_aliases(definition);
-        self.validate_reachable_nodes(definition, &node_handles);
+        let reachable_nodes = self.validate_reachable_nodes(definition, &node_handles);
+        self.validate_reachable_edges(definition, &node_handles, &reachable_nodes);
 
         for watchdog in &definition.watchdogs {
             self.validate_ref(
@@ -1561,9 +1562,9 @@ impl<'a> WorkflowCodeValidator<'a> {
         &mut self,
         definition: &WorkflowCodeDefinition,
         node_handles: &BTreeSet<String>,
-    ) {
+    ) -> BTreeSet<String> {
         if definition.endpoints.is_empty() {
-            return;
+            return BTreeSet::new();
         }
 
         let mut reachable = BTreeSet::<String>::new();
@@ -1597,6 +1598,27 @@ impl<'a> WorkflowCodeValidator<'a> {
                     "unreachable_node",
                     "node is not reachable from any workflow endpoint",
                     Some(node.handle.clone()),
+                );
+            }
+        }
+        reachable
+    }
+
+    fn validate_reachable_edges(
+        &mut self,
+        definition: &WorkflowCodeDefinition,
+        node_handles: &BTreeSet<String>,
+        reachable_nodes: &BTreeSet<String>,
+    ) {
+        for edge in &definition.edges {
+            if !node_handles.contains(&edge.from_node) || !node_handles.contains(&edge.to_node) {
+                continue;
+            }
+            if !reachable_nodes.contains(&edge.from_node) {
+                self.error(
+                    "unreachable_edge",
+                    "edge is not reachable from any workflow endpoint",
+                    Some(edge.handle.clone()),
                 );
             }
         }
@@ -2504,6 +2526,16 @@ mod tests {
             validation_policy: None,
             canvas: None,
         });
+        definition.edges.push(WorkflowCodeEdgeDefinition {
+            handle: "orphan_to_review".to_string(),
+            from_node: "orphan".to_string(),
+            to_node: "reviewer".to_string(),
+            source_side: None,
+            target_side: None,
+            handoff_schema: None,
+            validation_policy: None,
+            canvas: None,
+        });
 
         let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
 
@@ -2514,6 +2546,14 @@ mod tests {
         assert!(!report.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "unreachable_node"
                 && diagnostic.handle.as_deref() == Some("reviewer")
+        }));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "unreachable_edge"
+                && diagnostic.handle.as_deref() == Some("orphan_to_review")
+        }));
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "unreachable_edge"
+                && diagnostic.handle.as_deref() == Some("plan_to_review")
         }));
     }
 
