@@ -193,6 +193,7 @@ function createBuilder() {
       state.workflow = {
         ...state.workflow,
         ...(options.alias !== undefined ? { alias: options.alias } : {}),
+        ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
         ...(options.flushAgentContextBeforeRun !== undefined ? { flush_agent_context_before_run: options.flushAgentContextBeforeRun } : {}),
         ...(options.maxConcurrent !== undefined ? { max_concurrent: options.maxConcurrent } : {}),
         ...(options.runOutputSchema !== undefined ? { run_output_schema: ref(options.runOutputSchema, "schema") } : {}),
@@ -1061,6 +1062,8 @@ pub struct WorkflowCodeWorkflow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flush_agent_context_before_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<u32>,
@@ -1900,6 +1903,7 @@ fn workflow_code_generated_prompt_bytes(definition: &WorkflowCodeDefinition) -> 
 
     let mut total = 0usize;
     add_string(&mut total, definition.workflow.alias.as_deref());
+    add_string(&mut total, definition.workflow.prompt.as_deref());
     for schema in &definition.schemas {
         add_string(&mut total, schema.alias.as_deref());
         add_string(&mut total, schema.description.as_deref());
@@ -1953,6 +1957,7 @@ mod tests {
             schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
             workflow: WorkflowCodeWorkflow {
                 alias: Some("toy".to_string()),
+                prompt: Some("Run the toy workflow.".to_string()),
                 flush_agent_context_before_run: Some(true),
                 max_concurrent: Some(32),
                 run_output_schema: Some("final".to_string()),
@@ -2194,6 +2199,7 @@ const finalSchema = workflow.schema({
 })
 workflow.define({
   alias: "compiled",
+  prompt: "Run the compiled workflow.",
   maxConcurrent: 2,
   runOutputSchema: finalSchema
 })
@@ -2214,6 +2220,10 @@ workflow.endpoint(planner, { alias: "entry" })
         assert_eq!(
             result.definition.workflow.alias.as_deref(),
             Some("compiled")
+        );
+        assert_eq!(
+            result.definition.workflow.prompt.as_deref(),
+            Some("Run the compiled workflow.")
         );
         assert_eq!(result.definition.nodes.len(), 1);
         assert_eq!(result.definition.endpoints.len(), 1);

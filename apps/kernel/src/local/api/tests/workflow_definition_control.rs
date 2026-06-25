@@ -182,6 +182,7 @@ const progressOutput = workflow.schema({
 })
 workflow.define({
   alias: "scripted_run_flow",
+  prompt: "Use the workflow-code default invocation prompt.",
   maxConcurrent: 4,
   runOutputSchema: finalOutput,
   intermediateOutputSchema: progressOutput
@@ -210,7 +211,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 provider_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
                 queue_ref: None,
-                prompt: "Explain the smallest useful scripted workflow run.".to_string(),
+                prompt: String::new(),
             },
         ))
         .expect("workflow-code should apply and run");
@@ -341,7 +342,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     assert_eq!(workflow_run.endpoint_id(), endpoint_from_run.id());
     assert_eq!(
         workflow_run.invocation_prompt(),
-        Some("Explain the smallest useful scripted workflow run.")
+        Some("Use the workflow-code default invocation prompt.")
     );
     assert_eq!(format!("{:?}", workflow_run.status()), "Running");
     assert_eq!(workflow_run.node_runs().len(), 1);
@@ -1189,6 +1190,7 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
         schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
         workflow: crate::workflow_code::WorkflowCodeWorkflow {
             alias: Some("invalid_import".to_string()),
+            prompt: None,
             flush_agent_context_before_run: None,
             max_concurrent: None,
             run_output_schema: None,

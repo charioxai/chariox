@@ -1477,7 +1477,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 184
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 188
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1877,6 +1877,7 @@ export type WorkflowCodeDefinition = {
 
 export type WorkflowCodeWorkflow = {
   alias?: string | null
+  prompt?: string | null
   flush_agent_context_before_run?: boolean | null
   max_concurrent?: number | null
   run_output_schema?: string | null

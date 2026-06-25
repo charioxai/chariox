@@ -8,6 +8,7 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
 
 - `workflow.define(options)` sets workflow-level properties:
   - `alias`
+  - `prompt` (default invocation prompt used by `workflow_code.run` when no prompt is passed)
   - `flushAgentContextBeforeRun`
   - `maxConcurrent`
   - `runOutputSchema`
@@ -127,7 +128,7 @@ Do not include runtime ids in provider rebindings. Do not rebind existing-agent 
 
 1. Author the script.
 2. Call `arroba.meta.workflow_code.validate` with `source`, or save it with `arroba.meta.workflow_code.create` and validate by `name`. Include `language: "typescript"` when the inline or saved source uses TypeScript syntax.
-3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step.
+3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `prompt`; when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
 4. Inspect the apply report. It contains `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids`.
 5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.
 

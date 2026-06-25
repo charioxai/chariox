@@ -50,6 +50,7 @@ mod tests {
             schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
             workflow: WorkflowCodeWorkflow {
                 alias: Some("generated_agents".to_string()),
+                prompt: None,
                 flush_agent_context_before_run: Some(true),
                 max_concurrent: Some(2),
                 run_output_schema: None,

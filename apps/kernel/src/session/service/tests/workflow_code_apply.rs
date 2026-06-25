@@ -24,6 +24,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         workflow: WorkflowCodeWorkflow {
             alias: Some("coded_flow".to_string()),
+            prompt: Some("Run the coded flow.".to_string()),
             flush_agent_context_before_run: Some(false),
             max_concurrent: Some(2),
             run_output_schema: Some("final".to_string()),
@@ -289,6 +290,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         workflow: WorkflowCodeWorkflow {
             alias: Some("coded_router".to_string()),
+            prompt: None,
             flush_agent_context_before_run: None,
             max_concurrent: Some(2),
             run_output_schema: None,

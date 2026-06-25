@@ -411,7 +411,6 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
   const run = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.run', {
     name: importedName,
     endpoint: 'entry',
-    prompt: 'Run the imported workflow-code artifact from the metaagent capabilities drill.',
     provider_rebindings: providerRebindings,
   })
   assert(run.ok, 'metaagent should run workflow-code artifacts through runtime MCP', run.payload)
@@ -421,6 +420,13 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
     'workflow-code run should start or enqueue a workflow invocation',
     run.payload,
   )
+  if (runPayload.result?.invocation?.kind === 'started') {
+    assert(
+      runPayload.result.invocation.workflow_run?.invocation_prompt === 'Complete the isolated metaagent workflow-code drill.',
+      'workflow-code run should use the script-level prompt when the runtime MCP call omits prompt',
+      run.payload,
+    )
+  }
 
   const deletedOriginal = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.delete', { name })
   assert(deletedOriginal.ok, 'metaagent should delete original workflow-code artifact', deletedOriginal.payload)

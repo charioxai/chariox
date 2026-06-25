@@ -494,6 +494,10 @@ impl KernelRuntimeState {
             Ok(endpoint_ref) => endpoint_ref,
             Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
         };
+        let invocation_prompt = workflow_code_invocation_prompt(
+            &request.prompt,
+            apply_result.compile.definition.workflow.prompt.as_deref(),
+        );
         let (invoke_response, session) = self
             .execute_workflow_invoke_endpoint_request(
                 crate::local::InvokeWorkflowEndpointRequest {
@@ -501,7 +505,7 @@ impl KernelRuntimeState {
                     workflow_ref: apply_result.apply.workflow_id.clone(),
                     endpoint_ref,
                     queue_ref: request.queue_ref,
-                    prompt: Some(request.prompt),
+                    prompt: Some(invocation_prompt),
                     publication_invocation: None,
                 },
                 &caller_user_id,
@@ -602,6 +606,10 @@ impl KernelRuntimeState {
             Ok(endpoint_ref) => endpoint_ref,
             Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
         };
+        let invocation_prompt = workflow_code_invocation_prompt(
+            &request.prompt,
+            apply_result.compile.definition.workflow.prompt.as_deref(),
+        );
         let (invoke_response, session) = self
             .execute_workflow_invoke_endpoint_request(
                 crate::local::InvokeWorkflowEndpointRequest {
@@ -609,7 +617,7 @@ impl KernelRuntimeState {
                     workflow_ref: apply_result.apply.workflow_id.clone(),
                     endpoint_ref,
                     queue_ref: request.queue_ref,
-                    prompt: Some(request.prompt),
+                    prompt: Some(invocation_prompt),
                     publication_invocation: None,
                 },
                 &caller_user_id,
@@ -1105,6 +1113,18 @@ fn workflow_code_endpoint_ref(
             ),
         }),
     }
+}
+
+fn workflow_code_invocation_prompt(request_prompt: &str, default_prompt: Option<&str>) -> String {
+    let request_prompt = request_prompt.trim();
+    if !request_prompt.is_empty() {
+        return request_prompt.to_string();
+    }
+    let default_prompt = default_prompt.unwrap_or_default().trim();
+    if !default_prompt.is_empty() {
+        return default_prompt.to_string();
+    }
+    "Run the workflow exactly as instructed.".to_string()
 }
 
 pub(super) fn workflow_response_session(

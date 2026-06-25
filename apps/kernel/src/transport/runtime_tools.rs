@@ -585,7 +585,8 @@ pub struct MetaWorkflowCodeRunArgs {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
-    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1502,12 +1503,11 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             description: "Apply saved or inline workflow-code into the current session and invoke one endpoint. endpoint may be a script endpoint handle or a kernel endpoint ref; when omitted, the script must define exactly one endpoint.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "required": ["prompt"],
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
                     "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
-                    "prompt": {"type": "string"},
+                    "prompt": {"type": "string", "description": "Invocation prompt. When omitted or blank, the workflow-code script-level prompt is used; if the script has no prompt, Arroba uses a generic run instruction."},
                     "endpoint": {"type": "string"},
                     "queue": {"type": "string"},
                     "node_path": {"type": "string"},
