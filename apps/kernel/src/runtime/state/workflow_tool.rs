@@ -349,11 +349,16 @@ impl KernelRuntimeOwnedState {
             .filter(|edge| edge.from_node_id() == node_id)
             .map(|edge| {
                 let target_node = workflow.node(edge.to_node_id());
+                let target_instructions = target_node
+                    .and_then(|node| node.instructions())
+                    .map(compact_workflow_edge_contract_instructions)
+                    .filter(|instructions| !instructions.is_empty());
                 serde_json::json!({
                     "edge_id": edge.id(),
                     "from_node_id": edge.from_node_id(),
                     "to_node_id": edge.to_node_id(),
                     "to_node_public_label": target_node.map(|node| node.public_label()),
+                    "target_instructions": target_instructions,
                     "to_agent_id": target_node.map(|node| node.agent_id()),
                     "handoff_schema_ref": edge.handoff_schema_ref(),
                     "validation_policy": edge.validation_policy(),
@@ -718,6 +723,19 @@ fn send_agent_app_action_audit(
         .send_string(&payload_json);
 }
 
+fn compact_workflow_edge_contract_instructions(instructions: &str) -> String {
+    const MAX_CHARS: usize = 240;
+    let compact = instructions
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.chars().count() <= MAX_CHARS {
+        return compact;
+    }
+    let truncated = compact.chars().take(MAX_CHARS).collect::<String>();
+    format!("{truncated}...")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -828,6 +846,14 @@ mod tests {
                 "Worker A".to_string(),
             )
             .expect("worker a node should be added");
+        app.sessions_mut()
+            .update_workflow_node_instructions(
+                session.id(),
+                workflow.id(),
+                node_a.id(),
+                Some("Handle policy-sensitive routing tasks only.".to_string()),
+            )
+            .expect("worker a instructions should update");
         let node_b = app
             .sessions_mut()
             .add_workflow_node_owned(
@@ -839,6 +865,14 @@ mod tests {
                 "Worker B".to_string(),
             )
             .expect("worker b node should be added");
+        app.sessions_mut()
+            .update_workflow_node_instructions(
+                session.id(),
+                workflow.id(),
+                node_b.id(),
+                Some("Handle quality and completeness routing tasks only.".to_string()),
+            )
+            .expect("worker b instructions should update");
         let edge_a = app
             .sessions_mut()
             .add_workflow_edge(
@@ -918,6 +952,10 @@ mod tests {
             .expect("edge a should be present");
         assert_eq!(option_a["to_node_id"], node_a.id());
         assert_eq!(option_a["to_node_public_label"], "Worker A");
+        assert_eq!(
+            option_a["target_instructions"],
+            "Handle policy-sensitive routing tasks only."
+        );
         assert_eq!(option_a["to_agent_id"], worker_a.id());
         assert_eq!(option_a["handoff_schema_ref"], "/schemas/route-a.json");
         assert_eq!(option_a["validation_policy"], "halt");
@@ -927,6 +965,10 @@ mod tests {
             .expect("edge b should be present");
         assert_eq!(option_b["to_node_id"], node_b.id());
         assert_eq!(option_b["to_node_public_label"], "Worker B");
+        assert_eq!(
+            option_b["target_instructions"],
+            "Handle quality and completeness routing tasks only."
+        );
         assert_eq!(option_b["to_agent_id"], worker_b.id());
         assert_eq!(option_b["handoff_schema_ref"], "/schemas/route-b.json");
         assert_eq!(option_b["validation_policy"], "warn");
