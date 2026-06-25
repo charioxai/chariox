@@ -61,6 +61,29 @@ test("transcript stream controller carries prompt identity through new and merge
   assert.equal(harness.updatedEntries.at(-1)?.id, 2)
 })
 
+test("transcript stream controller scopes reused merge keys to the current turn", () => {
+  const harness = streamHarness({
+    entries: [
+      entry(1, "user", "first", { turnId: 1 }),
+      entry(2, "assistant", "first reply", { turnId: 1, mergeKey: "reply" }),
+      entry(3, "user", "second", { turnId: 2 }),
+    ],
+    entryCounter: 3,
+    currentTurnId: 2,
+  })
+
+  harness.controller.appendProviderChunk("assistant", "second reply", "reply")
+
+  assert.equal(harness.entries.length, 4)
+  assert.equal(harness.entries[1]?.text, "first reply")
+  assert.deepEqual(harness.entries[3], entry(4, "assistant", "second reply", {
+    turnId: 2,
+    mergeKey: "reply",
+  }))
+  assert.equal(harness.updatedEntries.length, 0)
+  assert.equal(harness.reconciled.length, 1)
+})
+
 test("transcript stream controller tracks and clears active tool labels", () => {
   const harness = streamHarness()
 

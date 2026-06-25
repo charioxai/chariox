@@ -44,12 +44,14 @@ export function createAgentPaneTranscriptStreamController(
 
     const currentEntries = deps.currentAgentPaneEntries(agentId).map((entry) => ({ ...entry }))
     const nextEntries = currentEntries.map((entry) => ({ ...entry }))
+    const currentTurnId = computeCurrentTurnId(nextEntries)
     const mergedEntry = mergeProviderChunk(nextEntries, {
       role,
       normalized,
       normalizedSource,
       mergeKey,
       metadata,
+      currentTurnId,
     })
 
     if (mergedEntry) {
@@ -113,14 +115,19 @@ function mergeProviderChunk(
     normalizedSource: string | undefined
     mergeKey: string | undefined
     metadata: TranscriptStreamMetadata
+    currentTurnId: number | null
   },
 ) {
-  const { role, normalized, normalizedSource, mergeKey, metadata } = options
+  const { role, normalized, normalizedSource, mergeKey, metadata, currentTurnId } = options
 
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const candidate = entries[index]
-      if (candidate?.role !== role || candidate.mergeKey !== mergeKey) {
+      if (
+        candidate?.role !== role
+        || candidate.mergeKey !== mergeKey
+        || !sameStreamingTurn(candidate, currentTurnId)
+      ) {
         continue
       }
       applyMergedChunk(candidate, role, normalized, normalizedSource)
@@ -130,13 +137,22 @@ function mergeProviderChunk(
   }
 
   const last = [...entries].reverse().find((entry) => entry.role !== "turn_toggle")
-  if (!mergeKey && last?.role === role && (role === "assistant" || role === "reasoning")) {
+  if (
+    !mergeKey
+    && last?.role === role
+    && sameStreamingTurn(last, currentTurnId)
+    && (role === "assistant" || role === "reasoning")
+  ) {
     last.text += normalized
     applyStreamMetadata(last, metadata)
     return last
   }
 
   return null
+}
+
+function sameStreamingTurn(entry: TranscriptEntry, currentTurnId: number | null) {
+  return currentTurnId === null || entry.turnId === currentTurnId
 }
 
 function applyMergedChunk(
