@@ -70,6 +70,7 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
 - `workflow.watchdog(endpoint, options)` defines endpoint wakeups:
   - `handle`
   - `queue`
+  - `enabled`
   - `intervalSeconds`
   - `invocationPrompt`
   - `policy` (`"skip"` or `"queue"`)

@@ -315,6 +315,7 @@ function createBuilder() {
         handle: handle("watchdog", options.handle),
         endpoint: ref(endpoint, "endpoint"),
         ...(options.queue !== undefined ? { queue: ref(options.queue, "queue") } : {}),
+        ...(options.enabled !== undefined ? { enabled: options.enabled } : {}),
         interval_seconds: options.intervalSeconds,
         invocation_prompt: options.invocationPrompt,
         policy: options.policy,
@@ -1194,6 +1195,8 @@ pub struct WorkflowCodeWatchdogDefinition {
     pub endpoint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     pub interval_seconds: u64,
     pub invocation_prompt: String,
     pub policy: WorkflowWatchdogPolicy,
@@ -2605,6 +2608,7 @@ const urgent = workflow.queue({ handle: "urgent", alias: "urgent", priority: 5, 
 workflow.watchdog(entry, {
   handle: "wake_entry",
   queue: urgent,
+  enabled: false,
   intervalSeconds: 60,
   invocationPrompt: "Check for queued work.",
   policy: "skip",
@@ -2631,6 +2635,7 @@ workflow.watchdog(entry, {
             result.definition.watchdogs[0].policy,
             WorkflowWatchdogPolicy::Skip
         );
+        assert_eq!(result.definition.watchdogs[0].enabled, Some(false));
         assert_eq!(result.definition.watchdogs[0].max_wakeups, Some(2));
     }
 

@@ -186,6 +186,11 @@ impl SessionService {
                 watchdog.policy,
                 Some(watchdog.max_wakeups),
             )?;
+            let created = if let Some(enabled) = watchdog.enabled {
+                self.set_workflow_watchdog_enabled(session_id, created.id(), enabled)?
+            } else {
+                created
+            };
             report
                 .watchdog_ids
                 .insert(watchdog.handle.clone(), created.id().to_string());

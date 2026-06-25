@@ -1252,6 +1252,7 @@ const urgent = workflow.queue({
 workflow.watchdog(entry, {
   handle: "entry_watchdog",
   queue: urgent,
+  enabled: false,
   intervalSeconds: 90,
   invocationPrompt: "Check whether urgent scripted workflow work needs attention.",
   policy: "queue",
@@ -1322,6 +1323,7 @@ workflow.watchdog(entry, {
     assert_eq!(watchdog.workflow_id(), workflow.id());
     assert_eq!(watchdog.endpoint_id(), entry_endpoint_id);
     assert_eq!(watchdog.queue_id(), Some(urgent_queue_id.as_str()));
+    assert!(!watchdog.enabled());
     assert_eq!(watchdog.interval_seconds(), 90);
     assert_eq!(
         watchdog.invocation_prompt(),
