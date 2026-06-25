@@ -1006,6 +1006,117 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
 }
 
 #[test]
+fn local_request_api_rejects_workflow_code_over_session_agent_limit_without_spawning() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping workflow-code session agent limit local API test because node is not available"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-agent-limit-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let worktree_root = workspace_root.join("worktree");
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let mut config = crate::DaemonConfig::for_tests();
+    config.user_config.workflow.session_default_max_agents = Some(1);
+    let harness = LocalRouterTestHarness::with_config(config);
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+workflow.define({ alias: "agent_limit_flow" })
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "agent-limit-planner", provider: "dev-stub", model: "default" }),
+  instructions: "Plan."
+})
+const reviewer = workflow.node({
+  handle: "reviewer",
+  agent: workflow.newAgent({ alias: "agent-limit-reviewer", provider: "dev-stub", model: "default" }),
+  instructions: "Review.",
+  canCompleteWorkflowRun: true
+})
+workflow.edge(planner, reviewer, { handle: "plan_to_review" })
+workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+"#;
+
+    let validated = harness
+        .dispatch(LocalDaemonRequest::ValidateWorkflowCode(
+            crate::local::ValidateWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("over-agent-limit workflow-code validate should return diagnostics");
+    match validated {
+        LocalDaemonResponse::WorkflowCodeValidated { result } => {
+            assert!(!result.validation.ok);
+            assert!(result
+                .validation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "session_agent_limit_exceeded"));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let apply_error = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect_err("over-agent-limit workflow-code apply should fail before spawning");
+    assert!(
+        format!("{apply_error:?}").contains("session_agent_limit_exceeded"),
+        "{apply_error:?}"
+    );
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed after rejected agent-limit apply");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => {
+            assert!(!workflows
+                .iter()
+                .any(|workflow| workflow.alias() == Some("agent_limit_flow")));
+        }
+        _ => panic!("unexpected local response"),
+    }
+    let session_after = harness.with_app(|app| {
+        crate::app::KernelSessionReadService::new(app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should load")
+    });
+    assert!(!session_after.agents().iter().any(|agent| {
+        agent.alias() == Some("agent-limit-planner")
+            || agent.alias() == Some("agent-limit-reviewer")
+    }));
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
 fn local_request_api_applies_workflow_code_extensions_to_generated_agents() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!("skipping workflow-code extension local API test because node is not available");

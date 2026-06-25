@@ -1925,6 +1925,24 @@ impl<'a> KernelSessionService<'a> {
     ) -> Result<(), DaemonError> {
         let session = self.app.sessions().get_session(session_id)?;
         let registry = self.app.providers.registry();
+        let generated_agent_count = definition
+            .nodes
+            .iter()
+            .filter(|node| matches!(&node.agent, WorkflowCodeAgentBinding::Create(_)))
+            .count();
+        let current_agent_count = self.app.agents.get_session_agents(session_id).len();
+        if current_agent_count.saturating_add(generated_agent_count) > session.max_agents() as usize
+        {
+            push_workflow_code_target_validation_error(
+                validation,
+                "session_agent_limit_exceeded",
+                format!(
+                    "workflow-code would create {generated_agent_count} agents but session `{session_id}` has {current_agent_count}/{} agents",
+                    session.max_agents()
+                ),
+                None,
+            );
+        }
         for node in &definition.nodes {
             match &node.agent {
                 WorkflowCodeAgentBinding::Create(agent) => {
