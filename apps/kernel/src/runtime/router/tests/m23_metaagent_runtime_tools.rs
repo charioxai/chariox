@@ -22,6 +22,18 @@ impl Drop for TestMetaRuntimeEnv {
     }
 }
 
+fn node_supports_workflow_code_typescript(node: &std::path::Path) -> bool {
+    std::process::Command::new(node)
+        .arg("--no-warnings")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg(
+            "const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)",
+        )
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 fn mark_test_agent_controlled_by_metaagent(
     app: &mut DaemonApp,
     agent_id: &str,
@@ -541,6 +553,111 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .pointer("/WorkflowCodeArtifactDeleted/name")
             .and_then(serde_json::Value::as_str),
         Some("meta-flow-imported")
+    );
+}
+
+#[tokio::test]
+async fn metaagent_workflow_code_applies_inline_typescript_source() {
+    let node_path = match crate::workflow_code::discover_workflow_code_node_path() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "skipping meta inline TypeScript workflow-code test because Node.js is unavailable: {error}"
+            );
+            return;
+        }
+    };
+    if !node_supports_workflow_code_typescript(&node_path) {
+        eprintln!(
+            "skipping meta inline TypeScript workflow-code test because Node.js cannot strip TypeScript"
+        );
+        return;
+    }
+
+    let env = TestMetaRuntimeEnv::new("workflow-code-inline-typescript");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let source = r#"
+type ProviderName = "dev-stub";
+const provider: ProviderName = "dev-stub";
+workflow.define({ alias: "meta_inline_typescript_flow", maxConcurrent: 2 });
+const finalOutput = workflow.schema({
+  handle: "final",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: { answer: { type: "string" } },
+    additionalProperties: false
+  }
+});
+workflow.define({ runOutputSchema: finalOutput });
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "inline-ts-worker", provider, model: "default" }),
+  instructions: "Complete with the final schema.",
+  canCompleteWorkflowRun: true
+});
+workflow.endpoint(worker, { handle: "entry", alias: "entry" });
+"#;
+
+    let applied = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
+            serde_json::json!({
+                "source": source,
+                "language": "typescript"
+            }),
+        )
+        .await
+        .expect("metaagent should apply inline TypeScript workflow-code");
+    assert!(applied.ok, "{:?}", applied.payload);
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("meta_inline_typescript_flow")
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/schema_refs/final")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        true
+    );
+    assert!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/session/workflows")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|workflows| workflows.iter().any(|workflow| {
+                workflow.get("alias").and_then(serde_json::Value::as_str)
+                    == Some("meta_inline_typescript_flow")
+                    && workflow
+                        .get("controlled_by_metaagent_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(metaagent.id())
+            })),
+        "inline TypeScript workflow should appear in the session snapshot"
     );
 }
 
