@@ -183,6 +183,39 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert_eq!(report.endpoint_ids.len(), 1);
     assert_eq!(report.queue_ids.len(), 1);
     assert_eq!(report.watchdog_ids.len(), 1);
+    assert_ne!(
+        report.node_ids.get("planner").map(String::as_str),
+        Some("planner"),
+        "script node handles must not become kernel node ids"
+    );
+    assert_ne!(
+        report.node_ids.get("worker").map(String::as_str),
+        Some("worker"),
+        "script node handles must not become kernel node ids"
+    );
+    assert_ne!(
+        report.edge_ids.get("planner_to_worker").map(String::as_str),
+        Some("planner_to_worker"),
+        "script edge handles must not become kernel edge ids"
+    );
+    assert_ne!(
+        report.endpoint_ids.get("entry").map(String::as_str),
+        Some("entry"),
+        "script endpoint handles must not become kernel endpoint ids"
+    );
+    assert_ne!(
+        report.queue_ids.get("urgent").map(String::as_str),
+        Some("urgent"),
+        "script queue handles must not become kernel queue ids"
+    );
+    assert_ne!(
+        report
+            .watchdog_ids
+            .get("entry_watchdog")
+            .map(String::as_str),
+        Some("entry_watchdog"),
+        "script watchdog handles must not become kernel watchdog ids"
+    );
     assert!(report.canvas_layout_applied);
     assert!(report.warnings.is_empty());
 
