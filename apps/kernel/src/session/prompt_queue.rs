@@ -98,6 +98,22 @@ impl PromptQueueItem {
         }
     }
 
+    pub fn external_observed_running(
+        id: impl Into<String>,
+        provider: impl AsRef<str>,
+        target_agent_id: impl Into<String>,
+        prompt: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            id,
+            format!("external:{}", provider.as_ref()),
+            target_agent_id,
+            prompt,
+            PromptStatus::Running,
+        )
+        .with_prompt_origin(PromptOrigin::External)
+    }
+
     pub fn with_attachments(mut self, attachments: Vec<PromptAttachment>) -> Self {
         self.attachments = attachments;
         self
@@ -288,5 +304,23 @@ mod tests {
         assert!(!arroba_prompt.is_external());
         assert!(external_prompt.is_external());
         assert!(!external_prompt.is_arroba_owned());
+    }
+
+    #[test]
+    fn prompt_queue_item_external_observed_running_sets_runtime_identity() {
+        let prompt = PromptQueueItem::external_observed_running(
+            "external:codex:thread-1:user-1",
+            "codex",
+            "agent-1",
+            "run this",
+        );
+
+        assert_eq!(prompt.id(), "external:codex:thread-1:user-1");
+        assert_eq!(prompt.source_attachment_id(), "external:codex");
+        assert_eq!(prompt.target_agent_id(), "agent-1");
+        assert_eq!(prompt.prompt(), "run this");
+        assert_eq!(prompt.status(), PromptStatus::Running);
+        assert!(prompt.is_external());
+        assert!(!prompt.is_arroba_owned());
     }
 }

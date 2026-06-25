@@ -965,16 +965,12 @@ fn external_active_prompt_from_turns(
         &target.import.external_provider_session_provider_id,
         &provider_turn_id,
     );
-    Some(
-        PromptQueueItem::new(
-            external_prompt_id,
-            format!("external:{}", target.import.external_provider),
-            target.agent_id.clone(),
-            latest.text.clone(),
-            PromptStatus::Running,
-        )
-        .with_prompt_origin(PromptOrigin::External),
-    )
+    Some(PromptQueueItem::external_observed_running(
+        external_prompt_id,
+        &target.import.external_provider,
+        target.agent_id.clone(),
+        latest.text.clone(),
+    ))
 }
 
 fn latest_observed_user_turn_id(
