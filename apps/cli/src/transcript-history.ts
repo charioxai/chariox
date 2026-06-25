@@ -408,17 +408,38 @@ function mergeStitchedHistoryMetadata(
   older: TranscriptEntry,
   newer: TranscriptEntry,
 ) {
-  target.providerRunId ??= older.providerRunId
-  target.source ??= older.source
-  target.externalProvider ??= older.externalProvider
-  target.externalProviderSessionId ??= older.externalProviderSessionId
-  target.externalProviderTurnId ??= older.externalProviderTurnId
-  target.observedAtMs ??= older.observedAtMs
-  target.externalObservation ??= older.externalObservation
-  target.promptId ??= older.promptId
-  target.sourceAttachmentId ??= older.sourceAttachmentId
+  if (target.providerRunId === undefined && older.providerRunId !== undefined) {
+    target.providerRunId = older.providerRunId
+  }
+  if (target.source === undefined && older.source !== undefined) {
+    target.source = older.source
+  }
+  if (target.externalProvider === undefined && older.externalProvider !== undefined) {
+    target.externalProvider = older.externalProvider
+  }
+  if (target.externalProviderSessionId === undefined && older.externalProviderSessionId !== undefined) {
+    target.externalProviderSessionId = older.externalProviderSessionId
+  }
+  if (target.externalProviderTurnId === undefined && older.externalProviderTurnId !== undefined) {
+    target.externalProviderTurnId = older.externalProviderTurnId
+  }
+  if (target.observedAtMs === undefined && older.observedAtMs !== undefined) {
+    target.observedAtMs = older.observedAtMs
+  }
+  if (target.externalObservation === undefined && older.externalObservation !== undefined) {
+    target.externalObservation = older.externalObservation
+  }
+  if (target.promptId === undefined && older.promptId !== undefined) {
+    target.promptId = older.promptId
+  }
+  if (target.sourceAttachmentId === undefined && older.sourceAttachmentId !== undefined) {
+    target.sourceAttachmentId = older.sourceAttachmentId
+  }
   if (older.attachments !== undefined || newer.attachments !== undefined) {
-    target.attachments = mergeHistoryAttachments(older.attachments, newer.attachments ?? [])
+    target.attachments = mergeHistoryAttachments(
+      older.attachments,
+      newer.attachments,
+    )
   }
 }
 
@@ -455,28 +476,29 @@ function cloneHistoryAttachments(
 
 function mergeHistoryAttachments(
   existing: TranscriptEntry["attachments"] | undefined,
-  incoming: TranscriptEntry["attachments"],
+  incoming: TranscriptEntry["attachments"] | undefined,
 ): NonNullable<TranscriptEntry["attachments"]> {
+  const incomingAttachments = incoming ?? []
   if (!existing?.length) {
-    return cloneHistoryAttachments(incoming)
+    return cloneHistoryAttachments(incomingAttachments)
   }
-  if (!incoming.length) {
+  if (!incomingAttachments.length) {
     return cloneHistoryAttachments(existing)
   }
   const existingByUrl = historyAttachmentsByUrl(existing)
-  const incomingByUrl = historyAttachmentsByUrl(incoming)
+  const incomingByUrl = historyAttachmentsByUrl(incomingAttachments)
   const sharedUrls = [...incomingByUrl.keys()].filter((url) => existingByUrl.has(url))
   if (sharedUrls.length === 0) {
-    return cloneHistoryAttachments(attachmentSetScore(incoming) > attachmentSetScore(existing) ? incoming : existing)
+    return cloneHistoryAttachments(attachmentSetScore(incomingAttachments) > attachmentSetScore(existing) ? incomingAttachments : existing)
   }
-  const base = existing.length >= incoming.length ? existing : incoming
+  const base = existing.length >= incomingAttachments.length ? existing : incomingAttachments
   const alternateByUrl = base === existing ? incomingByUrl : existingByUrl
   const merged = base.map((attachment) => {
     const alternate = alternateByUrl.get(attachment.url)
     return { ...(alternate ? richerHistoryAttachment(attachment, alternate) : attachment) }
   })
   const mergedUrls = new Set(merged.map((attachment) => attachment.url))
-  for (const attachment of base === existing ? incoming : existing) {
+  for (const attachment of base === existing ? incomingAttachments : existing) {
     if (!mergedUrls.has(attachment.url)) {
       merged.push({ ...attachment })
     }

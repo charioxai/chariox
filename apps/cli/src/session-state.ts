@@ -328,12 +328,18 @@ export function derivePromptLifecycleTransition(
   const previousPromptIds = collectActivePromptIds(currentSession)
   const nextPromptIds = collectActivePromptIds(nextSession)
   const nextPromptIdSet = new Set(nextPromptIds)
+  const settledPromptRecords = collectActivePromptRecords(currentSession)
+    .filter((prompt) => !nextPromptIdSet.has(prompt.id))
+    .filter((prompt) => {
+      const normalizedOrigin = prompt.promptOrigin?.trim().toLowerCase()
+      return normalizedOrigin !== "external" || prompt.status === "cancelling"
+    })
+
   return {
     activePromptChanged:
       previousPromptIds.length !== nextPromptIds.length
       || previousPromptIds.some((id, index) => id !== nextPromptIds[index]),
-    settledAgentIds: collectActivePromptRecords(currentSession)
-      .filter((prompt) => !nextPromptIdSet.has(prompt.id))
+    settledAgentIds: settledPromptRecords
       .map((prompt) => prompt.target_agent_id)
       .filter((agentId): agentId is string => Boolean(agentId)),
     cancelledPromptSettled:
@@ -406,6 +412,7 @@ function normalizeMultiAgentResponseLayout(
 type ActivePromptLifecycleRecord = {
   id: string
   status?: string
+  promptOrigin?: string | null
   target_agent_id?: string | null
 }
 
@@ -420,6 +427,7 @@ function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecy
       records.push({
         id: activeTurn.prompt_id,
         status: activeTurn.status,
+        promptOrigin: activeTurn.prompt_origin ?? null,
         target_agent_id: agentId,
       })
     }
@@ -428,10 +436,17 @@ function collectActivePromptRecords(session: RuntimeSession): ActivePromptLifecy
   if (session.prompt_states && Object.keys(session.prompt_states).length > 0) {
     return Object.values(session.prompt_states)
       .map((state) => state.active_prompt)
+      .map((stateActivePrompt) => stateActivePrompt ? {
+        ...stateActivePrompt,
+        promptOrigin: stateActivePrompt.prompt_origin ?? null,
+      } : null)
       .filter((prompt): prompt is NonNullable<typeof prompt> => Boolean(prompt))
       .sort((left, right) => left.id.localeCompare(right.id))
   }
-  return session.active_prompt ? [session.active_prompt] : []
+  return session.active_prompt ? [{
+    ...session.active_prompt,
+    promptOrigin: session.active_prompt.prompt_origin ?? null,
+  }] : []
 }
 
 function collectActivePromptIds(session: RuntimeSession) {

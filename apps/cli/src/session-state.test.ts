@@ -646,6 +646,56 @@ test("derivePromptLifecycleTransition ignores normal prompt replacement", () => 
   assert.deepEqual(transition.settledAgentIds, ["agent-a"])
 })
 
+test("derivePromptLifecycleTransition does not settle external prompts when they disappear", () => {
+  const transition = derivePromptLifecycleTransition(
+    session({
+      agent_activity: {
+        "agent-a": {
+          status: "working",
+          prompt_status: "running",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "running",
+            prompt_origin: "external",
+            phase: "streaming",
+          },
+        },
+      },
+    }),
+    session(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, false)
+  assert.deepEqual(transition.settledAgentIds, [])
+})
+
+test("derivePromptLifecycleTransition still settles external prompts with explicit cancellation", () => {
+  const transition = derivePromptLifecycleTransition(
+    session({
+      agent_activity: {
+        "agent-a": {
+          status: "working",
+          prompt_status: "cancelling",
+          busy: true,
+          active_turn: {
+            prompt_id: "prompt-1",
+            status: "cancelling",
+            prompt_origin: "External",
+            phase: "settling",
+          },
+        },
+      },
+    }),
+    session(),
+  )
+
+  assert.equal(transition.activePromptChanged, true)
+  assert.equal(transition.cancelledPromptSettled, true)
+  assert.deepEqual(transition.settledAgentIds, ["agent-a"])
+})
+
 test("deriveDetachedCliTransitionState resets waiting room and clears session-bound state", () => {
   const detached = deriveDetachedCliTransitionState({
     cliOptions: {
