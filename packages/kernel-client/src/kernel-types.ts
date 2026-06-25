@@ -1477,7 +1477,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 183
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 184
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {

@@ -15,6 +15,10 @@ fn default_workflow_flush_agent_context_before_run() -> bool {
     true
 }
 
+fn default_workflow_max_concurrent() -> u32 {
+    super::types::DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowSchemaDefinition {
     id: String,
@@ -73,6 +77,8 @@ pub struct WorkflowDefinition {
     canvas_layout: Option<WorkflowCanvasLayout>,
     #[serde(default = "default_workflow_flush_agent_context_before_run")]
     flush_agent_context_before_run: bool,
+    #[serde(default = "default_workflow_max_concurrent")]
+    max_concurrent: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +100,7 @@ impl WorkflowDefinition {
             revision: 0,
             canvas_layout: None,
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
+            max_concurrent: default_workflow_max_concurrent(),
             run_output_schema_ref: None,
             intermediate_output_schema_ref: None,
             schemas: Vec::new(),
@@ -111,6 +118,11 @@ impl WorkflowDefinition {
         let mut workflow = Self::new(id, alias);
         workflow.controlled_by_metaagent_id = Some(metaagent_id.into());
         workflow
+    }
+
+    pub fn with_max_concurrent(mut self, value: u32) -> Self {
+        self.max_concurrent = value.max(1);
+        self
     }
 
     pub fn id(&self) -> &str {
@@ -143,6 +155,10 @@ impl WorkflowDefinition {
 
     pub fn flush_agent_context_before_run(&self) -> bool {
         self.flush_agent_context_before_run
+    }
+
+    pub fn max_concurrent(&self) -> u32 {
+        self.max_concurrent
     }
 
     pub fn nodes(&self) -> &[WorkflowNodeDefinition] {
@@ -185,6 +201,11 @@ impl WorkflowDefinition {
 
     pub fn set_flush_agent_context_before_run(&mut self, value: bool) {
         self.flush_agent_context_before_run = value;
+        self.bump_revision();
+    }
+
+    pub fn set_max_concurrent(&mut self, value: u32) {
+        self.max_concurrent = value.max(1);
         self.bump_revision();
     }
 

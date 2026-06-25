@@ -328,6 +328,9 @@ impl SessionService {
         if let Some(value) = definition.workflow.flush_agent_context_before_run {
             workflow.set_flush_agent_context_before_run(value);
         }
+        if let Some(value) = definition.workflow.max_concurrent {
+            workflow.set_max_concurrent(value);
+        }
         workflow.set_run_output_schema_ref(resolve_workflow_code_schema_ref(
             definition.workflow.run_output_schema.as_deref(),
             schema_refs,

@@ -22,6 +22,7 @@ impl SessionService {
             next_workflow_queued_prompt_number: 0,
             max_workflow_queues_per_workflow: config.max_workflow_queues_per_workflow(),
             session_default_max_agents: config.session_default_max_agents(),
+            workflow_default_max_concurrent: config.workflow_code_limits().max_concurrent.max(1),
             next_workspace_link_number: 0,
         }
     }
@@ -502,6 +503,7 @@ impl SessionService {
             ),
             None => WorkflowDefinition::new(self.next_workflow_id(), alias),
         };
+        let workflow = workflow.with_max_concurrent(self.workflow_default_max_concurrent);
         let session =
             self.store
                 .get_mut(session_id)

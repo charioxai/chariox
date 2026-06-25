@@ -14,8 +14,12 @@ pub(super) fn collect_ready_workflow_dispatches(
         .map(|message| message.target_node_id().to_string())
         .collect::<BTreeSet<_>>();
     let mut dispatches = Vec::new();
+    let mut available_dispatch_slots = workflow_dispatch_slots_available(workflow, workflow_run);
 
     for target_node_id in target_node_ids {
+        if available_dispatch_slots == 0 {
+            break;
+        }
         if workflow_run.node_runs().iter().any(|node_run| {
             node_run.node_id() == target_node_id
                 && !matches!(
@@ -92,9 +96,28 @@ pub(super) fn collect_ready_workflow_dispatches(
             node_run,
             messages: selected_messages,
         });
+        available_dispatch_slots = available_dispatch_slots.saturating_sub(1);
     }
 
     Ok(dispatches)
+}
+
+fn workflow_dispatch_slots_available(
+    workflow: &WorkflowDefinition,
+    workflow_run: &WorkflowRun,
+) -> usize {
+    let max_concurrent = workflow.max_concurrent().max(1) as usize;
+    let active_node_runs = workflow_run
+        .node_runs()
+        .iter()
+        .filter(|node_run| {
+            matches!(
+                node_run.status(),
+                WorkflowNodeRunStatus::Ready | WorkflowNodeRunStatus::Running
+            )
+        })
+        .count();
+    max_concurrent.saturating_sub(active_node_runs)
 }
 
 fn select_next_workflow_message_index(

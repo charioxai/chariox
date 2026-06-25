@@ -182,6 +182,7 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert_eq!(workflow.alias(), Some("coded_flow"));
     assert_eq!(workflow.controlled_by_metaagent_id(), Some("meta-1"));
     assert!(!workflow.flush_agent_context_before_run());
+    assert_eq!(workflow.max_concurrent(), 2);
     assert_eq!(workflow.nodes().len(), 2);
     assert_eq!(workflow.edges().len(), 1);
     assert_eq!(workflow.endpoints().len(), 1);

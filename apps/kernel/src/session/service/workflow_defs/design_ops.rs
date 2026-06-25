@@ -14,6 +14,9 @@ impl SessionService {
                 if let Some(value) = workflow.flush_agent_context_before_run {
                     definition.set_flush_agent_context_before_run(value);
                 }
+                if let Some(value) = workflow.max_concurrent {
+                    definition.set_max_concurrent(value);
+                }
                 if workflow.run_output_schema_ref.is_some() {
                     definition.set_run_output_schema_ref(workflow.run_output_schema_ref);
                 }
@@ -55,6 +58,9 @@ impl SessionService {
                 }
                 if let Some(value) = patch.flush_agent_context_before_run {
                     workflow.set_flush_agent_context_before_run(value);
+                }
+                if let Some(value) = patch.max_concurrent {
+                    workflow.set_max_concurrent(value);
                 }
                 if let Some(value) = patch.run_output_schema_ref {
                     workflow.set_run_output_schema_ref(value);
