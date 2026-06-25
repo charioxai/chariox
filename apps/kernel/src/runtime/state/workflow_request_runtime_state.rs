@@ -43,6 +43,14 @@ impl KernelRuntimeState {
                 )
                 .await
             }
+            LocalDaemonRequest::RunWorkflowCode(request) => {
+                self.execute_workflow_code_run_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
+            }
             LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => (
                 self.execute_workflow_code_artifact_create_request(
                     request,
@@ -386,6 +394,107 @@ impl KernelRuntimeState {
         (result, session)
     }
 
+    async fn execute_workflow_code_run_request(
+        &self,
+        request: crate::local::RunWorkflowCodeRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let caller_user_id = caller_user_id.to_string();
+        let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
+        let session_id = request.session_id.clone();
+        let apply_result = match self
+            .with_app_side_effect({
+                let session_id = session_id.clone();
+                let node_path = request.node_path.clone();
+                let source = request.source.clone();
+                let provider_rebindings = request.provider_rebindings.clone();
+                let caller_user_id = caller_user_id.clone();
+                move |app| {
+                    let limits = app.config().workflow_code_limits();
+                    app.compile_and_apply_workflow_code_javascript_with_rebindings(
+                        &session_id,
+                        &node_path,
+                        &source,
+                        &limits,
+                        caller_user_id,
+                        controlled_by_metaagent_id,
+                        &provider_rebindings,
+                    )
+                }
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return (Err(error), None),
+        };
+        let endpoint_ref = match workflow_code_endpoint_ref(&apply_result.apply, request.endpoint) {
+            Ok(endpoint_ref) => endpoint_ref,
+            Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
+        };
+        let (invoke_response, session) = self
+            .execute_workflow_invoke_endpoint_request(
+                crate::local::InvokeWorkflowEndpointRequest {
+                    session_id: session_id.clone(),
+                    workflow_ref: apply_result.apply.workflow_id.clone(),
+                    endpoint_ref,
+                    queue_ref: request.queue_ref,
+                    prompt: Some(request.prompt),
+                    publication_invocation: None,
+                },
+                &caller_user_id,
+            )
+            .await;
+        let result = match invoke_response {
+            Ok(crate::local::LocalDaemonResponse::WorkflowRunInvoked {
+                workflow_run,
+                workflow,
+                endpoint,
+                session,
+            }) => Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun {
+                result: crate::workflow_code::WorkflowCodeRunResult {
+                    apply: apply_result,
+                    invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
+                        workflow_run,
+                        workflow,
+                        endpoint,
+                    },
+                },
+                session,
+            }),
+            Ok(crate::local::LocalDaemonResponse::WorkflowPromptEnqueued {
+                queued_prompt,
+                workflow,
+                endpoint,
+                session,
+            }) => Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun {
+                result: crate::workflow_code::WorkflowCodeRunResult {
+                    apply: apply_result,
+                    invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
+                        queued_prompt,
+                        workflow,
+                        endpoint,
+                    },
+                },
+                session,
+            }),
+            Ok(_) => Err(DaemonError::LocalTransport {
+                operation: "workflow_code.run",
+                message: "workflow endpoint invocation returned an unexpected response".to_string(),
+            }),
+            Err(error) => Err(error),
+        };
+        let session = result
+            .as_ref()
+            .ok()
+            .and_then(workflow_response_session)
+            .or(session);
+        (result, session)
+    }
+
     async fn execute_workflow_code_artifact_create_request(
         &self,
         request: crate::local::CreateWorkflowCodeArtifactRequest,
@@ -602,12 +711,39 @@ fn workflow_code_artifact_actor(
     )
 }
 
+fn workflow_code_endpoint_ref(
+    apply_report: &crate::workflow_code::WorkflowCodeApplyReport,
+    endpoint: Option<String>,
+) -> Result<String, DaemonError> {
+    match endpoint {
+        Some(endpoint) => Ok(apply_report
+            .endpoint_ids
+            .get(&endpoint)
+            .cloned()
+            .unwrap_or(endpoint)),
+        None if apply_report.endpoint_ids.len() == 1 => Ok(apply_report
+            .endpoint_ids
+            .values()
+            .next()
+            .expect("length checked")
+            .clone()),
+        None => Err(DaemonError::LocalTransport {
+            operation: "workflow_code.run",
+            message: format!(
+                "workflow-code defines {} endpoints; pass endpoint as a script handle or kernel endpoint ref",
+                apply_report.endpoint_ids.len()
+            ),
+        }),
+    }
+}
+
 pub(super) fn workflow_response_session(
     response: &LocalDaemonResponse,
 ) -> Option<crate::session::RuntimeSession> {
     match response {
         LocalDaemonResponse::WorkflowCreated { session, .. }
         | LocalDaemonResponse::WorkflowCodeApplied { session, .. }
+        | LocalDaemonResponse::WorkflowCodeRun { session, .. }
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }

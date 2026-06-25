@@ -65,6 +65,43 @@ export function applyWorkflowCodeRequest(
   }
 }
 
+export type RunWorkflowCodeRequest = {
+  RunWorkflowCode: {
+    session_id: string
+    node_path: string
+    source: string
+    provider_rebindings?: WorkflowCodeProviderRebinding[]
+    endpoint?: string | null
+    queue_ref?: string | null
+    prompt: string
+  }
+}
+
+export function runWorkflowCodeRequest(
+  sessionId: string,
+  nodePath: string,
+  source: string,
+  prompt: string,
+  options: {
+    providerRebindings?: WorkflowCodeProviderRebinding[]
+    endpoint?: string | null
+    queueRef?: string | null
+  } = {},
+): RunWorkflowCodeRequest {
+  const providerRebindings = options.providerRebindings ?? []
+  return {
+    RunWorkflowCode: {
+      session_id: sessionId,
+      node_path: nodePath,
+      source,
+      ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
+      ...(options.queueRef !== undefined ? { queue_ref: options.queueRef } : {}),
+      prompt,
+    },
+  }
+}
+
 export type CreateWorkflowCodeArtifactRequest = {
   CreateWorkflowCodeArtifact: {
     session_id: string

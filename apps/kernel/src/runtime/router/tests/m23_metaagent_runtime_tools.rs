@@ -340,20 +340,26 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     assert!(run.ok, "{:?}", run.payload);
     assert_eq!(
         run.payload
-            .pointer("/apply/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
+            .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
             .and_then(serde_json::Value::as_str)
             .is_some(),
         true
     );
     assert_eq!(
         run.payload
-            .pointer("/run/WorkflowRunInvoked/workflow/controlled_by_metaagent_id")
+            .pointer("/WorkflowCodeRun/result/invocation/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("started")
+    );
+    assert_eq!(
+        run.payload
+            .pointer("/WorkflowCodeRun/result/invocation/workflow/controlled_by_metaagent_id")
             .and_then(serde_json::Value::as_str),
         Some(metaagent.id())
     );
     assert_eq!(
         run.payload
-            .pointer("/run/WorkflowRunInvoked/endpoint/alias")
+            .pointer("/WorkflowCodeRun/result/invocation/endpoint/alias")
             .and_then(serde_json::Value::as_str),
         Some("entry")
     );

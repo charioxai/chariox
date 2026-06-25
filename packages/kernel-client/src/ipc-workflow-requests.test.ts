@@ -9,6 +9,7 @@ import {
   exportWorkflowPublicationPackageRequest,
   importWorkflowCodeArtifactRequest,
   listWorkflowCodeArtifactsRequest,
+  runWorkflowCodeRequest,
   setWorkflowNodeWaitForAllInputsRequest,
 } from "./ipc-workflow-requests.js"
 
@@ -88,6 +89,44 @@ test("workflow-code artifact requests match kernel shape", () => {
             model: "qwen3-coder",
           },
         ],
+      },
+    },
+  )
+  assert.deepEqual(
+    runWorkflowCodeRequest(
+      "session-1",
+      "/usr/local/bin/node",
+      "workflow.define({})",
+      "Run this workflow.",
+      {
+        endpoint: "entry",
+        queueRef: "default",
+        providerRebindings: [
+          {
+            node: "planner",
+            provider: "opencode",
+            model: "qwen3-coder",
+            account_profile: "work",
+          },
+        ],
+      },
+    ),
+    {
+      RunWorkflowCode: {
+        session_id: "session-1",
+        node_path: "/usr/local/bin/node",
+        source: "workflow.define({})",
+        provider_rebindings: [
+          {
+            node: "planner",
+            provider: "opencode",
+            model: "qwen3-coder",
+            account_profile: "work",
+          },
+        ],
+        endpoint: "entry",
+        queue_ref: "default",
+        prompt: "Run this workflow.",
       },
     },
   )

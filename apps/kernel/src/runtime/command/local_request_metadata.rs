@@ -550,6 +550,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",
         LocalDaemonRequest::ApplyWorkflowCode(_) => "workflow_code.apply",
+        LocalDaemonRequest::RunWorkflowCode(_) => "workflow_code.run",
         LocalDaemonRequest::CreateWorkflowCodeArtifact(_) => "workflow_code_artifact.create",
         LocalDaemonRequest::UpdateWorkflowCodeArtifact(_) => "workflow_code_artifact.update",
         LocalDaemonRequest::GetWorkflowCodeArtifact(_) => "workflow_code_artifact.get",

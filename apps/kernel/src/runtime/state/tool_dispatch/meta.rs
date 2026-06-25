@@ -801,69 +801,47 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         let artifact_name = args.name.clone();
         let source = meta_workflow_code_source(session, args.name, args.source)?;
-        let apply_response = self
-            .meta_workflow_code_apply_response(
-                session,
-                agent,
-                source,
-                args.node_path,
-                args.provider_rebindings,
-            )
-            .await?;
-        let apply_report = match &apply_response {
-            crate::local::LocalDaemonResponse::WorkflowCodeApplied { result, .. } => {
-                result.apply.clone()
-            }
-            _ => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "meta.workflow_code.run",
-                    message: "workflow-code apply returned an unexpected response".to_string(),
-                })
-            }
-        };
-        self.persist_metaagent_workflow_code_event(
-            "metaagent.workflow_code.applied",
-            session,
-            agent,
-            serde_json::json!({ "apply": &apply_report }),
-        );
-
-        let endpoint_ref = meta_workflow_code_endpoint_ref(&apply_report, args.endpoint)?;
-        let run_response = self
+        let response = self
             .meta_execute_workflow_request(
-                crate::local::LocalDaemonRequest::InvokeWorkflowEndpoint(
-                    crate::local::InvokeWorkflowEndpointRequest {
+                crate::local::LocalDaemonRequest::RunWorkflowCode(
+                    crate::local::RunWorkflowCodeRequest {
                         session_id: session.id().to_string(),
-                        workflow_ref: apply_report.workflow_id.clone(),
-                        endpoint_ref,
+                        node_path: meta_workflow_code_node_path(args.node_path)?
+                            .display()
+                            .to_string(),
+                        source,
+                        provider_rebindings: args.provider_rebindings,
+                        endpoint: args.endpoint,
                         queue_ref: args.queue,
-                        prompt: Some(args.prompt),
-                        publication_invocation: None,
+                        prompt: args.prompt,
                     },
                 ),
                 agent,
             )
             .await?;
+        let run_result = match &response {
+            crate::local::LocalDaemonResponse::WorkflowCodeRun { result, .. } => result,
+            _ => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "meta.workflow_code.run",
+                    message: "workflow-code run returned an unexpected response".to_string(),
+                })
+            }
+        };
         self.persist_metaagent_workflow_code_event(
             "metaagent.workflow_code.run",
             session,
             agent,
-            meta_workflow_code_run_audit_payload(&apply_report, &run_response),
+            meta_workflow_code_run_audit_payload(run_result),
         );
         self.record_metaagent_workflow_code_artifact_history(
             session,
             agent,
             artifact_name.as_deref(),
             crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
-            &apply_report,
+            &run_result.apply.apply,
         );
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "apply": local_response_to_value(&apply_response)?,
-                "run": local_response_to_value(&run_response)?,
-            }),
-        })
+        runtime_tool_result_from_local_response(response)
     }
 
     async fn meta_workflow_code_apply_response(
@@ -1922,65 +1900,32 @@ fn meta_workflow_code_source(
     }
 }
 
-fn meta_workflow_code_endpoint_ref(
-    apply_report: &crate::workflow_code::WorkflowCodeApplyReport,
-    endpoint: Option<String>,
-) -> Result<String, DaemonError> {
-    match endpoint {
-        Some(endpoint) => Ok(apply_report
-            .endpoint_ids
-            .get(&endpoint)
-            .cloned()
-            .unwrap_or(endpoint)),
-        None if apply_report.endpoint_ids.len() == 1 => Ok(apply_report
-            .endpoint_ids
-            .values()
-            .next()
-            .expect("length checked")
-            .clone()),
-        None => Err(DaemonError::LocalTransport {
-            operation: "meta.workflow_code.run",
-            message: format!(
-                "workflow-code defines {} endpoints; pass endpoint as a script handle or kernel endpoint ref",
-                apply_report.endpoint_ids.len()
-            ),
-        }),
-    }
-}
-
 fn meta_workflow_code_run_audit_payload(
-    apply_report: &crate::workflow_code::WorkflowCodeApplyReport,
-    response: &crate::local::LocalDaemonResponse,
+    result: &crate::workflow_code::WorkflowCodeRunResult,
 ) -> serde_json::Value {
-    match response {
-        crate::local::LocalDaemonResponse::WorkflowRunInvoked {
+    match &result.invocation {
+        crate::workflow_code::WorkflowCodeRunInvocation::Started {
             workflow_run,
             workflow,
             endpoint,
-            ..
         } => serde_json::json!({
             "outcome": "invoked",
-            "apply": apply_report,
+            "apply": &result.apply.apply,
             "workflow_id": workflow.id(),
             "endpoint_id": endpoint.id(),
             "workflow_run_id": workflow_run.id(),
         }),
-        crate::local::LocalDaemonResponse::WorkflowPromptEnqueued {
+        crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
             queued_prompt,
             workflow,
             endpoint,
-            ..
         } => serde_json::json!({
             "outcome": "enqueued",
-            "apply": apply_report,
+            "apply": &result.apply.apply,
             "workflow_id": workflow.id(),
             "endpoint_id": endpoint.id(),
             "queued_prompt_id": queued_prompt.id(),
             "queue_id": queued_prompt.queue_id(),
-        }),
-        _ => serde_json::json!({
-            "outcome": "unexpected",
-            "apply": apply_report,
         }),
     }
 }

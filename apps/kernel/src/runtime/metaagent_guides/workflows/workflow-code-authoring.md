@@ -24,7 +24,7 @@ Workflow-code scripts run in the kernel compiler with a single JavaScript builde
   - `provider`
   - `model`
   - `effort`
-  - `accountProfile` is reserved; current apply rejects it until provider account rebinding is wired.
+  - `accountProfile`
 
 - `workflow.existingAgent(agentRef)` binds a node to an already spawned session agent. In metaagent apply/run, the existing agent must be controlled by that metaagent.
 
@@ -93,7 +93,7 @@ Use node `extensions` when the node's agent needs MCP, skill, script, credential
 4. Inspect the apply report. It contains `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids`.
 5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.
 
-Use `provider_rebindings` with apply/run when a generated-agent provider or model is unavailable in the target kernel. Rebindings target node handles, not generated runtime ids, and can only rebind nodes using `workflow.newAgent`.
+Use `provider_rebindings` with apply/run when a generated-agent provider, model, effort, or account profile is unavailable or should be replaced in the target kernel. Rebindings target node handles, not generated runtime ids, and can only rebind nodes using `workflow.newAgent`.
 
 ## Small Routing Example
 

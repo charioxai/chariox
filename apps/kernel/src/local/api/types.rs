@@ -44,7 +44,7 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 182;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 183;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetDaemonHealthRequest;
@@ -341,6 +341,7 @@ pub enum LocalDaemonRequest {
     CreateWorkflow(CreateWorkflowRequest),
     ValidateWorkflowCode(ValidateWorkflowCodeRequest),
     ApplyWorkflowCode(ApplyWorkflowCodeRequest),
+    RunWorkflowCode(RunWorkflowCodeRequest),
     CreateWorkflowCodeArtifact(CreateWorkflowCodeArtifactRequest),
     UpdateWorkflowCodeArtifact(UpdateWorkflowCodeArtifactRequest),
     GetWorkflowCodeArtifact(GetWorkflowCodeArtifactRequest),
@@ -1097,6 +1098,10 @@ pub enum LocalDaemonResponse {
     },
     WorkflowCodeApplied {
         result: crate::workflow_code::WorkflowCodeCompileAndApplyResult,
+        session: RuntimeSession,
+    },
+    WorkflowCodeRun {
+        result: crate::workflow_code::WorkflowCodeRunResult,
         session: RuntimeSession,
     },
     WorkflowCodeArtifactCreated {

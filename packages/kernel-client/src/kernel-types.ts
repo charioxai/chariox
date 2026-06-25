@@ -1477,7 +1477,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 182
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 183
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2022,6 +2022,25 @@ export type WorkflowCodeCompileAndApplyResult = {
   apply: WorkflowCodeApplyReport
 }
 
+export type WorkflowCodeRunResult = {
+  apply: WorkflowCodeCompileAndApplyResult
+  invocation: WorkflowCodeRunInvocation
+}
+
+export type WorkflowCodeRunInvocation =
+  | {
+      kind: "started"
+      workflow_run: WorkflowRun
+      workflow: WorkflowDefinition
+      endpoint: WorkflowEndpointDefinition
+    }
+  | {
+      kind: "enqueued"
+      queued_prompt: WorkflowQueuedPrompt
+      workflow: WorkflowDefinition
+      endpoint: WorkflowEndpointDefinition
+    }
+
 export type WorkflowCodeLanguage = "java_script" | "type_script"
 
 export type WorkflowCodeArtifactMetadata = {
@@ -2091,6 +2110,13 @@ export type WorkflowCodeValidatedResponse = {
 export type WorkflowCodeAppliedResponse = {
   WorkflowCodeApplied: {
     result: WorkflowCodeCompileAndApplyResult
+    session: RuntimeSession
+  }
+}
+
+export type WorkflowCodeRunResponse = {
+  WorkflowCodeRun: {
+    result: WorkflowCodeRunResult
     session: RuntimeSession
   }
 }

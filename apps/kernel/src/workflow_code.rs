@@ -340,6 +340,27 @@ pub struct WorkflowCodeCompileAndApplyResult {
     pub apply: WorkflowCodeApplyReport,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowCodeRunResult {
+    pub apply: WorkflowCodeCompileAndApplyResult,
+    pub invocation: WorkflowCodeRunInvocation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowCodeRunInvocation {
+    Started {
+        workflow_run: crate::session::WorkflowRun,
+        workflow: crate::session::WorkflowDefinition,
+        endpoint: crate::session::WorkflowEndpointDefinition,
+    },
+    Enqueued {
+        queued_prompt: crate::session::WorkflowQueuedPrompt,
+        workflow: crate::session::WorkflowDefinition,
+        endpoint: crate::session::WorkflowEndpointDefinition,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowCodeProviderRebinding {

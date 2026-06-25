@@ -26,6 +26,20 @@ pub struct ApplyWorkflowCodeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWorkflowCodeRequest {
+    pub session_id: String,
+    pub node_path: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowCodeArtifactRequest {
     pub session_id: String,
     pub name: String,
