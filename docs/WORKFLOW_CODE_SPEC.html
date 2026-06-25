@@ -757,11 +757,11 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
         <tbody>
           <tr>
             <td><code>arroba.meta.workflow_code.create</code></td>
-            <td>Create a saved workflow-code artifact from name, source, optional language, and optional Node.js path.</td>
+            <td>Create a saved workflow-code artifact from name, source, optional language (<code>javascript</code> or <code>typescript</code>; legacy <code>java_script</code>/<code>type_script</code> are accepted), and optional Node.js path.</td>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.update</code></td>
-            <td>Update a saved artifact revision.</td>
+            <td>Update a saved artifact revision from name, source, optional language (<code>javascript</code> or <code>typescript</code>), and optional Node.js path.</td>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.list</code></td>
@@ -777,7 +777,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.validate</code></td>
-            <td>Compile in dry-run mode and return typed errors, warnings, and binding requirements.</td>
+            <td>Compile inline source or validate a saved artifact by name without mutating workflow state. Accepts optional language, Node.js path for inline source, and provider/model rebindings.</td>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.apply</code></td>
@@ -785,7 +785,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.run</code></td>
-            <td>Apply if needed and invoke an endpoint with a prompt, or run an already-applied artifact instance. <code>endpoint</code> and <code>queue</code> accept script handles from the generated workflow and are resolved through the apply report.</td>
+            <td>Apply saved or inline workflow-code as a fresh workflow, then invoke one endpoint with a prompt. <code>endpoint</code> and <code>queue</code> accept script handles from the generated workflow and are resolved through the apply report.</td>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.export</code></td>
