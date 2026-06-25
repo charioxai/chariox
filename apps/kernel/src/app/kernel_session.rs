@@ -13,10 +13,10 @@ use crate::session::{
     CreateSessionRequest, RuntimeSession, SessionStateOwner, SessionStateReader, SessionStatus,
 };
 use crate::workflow_code::{
-    compile_workflow_code_javascript_with_schema_import_root, WorkflowCodeAgentBinding,
+    compile_workflow_code_source_with_schema_import_root, WorkflowCodeAgentBinding,
     WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult, WorkflowCodeCompileResult,
-    WorkflowCodeDefinition, WorkflowCodeValidationDiagnostic, WorkflowCodeValidationReport,
-    WorkflowCodeValidationSeverity,
+    WorkflowCodeDefinition, WorkflowCodeLanguage, WorkflowCodeValidationDiagnostic,
+    WorkflowCodeValidationReport, WorkflowCodeValidationSeverity,
 };
 
 pub(crate) struct KernelSessionService<'a> {
@@ -1529,19 +1529,21 @@ impl<'a> KernelSessionService<'a> {
         )
     }
 
-    pub(crate) fn compile_and_validate_workflow_code_javascript_with_rebindings(
+    pub(crate) fn compile_and_validate_workflow_code_source_with_rebindings(
         &mut self,
         session_id: &str,
         node_path: impl AsRef<Path>,
         source: &str,
+        language: WorkflowCodeLanguage,
         limits: &WorkflowCodeLimitsConfig,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
         caller_metaagent_id: Option<&str>,
     ) -> Result<WorkflowCodeCompileResult, DaemonError> {
         let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
-        let mut compile = compile_workflow_code_javascript_with_schema_import_root(
+        let mut compile = compile_workflow_code_source_with_schema_import_root(
             node_path,
             source,
+            language,
             limits,
             schema_import_root.as_deref(),
         )?;
@@ -1601,10 +1603,34 @@ impl<'a> KernelSessionService<'a> {
         controlled_by_metaagent_id: Option<String>,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
     ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
-        let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
-        let compile = compile_workflow_code_javascript_with_schema_import_root(
+        self.compile_and_apply_workflow_code_source_with_rebindings(
+            session_id,
             node_path,
             source,
+            WorkflowCodeLanguage::JavaScript,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            provider_rebindings,
+        )
+    }
+
+    pub(crate) fn compile_and_apply_workflow_code_source_with_rebindings(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        language: WorkflowCodeLanguage,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        let schema_import_root = self.workflow_code_schema_import_root(session_id)?;
+        let compile = compile_workflow_code_source_with_schema_import_root(
+            node_path,
+            source,
+            language,
             limits,
             schema_import_root.as_deref(),
         )?;

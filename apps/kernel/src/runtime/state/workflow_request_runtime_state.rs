@@ -348,10 +348,13 @@ impl KernelRuntimeState {
         self.with_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let result = crate::app::KernelSessionService::new(app)
-                .compile_and_validate_workflow_code_javascript_with_rebindings(
+                .compile_and_validate_workflow_code_source_with_rebindings(
                     &request.session_id,
                     &request.node_path,
                     &request.source,
+                    request
+                        .language
+                        .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
                     &limits,
                     &request.provider_rebindings,
                     caller_metaagent_id.as_deref(),
@@ -376,10 +379,13 @@ impl KernelRuntimeState {
         let result = self
             .with_app_side_effect(move |app| {
                 let limits = app.config().workflow_code_limits();
-                let result = app.compile_and_apply_workflow_code_javascript_with_rebindings(
+                let result = app.compile_and_apply_workflow_code_source_with_rebindings(
                     &request.session_id,
                     &request.node_path,
                     &request.source,
+                    request
+                        .language
+                        .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript),
                     &limits,
                     caller_user_id,
                     controlled_by_metaagent_id,
@@ -411,14 +417,18 @@ impl KernelRuntimeState {
                 let session_id = session_id.clone();
                 let node_path = request.node_path.clone();
                 let source = request.source.clone();
+                let language = request
+                    .language
+                    .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript);
                 let provider_rebindings = request.provider_rebindings.clone();
                 let caller_user_id = caller_user_id.clone();
                 move |app| {
                     let limits = app.config().workflow_code_limits();
-                    app.compile_and_apply_workflow_code_javascript_with_rebindings(
+                    app.compile_and_apply_workflow_code_source_with_rebindings(
                         &session_id,
                         &node_path,
                         &source,
+                        language,
                         &limits,
                         caller_user_id,
                         controlled_by_metaagent_id,

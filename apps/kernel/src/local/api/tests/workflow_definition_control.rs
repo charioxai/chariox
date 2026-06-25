@@ -74,6 +74,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                language: None,
                 provider_rebindings: Vec::new(),
             },
         ))
@@ -104,6 +105,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                language: None,
                 provider_rebindings: Vec::new(),
             },
         ))
@@ -198,6 +200,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                language: None,
                 provider_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
                 queue_ref: None,
@@ -530,6 +533,7 @@ workflow.watchdog(entry, {
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                language: None,
                 provider_rebindings: Vec::new(),
             },
         ))
@@ -634,6 +638,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                language: None,
                 provider_rebindings: Vec::new(),
             },
         ))
@@ -658,6 +663,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 session_id: session.id().to_string(),
                 node_path: node_path.display().to_string(),
                 source: source.to_string(),
+                language: None,
                 provider_rebindings: vec![crate::workflow_code::WorkflowCodeProviderRebinding {
                     node: "planner".to_string(),
                     provider: "dev-stub".to_string(),
@@ -979,6 +985,70 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         }
         _ => panic!("unexpected local response"),
     }
+}
+
+#[test]
+fn local_request_api_applies_inline_typescript_workflow_code() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping inline workflow-code TypeScript test because node is not available");
+        return;
+    };
+    if !node_supports_workflow_code_typescript(&node_path) {
+        eprintln!(
+            "skipping inline workflow-code TypeScript test because Node.js cannot strip TypeScript"
+        );
+        return;
+    }
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-inline-workflow-code-ts",
+                "worktree-inline-workflow-code-ts",
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+type ProviderName = "dev-stub";
+const provider: ProviderName = "dev-stub";
+workflow.define({ alias: "inline_typescript_flow" });
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "inline-ts-worker", provider, model: "default" }),
+  canCompleteWorkflowRun: true
+});
+workflow.endpoint(worker, { handle: "entry", alias: "entry" });
+"#;
+
+    let applied = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: Some(crate::workflow_code::WorkflowCodeLanguage::TypeScript),
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("inline TypeScript workflow-code should apply");
+
+    let LocalDaemonResponse::WorkflowCodeApplied { result, session } = applied else {
+        panic!("unexpected local response");
+    };
+    assert!(result.compile.validation.ok);
+    assert_eq!(
+        result.compile.definition.workflow.alias.as_deref(),
+        Some("inline_typescript_flow")
+    );
+    assert!(session
+        .workflows()
+        .iter()
+        .any(|workflow| workflow.id() == result.apply.workflow_id));
 }
 
 #[test]

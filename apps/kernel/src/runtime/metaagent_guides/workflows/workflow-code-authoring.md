@@ -2,7 +2,7 @@
 
 Use workflow-code when the task is to generate a complete workflow shape as a portable script. Use manual workflow commands when incremental interactive editing is simpler. The script is a workflow generator: every apply creates a new workflow and new node, edge, endpoint, queue, watchdog, and generated-agent ids. Handles inside the script only connect script components to each other; after apply, the kernel returns handle-to-id maps in the apply report.
 
-Workflow-code scripts run in the kernel compiler with a single JavaScript builder named `workflow`. Do not invent attributes. The compiler rejects unknown fields after it exports the builder state into the kernel workflow-code schema.
+Workflow-code scripts run in the kernel compiler with a single builder named `workflow`. JavaScript is the default language. Pass `language: "typescript"` for TypeScript source in `create`, `update`, `validate`, `apply`, or `run`; legacy `type_script` decodes for compatibility, but new scripts and tool calls should use `typescript`. Do not invent attributes. The compiler rejects unknown fields after it exports the builder state into the kernel workflow-code schema.
 
 ## Builder API
 
@@ -88,7 +88,7 @@ Use node `extensions` when the node's agent needs MCP, skill, script, credential
 ## Metaagent Tool Flow
 
 1. Author the script.
-2. Call `arroba.meta.workflow_code.validate` with `source`, or save it with `arroba.meta.workflow_code.create` and validate by `name`.
+2. Call `arroba.meta.workflow_code.validate` with `source`, or save it with `arroba.meta.workflow_code.create` and validate by `name`. Include `language: "typescript"` when the inline or saved source uses TypeScript syntax.
 3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step.
 4. Inspect the apply report. It contains `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids`.
 5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.

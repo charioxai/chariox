@@ -155,6 +155,43 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
+    fn workflow_code_meta_specs_advertise_typescript_and_provider_rebindings() {
+        let specs = meta_runtime_tool_specs();
+        for tool_name in [
+            META_WORKFLOW_CODE_CREATE_TOOL,
+            META_WORKFLOW_CODE_UPDATE_TOOL,
+            META_WORKFLOW_CODE_VALIDATE_TOOL,
+            META_WORKFLOW_CODE_APPLY_TOOL,
+            META_WORKFLOW_CODE_RUN_TOOL,
+        ] {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.name == tool_name)
+                .expect("workflow-code tool should exist");
+            assert!(
+                spec.input_schema
+                    .pointer("/properties/language/enum")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|values| values
+                        .iter()
+                        .any(|value| value.as_str() == Some("typescript"))),
+                "{tool_name} should advertise canonical TypeScript language"
+            );
+        }
+
+        let apply = specs
+            .iter()
+            .find(|spec| spec.name == META_WORKFLOW_CODE_APPLY_TOOL)
+            .expect("workflow-code apply tool should exist");
+        assert_eq!(
+            apply
+                .input_schema
+                .pointer("/properties/provider_rebindings/items/properties/account_profile/type"),
+            Some(&serde_json::json!("string"))
+        );
+    }
+
+    #[test]
     fn slice_specs_expose_screen_input_and_ocr_tools() {
         let specs = slice_runtime_tool_specs();
         assert!(specs

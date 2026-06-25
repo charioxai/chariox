@@ -12,6 +12,8 @@ pub struct ValidateWorkflowCodeRequest {
     pub session_id: String,
     pub node_path: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
@@ -21,6 +23,8 @@ pub struct ApplyWorkflowCodeRequest {
     pub session_id: String,
     pub node_path: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
 }
@@ -30,6 +34,8 @@ pub struct RunWorkflowCodeRequest {
     pub session_id: String,
     pub node_path: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

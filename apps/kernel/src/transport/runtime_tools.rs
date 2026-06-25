@@ -556,6 +556,8 @@ pub struct MetaWorkflowCodeValidateArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
@@ -568,6 +570,8 @@ pub struct MetaWorkflowCodeApplyArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
@@ -579,6 +583,8 @@ pub struct MetaWorkflowCodeRunArgs {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
@@ -1383,7 +1389,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "language": {"type": "string", "enum": ["java_script", "type_script"]},
+                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
                     "node_path": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -1417,7 +1423,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "language": {"type": "string", "enum": ["java_script", "type_script"]},
+                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
                     "node_path": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -1441,6 +1447,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
+                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
                     "node_path": {"type": "string"},
                     "provider_rebindings": {
                         "type": "array",
@@ -1451,7 +1458,8 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                                 "node": {"type": "string"},
                                 "provider": {"type": "string"},
                                 "model": {"type": "string"},
-                                "effort": {"type": "string"}
+                                "effort": {"type": "string"},
+                                "account_profile": {"type": "string"}
                             },
                             "additionalProperties": false
                         }
@@ -1468,7 +1476,23 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "node_path": {"type": "string"}
+                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
+                    "node_path": {"type": "string"},
+                    "provider_rebindings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["node", "provider"],
+                            "properties": {
+                                "node": {"type": "string"},
+                                "provider": {"type": "string"},
+                                "model": {"type": "string"},
+                                "effort": {"type": "string"},
+                                "account_profile": {"type": "string"}
+                            },
+                            "additionalProperties": false
+                        }
+                    }
                 },
                 "additionalProperties": false
             }),
@@ -1482,6 +1506,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
+                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
                     "prompt": {"type": "string"},
                     "endpoint": {"type": "string"},
                     "queue": {"type": "string"},
@@ -1495,7 +1520,8 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                                 "node": {"type": "string"},
                                 "provider": {"type": "string"},
                                 "model": {"type": "string"},
-                                "effort": {"type": "string"}
+                                "effort": {"type": "string"},
+                                "account_profile": {"type": "string"}
                             },
                             "additionalProperties": false
                         }

@@ -777,6 +777,7 @@ impl KernelRuntimeState {
                             .display()
                             .to_string(),
                         source,
+                        language: args.language,
                         provider_rebindings: args.provider_rebindings,
                     },
                 ),
@@ -810,6 +811,7 @@ impl KernelRuntimeState {
                 source,
                 args.node_path,
                 args.provider_rebindings,
+                args.language,
             )
             .await?
         };
@@ -860,6 +862,7 @@ impl KernelRuntimeState {
                             .display()
                             .to_string(),
                         source,
+                        language: args.language,
                         provider_rebindings: args.provider_rebindings,
                         endpoint: args.endpoint,
                         queue_ref: args.queue,
@@ -902,6 +905,7 @@ impl KernelRuntimeState {
         source: String,
         node_path: Option<String>,
         provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+        language: Option<crate::workflow_code::WorkflowCodeLanguage>,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
         self.meta_execute_workflow_request(
             crate::local::LocalDaemonRequest::ApplyWorkflowCode(
@@ -911,6 +915,7 @@ impl KernelRuntimeState {
                         .display()
                         .to_string(),
                     source,
+                    language,
                     provider_rebindings,
                 },
             ),
