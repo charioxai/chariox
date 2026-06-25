@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -14,6 +15,7 @@ import {
   deleteWorkflowCodeArtifactRequest,
   endSessionRequest,
   exportWorkflowCodeArtifactRequest,
+  exportWorkflowCodeSourceRequest,
   getSessionStateRequest,
   getWorkflowCodeArtifactRequest,
   getProviderRunRequest,
@@ -243,7 +245,7 @@ const reviewer = workflow.node({
 
 workflow.edge(planner, worker, { handle: "planner_to_worker", handoffSchema: handoff, validationPolicy: "warn" });
 workflow.edge(worker, reviewer, { handle: "worker_to_reviewer", handoffSchema: handoff, validationPolicy: "warn" });
-const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 const urgent = workflow.queue({ handle: "urgent", alias: "urgent", priority: 10, enabled: false });
 workflow.watchdog(entry, {
   handle: "entry_watchdog",
@@ -323,7 +325,7 @@ workflow.edge(existingWorker, generatedFinisher, {
   handoffSchema: handoff,
   validationPolicy: "warn",
 });
-workflow.endpoint(existingWorker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(existingWorker, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 `.trim()
 }
 
@@ -376,7 +378,7 @@ const worker = workflow.node({
   canvas: { x: 0, y: 120 },
 });
 
-workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 `.trim()
 }
 
@@ -517,11 +519,12 @@ async function workflowCodeExamples() {
   })))
 }
 
-async function applyExampleSuite(client, sessionId, nodePath) {
+async function applyExampleSuite(client, sessionId, nodePath, workspace) {
   const examples = await workflowCodeExamples()
   const results = []
   for (const [index, example] of examples.entries()) {
-    const artifactName = `pattern-${index + 1}-${example.name.replace(/\.js$/, '')}-${Date.now()}`
+    const slug = example.name.replace(/\.js$/, '')
+    const artifactName = `pattern-${index + 1}-${slug}-${Date.now()}`
     const created = unwrap(
       await client.send(createWorkflowCodeArtifactRequest(sessionId, artifactName, nodePath, example.source)),
       'WorkflowCodeArtifactCreated',
@@ -532,25 +535,111 @@ async function applyExampleSuite(client, sessionId, nodePath) {
       await client.send(exportWorkflowCodeArtifactRequest(sessionId, artifactName)),
       'WorkflowCodeArtifactExported',
     ).package
+    assert(exported?.source_sha256, `example ${example.name} package export should include source hash`, exported)
+    assert(exported?.definition_sha256, `example ${example.name} package export should include definition hash`, exported)
+
+    const importedArtifactName = `${artifactName}-package-imported`
+    const imported = unwrap(
+      await client.send(importWorkflowCodeArtifactRequest(sessionId, exported, nodePath, {
+        name: importedArtifactName,
+        overwrite: false,
+      })),
+      'WorkflowCodeArtifactImported',
+    ).artifact
+    assert(imported?.metadata?.validation?.ok, `example ${example.name} package import should validate`, imported?.metadata?.validation)
+
     const expected = expectationFromDefinition(exported.definition)
     const rebindings = rebindingsForDefinition(exported.definition)
     const appliedResponse = unwrap(
-      await client.send(applyWorkflowCodeArtifactRequest(sessionId, artifactName, rebindings)),
+      await client.send(applyWorkflowCodeArtifactRequest(sessionId, importedArtifactName, rebindings)),
       'WorkflowCodeApplied',
     )
     const apply = validateApplyResult(appliedResponse.result, `example ${example.name}`, expected)
     validateSessionProjection(appliedResponse.session, apply, `example ${example.name}`, expected)
+
+    const inlineSource = unwrap(
+      await client.send(exportWorkflowCodeSourceRequest(
+        sessionId,
+        { kind: 'artifact', name: artifactName },
+        'inline',
+      )),
+      'WorkflowCodeSourceExported',
+    ).export
+    assert(inlineSource?.source, `example ${example.name} inline source export should include source`, inlineSource)
+    assert(
+      sha256Hex(inlineSource.source) === inlineSource.source_sha256,
+      `example ${example.name} inline source hash should match contents`,
+      inlineSource,
+    )
+    const inlineRoundTripName = `${artifactName}-inline-source`
+    const inlineRoundTrip = unwrap(
+      await client.send(createWorkflowCodeArtifactRequest(sessionId, inlineRoundTripName, nodePath, inlineSource.source)),
+      'WorkflowCodeArtifactCreated',
+    ).artifact
+    assert(inlineRoundTrip?.metadata?.validation?.ok, `example ${example.name} inline source should recompile`, inlineRoundTrip?.metadata?.validation)
+
+    const directorySource = unwrap(
+      await client.send(exportWorkflowCodeSourceRequest(
+        sessionId,
+        { kind: 'artifact', name: artifactName },
+        'directory',
+      )),
+      'WorkflowCodeSourceExported',
+    ).export
+    assert(directorySource?.source_path === 'workflow.js', `example ${example.name} source directory should export workflow.js`, directorySource)
+    const directoryManifest = await writeSourceDirectoryExport(workspace, directorySource, `example ${example.name}`)
+    assert(directoryManifest?.schema_paths, `example ${example.name} source directory manifest should include schema_paths`, directoryManifest)
+    const directoryRoundTripName = `${artifactName}-directory-source`
+    const directoryRoundTrip = unwrap(
+      await client.send(createWorkflowCodeArtifactRequest(sessionId, directoryRoundTripName, nodePath, directorySource.source)),
+      'WorkflowCodeArtifactCreated',
+    ).artifact
+    assert(directoryRoundTrip?.metadata?.validation?.ok, `example ${example.name} source directory should recompile`, directoryRoundTrip?.metadata?.validation)
+
     results.push({
       example: example.name,
       artifactName,
+      packageImportedArtifactName: importedArtifactName,
       workflowId: apply.workflow_id,
       nodes: expected.nodes,
       edges: expected.edges,
       endpoints: expected.endpoints,
       schemas: Object.keys(apply.schema_refs ?? {}),
+      packageSha256: exported.source_sha256,
+      inlineSourceSha256: inlineSource.source_sha256,
+      directorySourceSha256: directorySource.source_sha256,
+      directoryFiles: (directorySource.files ?? []).map((file) => file.path).sort(),
     })
   }
   return results
+}
+
+async function writeSourceDirectoryExport(workspace, exportResult, label) {
+  const files = exportResult.files ?? []
+  assert(files.some((file) => file.path === 'workflow.js'), `${label} source directory should include workflow.js`, exportResult)
+  const manifestFile = files.find((file) => file.path === 'manifest.json')
+  assert(manifestFile, `${label} source directory should include manifest.json`, exportResult)
+  for (const file of files) {
+    assert(sha256Hex(file.contents) === file.sha256, `${label} source directory file hash mismatch for ${file.path}`, file)
+    const target = path.join(workspace, file.path)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, file.contents, 'utf8')
+  }
+  const manifest = JSON.parse(manifestFile.contents)
+  assert(manifest.source_path === 'workflow.js', `${label} manifest source_path should be workflow.js`, manifest)
+  assert(manifest.source_sha256 === exportResult.source_sha256, `${label} manifest source hash should match export`, {
+    manifest,
+    exportResult,
+  })
+  assert(manifest.definition_sha256 === exportResult.definition_sha256, `${label} manifest definition hash should match export`, {
+    manifest,
+    exportResult,
+  })
+  return manifest
+}
+
+function sha256Hex(value) {
+  return createHash('sha256').update(value).digest('hex')
 }
 
 function validateArtifactHistory(artifact, expectedActions) {
@@ -888,7 +977,7 @@ async function main() {
     assert((state?.workflows ?? []).some((workflow) => workflow.id === runApply.workflow_id), 'run workflow should be in loaded session state')
     const existingAgentArtifact = await applyExistingAgentArtifact(client, session, nodePath, workspace)
     const exampleSuite = options.exampleSuite
-      ? await applyExampleSuite(client, session.id, nodePath)
+      ? await applyExampleSuite(client, session.id, nodePath, workspace)
       : []
 
     summary = {

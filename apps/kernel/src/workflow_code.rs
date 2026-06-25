@@ -2653,7 +2653,8 @@ impl WorkflowCodeJavascriptWriter {
     }
 
     fn var_for(&mut self, kind: &str, handle: &str) -> String {
-        if let Some(var) = self.vars.get(handle) {
+        let key = var_key(kind, handle);
+        if let Some(var) = self.vars.get(&key) {
             return var.clone();
         }
         let stem = sanitize_identifier_stem(handle);
@@ -2664,13 +2665,13 @@ impl WorkflowCodeJavascriptWriter {
             index += 1;
         }
         self.used_vars.insert(candidate.clone());
-        self.vars.insert(handle.to_string(), candidate.clone());
+        self.vars.insert(key, candidate.clone());
         candidate
     }
 
     fn existing_var(&self, handle: &str, kind: &str) -> Result<String, crate::DaemonError> {
         self.vars
-            .get(handle)
+            .get(&var_key(kind, handle))
             .cloned()
             .ok_or_else(|| crate::DaemonError::LocalTransport {
                 operation: "workflow_code.source_export",
@@ -2697,12 +2698,14 @@ impl WorkflowCodeJavascriptWriter {
             &mut fields,
             "runOutputSchema",
             &workflow.run_output_schema,
+            "schema",
             &self.vars,
         )?;
         push_ref_field(
             &mut fields,
             "intermediateOutputSchema",
             &workflow.intermediate_output_schema,
+            "schema",
             &self.vars,
         )?;
         if !fields.is_empty() {
@@ -2762,6 +2765,7 @@ impl WorkflowCodeJavascriptWriter {
             &mut fields,
             "intermediateOutputSchema",
             &node.intermediate_output_schema,
+            "schema",
             &self.vars,
         )?;
         push_json_field(&mut fields, "maxTurns", &node.max_turns)?;
@@ -2788,6 +2792,7 @@ impl WorkflowCodeJavascriptWriter {
             &mut fields,
             "handoffSchema",
             &edge.handoff_schema,
+            "schema",
             &self.vars,
         )?;
         push_json_field(&mut fields, "validationPolicy", &edge.validation_policy)?;
@@ -2841,7 +2846,7 @@ impl WorkflowCodeJavascriptWriter {
         let endpoint = self.existing_var(&watchdog.endpoint, "endpoint")?;
         let mut fields = Vec::new();
         push_json_field(&mut fields, "handle", &Some(watchdog.handle.clone()))?;
-        push_ref_field(&mut fields, "queue", &watchdog.queue, &self.vars)?;
+        push_ref_field(&mut fields, "queue", &watchdog.queue, "queue", &self.vars)?;
         push_json_field(&mut fields, "enabled", &watchdog.enabled)?;
         push_json_field(
             &mut fields,
@@ -2885,12 +2890,13 @@ fn push_ref_field(
     fields: &mut Vec<String>,
     name: &str,
     value: &Option<String>,
+    kind: &str,
     vars: &BTreeMap<String, String>,
 ) -> Result<(), crate::DaemonError> {
     let Some(handle) = value else {
         return Ok(());
     };
-    let Some(var) = vars.get(handle) else {
+    let Some(var) = vars.get(&var_key(kind, handle)) else {
         return Err(crate::DaemonError::LocalTransport {
             operation: "workflow_code.source_export",
             message: format!(
@@ -2900,6 +2906,10 @@ fn push_ref_field(
     };
     fields.push(format!("{name}: {var}"));
     Ok(())
+}
+
+fn var_key(kind: &str, handle: &str) -> String {
+    format!("{kind}:{handle}")
 }
 
 fn push_json_field<T: Serialize>(
@@ -4211,6 +4221,34 @@ workflow.schemaFromFile({ handle: "final", path: "schemas/final.txt" })
 
         assert!(format!("{error}").contains("must end in .json"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_export_keeps_component_variable_namespaces_separate() {
+        let mut definition = minimal_definition();
+        definition.schemas[0].handle = "entry".to_string();
+        definition.schemas[0].alias = Some("Entry schema".to_string());
+        definition.workflow.run_output_schema = Some("entry".to_string());
+
+        let inline = workflow_code_definition_to_javascript(&definition, None)
+            .expect("inline source export should serialize");
+        assert!(inline.contains("const schema_entry = workflow.schema"));
+        assert!(inline.contains("const endpoint_entry = workflow.endpoint"));
+        assert!(inline.contains("runOutputSchema: schema_entry"));
+
+        let directory = export_workflow_code_source_from_definition(
+            "entry-collision",
+            &definition,
+            WorkflowCodeSourceExportFormat::Directory,
+        )
+        .expect("source directory export should serialize");
+        assert!(directory
+            .source
+            .contains("const schema_entry = workflow.schemaFromFile"));
+        assert!(directory
+            .source
+            .contains("const endpoint_entry = workflow.endpoint"));
+        assert!(directory.source.contains("runOutputSchema: schema_entry"));
     }
 
     #[test]
