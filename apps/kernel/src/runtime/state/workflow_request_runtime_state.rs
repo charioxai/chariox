@@ -494,6 +494,7 @@ impl KernelRuntimeState {
             Ok(endpoint_ref) => endpoint_ref,
             Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
         };
+        let queue_ref = workflow_code_queue_ref(&apply_result.apply, request.queue_ref);
         let invocation_prompt = workflow_code_invocation_prompt(
             &request.prompt,
             apply_result.compile.definition.workflow.prompt.as_deref(),
@@ -504,7 +505,7 @@ impl KernelRuntimeState {
                     session_id: session_id.clone(),
                     workflow_ref: apply_result.apply.workflow_id.clone(),
                     endpoint_ref,
-                    queue_ref: request.queue_ref,
+                    queue_ref,
                     prompt: Some(invocation_prompt),
                     publication_invocation: None,
                 },
@@ -606,6 +607,7 @@ impl KernelRuntimeState {
             Ok(endpoint_ref) => endpoint_ref,
             Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
         };
+        let queue_ref = workflow_code_queue_ref(&apply_result.apply, request.queue_ref);
         let invocation_prompt = workflow_code_invocation_prompt(
             &request.prompt,
             apply_result.compile.definition.workflow.prompt.as_deref(),
@@ -616,7 +618,7 @@ impl KernelRuntimeState {
                     session_id: session_id.clone(),
                     workflow_ref: apply_result.apply.workflow_id.clone(),
                     endpoint_ref,
-                    queue_ref: request.queue_ref,
+                    queue_ref,
                     prompt: Some(invocation_prompt),
                     publication_invocation: None,
                 },
@@ -1113,6 +1115,19 @@ fn workflow_code_endpoint_ref(
             ),
         }),
     }
+}
+
+fn workflow_code_queue_ref(
+    apply_report: &crate::workflow_code::WorkflowCodeApplyReport,
+    queue_ref: Option<String>,
+) -> Option<String> {
+    queue_ref.map(|queue_ref| {
+        apply_report
+            .queue_ids
+            .get(&queue_ref)
+            .cloned()
+            .unwrap_or(queue_ref)
+    })
 }
 
 fn workflow_code_invocation_prompt(request_prompt: &str, default_prompt: Option<&str>) -> String {

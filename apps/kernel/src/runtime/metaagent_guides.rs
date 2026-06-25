@@ -379,6 +379,7 @@ mod tests {
             "Use `queue: \"default\"`",
             "with `endpoint`, optional `queue`, and `prompt`",
             "`run` may pass `endpoint`, `queue`, and `prompt`",
+            "endpoint and queue values may be script handles",
             "`validationPolicy` (`\"warn\"` or `\"halt\"`)",
             "`policy` (`\"skip\"` or `\"queue\"`)",
         ] {

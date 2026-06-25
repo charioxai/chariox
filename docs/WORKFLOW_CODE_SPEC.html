@@ -253,7 +253,7 @@
           <tr>
             <td>Queued prompt</td>
             <td><code>queue_id</code>, <code>workflow_id</code>, <code>endpoint_id</code>, <code>prompt</code>, <code>source</code>, <code>status</code></td>
-            <td>Not a static builder primitive. Use <code>arroba.meta.workflow_code.run</code> with <code>endpoint</code>, <code>queue</code>, and <code>prompt</code>, or <code>RunWorkflowCode*</code> with <code>endpoint</code>, <code>queue_ref</code>, and <code>prompt</code>; the kernel starts a run or creates a queued prompt according to current workflow scheduling state.</td>
+            <td>Not a static builder primitive. Use <code>arroba.meta.workflow_code.run</code> with <code>endpoint</code>, <code>queue</code>, and <code>prompt</code>, or <code>RunWorkflowCode*</code> with <code>endpoint</code>, <code>queue_ref</code>, and <code>prompt</code>. Endpoint and queue values may be script handles; the kernel maps them to generated runtime ids before starting a run or creating a queued prompt.</td>
           </tr>
           <tr>
             <td>Watchdog</td>
@@ -785,7 +785,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.run</code></td>
-            <td>Apply if needed and invoke an endpoint with a prompt, or run an already-applied artifact instance.</td>
+            <td>Apply if needed and invoke an endpoint with a prompt, or run an already-applied artifact instance. <code>endpoint</code> and <code>queue</code> accept script handles from the generated workflow and are resolved through the apply report.</td>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.export</code></td>

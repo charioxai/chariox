@@ -198,6 +198,12 @@ const planner = workflow.node({
   maxTurns: 2,
   canvas: { x: 24, y: 48 }
 })
+workflow.queue({
+  handle: "fast_lane",
+  alias: "urgent",
+  priority: 9,
+  enabled: true
+})
 workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 "#;
 
@@ -210,7 +216,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 language: None,
                 provider_rebindings: Vec::new(),
                 endpoint: Some("entry".to_string()),
-                queue_ref: None,
+                queue_ref: Some("fast_lane".to_string()),
                 prompt: String::new(),
             },
         ))
@@ -314,8 +320,10 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                     .apply
                     .apply
                     .queue_ids
-                    .get("default")
+                    .get("fast_lane")
                     .map(String::as_str)
+            && queue.alias() == "urgent"
+            && queue.priority() == 9
     }));
 
     let (workflow_run, workflow_from_run, endpoint_from_run) = match result.invocation {
@@ -776,6 +784,12 @@ const planner = workflow.node({
   agent: workflow.newAgent({ alias: "planner", provider: "codex", model: "gpt-5" }),
   instructions: "Plan."
 })
+workflow.queue({
+  handle: "fast_lane",
+  alias: "urgent",
+  priority: 9,
+  enabled: true
+})
 workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 "#;
     let updated_source = source.replace("artifact_flow", "artifact_flow_updated");
@@ -988,7 +1002,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 name: imported_name.clone(),
                 provider_rebindings,
                 endpoint: Some("entry".to_string()),
-                queue_ref: None,
+                queue_ref: Some("fast_lane".to_string()),
                 prompt: "Run the portable imported artifact.".to_string(),
             },
         ))
@@ -1005,6 +1019,15 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 agent.id() == planner_agent_id
                     && agent.provider() == "dev-stub"
                     && agent.model() == Some("default")
+            }));
+            let queue_id = result
+                .apply
+                .apply
+                .queue_ids
+                .get("fast_lane")
+                .expect("script queue handle should map to a runtime queue id");
+            assert!(session.workflow_prompt_queues().iter().any(|queue| {
+                queue.id() == queue_id && queue.alias() == "urgent" && queue.priority() == 9
             }));
             result
         }

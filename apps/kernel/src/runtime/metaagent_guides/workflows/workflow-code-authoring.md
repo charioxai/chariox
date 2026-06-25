@@ -81,7 +81,7 @@ If no queues are defined, the kernel creates the workflow default prompt queue a
 
 Workflow, endpoint, and queue aliases use the same rules as manual workflow commands: after trimming and lowercase normalization, aliases must contain only lowercase letters, digits, `-`, or `_`. Queue aliases must be unique after normalization; define at most one queue with alias `default` when you need to configure the implicit default queue.
 
-Workflow-code scripts only define workflow structure. They do not call `run` or `enqueue` during compilation. To invoke the generated workflow, call `arroba.meta.workflow_code.run` with `endpoint`, optional `queue`, and `prompt`; the kernel starts the run or enqueues the prompt through normal workflow scheduling.
+Workflow-code scripts only define workflow structure. They do not call `run` or `enqueue` during compilation. To invoke the generated workflow, call `arroba.meta.workflow_code.run` with `endpoint`, optional `queue`, and `prompt`; `endpoint` and `queue` may be script handles returned by `workflow.endpoint` and `workflow.queue`, and the kernel maps them to generated runtime ids before normal workflow scheduling.
 
 ## Schemas and Outputs
 
@@ -134,7 +134,7 @@ Do not include runtime ids in provider rebindings. Do not rebind existing-agent 
 
 1. Author the script.
 2. Call `arroba.meta.workflow_code.validate` with `source`, or save it with `arroba.meta.workflow_code.create` and validate by `name`. Include `language: "typescript"` when the inline or saved source uses TypeScript syntax.
-3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `endpoint`, `queue`, and `prompt`; when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
+3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `endpoint`, `queue`, and `prompt`; endpoint and queue values may be script handles, and when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
 4. Inspect the apply report. It contains `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids`.
 5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.
 
