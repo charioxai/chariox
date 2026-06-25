@@ -1,7 +1,7 @@
 use super::*;
 use crate::local::{
     CreateWorkflowPublicationRequest, ExportWorkflowPublicationPackageRequest, InstallSkillRequest,
-    RegisterWorkflowPublicationEndpointRequest,
+    RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -16,6 +16,27 @@ fn find_node_for_workflow_code_local_api_test() -> Option<PathBuf> {
         PathBuf::from("/opt/homebrew/bin/node"),
         PathBuf::from("/usr/local/bin/node"),
         PathBuf::from("/usr/bin/node"),
+    ]);
+    candidates.into_iter().find(|candidate| {
+        std::process::Command::new(candidate)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+}
+
+fn find_python_for_workflow_code_local_api_test() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("PYTHON") {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.extend([
+        PathBuf::from("/opt/homebrew/bin/python3"),
+        PathBuf::from("/usr/local/bin/python3"),
+        PathBuf::from("/usr/bin/python3"),
+        PathBuf::from("python3"),
     ]);
     candidates.into_iter().find(|candidate| {
         std::process::Command::new(candidate)
@@ -1386,6 +1407,145 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
                 "workflow-code-skill",
             )
     }));
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
+fn local_request_api_applies_workflow_code_script_extensions_to_generated_agents() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping workflow-code script extension local API test because node is not available"
+        );
+        return;
+    };
+    let Some(python_path) = find_python_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping workflow-code script extension local API test because python3 is not available"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-script-extension-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let script_path = workspace_root.join("workflow_code_script.py");
+    std::fs::write(
+        &script_path,
+        r#"
+def run(value: str = "ok") -> dict:
+    """Return a deterministic workflow-code script extension result."""
+    return {"value": value}
+
+def test_run():
+    assert run("test")["value"] == "test"
+"#,
+    )
+    .expect("test script should be written");
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                "worktree-script-extension",
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    match harness
+        .dispatch(LocalDaemonRequest::RegisterEnvironment(
+            RegisterEnvironmentRequest {
+                workspace_id: Some(workspace_root.display().to_string()),
+                config: crate::script::ArrobaEnvironmentConfig {
+                    name: "workflow-code-python".to_string(),
+                    runtime: crate::script::ArrobaEnvironmentRuntime::Python {
+                        python: python_path,
+                    },
+                },
+            },
+        ))
+        .expect("test environment should register")
+    {
+        LocalDaemonResponse::EnvironmentRegistered { environment, .. } => {
+            assert_eq!(environment.name, "workflow-code-python");
+        }
+        _ => panic!("unexpected local response"),
+    }
+    match harness
+        .dispatch(LocalDaemonRequest::RegisterScript(RegisterScriptRequest {
+            workspace_id: Some(workspace_root.display().to_string()),
+            source_path: script_path,
+            environment: "workflow-code-python".to_string(),
+            name: Some("workflow-code-script".to_string()),
+        }))
+        .expect("test script should register")
+    {
+        LocalDaemonResponse::ScriptRegistered { script, .. } => {
+            assert_eq!(script.name, "workflow-code-script");
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let source = r#"
+workflow.define({ alias: "scripted_script_extension_flow" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "script-extension-worker", provider: "dev-stub", model: "default" }),
+  publicLabel: "Worker",
+  instructions: "Use the granted script extension if needed.",
+  canCompleteWorkflowRun: true,
+  extensions: [
+    { kind: "script", name: "workflow-code-script", environment: "workflow-code-python" }
+  ]
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+    let applied = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("workflow-code with registered script extension should apply");
+    let LocalDaemonResponse::WorkflowCodeApplied {
+        result,
+        session: applied_session,
+    } = applied
+    else {
+        panic!("unexpected local response");
+    };
+    assert!(result.compile.validation.ok);
+    let worker_agent_id = result
+        .apply
+        .agent_ids
+        .get("worker")
+        .expect("worker agent id should be reported");
+    let worker = applied_session
+        .agents()
+        .iter()
+        .find(|agent| agent.id() == worker_agent_id)
+        .expect("generated worker should be present");
+    let grant = worker
+        .extension_grants()
+        .iter()
+        .find(|grant| {
+            grant.matches(
+                &crate::extension::ExtensionKind::Script,
+                "workflow-code-script",
+            )
+        })
+        .expect("generated worker should receive the script extension grant");
+    assert_eq!(grant.environment.as_deref(), Some("workflow-code-python"));
 
     std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
 }
