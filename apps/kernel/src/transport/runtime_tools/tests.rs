@@ -169,7 +169,7 @@ mod workspace_live_sync_tests {
     }
 
     #[test]
-    fn workflow_code_meta_specs_advertise_typescript_and_provider_rebindings() {
+    fn workflow_code_meta_specs_advertise_languages_and_provider_rebindings() {
         let specs = meta_runtime_tool_specs();
         for tool_name in [
             META_WORKFLOW_CODE_CREATE_TOOL,
@@ -182,6 +182,15 @@ mod workspace_live_sync_tests {
                 .iter()
                 .find(|spec| spec.name == tool_name)
                 .expect("workflow-code tool should exist");
+            assert!(
+                spec.input_schema
+                    .pointer("/properties/language/enum")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|values| values
+                        .iter()
+                        .any(|value| value.as_str() == Some("javascript"))),
+                "{tool_name} should advertise canonical JavaScript language"
+            );
             assert!(
                 spec.input_schema
                     .pointer("/properties/language/enum")

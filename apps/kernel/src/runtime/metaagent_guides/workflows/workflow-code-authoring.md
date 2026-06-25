@@ -2,7 +2,7 @@
 
 Use workflow-code when the task is to generate a complete workflow shape as a portable script. Use manual workflow commands when incremental interactive editing is simpler. The script is a workflow generator: every apply creates a new workflow and new node, edge, endpoint, queue, watchdog, and generated-agent ids. Handles inside the script only connect script components to each other; after apply, the kernel returns handle-to-id maps in the apply report.
 
-Workflow-code scripts run in the kernel compiler with a single builder named `workflow`. JavaScript is the default language. Pass `language: "typescript"` for TypeScript source in `create`, `update`, `validate`, `apply`, or `run`; legacy `type_script` decodes for compatibility, but new scripts and tool calls should use `typescript`. Do not invent attributes. The compiler rejects unknown fields after it exports the builder state into the kernel workflow-code schema.
+Workflow-code scripts run in the kernel compiler with a single builder named `workflow`. JavaScript is the default language. Pass `language: "javascript"` or `language: "typescript"` in `create`, `update`, `validate`, `apply`, or `run` when the source language needs to be explicit; legacy `java_script` and `type_script` decode for compatibility, but new scripts and tool calls should use `javascript` or `typescript`. Do not invent attributes. The compiler rejects unknown fields after it exports the builder state into the kernel workflow-code schema.
 
 ## Builder API
 

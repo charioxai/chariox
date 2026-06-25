@@ -562,6 +562,7 @@ pub struct WorkflowCodeArtifactPackage {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowCodeLanguage {
+    #[serde(alias = "javascript")]
     JavaScript,
     #[serde(rename = "typescript", alias = "type_script")]
     TypeScript,
@@ -2677,6 +2678,11 @@ workflow.watchdog(entry, {
             serde_json::to_value(WorkflowCodeLanguage::TypeScript)
                 .expect("language should serialize"),
             serde_json::json!("typescript")
+        );
+        assert_eq!(
+            serde_json::from_value::<WorkflowCodeLanguage>(serde_json::json!("javascript"))
+                .expect("friendly JavaScript spelling should decode"),
+            WorkflowCodeLanguage::JavaScript
         );
         assert_eq!(
             serde_json::from_value::<WorkflowCodeLanguage>(serde_json::json!("type_script"))

@@ -1390,7 +1390,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
+                    "language": {"type": "string", "enum": ["javascript", "java_script", "typescript", "type_script"]},
                     "node_path": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -1424,7 +1424,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
+                    "language": {"type": "string", "enum": ["javascript", "java_script", "typescript", "type_script"]},
                     "node_path": {"type": "string"}
                 },
                 "additionalProperties": false
@@ -1448,7 +1448,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
+                    "language": {"type": "string", "enum": ["javascript", "java_script", "typescript", "type_script"]},
                     "node_path": {"type": "string"},
                     "provider_rebindings": {
                         "type": "array",
@@ -1477,7 +1477,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
+                    "language": {"type": "string", "enum": ["javascript", "java_script", "typescript", "type_script"]},
                     "node_path": {"type": "string"},
                     "provider_rebindings": {
                         "type": "array",
@@ -1506,7 +1506,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
-                    "language": {"type": "string", "enum": ["java_script", "typescript", "type_script"]},
+                    "language": {"type": "string", "enum": ["javascript", "java_script", "typescript", "type_script"]},
                     "prompt": {"type": "string", "description": "Invocation prompt. When omitted or blank, the workflow-code script-level prompt is used; if the script has no prompt, Arroba uses a generic run instruction."},
                     "endpoint": {"type": "string"},
                     "queue": {"type": "string"},
