@@ -156,11 +156,13 @@ test("executeShellCommand exports and imports workflow-code packages and source"
     const packageImport = await executeShellCommand(parseShellCommand("workflow code package import exports/toy.workflow-code.json imported-toy --overwrite"), context, { client: fake.client })
     const sourceInline = await executeShellCommand(parseShellCommand("workflow code source export toy-flow exports/toy.js"), context, { client: fake.client })
     const sourceDirectory = await executeShellCommand(parseShellCommand("workflow code source export toy-flow exports/toy-source --format directory"), context, { client: fake.client })
+    const workflowSource = await executeShellCommand(parseShellCommand("workflow code source export workflow-1 exports/workflow.js --workflow"), context, { client: fake.client })
 
     assert.equal(packageExport.ok, true)
     assert.equal(packageImport.ok, true)
     assert.equal(sourceInline.ok, true)
     assert.equal(sourceDirectory.ok, true)
+    assert.equal(workflowSource.ok, true)
     assert.equal(JSON.parse(await readFile(join(root, "exports/toy.workflow-code.json"), "utf8")).name, "toy-flow")
     assert.equal(await readFile(join(root, "exports/toy.js"), "utf8"), workflowCodePackage.source)
     assert.equal(await readFile(join(root, "exports/toy-source/workflow.js"), "utf8"), "async function defineWorkflow(workflow) {}\n")
@@ -188,6 +190,13 @@ test("executeShellCommand exports and imports workflow-code packages and source"
           session_id: "session-1",
           target: { kind: "artifact", name: "toy-flow" },
           format: "directory",
+        },
+      },
+      {
+        ExportWorkflowCodeSource: {
+          session_id: "session-1",
+          target: { kind: "workflow", workflow_ref: "workflow-1" },
+          format: "inline",
         },
       },
     ])

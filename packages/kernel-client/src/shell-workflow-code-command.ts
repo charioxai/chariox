@@ -40,7 +40,7 @@ export async function executeWorkflowCodeCommand(
   }
   if (area === "source") {
     if (action === "export") return exportWorkflowCodeSource(sessionId, rest, context, deps)
-    return { ok: false, message: "usage: workflow code source export <artifact-name> <file|directory> [--format inline|directory]" }
+    return { ok: false, message: "usage: workflow code source export <artifact-or-workflow-ref> <file|directory> [--workflow] [--format inline|directory]" }
   }
   return { ok: false, message: "usage: workflow code package export|import | workflow code source export" }
 }
@@ -100,13 +100,13 @@ async function exportWorkflowCodeSource(
 ): Promise<ShellCommandResult> {
   const [name, outputPath, ...optionArgs] = args
   if (!name || !outputPath) {
-    return { ok: false, message: "usage: workflow code source export <artifact-name> <file|directory> [--format inline|directory]" }
+    return { ok: false, message: "usage: workflow code source export <artifact-or-workflow-ref> <file|directory> [--workflow] [--format inline|directory]" }
   }
-  const parsed = parseSourceExportFormat(optionArgs)
+  const parsed = parseSourceExportOptions(optionArgs)
   if (!parsed.ok) return { ok: false, message: parsed.message }
   const response = await deps.client.send(exportWorkflowCodeSourceRequest(
     sessionId,
-    { kind: "artifact", name },
+    parsed.target === "workflow" ? { kind: "workflow", workflow_ref: name } : { kind: "artifact", name },
     parsed.format,
   ))
   const exportResult = expectVariant<{ export: WorkflowCodeSourceExport }>(response, "WorkflowCodeSourceExported").export
@@ -125,26 +125,31 @@ async function exportWorkflowCodeSource(
   }
 }
 
-function parseSourceExportFormat(args: string[]): { ok: true; format: WorkflowCodeSourceExportFormat } | { ok: false; message: string } {
+function parseSourceExportOptions(args: string[]): { ok: true; format: WorkflowCodeSourceExportFormat; target: "artifact" | "workflow" } | { ok: false; message: string } {
   let format: WorkflowCodeSourceExportFormat = "inline"
+  let target: "artifact" | "workflow" = "artifact"
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === "--directory" || arg === "--dir") {
       format = "directory"
       continue
     }
+    if (arg === "--workflow") {
+      target = "workflow"
+      continue
+    }
     if (arg === "--format") {
       const value = args[index + 1]
       if (value !== "inline" && value !== "directory") {
-        return { ok: false, message: "usage: workflow code source export ... [--format inline|directory]" }
+        return { ok: false, message: "usage: workflow code source export ... [--workflow] [--format inline|directory]" }
       }
       format = value
       index += 1
       continue
     }
-    return { ok: false, message: "usage: workflow code source export ... [--format inline|directory]" }
+    return { ok: false, message: "usage: workflow code source export ... [--workflow] [--format inline|directory]" }
   }
-  return { ok: true, format }
+  return { ok: true, format, target }
 }
 
 function resolveShellPath(context: ShellContext, path: string): string {

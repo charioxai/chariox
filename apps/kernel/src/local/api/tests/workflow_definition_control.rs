@@ -2142,6 +2142,42 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                     && agent.provider() == "dev-stub"
                     && agent.model() == Some("default")
             }));
+            let live_source = match harness
+                .dispatch(LocalDaemonRequest::ExportWorkflowCodeSource(
+                    crate::local::ExportWorkflowCodeSourceRequest {
+                        session_id: session.id().to_string(),
+                        target: crate::local::WorkflowCodeSourceExportTarget::Workflow {
+                            workflow_ref: result.apply.workflow_id.clone(),
+                        },
+                        format: crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
+                    },
+                ))
+                .expect("live workflow source should export")
+            {
+                LocalDaemonResponse::WorkflowCodeSourceExported { export } => export,
+                _ => panic!("unexpected local response"),
+            };
+            assert_eq!(live_source.source_path, "workflow.js");
+            assert!(live_source.source.contains("workflow.newAgent"));
+            let live_recompiled =
+                crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
+                    &node_path,
+                    &live_source.source,
+                    live_source.language,
+                    &crate::config::WorkflowCodeLimitsConfig::default(),
+                    None,
+                )
+                .expect("live workflow source export should recompile");
+            assert!(live_recompiled.validation.ok);
+            assert_eq!(
+                live_recompiled.definition.workflow.alias.as_deref(),
+                Some("artifact_flow_updated")
+            );
+            assert!(matches!(
+                &live_recompiled.definition.nodes[0].agent,
+                crate::workflow_code::WorkflowCodeAgentBinding::Create(agent)
+                    if agent.provider == "dev-stub"
+            ));
         }
         _ => panic!("unexpected local response"),
     }

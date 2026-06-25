@@ -1045,12 +1045,13 @@ impl KernelRuntimeState {
                     registry.export_source(&name, request.format)?
                 }
                 crate::local::WorkflowCodeSourceExportTarget::Workflow { workflow_ref } => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "workflow_code.source_export",
-                        message: format!(
-                            "workflow source export from live workflow `{workflow_ref}` is not implemented yet; export a saved workflow-code artifact instead"
-                        ),
-                    });
+                    let session = crate::app::KernelSessionReadService::new(app)
+                        .session_snapshot(&request.session_id)?;
+                    crate::workflow_code::export_workflow_code_source_from_session_workflow(
+                        &session,
+                        &workflow_ref,
+                        request.format,
+                    )?
                 }
             };
             app.durable_state_store().append_event(

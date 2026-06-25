@@ -15,7 +15,8 @@ use crate::config::WorkflowCodeLimitsConfig;
 use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::mcp::validate_registry_name;
 use crate::session::{
-    WorkflowEdgeEndpointSide, WorkflowHandoffValidationPolicy, WorkflowWatchdogPolicy,
+    RuntimeSession, WorkflowEdgeEndpointSide, WorkflowHandoffValidationPolicy,
+    WorkflowWatchdogPolicy,
 };
 
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
@@ -498,6 +499,33 @@ impl WorkflowCodeArtifactActor {
             metaagent_id,
         }
     }
+}
+
+pub fn export_workflow_code_source_from_session_workflow(
+    session: &RuntimeSession,
+    workflow_ref: &str,
+    format: WorkflowCodeSourceExportFormat,
+) -> Result<WorkflowCodeSourceExport, crate::DaemonError> {
+    let workflow = session
+        .workflows()
+        .iter()
+        .find(|workflow| {
+            workflow.id() == workflow_ref
+                || workflow.alias().is_some_and(|alias| alias == workflow_ref)
+        })
+        .ok_or_else(|| crate::DaemonError::LocalTransport {
+            operation: "workflow_code.source_export",
+            message: format!(
+                "workflow `{workflow_ref}` is not present in session `{}`",
+                session.id()
+            ),
+        })?;
+    let definition = workflow_code_definition_from_session_workflow(session, workflow)?;
+    let name = workflow
+        .alias()
+        .filter(|alias| !alias.trim().is_empty())
+        .unwrap_or(workflow.id());
+    export_workflow_code_source_from_definition(name, &definition, format)
 }
 
 impl Default for WorkflowCodeArtifactActor {
@@ -2225,6 +2253,171 @@ fn export_workflow_code_source_directory(
         source,
         files,
     })
+}
+
+fn export_workflow_code_source_from_definition(
+    name: &str,
+    definition: &WorkflowCodeDefinition,
+    format: WorkflowCodeSourceExportFormat,
+) -> Result<WorkflowCodeSourceExport, crate::DaemonError> {
+    let definition_sha256 = workflow_code_definition_sha256_hex(definition);
+    match format {
+        WorkflowCodeSourceExportFormat::Inline => {
+            let source = workflow_code_definition_to_javascript(definition, None)?;
+            let source_sha256 = sha256_hex(source.as_bytes());
+            Ok(WorkflowCodeSourceExport {
+                name: name.to_string(),
+                language: WorkflowCodeLanguage::JavaScript,
+                format,
+                source_path: "workflow.js".to_string(),
+                source_sha256,
+                source_bytes: source.len() as u64,
+                definition_sha256,
+                source,
+                files: Vec::new(),
+            })
+        }
+        WorkflowCodeSourceExportFormat::Directory => {
+            export_workflow_code_source_directory(name, definition, definition_sha256)
+        }
+    }
+}
+
+fn workflow_code_definition_from_session_workflow(
+    session: &RuntimeSession,
+    workflow: &crate::session::WorkflowDefinition,
+) -> Result<WorkflowCodeDefinition, crate::DaemonError> {
+    let canvas = workflow.canvas_layout();
+    let mut nodes = Vec::new();
+    for node in workflow.nodes() {
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == node.agent_id())
+            .ok_or_else(|| crate::DaemonError::LocalTransport {
+                operation: "workflow_code.source_export",
+                message: format!(
+                    "workflow node `{}` references missing agent `{}`",
+                    node.id(),
+                    node.agent_id()
+                ),
+            })?;
+        nodes.push(WorkflowCodeNodeDefinition {
+            handle: node.id().to_string(),
+            agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                alias: agent.alias().map(str::to_string),
+                provider: agent.provider().to_string(),
+                model: agent.model().map(str::to_string),
+                effort: agent.effort().map(str::to_string),
+                account_profile: agent.account_profile().map(str::to_string),
+            }),
+            public_label: Some(node.public_label().to_string()),
+            instructions: node.instructions().map(str::to_string),
+            can_complete_workflow_run: Some(node.can_complete_workflow_run()),
+            can_emit_intermediate_run_output: Some(node.can_emit_intermediate_run_output()),
+            wait_for_all_inputs: Some(node.wait_for_all_inputs()),
+            intermediate_output_schema: node.intermediate_output_schema_ref().map(str::to_string),
+            max_turns: node.max_turns(),
+            extensions: agent.extension_grants().to_vec(),
+            canvas: canvas
+                .and_then(|layout| layout.nodes.get(node.id()))
+                .map(workflow_code_canvas_point_from_layout),
+        });
+    }
+
+    Ok(WorkflowCodeDefinition {
+        schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+        workflow: WorkflowCodeWorkflow {
+            alias: workflow.alias().map(str::to_string),
+            prompt: None,
+            flush_agent_context_before_run: Some(workflow.flush_agent_context_before_run()),
+            max_concurrent: Some(workflow.max_concurrent()),
+            run_output_schema: workflow.run_output_schema_ref().map(str::to_string),
+            intermediate_output_schema: workflow
+                .intermediate_output_schema_ref()
+                .map(str::to_string),
+        },
+        schemas: workflow
+            .schemas()
+            .iter()
+            .map(|schema| WorkflowCodeSchemaDefinition {
+                handle: schema.id().to_string(),
+                alias: schema.alias().map(str::to_string),
+                description: schema.description().map(str::to_string),
+                schema: schema.schema().clone(),
+            })
+            .collect(),
+        nodes,
+        edges: workflow
+            .edges()
+            .iter()
+            .map(|edge| WorkflowCodeEdgeDefinition {
+                handle: edge.id().to_string(),
+                from_node: edge.from_node_id().to_string(),
+                to_node: edge.to_node_id().to_string(),
+                source_side: edge.source_side(),
+                target_side: edge.target_side(),
+                handoff_schema: edge.handoff_schema_ref().map(str::to_string),
+                validation_policy: edge.validation_policy(),
+                canvas: canvas
+                    .and_then(|layout| layout.edges.get(edge.id()))
+                    .map(|layout| WorkflowCodeCanvasEdge {
+                        points: layout
+                            .waypoints
+                            .iter()
+                            .map(workflow_code_canvas_point_from_layout)
+                            .collect(),
+                    }),
+            })
+            .collect(),
+        endpoints: workflow
+            .endpoints()
+            .iter()
+            .map(|endpoint| WorkflowCodeEndpointDefinition {
+                handle: endpoint.id().to_string(),
+                entry_node: endpoint.entry_node_id().to_string(),
+                alias: endpoint.alias().map(str::to_string),
+                canvas: canvas
+                    .and_then(|layout| layout.endpoints.get(endpoint.id()))
+                    .map(workflow_code_canvas_point_from_layout),
+            })
+            .collect(),
+        queues: session
+            .workflow_prompt_queues()
+            .iter()
+            .filter(|queue| queue.workflow_id() == workflow.id())
+            .map(|queue| WorkflowCodeQueueDefinition {
+                handle: queue.id().to_string(),
+                alias: queue.alias().to_string(),
+                priority: queue.priority(),
+                enabled: queue.enabled(),
+            })
+            .collect(),
+        watchdogs: session
+            .workflow_watchdogs()
+            .iter()
+            .filter(|watchdog| watchdog.workflow_id() == workflow.id())
+            .map(|watchdog| WorkflowCodeWatchdogDefinition {
+                handle: watchdog.id().to_string(),
+                endpoint: watchdog.endpoint_id().to_string(),
+                queue: watchdog.queue_id().map(str::to_string),
+                enabled: Some(watchdog.enabled()),
+                interval_seconds: watchdog.interval_seconds(),
+                invocation_prompt: watchdog.invocation_prompt().to_string(),
+                policy: watchdog.policy(),
+                max_wakeups: watchdog.max_wakeups(),
+            })
+            .collect(),
+    })
+}
+
+fn workflow_code_canvas_point_from_layout(
+    point: &crate::session::WorkflowCanvasPoint,
+) -> WorkflowCodeCanvasPoint {
+    WorkflowCodeCanvasPoint {
+        x: point.x,
+        y: point.y,
+    }
 }
 
 fn unique_schema_export_path(
