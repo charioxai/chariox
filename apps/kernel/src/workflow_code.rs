@@ -113,7 +113,6 @@ import vm from "node:vm"
 const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
 const input = JSON.parse(Buffer.concat(chunks).toString() || "{}")
-const logs = []
 
 function createBuilder() {
   let nextSchema = 1
@@ -348,19 +347,19 @@ try {
   const context = vm.createContext({
     workflow,
     console: {
-      log: (...values) => logs.push(values.map(String).join(" ")),
-      error: (...values) => logs.push(values.map(String).join(" "))
+      log: () => {},
+      error: () => {}
     }
   })
   const wrapped = `(async () => {\n${source}\nif (typeof defineWorkflow === "function") await defineWorkflow(workflow)\nreturn workflow.export()\n})()`
   const script = new vm.Script(wrapped, { filename: "workflow-code.js" })
   const definition = await script.runInContext(context, { timeout: Math.max(1, Number(input.timeout_ms || 30000)) })
-  console.log(JSON.stringify({ ok: true, definition, source_spans: workflow.__sourceSpans(), logs: logs.join("\n") }))
+  console.log(JSON.stringify({ ok: true, definition, source_spans: workflow.__sourceSpans(), logs: "" }))
 } catch (error) {
   console.log(JSON.stringify({
     ok: false,
     error: String(error && error.message ? error.message : error),
-    logs: logs.join("\n")
+    logs: ""
   }))
 }
 "#;
@@ -2611,6 +2610,40 @@ workflow.endpoint(planner, { alias: "entry" })
         assert_eq!(result.definition.nodes.len(), 1);
         assert_eq!(result.definition.endpoints.len(), 1);
         assert_eq!(result.definition.schemas.len(), 1);
+    }
+
+    #[test]
+    fn javascript_compiler_ignores_source_console_output() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let source = r#"
+console.log("do not leak this into the compile result")
+console.error("do not leak this either")
+workflow.define({ alias: "silent_console" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+        let result =
+            compile_workflow_code_javascript(node, source, &WorkflowCodeLimitsConfig::default())
+                .expect("workflow-code JS source should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        assert_eq!(
+            result.definition.workflow.alias.as_deref(),
+            Some("silent_console")
+        );
+        assert!(
+            result.logs.is_empty(),
+            "workflow-code source console output must not be surfaced in compile results"
+        );
     }
 
     #[test]
