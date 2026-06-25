@@ -16,7 +16,10 @@ import {
   exportWorkflowCodeArtifactRequest,
   getSessionStateRequest,
   getWorkflowCodeArtifactRequest,
+  getProviderRunRequest,
   importWorkflowCodeArtifactRequest,
+  invokeWorkflowEndpointRequest,
+  launchProviderRunRequest,
   runWorkflowCodeArtifactRequest,
   spawnAgentRequest,
 } from '@arroba/kernel-client'
@@ -154,7 +157,7 @@ async function waitForKernel(client, workspace, worktree, timeoutMs) {
   while (Date.now() < deadline) {
     try {
       const session = unwrap(
-        await client.send(createSessionRequest(workspace, worktree, 'workflow-code-ready-probe')),
+        await client.send(createSessionRequest(workspace, worktree, 'workflow-code-ready-probe', undefined, null, 'off')),
         'SessionCreated',
       ).session
       await client.send(endSessionRequest(session.id)).catch(() => {})
@@ -315,6 +318,51 @@ function existingAgentRebindings() {
     provider: 'dev-stub',
     model: 'default',
   }]
+}
+
+function outputSchemaWorkflowCodeSource() {
+  return `
+workflow.define({
+  alias: "workflow_code_output_schema_artifact_drill",
+  prompt: "Validate schema-backed intermediate and final workflow outputs from workflow-code.",
+  maxConcurrent: 1,
+});
+
+const valueOutput = workflow.schema({
+  handle: "value_output",
+  alias: "Value output",
+  schema: {
+    type: "object",
+    required: ["value"],
+    properties: {
+      value: { type: "number" },
+    },
+    additionalProperties: false,
+  },
+});
+
+workflow.define({
+  runOutputSchema: valueOutput,
+  intermediateOutputSchema: valueOutput,
+});
+
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({
+    alias: "artifact-output-worker",
+    provider: "dev-stub",
+    model: "workflow-intermediate-node",
+  }),
+  publicLabel: "Output worker",
+  instructions: "Acknowledge the workflow turn, submit one intermediate output, then submit the final output.",
+  canCompleteWorkflowRun: true,
+  canEmitIntermediateRunOutput: true,
+  intermediateOutputSchema: valueOutput,
+  canvas: { x: 0, y: 120 },
+});
+
+workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+`.trim()
 }
 
 function defaultToyExpectation() {
@@ -484,6 +532,125 @@ async function applyExistingAgentArtifact(client, session, nodePath, workspace) 
   }
 }
 
+async function waitForCompletedWorkflowRun(client, sessionId, workflowRunId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastRun = null
+  while (Date.now() < deadline) {
+    const stateResponse = await client.send(getSessionStateRequest(sessionId))
+    const state = unwrap(stateResponse, 'SessionStateLoaded')?.session
+      ?? unwrap(stateResponse, 'SessionState')?.session
+    const run = (state?.workflow_runs ?? []).find((entry) => entry.id === workflowRunId)
+    if (run) {
+      lastRun = run
+      if (['Completed', 'Failed', 'Stopped'].includes(run.status)) {
+        return run
+      }
+    }
+    await sleep(500)
+  }
+  throw new Error(`workflow run ${workflowRunId} did not complete before timeout${lastRun ? `\n${JSON.stringify(lastRun, null, 2)}` : ''}`)
+}
+
+async function waitForProviderRunReady(client, providerRunId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const providerRun = unwrap(await client.send(getProviderRunRequest(providerRunId)), 'ProviderRun')?.provider_run
+    if (providerRun?.state && providerRun.state !== 'Starting') {
+      if (providerRun.state !== 'Running' && providerRun.state !== 'Parked') {
+        throw new Error(`provider run ${providerRunId} reached unexpected state ${providerRun.state}`)
+      }
+      return providerRun
+    }
+    await sleep(250)
+  }
+  throw new Error(`provider run ${providerRunId} did not become ready`)
+}
+
+async function applyOutputSchemaArtifact(client, session, nodePath, timeoutMs) {
+  const artifactName = `output-schema-artifact-${Date.now()}`
+  const source = outputSchemaWorkflowCodeSource()
+  const created = unwrap(
+    await client.send(createWorkflowCodeArtifactRequest(session.id, artifactName, nodePath, source)),
+    'WorkflowCodeArtifactCreated',
+  ).artifact
+  assert(created?.metadata?.validation?.ok, 'output-schema artifact should validate', created?.metadata?.validation)
+
+  const expected = {
+    nodes: 1,
+    agents: 1,
+    edges: 0,
+    endpoints: 1,
+    requiredSchemas: ['value_output'],
+  }
+  const appliedResponse = unwrap(
+    await client.send(applyWorkflowCodeArtifactRequest(session.id, artifactName)),
+    'WorkflowCodeApplied',
+  )
+  const apply = validateApplyResult(appliedResponse.result, 'output-schema artifact apply', expected)
+  const workflow = (appliedResponse.session?.workflows ?? []).find((entry) => entry.id === apply.workflow_id)
+  assert(workflow, 'output-schema artifact workflow should appear in session projection', { workflowId: apply.workflow_id })
+  assert(
+    workflow.run_output_schema_ref === apply.schema_refs.value_output,
+    'output-schema artifact should assign workflow final output schema',
+    { workflow, schemaRefs: apply.schema_refs },
+  )
+  assert(
+    workflow.intermediate_output_schema_ref === apply.schema_refs.value_output,
+    'output-schema artifact should assign workflow intermediate output schema',
+    { workflow, schemaRefs: apply.schema_refs },
+  )
+  const nodeId = apply.node_ids?.worker
+  const agentId = apply.agent_ids?.worker
+  const node = (workflow.nodes ?? []).find((entry) => entry.id === nodeId)
+  assert(node?.intermediate_output_schema_ref === apply.schema_refs.value_output, 'output-schema artifact should assign node intermediate schema', {
+    node,
+    schemaRefs: apply.schema_refs,
+  })
+  assert(agentId, 'output-schema artifact should resolve worker agent id', apply)
+
+  const launchResponse = unwrap(
+    await client.send(launchProviderRunRequest(
+      session.id,
+      'dev-stub',
+      'default',
+      'workflow-intermediate-node',
+      'low',
+      agentId,
+    )),
+    'ProviderRunLaunchAccepted',
+  )
+  assert(launchResponse?.provider_run?.id, 'output-schema artifact should launch generated worker provider run', launchResponse)
+  await waitForProviderRunReady(client, launchResponse.provider_run.id, timeoutMs)
+
+  const endpointId = apply.endpoint_ids?.entry
+  assert(endpointId, 'output-schema artifact should resolve entry endpoint id', apply)
+  const invokeResponse = await client.send(invokeWorkflowEndpointRequest(
+    session.id,
+    apply.workflow_id,
+    endpointId,
+    'Run the workflow-code output schema drill.',
+  ))
+  const workflowRun = unwrap(invokeResponse, 'WorkflowRunInvoked')?.workflow_run
+  assert(workflowRun?.id, 'output-schema artifact should start a workflow run', invokeResponse)
+  const completed = await waitForCompletedWorkflowRun(client, session.id, workflowRun.id, timeoutMs)
+  assert(completed.status === 'Completed', 'output-schema artifact workflow run should complete', completed)
+  assert(completed.final_output?.message === JSON.stringify({ value: 1842 }), 'output-schema artifact final output mismatch', completed)
+  assert(completed.final_output_valid === true, 'output-schema artifact final output should validate', completed)
+  const intermediate = (completed.intermediate_outputs ?? []).find(
+    (entry) => entry.output?.message === JSON.stringify({ value: 1841 }),
+  )
+  assert(intermediate, 'output-schema artifact should record the intermediate output', completed)
+  assert(intermediate.valid === true, 'output-schema artifact intermediate output should validate', intermediate)
+
+  return {
+    artifactName,
+    workflowId: apply.workflow_id,
+    workflowRunId: workflowRun.id,
+    finalOutput: completed.final_output?.message,
+    intermediateOutputs: completed.intermediate_outputs?.map((entry) => entry.output?.message) ?? [],
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const source = workflowCodeSource()
@@ -533,7 +700,7 @@ async function main() {
     await waitForKernel(client, workspace, worktree, options.timeoutMs)
 
     const session = unwrap(
-      await client.send(createSessionRequest(workspace, worktree, 'workflow-code-artifact-drill')),
+      await client.send(createSessionRequest(workspace, worktree, 'workflow-code-artifact-drill', undefined, null, 'off')),
       'SessionCreated',
     ).session
     sessionId = session.id
@@ -579,6 +746,8 @@ async function main() {
     ).artifact
     assert(imported?.metadata?.validation?.ok, 'imported artifact should validate', imported?.metadata?.validation)
 
+    const outputSchemaArtifact = await applyOutputSchemaArtifact(client, session, nodePath, options.timeoutMs)
+
     const runResponse = unwrap(
       await client.send(runWorkflowCodeArtifactRequest(session.id, importedName, 'Run the imported workflow-code artifact.', {
         endpoint: 'entry',
@@ -617,6 +786,7 @@ async function main() {
       generatedAgents: Object.values(runApply.agent_ids ?? {}),
       schemaRefs: runApply.schema_refs,
       existingAgentArtifact,
+      outputSchemaArtifact,
       exampleSuite,
     }
     console.log(JSON.stringify(summary, null, 2))
