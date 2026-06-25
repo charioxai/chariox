@@ -132,6 +132,7 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
         "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
         "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
         "large-output-drill" => Some(dev_stub_large_output_script()),
+        "metaagent-workflow-code-author" => Some(dev_stub_metaagent_workflow_code_author_script()),
         _ => None,
     }
     .unwrap_or_else(|| "cat".to_string());
@@ -151,6 +152,7 @@ fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
             | "semantic-url-renderer-stub"
             | "slow-first-output-drill"
             | "large-output-drill"
+            | "metaagent-workflow-code-author"
     )
 }
 
@@ -178,6 +180,7 @@ fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<String, String>
         "workflow-intermediate-node"
             | "workflow-dashboard-producer-node"
             | "workflow-final-passthrough-node"
+            | "metaagent-workflow-code-author"
     ) {
         if let Some(binding) = request.runtime_mcp_binding.as_ref() {
             env.insert(
@@ -191,6 +194,174 @@ fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<String, String>
         }
     }
     env
+}
+
+fn dev_stub_metaagent_workflow_code_author_script() -> String {
+    let source = r#"
+workflow.define({
+  alias: "observed_meta_workflow_code",
+  prompt: "Complete the observed metaagent workflow-code drill.",
+  maxConcurrent: 2,
+});
+
+const finalOutput = workflow.schema({
+  handle: "final_output",
+  alias: "Final output",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: {
+      answer: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+});
+
+workflow.define({ runOutputSchema: finalOutput });
+
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "observed-meta-worker", provider: "codex", model: "gpt-5" }),
+  publicLabel: "Observed worker",
+  instructions: "Submit final output matching final_output.",
+  canCompleteWorkflowRun: true,
+  canvas: { x: 0, y: 80 },
+});
+
+workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 80 } });
+"#;
+    let source_json = serde_json::to_string(source).expect("workflow-code source should encode");
+    let js = format!(
+        r#"const http = require("node:http");
+const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const source = {source_json};
+let started = false;
+let promptBuffer = "";
+
+function callRuntimeTool(name, args = {{}}) {{
+  return new Promise((resolve, reject) => {{
+    if (!runtimeUrl || !runtimeToken) return reject(new Error("runtime MCP binding missing"));
+    const parsed = new URL(runtimeUrl);
+    const body = JSON.stringify({{
+      jsonrpc: "2.0",
+      id: `dev-stub-meta-${{Date.now()}}-${{Math.random().toString(16).slice(2)}}`,
+      method: "tools/call",
+      params: {{ name, arguments: args }},
+    }});
+    const req = http.request({{
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname || "/mcp",
+      method: "POST",
+      headers: {{
+        authorization: `Bearer ${{runtimeToken}}`,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+      }},
+    }}, (res) => {{
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {{
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (res.statusCode !== 200) return reject(new Error(`runtime MCP HTTP ${{res.statusCode}}: ${{text}}`));
+        const response = JSON.parse(text);
+        if (response.error) return reject(new Error(JSON.stringify(response.error)));
+        if (response.result && response.result.isError) return reject(new Error(JSON.stringify(response.result)));
+        resolve(response.result ? response.result.structuredContent : response);
+      }});
+    }});
+    req.setTimeout(5000, () => {{
+      req.destroy(new Error(`runtime MCP ${{name}} timeout`));
+    }});
+    req.on("error", reject);
+    req.end(body);
+  }});
+}}
+
+function unwrap(value, key) {{
+  return value && value[key] ? value[key] : value;
+}}
+
+async function authorWorkflowCode() {{
+  const name = `observed-meta-workflow-code-${{Date.now()}}`;
+  const providerRebindings = [{{ node: "worker", provider: "dev-stub", model: "default" }}];
+  await callRuntimeTool("arroba.meta.update_task", {{
+    markdown: "Observed workflow-code authoring drill: discover guidance, create, validate, apply, and run a workflow-code artifact.",
+  }});
+  await callRuntimeTool("arroba.meta.search_guides", {{
+    query: "workflow-code authoring create validate apply run",
+    tag: "workflow-code",
+    command: "arroba.meta.workflow_code.create",
+    limit: 5,
+  }});
+  await callRuntimeTool("arroba.meta.read_guide", {{ guide: "workflows/workflow-code-authoring" }});
+  const created = await callRuntimeTool("arroba.meta.workflow_code.create", {{ name, source }});
+  const createdArtifact = unwrap(created, "WorkflowCodeArtifactCreated").artifact;
+  const validated = await callRuntimeTool("arroba.meta.workflow_code.validate", {{ name }});
+  const validationOk = unwrap(validated, "WorkflowCodeValidated").result.validation.ok;
+  if (!validationOk) throw new Error("workflow-code validation failed");
+  const applied = await callRuntimeTool("arroba.meta.workflow_code.apply", {{
+    name,
+    provider_rebindings: providerRebindings,
+  }});
+  const appliedPayload = unwrap(applied, "WorkflowCodeApplied");
+  const run = await callRuntimeTool("arroba.meta.workflow_code.run", {{
+    name,
+    endpoint: "entry",
+    provider_rebindings: providerRebindings,
+  }});
+  const runPayload = unwrap(run, "WorkflowCodeRun");
+  const marker = [
+    "OBSERVED_WORKFLOW_CODE_AUTHORING_DONE",
+    `artifact=${{name}}`,
+    `workflow=${{appliedPayload.result.apply.workflow_id}}`,
+    `invocation=${{runPayload.result.invocation.kind}}`,
+  ].join(" ");
+  await callRuntimeTool("arroba.meta.update_plan", {{
+    markdown: marker,
+  }});
+  process.stdout.write(`${{marker}}\n`);
+  process.stdout.write("```json\n" + JSON.stringify({{
+    summary: "Observed metaagent workflow-code authoring completed",
+    output: {{
+      message: {{
+        artifact: name,
+        workflow_id: appliedPayload.result.apply.workflow_id,
+        invocation: runPayload.result.invocation.kind,
+        validation_ok: Boolean(createdArtifact && createdArtifact.metadata && createdArtifact.metadata.validation && createdArtifact.metadata.validation.ok),
+      }},
+    }},
+  }}) + "\n```\n");
+}}
+
+function maybeStart() {{
+  if (started || !promptBuffer.includes("OBSERVED_WORKFLOW_CODE_AUTHORING")) return;
+  started = true;
+  authorWorkflowCode().catch(async (error) => {{
+    const message = `OBSERVED_WORKFLOW_CODE_AUTHORING_FAILED ${{error.message || error}}`;
+    process.stdout.write(message + "\n");
+    try {{
+      await callRuntimeTool("arroba.meta.update_plan", {{ markdown: message }});
+    }} catch {{}}
+  }});
+}}
+
+process.stdin.setEncoding("utf8");
+if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {{
+  process.stdin.setRawMode(true);
+}}
+process.stdin.on("data", (chunk) => {{
+  promptBuffer += chunk;
+  maybeStart();
+}});
+process.stdin.resume();
+"#
+    );
+    format!(
+        "stty -echo 2>/dev/null || true; node -e {}",
+        shell_single_quote(&js)
+    )
 }
 
 fn dev_stub_workflow_output_script(summary: &str, value: i64) -> String {

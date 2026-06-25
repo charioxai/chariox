@@ -181,6 +181,14 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, 
 `.trim()
 }
 
+const OBSERVED_WORKFLOW_CODE_PROMPT = [
+  'OBSERVED_WORKFLOW_CODE_AUTHORING',
+  '',
+  'Use the Arroba meta workflow-code guidance to create a tiny portable workflow-code artifact.',
+  'Validate it, apply it with provider/model rebinding to dev-stub/default, and run its entry endpoint.',
+  'Do this from your own runtime MCP tools. The harness will only observe session state.',
+].join('\n')
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function launchRuntime(client, requests, sessionId, agentId, model, timeoutMs, pollMs) {
@@ -508,6 +516,79 @@ async function verifyMetaWorkflowCodeTools(metaRun, metaagentId) {
   }
 }
 
+async function verifyObservedMetaWorkflowCodeAuthoring(client, requests, sessionId, attachmentId, metaRun, metaagentId, timeoutMs, pollMs) {
+  await client.send(requests.submitPromptRequest(
+    sessionId,
+    attachmentId,
+    metaagentId,
+    OBSERVED_WORKFLOW_CODE_PROMPT,
+    [],
+  ))
+
+  const deadline = Date.now() + timeoutMs
+  let lastSession = null
+  while (Date.now() < deadline) {
+    const session = unwrapVariant(
+      await client.send(requests.getSessionStateRequest(sessionId)),
+      'SessionState',
+      'SessionStateLoaded',
+    ).session
+    lastSession = session
+    const task = (session.metaagent_tasks ?? []).find((entry) => entry.metaagent_id === metaagentId)
+    const plan = task?.plan_markdown ?? ''
+    const markerMatch = plan.match(/OBSERVED_WORKFLOW_CODE_AUTHORING_DONE artifact=(\S+) workflow=(\S+) invocation=(\S+)/)
+    if (markerMatch) {
+      const [, artifactName, workflowId, invocation] = markerMatch
+      const workflow = (session.workflows ?? []).find((entry) => entry.id === workflowId)
+      const generatedAgent = (session.agents ?? []).find((entry) => (
+        entry.alias === 'observed-meta-worker'
+        && entry.provider === 'dev-stub'
+        && entry.model === 'default'
+        && entry.controlled_by_metaagent_id === metaagentId
+      ))
+      const workflowRun = (session.workflow_runs ?? []).find((entry) => entry.workflow_id === workflowId)
+      assert(workflow, 'observed metaagent workflow-code apply should project workflow into the session', {
+        marker: plan,
+        workflows: session.workflows,
+      })
+      assert(
+        workflow.alias === 'observed_meta_workflow_code'
+          && workflow.controlled_by_metaagent_id === metaagentId,
+        'observed metaagent workflow should have expected alias and controller',
+        workflow,
+      )
+      assert(generatedAgent, 'observed metaagent workflow-code should create a rebound generated worker agent', {
+        agents: session.agents,
+      })
+      assert(workflowRun || invocation === 'enqueued', 'observed metaagent workflow-code run should start or enqueue invocation', {
+        invocation,
+        workflowRuns: session.workflow_runs,
+      })
+      return {
+        artifactName,
+        workflowId,
+        invocation,
+        generatedAgentId: generatedAgent?.id ?? null,
+        workflowRunId: workflowRun?.id ?? null,
+      }
+    }
+    const failed = plan.match(/OBSERVED_WORKFLOW_CODE_AUTHORING_FAILED\s+(.+)/)
+    if (failed) {
+      throw new Error(`observed metaagent workflow-code authoring failed: ${failed[1]}`)
+    }
+    await sleep(pollMs)
+  }
+
+  throw new Error(`timed out waiting for observed metaagent workflow-code authoring\n${JSON.stringify({
+    metaagentId,
+    metaRunId: metaRun.id,
+    task: (lastSession?.metaagent_tasks ?? []).find((entry) => entry.metaagent_id === metaagentId) ?? null,
+    workflows: lastSession?.workflows ?? [],
+    agents: lastSession?.agents ?? [],
+    workflowRuns: lastSession?.workflow_runs ?? [],
+  }, null, 2)}`)
+}
+
 async function cleanupSession(kernelUrl, sessionId) {
   if (!sessionId) return
   const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
@@ -626,7 +707,7 @@ async function main() {
     const metaagent = agents.find((agent) => agent.role === 'meta')
     assert(metaagent, 'session should contain one metaagent', { agents })
 
-    const metaRun = await launchRuntime(client, requests, sessionId, metaagent.id, 'metaagent-capabilities-meta', options.timeoutMs, options.pollMs)
+    const metaRun = await launchRuntime(client, requests, sessionId, metaagent.id, 'metaagent-workflow-code-author', options.timeoutMs, options.pollMs)
     assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be forced to plan mode', { metaRun })
     assert(
       metaRun.permission_level === 'required',
@@ -732,6 +813,18 @@ async function main() {
     const workflowCodeSummary = await verifyMetaWorkflowCodeTools(metaRun, metaagent.id)
     log('workflow-code-capabilities-passed', workflowCodeSummary)
 
+    const observedWorkflowCodeSummary = await verifyObservedMetaWorkflowCodeAuthoring(
+      client,
+      requests,
+      sessionId,
+      attachment.id,
+      metaRun,
+      metaagent.id,
+      options.timeoutMs,
+      options.pollMs,
+    )
+    log('observed-workflow-code-authoring-passed', observedWorkflowCodeSummary)
+
     const mcpConfig = {
       name: 'iso-mcp',
       transport: {
@@ -836,6 +929,7 @@ async function main() {
       metaagentId: metaagent.id,
       workerId: worker.id,
       workflowCode: workflowCodeSummary,
+      observedWorkflowCode: observedWorkflowCodeSummary,
     }, null, 2))
     succeeded = true
   } catch (error) {
