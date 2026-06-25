@@ -99,7 +99,10 @@ pub(crate) const METAAGENT_GUIDES: &[MetaagentGuide] = &[
         tags: &["workflow", "workflow-code", "script", "metaagent"],
         commands: &[
             "arroba.meta.workflow_code.create",
+            "arroba.meta.workflow_code.read",
+            "arroba.meta.workflow_code.list",
             "arroba.meta.workflow_code.update",
+            "arroba.meta.workflow_code.delete",
             "arroba.meta.workflow_code.validate",
             "arroba.meta.workflow_code.apply",
             "arroba.meta.workflow_code.run",
@@ -300,16 +303,32 @@ mod tests {
 
     #[test]
     fn workflow_code_guide_is_searchable_by_meta_tool_command() {
-        let guides = search_guides(MetaagentGuideSearchArgs {
-            query: Some("workflow code javascript builder".to_string()),
-            tag: Some("workflow-code".to_string()),
-            command: Some("arroba.meta.workflow_code.apply".to_string()),
-            limit: Some(5),
-        });
-        assert!(guides.iter().any(|guide| {
-            guide.get("id").and_then(serde_json::Value::as_str)
-                == Some("workflows/workflow-code-authoring")
-        }));
+        for command in [
+            "arroba.meta.workflow_code.create",
+            "arroba.meta.workflow_code.read",
+            "arroba.meta.workflow_code.list",
+            "arroba.meta.workflow_code.update",
+            "arroba.meta.workflow_code.delete",
+            "arroba.meta.workflow_code.validate",
+            "arroba.meta.workflow_code.apply",
+            "arroba.meta.workflow_code.run",
+            "arroba.meta.workflow_code.export",
+            "arroba.meta.workflow_code.import",
+        ] {
+            let guides = search_guides(MetaagentGuideSearchArgs {
+                query: Some("workflow code javascript builder".to_string()),
+                tag: Some("workflow-code".to_string()),
+                command: Some(command.to_string()),
+                limit: Some(5),
+            });
+            assert!(
+                guides.iter().any(|guide| {
+                    guide.get("id").and_then(serde_json::Value::as_str)
+                        == Some("workflows/workflow-code-authoring")
+                }),
+                "workflow-code authoring guide should be discoverable for `{command}`"
+            );
+        }
     }
 
     #[test]

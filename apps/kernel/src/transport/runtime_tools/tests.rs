@@ -116,7 +116,13 @@ mod workspace_live_sync_tests {
             .any(|spec| spec.name == META_WORKFLOW_CODE_READ_TOOL));
         assert!(specs
             .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_LIST_TOOL));
+        assert!(specs
+            .iter()
             .any(|spec| spec.name == META_WORKFLOW_CODE_UPDATE_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_DELETE_TOOL));
         assert!(specs
             .iter()
             .any(|spec| spec.name == META_WORKFLOW_CODE_VALIDATE_TOOL));
@@ -135,6 +141,14 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__arroba_meta_workflow_code_create"),
             Some(META_WORKFLOW_CODE_CREATE_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_list"),
+            Some(META_WORKFLOW_CODE_LIST_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_delete"),
+            Some(META_WORKFLOW_CODE_DELETE_TOOL)
         );
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__meta_workflow_code_apply"),
