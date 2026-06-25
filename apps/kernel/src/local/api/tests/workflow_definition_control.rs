@@ -4,6 +4,7 @@ use crate::local::{
     RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 fn find_node_for_workflow_code_local_api_test() -> Option<PathBuf> {
@@ -34,6 +35,11 @@ fn node_supports_workflow_code_typescript(node: &std::path::Path) -> bool {
         .arg("const mod = await import('node:module'); if (typeof mod.stripTypeScriptTypes !== 'function') process.exit(1)")
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn workflow_code_test_sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[test]
@@ -902,6 +908,256 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 "string"
             );
             assert!(artifact.metadata.validation.ok);
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
+fn local_request_api_rejects_invalid_workflow_code_artifact_create_without_persisting() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping invalid workflow-code artifact create test because node is unavailable"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-invalid-create-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-invalid"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let invalid_source = r#"
+workflow.define({ alias: "invalid_artifact" })
+workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
+  canCompleteWorkflowRun: true
+})
+"#;
+    let name = "invalid-create";
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowCodeArtifact(
+            crate::local::CreateWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: node_path.display().to_string(),
+                source: invalid_source.to_string(),
+            },
+        ))
+        .expect_err("invalid workflow-code artifact should not create");
+
+    assert!(format!("{error}").contains("missing_endpoint"));
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflowCodeArtifacts(
+            crate::local::ListWorkflowCodeArtifactsRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("workflow-code artifacts should list");
+    match listed {
+        LocalDaemonResponse::WorkflowCodeArtifactsListed { artifacts } => {
+            assert!(!artifacts.iter().any(|artifact| artifact.name == name));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
+fn local_request_api_rejects_invalid_workflow_code_artifact_update_without_overwriting() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping invalid workflow-code artifact update test because node is unavailable"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-invalid-update-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-invalid"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let name = "invalid-update";
+    let valid_source = r#"
+workflow.define({ alias: "valid_artifact" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+    let invalid_source = valid_source.replace(
+        r#"workflow.endpoint(worker, { handle: "entry", alias: "entry" })"#,
+        "",
+    );
+
+    harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowCodeArtifact(
+            crate::local::CreateWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: node_path.display().to_string(),
+                source: valid_source.to_string(),
+            },
+        ))
+        .expect("valid workflow-code artifact should create");
+    let error = harness
+        .dispatch(LocalDaemonRequest::UpdateWorkflowCodeArtifact(
+            crate::local::UpdateWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: node_path.display().to_string(),
+                source: invalid_source,
+            },
+        ))
+        .expect_err("invalid workflow-code artifact update should fail");
+
+    assert!(format!("{error}").contains("missing_endpoint"));
+    let loaded = harness
+        .dispatch(LocalDaemonRequest::GetWorkflowCodeArtifact(
+            crate::local::GetWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: name.to_string(),
+            },
+        ))
+        .expect("workflow-code artifact should load");
+    match loaded {
+        LocalDaemonResponse::WorkflowCodeArtifact { artifact } => {
+            assert_eq!(
+                artifact.definition.workflow.alias.as_deref(),
+                Some("valid_artifact")
+            );
+            assert_eq!(artifact.source, valid_source);
+            assert!(artifact.metadata.validation.ok);
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
+fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-invalid-import-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-invalid"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let definition = crate::workflow_code::WorkflowCodeDefinition {
+        schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
+        workflow: crate::workflow_code::WorkflowCodeWorkflow {
+            alias: Some("invalid_import".to_string()),
+            flush_agent_context_before_run: None,
+            max_concurrent: None,
+            run_output_schema: None,
+            intermediate_output_schema: None,
+        },
+        schemas: Vec::new(),
+        nodes: vec![crate::workflow_code::WorkflowCodeNodeDefinition {
+            handle: "worker".to_string(),
+            agent: crate::workflow_code::WorkflowCodeAgentBinding::Create(
+                crate::workflow_code::WorkflowCodeAgentCreate {
+                    alias: Some("worker".to_string()),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                    account_profile: None,
+                },
+            ),
+            public_label: None,
+            instructions: None,
+            can_complete_workflow_run: Some(true),
+            can_emit_intermediate_run_output: None,
+            wait_for_all_inputs: None,
+            intermediate_output_schema: None,
+            max_turns: None,
+            extensions: Vec::new(),
+            canvas: None,
+        }],
+        edges: Vec::new(),
+        endpoints: Vec::new(),
+        queues: Vec::new(),
+        watchdogs: Vec::new(),
+    };
+    let source = "workflow.define({ alias: \"invalid_import\" })";
+    let package = crate::workflow_code::WorkflowCodeArtifactPackage {
+        package_version: crate::workflow_code::WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION,
+        name: "invalid-import".to_string(),
+        language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+        source: source.to_string(),
+        source_sha256: workflow_code_test_sha256_hex(source.as_bytes()),
+        source_bytes: source.len() as u64,
+        validation: definition
+            .validate_with_limits(&crate::config::WorkflowCodeLimitsConfig::default()),
+        definition,
+        exported_at_ms: crate::session::unix_epoch_ms(),
+    };
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::ImportWorkflowCodeArtifact(
+            crate::local::ImportWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                package,
+                name: None,
+                overwrite: false,
+                node_path: "node".to_string(),
+            },
+        ))
+        .expect_err("invalid workflow-code package should not import");
+
+    assert!(format!("{error}").contains("missing_endpoint"));
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflowCodeArtifacts(
+            crate::local::ListWorkflowCodeArtifactsRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("workflow-code artifacts should list");
+    match listed {
+        LocalDaemonResponse::WorkflowCodeArtifactsListed { artifacts } => {
+            assert!(!artifacts
+                .iter()
+                .any(|artifact| artifact.name == "invalid-import"));
         }
         _ => panic!("unexpected local response"),
     }

@@ -524,6 +524,10 @@ impl KernelRuntimeState {
                     &limits,
                     schema_import_root.as_deref(),
                 )?;
+            reject_invalid_workflow_code_artifact_validation(
+                "workflow_code_artifact.create",
+                &compile.validation,
+            )?;
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact = registry.save(
                 &request.name,
@@ -565,6 +569,10 @@ impl KernelRuntimeState {
                     &limits,
                     schema_import_root.as_deref(),
                 )?;
+            reject_invalid_workflow_code_artifact_validation(
+                "workflow_code_artifact.update",
+                &compile.validation,
+            )?;
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact = registry.update(
                 &request.name,
@@ -673,6 +681,10 @@ impl KernelRuntimeState {
             request.package.validate_integrity()?;
             let limits = app.config().workflow_code_limits();
             let validation = request.package.definition.validate_with_limits(&limits);
+            reject_invalid_workflow_code_artifact_validation(
+                "workflow_code_artifact.import",
+                &validation,
+            )?;
             let definition = request.package.definition.clone();
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let artifact = registry.import_package(
@@ -739,6 +751,31 @@ fn workflow_code_artifact_actor(
         caller_user_id.to_string(),
         caller_metaagent_id.map(str::to_string),
     )
+}
+
+fn reject_invalid_workflow_code_artifact_validation(
+    operation: &'static str,
+    validation: &crate::workflow_code::WorkflowCodeValidationReport,
+) -> Result<(), DaemonError> {
+    if validation.ok {
+        return Ok(());
+    }
+    let diagnostics = validation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic
+                .handle
+                .as_deref()
+                .map(|handle| format!("{}:{handle}", diagnostic.code))
+                .unwrap_or_else(|| diagnostic.code.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!("workflow-code artifact validation failed: {diagnostics}"),
+    })
 }
 
 fn workflow_code_endpoint_ref(
