@@ -590,6 +590,45 @@ workflow.endpoint(planner, { alias: "entry" })
     }
 
     #[test]
+    fn workflow_code_javascript_apply_rejects_invalid_source_without_mutating_session() {
+        let Some(node_path) = find_node_for_workflow_code_test() else {
+            eprintln!("skipping invalid workflow-code JS apply test because node is not available");
+            return;
+        };
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let source = r#"
+workflow.define({ alias: "invalid_coded_flow" })
+workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
+  canCompleteWorkflowRun: true
+})
+"#;
+
+        let error = app
+            .compile_and_apply_workflow_code_javascript(
+                session.id(),
+                &node_path,
+                source,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect_err("invalid workflow-code should not apply");
+
+        assert!(format!("{error}").contains("missing_endpoint"));
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(session.workflows().is_empty());
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 1);
+    }
+
+    #[test]
     fn workflow_code_canonical_patterns_compile_and_apply_with_provider_rebindings() {
         let Some(node_path) = find_node_for_workflow_code_test() else {
             eprintln!("skipping workflow-code pattern apply test because node is not available");
