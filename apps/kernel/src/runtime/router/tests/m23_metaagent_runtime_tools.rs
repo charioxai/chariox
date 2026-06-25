@@ -141,6 +141,9 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
         crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL,
         crate::transport::runtime_tools::META_WORKFLOW_CODE_EXPORT_TOOL,
         crate::transport::runtime_tools::META_WORKFLOW_CODE_IMPORT_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL,
     ] {
         assert!(
             meta_specs
@@ -792,6 +795,69 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         Some("meta_scripted_flow_updated")
     );
 
+    let package_exported = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL,
+            serde_json::json!({ "name": "meta-flow-imported" }),
+        )
+        .await
+        .expect("metaagent should export explicit workflow-code package");
+    assert!(package_exported.ok, "{:?}", package_exported.payload);
+    assert_eq!(
+        package_exported
+            .payload
+            .pointer("/WorkflowCodePackageExported/package/name")
+            .and_then(serde_json::Value::as_str),
+        Some("meta-flow-imported")
+    );
+    let package = package_exported
+        .payload
+        .pointer("/WorkflowCodePackageExported/package")
+        .cloned()
+        .expect("explicit package export should return package");
+    let package_imported = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
+            serde_json::json!({
+                "package": package,
+                "name": "meta-flow-package-imported"
+            }),
+        )
+        .await
+        .expect("metaagent should import explicit workflow-code package");
+    assert!(package_imported.ok, "{:?}", package_imported.payload);
+    assert_eq!(
+        package_imported
+            .payload
+            .pointer("/WorkflowCodePackageImported/artifact/metadata/name")
+            .and_then(serde_json::Value::as_str),
+        Some("meta-flow-package-imported")
+    );
+    let source_exported = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL,
+            serde_json::json!({ "name": "meta-flow-imported", "format": "directory" }),
+        )
+        .await
+        .expect("metaagent should export workflow-code source");
+    assert!(source_exported.ok, "{:?}", source_exported.payload);
+    assert_eq!(
+        source_exported
+            .payload
+            .pointer("/WorkflowCodeSourceExported/export/source_path")
+            .and_then(serde_json::Value::as_str),
+        Some("workflow.js")
+    );
+
     let deleted = router
         .runtime_state
         .dispatch_meta_runtime_tool_call_for_agent(
@@ -828,6 +894,22 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .pointer("/WorkflowCodeArtifactDeleted/name")
             .and_then(serde_json::Value::as_str),
         Some("meta-flow-imported")
+    );
+
+    let deleted_package_import = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL,
+            serde_json::json!({ "name": "meta-flow-package-imported" }),
+        )
+        .await
+        .expect("metaagent should delete package-imported workflow-code artifact");
+    assert!(
+        deleted_package_import.ok,
+        "{:?}",
+        deleted_package_import.payload
     );
 }
 

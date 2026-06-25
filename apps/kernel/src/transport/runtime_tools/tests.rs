@@ -138,6 +138,15 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == META_WORKFLOW_CODE_IMPORT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL));
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__arroba_meta_workflow_code_create"),
             Some(META_WORKFLOW_CODE_CREATE_TOOL)
@@ -165,6 +174,18 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__meta_workflow_code_import"),
             Some(META_WORKFLOW_CODE_IMPORT_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_package_export"),
+            Some(META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_package_import"),
+            Some(META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_source_export"),
+            Some(META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL)
         );
     }
 

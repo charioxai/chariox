@@ -118,6 +118,9 @@ pub const META_WORKFLOW_CODE_APPLY_TOOL: &str = "arroba.meta.workflow_code.apply
 pub const META_WORKFLOW_CODE_RUN_TOOL: &str = "arroba.meta.workflow_code.run";
 pub const META_WORKFLOW_CODE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.export";
 pub const META_WORKFLOW_CODE_IMPORT_TOOL: &str = "arroba.meta.workflow_code.import";
+pub const META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.package_export";
+pub const META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL: &str = "arroba.meta.workflow_code.package_import";
+pub const META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.source_export";
 
 pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
 pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
@@ -602,6 +605,8 @@ pub struct MetaWorkflowCodeExportArgs {
     pub name: String,
 }
 
+pub type MetaWorkflowCodePackageExportArgs = MetaWorkflowCodeExportArgs;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetaWorkflowCodeImportArgs {
     pub package: crate::workflow_code::WorkflowCodeArtifactPackage,
@@ -611,6 +616,15 @@ pub struct MetaWorkflowCodeImportArgs {
     pub overwrite: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
+}
+
+pub type MetaWorkflowCodePackageImportArgs = MetaWorkflowCodeImportArgs;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaWorkflowCodeSourceExportArgs {
+    pub name: String,
+    #[serde(default)]
+    pub format: crate::workflow_code::WorkflowCodeSourceExportFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1558,6 +1572,46 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL.to_string(),
+            description: "Export a saved workflow-code artifact as a portable workflow-code package. This is the explicit package-named form; arroba.meta.workflow_code.export is kept as a compatibility alias.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL.to_string(),
+            description: "Import a portable workflow-code package after integrity checking and validation. This is the explicit package-named form; arroba.meta.workflow_code.import is kept as a compatibility alias.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["package"],
+                "properties": {
+                    "package": {"type": "object"},
+                    "name": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                    "node_path": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL.to_string(),
+            description: "Export a saved workflow-code artifact as source. format inline returns the saved JS/TS source; format directory returns workflow.js plus schemas/*.json and manifest.json contents.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "format": {"type": "string", "enum": ["inline", "directory"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
             description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
@@ -1736,6 +1790,24 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_meta_workflow_code_import"
         | "mcp__arroba__meta_workflow_code_import"
         | "mcp__arroba__arroba_meta_workflow_code_import" => Some(META_WORKFLOW_CODE_IMPORT_TOOL),
+        META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL
+        | "arroba_meta_workflow_code_package_export"
+        | "mcp__arroba__meta_workflow_code_package_export"
+        | "mcp__arroba__arroba_meta_workflow_code_package_export" => {
+            Some(META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL)
+        }
+        META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL
+        | "arroba_meta_workflow_code_package_import"
+        | "mcp__arroba__meta_workflow_code_package_import"
+        | "mcp__arroba__arroba_meta_workflow_code_package_import" => {
+            Some(META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL)
+        }
+        META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL
+        | "arroba_meta_workflow_code_source_export"
+        | "mcp__arroba__meta_workflow_code_source_export"
+        | "mcp__arroba__arroba_meta_workflow_code_source_export" => {
+            Some(META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL)
+        }
         META_RESOLVE_RUNTIME_INTERACTION_TOOL
         | "arroba_meta_resolve_runtime_interaction"
         | "mcp__arroba__meta_resolve_runtime_interaction"
