@@ -747,7 +747,10 @@ fn append_observed_external_turns_for_import_with_options(
         .import
         .external_provider_session_provider_id
         .clone();
-    let external_merge_key_prefix = format!("external:{provider}:{provider_session_id}:");
+    let external_merge_key_prefix = crate::history::external_provider_observed_merge_key_prefix(
+        &provider,
+        &provider_session_id,
+    );
     let history_index = app
         .operational_history_store()
         .load_external_import_history_index(
@@ -783,7 +786,7 @@ fn append_observed_external_turns_for_import_with_options(
     let mut visible_provider_turn_id = latest_observed_user_turn_id(&read.turns);
     let mut current_observed_turn_is_arroba_owned = false;
     let candidate_turns =
-        latest_observed_external_turns_by_merge_key(&read.turns, &external_merge_key_prefix);
+        latest_observed_external_turns_by_merge_key(&read.turns, &provider, &provider_session_id);
     for turn in &candidate_turns {
         let kind = turn.role.session_history_kind();
         let merge_turn_id = turn.provider_turn_id_or_fallback();
@@ -793,7 +796,7 @@ fn append_observed_external_turns_for_import_with_options(
         let provider_turn_id = visible_provider_turn_id
             .clone()
             .unwrap_or_else(|| merge_turn_id.clone());
-        let merge_key = turn.external_merge_key(&external_merge_key_prefix);
+        let merge_key = turn.external_merge_key(&provider, &provider_session_id);
         if turn.role == crate::app::ObservedExternalProviderTurnRole::User {
             current_observed_turn_is_arroba_owned = normalized_observed_prompt_text(&turn.text)
                 .is_some_and(|text| arroba_owned_prompt_texts.contains(&text));
@@ -914,12 +917,15 @@ fn append_observed_external_turns_for_import_with_options(
 
 fn latest_observed_external_turns_by_merge_key(
     turns: &[crate::app::ObservedExternalProviderTurn],
-    external_merge_key_prefix: &str,
+    provider: &str,
+    provider_session_id: &str,
 ) -> Vec<crate::app::ObservedExternalProviderTurn> {
     let mut latest_indices_by_merge_key = BTreeMap::new();
     for (index, turn) in turns.iter().enumerate() {
-        latest_indices_by_merge_key
-            .insert(turn.external_merge_key(external_merge_key_prefix), index);
+        latest_indices_by_merge_key.insert(
+            turn.external_merge_key(provider, provider_session_id),
+            index,
+        );
     }
     let latest_indices = latest_indices_by_merge_key
         .into_values()
@@ -993,14 +999,14 @@ fn external_active_prompt_from_turns(
         return None;
     }
     let provider_turn_id = latest.provider_turn_id_or_fallback();
+    let external_prompt_id = crate::history::external_provider_observed_merge_key(
+        &target.import.external_provider,
+        &target.import.external_provider_session_provider_id,
+        &provider_turn_id,
+    );
     Some(
         PromptQueueItem::new(
-            format!(
-                "external:{}:{}:{}",
-                target.import.external_provider,
-                target.import.external_provider_session_provider_id,
-                provider_turn_id
-            ),
+            external_prompt_id,
             format!("external:{}", target.import.external_provider),
             target.agent_id.clone(),
             latest.text.clone(),
@@ -1068,16 +1074,17 @@ fn emit_observed_external_state_signal(
     let provider_run_id = provider_run_id
         .map(str::to_string)
         .unwrap_or_else(|| format!("external-observer:{}", target.agent_id));
-    let provider = &target.import.external_provider;
-    let provider_session_id = &target.import.external_provider_session_provider_id;
     let latest_merge_key = latest_merge_key.unwrap_or("none");
     app.terminal_stream_store().fan_out_output(
         &target.session_id,
         &provider_run_id,
         Some(&target.agent_id),
         crate::terminal::TerminalOutputKind::ProviderStatus,
-        Some(format!(
-            "external:{provider}:{provider_session_id}:state:{reason}:{latest_merge_key}"
+        Some(crate::history::external_provider_observed_state_merge_key(
+            &target.import.external_provider,
+            &target.import.external_provider_session_provider_id,
+            reason,
+            latest_merge_key,
         )),
         recipient_attachment_ids,
         b"external_provider_history_updated",

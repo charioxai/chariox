@@ -49,11 +49,11 @@ impl ObservedExternalProviderTurn {
             .unwrap_or_else(|| self.stable_fallback_id())
     }
 
-    pub(crate) fn external_merge_key(&self, external_merge_key_prefix: &str) -> String {
-        format!(
-            "{}{}",
-            external_merge_key_prefix,
-            self.provider_turn_id_or_fallback()
+    pub(crate) fn external_merge_key(&self, provider: &str, provider_session_id: &str) -> String {
+        crate::history::external_provider_observed_merge_key(
+            provider,
+            provider_session_id,
+            &self.provider_turn_id_or_fallback(),
         )
     }
 }
@@ -2195,7 +2195,7 @@ mod tests {
         );
         assert_eq!(user.provider_turn_id_or_fallback(), "provider-user-1");
         assert_eq!(
-            user.external_merge_key("external:codex:thread-1:"),
+            user.external_merge_key("codex", "thread-1"),
             "external:codex:thread-1:provider-user-1"
         );
 
@@ -2212,7 +2212,7 @@ mod tests {
         let fallback_id = tool.provider_turn_id_or_fallback();
         assert!(fallback_id.starts_with("observed-tool-"));
         assert_eq!(
-            tool.external_merge_key("external:claude:thread-2:"),
+            tool.external_merge_key("claude", "thread-2"),
             format!("external:claude:thread-2:{fallback_id}")
         );
 

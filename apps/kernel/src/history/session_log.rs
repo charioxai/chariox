@@ -186,6 +186,37 @@ impl SessionHistoryEntrySource {
     }
 }
 
+pub fn external_provider_observed_merge_key_prefix(
+    provider: &str,
+    provider_session_id: &str,
+) -> String {
+    format!("external:{provider}:{provider_session_id}:")
+}
+
+pub fn external_provider_observed_merge_key(
+    provider: &str,
+    provider_session_id: &str,
+    provider_turn_id: &str,
+) -> String {
+    format!(
+        "{}{}",
+        external_provider_observed_merge_key_prefix(provider, provider_session_id),
+        provider_turn_id
+    )
+}
+
+pub fn external_provider_observed_state_merge_key(
+    provider: &str,
+    provider_session_id: &str,
+    reason: &str,
+    latest_merge_key: &str,
+) -> String {
+    format!(
+        "{}state:{reason}:{latest_merge_key}",
+        external_provider_observed_merge_key_prefix(provider, provider_session_id)
+    )
+}
+
 impl SessionHistoryEntry {
     pub fn is_external_provider_observed(&self) -> bool {
         self.source == Some(SessionHistoryEntrySource::ExternalProviderObserved)
@@ -313,9 +344,9 @@ impl SessionHistoryEntry {
             text,
             provider,
             provider_session_id,
-            provider_turn_id
-                .as_ref()
-                .map(|turn_id| format!("external:{provider}:{provider_session_id}:{turn_id}")),
+            provider_turn_id.as_ref().map(|turn_id| {
+                external_provider_observed_merge_key(provider, provider_session_id, turn_id)
+            }),
             provider_turn_id,
             observed_at_ms,
         )
@@ -650,4 +681,30 @@ impl SessionHistoryStore {
 
 fn history_file_name(session: &RuntimeSession) -> String {
     format!("{}-{}.jsonl", session.id(), session.created_at_ms())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_provider_observed_merge_keys_are_centralized() {
+        assert_eq!(
+            external_provider_observed_merge_key_prefix("codex", "thread-1"),
+            "external:codex:thread-1:"
+        );
+        assert_eq!(
+            external_provider_observed_merge_key("codex", "thread-1", "item-1"),
+            "external:codex:thread-1:item-1"
+        );
+        assert_eq!(
+            external_provider_observed_state_merge_key(
+                "codex",
+                "thread-1",
+                "settled",
+                "external:codex:thread-1:item-1"
+            ),
+            "external:codex:thread-1:state:settled:external:codex:thread-1:item-1"
+        );
+    }
 }

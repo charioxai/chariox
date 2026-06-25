@@ -21,8 +21,10 @@ mod session_log;
 pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
 pub use session_log::{
-    SessionHistoryEntry, SessionHistoryEntryKind, SessionHistoryEntrySource,
-    SessionHistoryExternalObservation, SessionHistoryPromptAttachment, SessionHistoryStore,
+    external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
+    external_provider_observed_state_merge_key, SessionHistoryEntry, SessionHistoryEntryKind,
+    SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryPromptAttachment,
+    SessionHistoryStore,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
