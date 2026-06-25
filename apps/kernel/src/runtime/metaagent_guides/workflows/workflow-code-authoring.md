@@ -79,6 +79,8 @@ Canvas points are optional. Use `{ x, y }` for nodes/endpoints. Use `{ points: [
 
 If no queues are defined, the kernel creates the workflow default prompt queue and returns it in `queue_ids`. Define queues only when the workflow needs named priorities or disabled queues. Watchdogs reference endpoint and optional queue handles, not runtime ids.
 
+Workflow-code scripts only define workflow structure. They do not call `run` or `enqueue` during compilation. To invoke the generated workflow, call `arroba.meta.workflow_code.run` with `endpoint`, optional `queue_ref`, and `prompt`; the kernel starts the run or enqueues the prompt through normal workflow scheduling.
+
 ## Schemas and Outputs
 
 Define workflow schemas directly in the script so the artifact is portable. Use `workflow.schema` handles for:
@@ -130,7 +132,7 @@ Do not include runtime ids in provider rebindings. Do not rebind existing-agent 
 
 1. Author the script.
 2. Call `arroba.meta.workflow_code.validate` with `source`, or save it with `arroba.meta.workflow_code.create` and validate by `name`. Include `language: "typescript"` when the inline or saved source uses TypeScript syntax.
-3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `prompt`; when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
+3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `endpoint`, `queue_ref`, and `prompt`; when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
 4. Inspect the apply report. It contains `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids`.
 5. Use `arroba.meta.workflow_code.export` and `arroba.meta.workflow_code.import` to exchange portable workflow-code artifacts across kernels.
 

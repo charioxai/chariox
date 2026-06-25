@@ -352,6 +352,12 @@ mod tests {
         ] {
             assert!(body.contains(expected), "missing `{expected}` from guide");
         }
+        for unsupported in ["workflow.run", "workflow.enqueue"] {
+            assert!(
+                !body.contains(unsupported),
+                "guide should not document unsupported builder method `{unsupported}`"
+            );
+        }
     }
 
     #[test]
