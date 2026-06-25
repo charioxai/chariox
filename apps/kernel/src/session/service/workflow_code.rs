@@ -33,18 +33,6 @@ impl SessionService {
             });
         }
         self.validate_workflow_code_agent_bindings(session_id, definition, node_agent_ids)?;
-        for watchdog in &definition.watchdogs {
-            if watchdog.queue.is_some() {
-                return Err(DaemonError::LocalTransport {
-                    operation: "workflow_code.apply",
-                    message: format!(
-                        "watchdog `{}` declares a queue, but runtime watchdogs do not carry queue bindings yet",
-                        watchdog.handle
-                    ),
-                });
-            }
-        }
-
         let workflow = self.create_workflow_code_workflow(
             session_id,
             definition.workflow.alias.as_deref(),
@@ -169,6 +157,10 @@ impl SessionService {
                 session_id,
                 &workflow_id,
                 endpoint_id,
+                watchdog
+                    .queue
+                    .as_deref()
+                    .and_then(|queue| report.queue_ids.get(queue).map(String::as_str)),
                 watchdog.interval_seconds,
                 watchdog.invocation_prompt.clone(),
                 watchdog.policy,

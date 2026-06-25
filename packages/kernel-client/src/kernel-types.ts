@@ -1476,7 +1476,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 175
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 176
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2259,6 +2259,7 @@ export type WorkflowWatchdogDefinition = {
   id: string
   workflow_id: string
   endpoint_id: string
+  queue_id?: string | null
   enabled: boolean
   interval_seconds: number
   invocation_prompt: string

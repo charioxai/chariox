@@ -75,7 +75,7 @@ impl KernelRuntimeOwnedState {
             &plan.workflow_id,
             &plan.endpoint_id,
             Some(plan.invocation_prompt.clone()),
-            None,
+            plan.queue_id.as_deref(),
             crate::session::WorkflowQueuedPromptSource::Watchdog,
             Some(plan.watchdog_id.clone()),
         )?;

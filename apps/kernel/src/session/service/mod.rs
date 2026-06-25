@@ -103,6 +103,7 @@ pub struct WorkflowWatchdogTickPlan {
     pub session_id: String,
     pub workflow_id: String,
     pub endpoint_id: String,
+    pub queue_id: Option<String>,
     pub invocation_prompt: String,
 }
 

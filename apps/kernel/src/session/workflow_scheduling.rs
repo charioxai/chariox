@@ -271,6 +271,8 @@ pub struct WorkflowWatchdogDefinition {
     id: String,
     workflow_id: String,
     endpoint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queue_id: Option<String>,
     enabled: bool,
     interval_seconds: u64,
     invocation_prompt: String,
@@ -309,6 +311,7 @@ impl WorkflowWatchdogDefinition {
             id: id.into(),
             workflow_id: workflow_id.into(),
             endpoint_id: endpoint_id.into(),
+            queue_id: None,
             enabled: true,
             interval_seconds,
             invocation_prompt: invocation_prompt.into(),
@@ -334,6 +337,9 @@ impl WorkflowWatchdogDefinition {
     }
     pub fn endpoint_id(&self) -> &str {
         &self.endpoint_id
+    }
+    pub fn queue_id(&self) -> Option<&str> {
+        self.queue_id.as_deref()
     }
     pub fn enabled(&self) -> bool {
         self.enabled
@@ -385,6 +391,11 @@ impl WorkflowWatchdogDefinition {
 
     pub fn set_next_run_at_ms(&mut self, value: u64) {
         self.next_run_at_ms = value;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub fn set_queue_id(&mut self, value: Option<String>) {
+        self.queue_id = value;
         self.updated_at_ms = unix_epoch_ms();
     }
 

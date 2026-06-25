@@ -625,6 +625,7 @@ fn workflow_watchdog_skip_policy_skips_when_endpoint_run_is_active() {
             session.id(),
             workflow.id(),
             endpoint.id(),
+            None,
             1,
             "run".to_string(),
             WorkflowWatchdogPolicy::Skip,
@@ -672,11 +673,15 @@ fn workflow_watchdog_queue_policy_queues_one_pending_run() {
             Some("entry".to_string()),
         )
         .expect("endpoint should be created");
+    let slow_queue = service
+        .create_workflow_prompt_queue(session.id(), workflow.id(), "slow".to_string(), -10)
+        .expect("slow queue should be created");
     let watchdog = service
         .create_workflow_watchdog(
             session.id(),
             workflow.id(),
             endpoint.id(),
+            Some("slow"),
             1,
             "run".to_string(),
             WorkflowWatchdogPolicy::Queue,
@@ -695,6 +700,15 @@ fn workflow_watchdog_queue_policy_queues_one_pending_run() {
         .collect_due_workflow_watchdog_invocations(watchdog.next_run_at_ms())
         .expect("watchdog collection should succeed");
     assert!(queued.is_empty());
+    let queued_prompt = service
+        .get_session(session.id())
+        .expect("session should exist")
+        .workflow_queued_prompts()
+        .iter()
+        .find(|prompt| prompt.watchdog_id() == Some(watchdog.id()))
+        .expect("watchdog prompt should be queued")
+        .clone();
+    assert_eq!(queued_prompt.queue_id(), slow_queue.id());
     let watchdog = service
         .resolve_workflow_watchdog_ref(session.id(), watchdog.id())
         .expect("watchdog should resolve");
@@ -815,6 +829,7 @@ fn workflow_watchdog_defaults_to_bounded_max_wakeups() {
             session.id(),
             workflow.id(),
             endpoint.id(),
+            None,
             1,
             "run".to_string(),
             WorkflowWatchdogPolicy::Skip,
@@ -856,6 +871,7 @@ fn workflow_watchdog_budget_can_be_unbounded_or_auto_disable_when_exhausted() {
             session.id(),
             workflow.id(),
             endpoint.id(),
+            None,
             1,
             "run".to_string(),
             WorkflowWatchdogPolicy::Skip,
@@ -867,6 +883,7 @@ fn workflow_watchdog_budget_can_be_unbounded_or_auto_disable_when_exhausted() {
             session.id(),
             workflow.id(),
             endpoint.id(),
+            None,
             1,
             "run".to_string(),
             WorkflowWatchdogPolicy::Skip,
@@ -918,6 +935,7 @@ fn workflow_watchdog_queued_start_is_rejected_after_budget_is_exhausted() {
             session.id(),
             workflow.id(),
             endpoint.id(),
+            None,
             1,
             "run".to_string(),
             WorkflowWatchdogPolicy::Queue,

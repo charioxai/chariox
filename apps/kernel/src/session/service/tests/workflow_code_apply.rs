@@ -86,7 +86,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
         watchdogs: vec![WorkflowCodeWatchdogDefinition {
             handle: "entry_watchdog".to_string(),
             endpoint: "entry".to_string(),
-            queue: None,
+            queue: Some("urgent".to_string()),
             interval_seconds: 60,
             invocation_prompt: "Check for stale work.".to_string(),
             policy: WorkflowWatchdogPolicy::Skip,
@@ -166,6 +166,7 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert_eq!(watchdog.workflow_id(), report.workflow_id);
     assert_eq!(watchdog.interval_seconds(), 60);
     assert_eq!(watchdog.max_wakeups(), Some(2));
+    assert_eq!(watchdog.queue_id(), Some(urgent_queue_id.as_str()));
 
     let layout = workflow
         .canvas_layout()

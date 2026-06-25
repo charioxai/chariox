@@ -1005,11 +1005,12 @@ impl<'a> WorkflowCodeValidator<'a> {
                 .iter()
                 .map(|endpoint| endpoint.handle.as_str()),
         );
-        let queue_handles = collect_unique_handles(
+        let mut queue_handles = collect_unique_handles(
             self,
             "queue",
             definition.queues.iter().map(|queue| queue.handle.as_str()),
         );
+        queue_handles.insert("default".to_string());
         collect_unique_handles(
             self,
             "watchdog",

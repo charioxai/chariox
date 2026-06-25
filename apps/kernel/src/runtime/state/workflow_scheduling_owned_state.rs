@@ -14,6 +14,7 @@ impl KernelRuntimeOwnedState {
             &request.session_id,
             &request.workflow_ref,
             &request.endpoint_ref,
+            request.queue_ref.as_deref(),
             request.interval_seconds,
             request.invocation_prompt,
             request.policy,

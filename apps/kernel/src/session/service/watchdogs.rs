@@ -8,6 +8,7 @@ impl SessionService {
         session_id: &str,
         workflow_ref: &str,
         endpoint_ref: &str,
+        queue_ref: Option<&str>,
         interval_seconds: u64,
         invocation_prompt: String,
         policy: WorkflowWatchdogPolicy,
@@ -21,7 +22,12 @@ impl SessionService {
             .resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?
             .id()
             .to_string();
-        let watchdog = WorkflowWatchdogDefinition::new(
+        let queue_id = queue_ref
+            .map(|queue_ref| {
+                self.resolve_workflow_prompt_queue_ref(session_id, &workflow_id, queue_ref)
+            })
+            .transpose()?;
+        let mut watchdog = WorkflowWatchdogDefinition::new(
             self.next_workflow_watchdog_id(),
             workflow_id,
             endpoint_id,
@@ -30,6 +36,7 @@ impl SessionService {
             policy,
             max_wakeups.unwrap_or(Some(crate::session::DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS)),
         );
+        watchdog.set_queue_id(queue_id);
         let session =
             self.store
                 .get_mut(session_id)
@@ -231,6 +238,7 @@ impl SessionService {
                             session_id: session_id.clone(),
                             workflow_id: watchdog.workflow_id().to_string(),
                             endpoint_id: watchdog.endpoint_id().to_string(),
+                            queue_id: watchdog.queue_id().map(str::to_string),
                             invocation_prompt: watchdog.invocation_prompt().to_string(),
                         });
                         continue;
@@ -263,6 +271,7 @@ impl SessionService {
                                     queued_prompt_specs.push((
                                         watchdog.workflow_id().to_string(),
                                         watchdog.endpoint_id().to_string(),
+                                        watchdog.queue_id().map(str::to_string),
                                         watchdog.invocation_prompt().to_string(),
                                         watchdog.id().to_string(),
                                     ));
@@ -281,18 +290,21 @@ impl SessionService {
                         session_id: session_id.clone(),
                         workflow_id: watchdog.workflow_id().to_string(),
                         endpoint_id: watchdog.endpoint_id().to_string(),
+                        queue_id: watchdog.queue_id().map(str::to_string),
                         invocation_prompt: watchdog.invocation_prompt().to_string(),
                     });
                 }
                 queued_prompt_specs
             };
-            for (workflow_id, endpoint_id, invocation_prompt, watchdog_id) in queued_prompt_specs {
+            for (workflow_id, endpoint_id, queue_id, invocation_prompt, watchdog_id) in
+                queued_prompt_specs
+            {
                 let _ = self.enqueue_workflow_prompt(
                     &session_id,
                     &workflow_id,
                     &endpoint_id,
                     Some(invocation_prompt),
-                    None,
+                    queue_id.as_deref(),
                     WorkflowQueuedPromptSource::Watchdog,
                     Some(watchdog_id),
                 );
