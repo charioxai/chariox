@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdir, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -18,10 +18,12 @@ import {
   getWorkflowCodeArtifactRequest,
   getProviderRunRequest,
   importWorkflowCodeArtifactRequest,
+  installSkillRequest,
   invokeWorkflowEndpointRequest,
   launchProviderRunRequest,
   runWorkflowCodeArtifactRequest,
   spawnAgentRequest,
+  uninstallSkillRequest,
 } from '@arroba/kernel-client'
 
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
@@ -30,6 +32,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const DEFAULT_TIMEOUT_MS = 120_000
+const WORKFLOW_CODE_ARTIFACT_SKILL_PREFIX = 'workflow-code-artifact-skill'
 
 function nowStamp() {
   return new Date().toISOString().replace(/[:.]/g, '-')
@@ -170,7 +173,7 @@ async function waitForKernel(client, workspace, worktree, timeoutMs) {
   throw new Error(`kernel did not become ready: ${lastError?.message ?? 'unknown error'}`)
 }
 
-function workflowCodeSource() {
+function workflowCodeSource(skillName) {
   return `
 workflow.define({
   alias: "workflow_code_artifact_drill",
@@ -214,6 +217,7 @@ const planner = workflow.node({
   publicLabel: "Planner",
   instructions: "Read the endpoint prompt and hand a numbered task to the worker.",
   canCompleteWorkflowRun: false,
+  extensions: [{ kind: "skill", name: "${skillName}" }],
   canvas: { x: 0, y: 120 },
 });
 
@@ -365,13 +369,16 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, 
 `.trim()
 }
 
-function defaultToyExpectation() {
+function defaultToyExpectation(skillName = null) {
   return {
     nodes: 3,
     agents: 3,
     edges: 2,
     endpoints: 1,
     requiredSchemas: ['handoff', 'final_output'],
+    nodeExtensions: skillName
+      ? { planner: [{ kind: 'skill', name: skillName }] }
+      : {},
   }
 }
 
@@ -382,6 +389,11 @@ function expectationFromDefinition(definition) {
     edges: definition.edges?.length ?? 0,
     endpoints: definition.endpoints?.length ?? 0,
     requiredSchemas: (definition.schemas ?? []).map((schema) => schema.handle),
+    nodeExtensions: Object.fromEntries(
+      (definition.nodes ?? [])
+        .filter((node) => (node.extensions ?? []).length > 0)
+        .map((node) => [node.handle, node.extensions]),
+    ),
   }
 }
 
@@ -423,7 +435,38 @@ function validateSessionProjection(session, apply, label, expected = defaultToyE
     assert(agent, `${label} node agent ${handle} should appear in session`, { agentId })
     assert(agent.provider === 'dev-stub', `${label} node agent ${handle} should use dev-stub`, agent)
     assert(agent.model === 'default', `${label} node agent ${handle} should use default model`, agent)
+    for (const extension of expected.nodeExtensions?.[handle] ?? []) {
+      assert(
+        (agent.extension_grants ?? []).some((grant) => (
+          grant.kind === extension.kind
+          && grant.name === extension.name
+          && (extension.environment === undefined || grant.environment === extension.environment)
+          && (extension.credential === undefined || grant.credential === extension.credential)
+          && (extension.max_safety === undefined || grant.max_safety === extension.max_safety)
+        )),
+        `${label} node agent ${handle} should receive extension ${extension.kind}:${extension.name}`,
+        { agent, expectedExtension: extension },
+      )
+    }
   }
+}
+
+async function writeWorkflowCodeArtifactSkillSource(skillSourceRoot, skillName) {
+  const skillDir = path.join(skillSourceRoot, skillName)
+  await mkdir(skillDir, { recursive: true })
+  await writeFile(
+    path.join(skillDir, 'SKILL.md'),
+    [
+      '---',
+      `name: ${skillName}`,
+      'description: Skill used by the workflow-code artifact drill.',
+      '---',
+      'Use this skill only for workflow-code artifact drill validation.',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+  return skillDir
 }
 
 async function workflowCodeExamples() {
@@ -653,12 +696,14 @@ async function applyOutputSchemaArtifact(client, session, nodePath, timeoutMs) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const source = workflowCodeSource()
+  const skillName = `${WORKFLOW_CODE_ARTIFACT_SKILL_PREFIX}-${process.pid}-${Date.now()}`
+  const source = workflowCodeSource(skillName)
   if (options.dryRun) {
     console.log(JSON.stringify({
       artifactRoot: options.artifactRoot,
       spawnDaemon: options.spawnDaemon,
       kernel: options.kernel,
+      skillName,
       source,
       providerRebindings: providerRebindings(),
       exampleSuite: options.exampleSuite,
@@ -670,8 +715,10 @@ async function main() {
   const generatedRoot = path.join(repoRoot, 'target', 'workflow-code-artifact-drill', `${process.pid}-${Date.now()}`)
   const workspace = options.workspace ?? path.join(generatedRoot, 'workspace')
   const worktree = options.worktree ?? path.join(generatedRoot, 'worktree')
+  const skillSourceRoot = path.join(generatedRoot, 'skills')
   await mkdir(workspace, { recursive: true })
   await mkdir(worktree, { recursive: true })
+  const skillSourceDir = await writeWorkflowCodeArtifactSkillSource(skillSourceRoot, skillName)
 
   let passed = false
   let failure = null
@@ -681,6 +728,7 @@ async function main() {
   let kernelUrl = options.kernel ?? 'ws://127.0.0.1:43284'
   let summary = {}
   let client = null
+  let installedSkill = false
 
   try {
     if (options.spawnDaemon) {
@@ -710,6 +758,13 @@ async function main() {
     ).attachment
     attachmentId = attachment.id
 
+    const skillInstall = unwrap(
+      await client.send(installSkillRequest(workspace, skillSourceDir)),
+      'SkillInstalled',
+    )
+    assert(skillInstall?.skill?.name === skillName, 'workflow-code artifact drill skill should install', skillInstall)
+    installedSkill = true
+
     const artifactName = `artifact-drill-${Date.now()}`
     const importedName = `${artifactName}-imported`
     const nodePath = process.execPath
@@ -725,8 +780,9 @@ async function main() {
       await client.send(applyWorkflowCodeArtifactRequest(session.id, artifactName, providerRebindings())),
       'WorkflowCodeApplied',
     )
-    const firstApply = validateApplyResult(appliedResponse.result, 'artifact apply')
-    validateSessionProjection(appliedResponse.session, firstApply, 'artifact apply')
+    const defaultExpected = defaultToyExpectation(skillName)
+    const firstApply = validateApplyResult(appliedResponse.result, 'artifact apply', defaultExpected)
+    validateSessionProjection(appliedResponse.session, firstApply, 'artifact apply', defaultExpected)
 
     const exported = unwrap(
       await client.send(exportWorkflowCodeArtifactRequest(session.id, artifactName)),
@@ -755,8 +811,8 @@ async function main() {
       })),
       'WorkflowCodeRun',
     )
-    const runApply = validateApplyResult(runResponse.result.apply, 'artifact run')
-    validateSessionProjection(runResponse.session, runApply, 'artifact run')
+    const runApply = validateApplyResult(runResponse.result.apply, 'artifact run', defaultExpected)
+    validateSessionProjection(runResponse.session, runApply, 'artifact run', defaultExpected)
     const invocation = runResponse.result.invocation
     assert(invocation?.workflow_run || invocation?.queued_prompt, 'artifact run should invoke or enqueue a workflow run', invocation)
 
@@ -791,6 +847,10 @@ async function main() {
     }
     console.log(JSON.stringify(summary, null, 2))
 
+    if (installedSkill) {
+      await client.send(uninstallSkillRequest(workspace, skillName)).catch(() => {})
+      installedSkill = false
+    }
     await client.send(endSessionRequest(session.id)).catch(() => {})
     await client.close()
     passed = true
@@ -798,6 +858,9 @@ async function main() {
     failure = error
     console.error(error)
     if (client && sessionId) {
+      if (installedSkill) {
+        await client.send(uninstallSkillRequest(workspace, skillName)).catch(() => {})
+      }
       await client.send(endSessionRequest(sessionId)).catch(() => {})
     }
     if (client) {
