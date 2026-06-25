@@ -289,6 +289,132 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 }
 
 #[test]
+fn local_request_api_applies_workflow_code_queues_and_watchdogs() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping workflow-code queue/watchdog local API test because node is not available"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-queues-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-queues"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+workflow.define({ alias: "queued_watchdog_flow" })
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "queue-planner", provider: "dev-stub", model: "default" }),
+  publicLabel: "Planner",
+  instructions: "Process queued watchdog work.",
+  canCompleteWorkflowRun: true
+})
+const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+const urgent = workflow.queue({
+  handle: "urgent",
+  alias: "urgent",
+  priority: 7,
+  enabled: true
+})
+workflow.watchdog(entry, {
+  handle: "entry_watchdog",
+  queue: urgent,
+  intervalSeconds: 90,
+  invocationPrompt: "Check whether urgent scripted workflow work needs attention.",
+  policy: "queue",
+  maxWakeups: 3
+})
+"#;
+
+    let applied = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("workflow-code should apply");
+    let LocalDaemonResponse::WorkflowCodeApplied {
+        result,
+        session: applied_session,
+    } = applied
+    else {
+        panic!("unexpected local response");
+    };
+    assert!(result.compile.validation.ok);
+    assert!(result.apply.warnings.iter().any(|warning| {
+        warning.code == "canvas_auto_layout_applied" && warning.handle.is_none()
+    }));
+
+    let workflow = applied_session
+        .workflows()
+        .iter()
+        .find(|workflow| workflow.id() == result.apply.workflow_id)
+        .expect("generated workflow should be returned");
+    assert_eq!(workflow.alias(), Some("queued_watchdog_flow"));
+    let urgent_queue_id = result
+        .apply
+        .queue_ids
+        .get("urgent")
+        .expect("urgent queue id should be reported");
+    let entry_endpoint_id = result
+        .apply
+        .endpoint_ids
+        .get("entry")
+        .expect("entry endpoint id should be reported");
+    let watchdog_id = result
+        .apply
+        .watchdog_ids
+        .get("entry_watchdog")
+        .expect("watchdog id should be reported");
+
+    let urgent_queue = applied_session
+        .workflow_prompt_queues()
+        .iter()
+        .find(|queue| queue.id() == urgent_queue_id)
+        .expect("urgent queue should exist in the session");
+    assert_eq!(urgent_queue.workflow_id(), workflow.id());
+    assert_eq!(urgent_queue.alias(), "urgent");
+    assert_eq!(urgent_queue.priority(), 7);
+    assert!(urgent_queue.enabled());
+
+    let watchdog = applied_session
+        .workflow_watchdogs()
+        .iter()
+        .find(|watchdog| watchdog.id() == watchdog_id)
+        .expect("scripted watchdog should exist in the session");
+    assert_eq!(watchdog.workflow_id(), workflow.id());
+    assert_eq!(watchdog.endpoint_id(), entry_endpoint_id);
+    assert_eq!(watchdog.queue_id(), Some(urgent_queue_id.as_str()));
+    assert_eq!(watchdog.interval_seconds(), 90);
+    assert_eq!(
+        watchdog.invocation_prompt(),
+        "Check whether urgent scripted workflow work needs attention."
+    );
+    assert_eq!(
+        watchdog.policy(),
+        crate::session::WorkflowWatchdogPolicy::Queue
+    );
+    assert_eq!(watchdog.max_wakeups(), Some(3));
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
 fn local_request_api_workflow_code_validate_checks_target_provider_rebindings() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!("skipping workflow-code local API test because node is not available");
