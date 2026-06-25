@@ -163,16 +163,21 @@ impl KernelRuntimeState {
             META_SEARCH_GUIDES_TOOL => {
                 let args = serde_json::from_value::<MetaGuideSearchArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let guide_context =
+                    crate::runtime::metaagent_guides::MetaagentGuideContext::for_workspace(
+                        agent.worktree_id().unwrap_or_else(|| session.worktree_id()),
+                    );
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
-                        "guides": crate::runtime::metaagent_guides::search_guides(
+                        "guides": crate::runtime::metaagent_guides::search_guides_with_context(
                             crate::runtime::metaagent_guides::MetaagentGuideSearchArgs {
                                 query: args.query,
                                 tag: args.tag,
                                 command: args.command,
                                 limit: args.limit,
-                            }
+                            },
+                            &guide_context,
                         ),
                     }),
                 })
@@ -180,16 +185,21 @@ impl KernelRuntimeState {
             META_LIST_GUIDES_TOOL => {
                 let args = serde_json::from_value::<MetaGuideListArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let guide_context =
+                    crate::runtime::metaagent_guides::MetaagentGuideContext::for_workspace(
+                        agent.worktree_id().unwrap_or_else(|| session.worktree_id()),
+                    );
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: serde_json::json!({
-                        "guides": crate::runtime::metaagent_guides::list_guides(
+                        "guides": crate::runtime::metaagent_guides::list_guides_with_context(
                             crate::runtime::metaagent_guides::MetaagentGuideSearchArgs {
                                 query: None,
                                 tag: args.tag,
                                 command: args.command,
                                 limit: args.limit,
-                            }
+                            },
+                            &guide_context,
                         ),
                     }),
                 })
@@ -197,8 +207,15 @@ impl KernelRuntimeState {
             META_READ_GUIDE_TOOL => {
                 let args = serde_json::from_value::<MetaReadGuideArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let guide_context =
+                    crate::runtime::metaagent_guides::MetaagentGuideContext::for_workspace(
+                        agent.worktree_id().unwrap_or_else(|| session.worktree_id()),
+                    );
                 Ok(
-                    match crate::runtime::metaagent_guides::read_guide(&args.guide) {
+                    match crate::runtime::metaagent_guides::read_guide_with_context(
+                        &args.guide,
+                        &guide_context,
+                    ) {
                         Some(guide) => RuntimeToolResult {
                             ok: true,
                             payload: guide,

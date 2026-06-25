@@ -1,3 +1,8 @@
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MetaagentGuide {
     pub id: &'static str,
@@ -142,6 +147,9 @@ pub(crate) const METAAGENT_GUIDES: &[MetaagentGuide] = &[
     },
 ];
 
+const METAAGENT_GUIDE_DIR: &str = "metaagent-guides";
+const BUILTIN_GUIDE_DIR: &str = "builtin";
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MetaagentGuideSearchArgs {
     pub query: Option<String>,
@@ -150,19 +158,114 @@ pub(crate) struct MetaagentGuideSearchArgs {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetaagentGuideSourceScope {
+    Workspace,
+    User,
+    BuiltinCopy,
+    Embedded,
+}
+
+impl MetaagentGuideSourceScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::User => "user",
+            Self::BuiltinCopy => "builtin_copy",
+            Self::Embedded => "embedded",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MetaagentGuideContext {
+    workspace: Option<PathBuf>,
+    user_root: Option<PathBuf>,
+    seed_builtin_copies: bool,
+}
+
+impl MetaagentGuideContext {
+    pub(crate) fn for_workspace(workspace: impl Into<PathBuf>) -> Self {
+        Self {
+            workspace: Some(workspace.into()),
+            user_root: arroba_home().map(|home| home.join(METAAGENT_GUIDE_DIR)),
+            seed_builtin_copies: true,
+        }
+    }
+
+    fn embedded_only() -> Self {
+        Self {
+            workspace: None,
+            user_root: None,
+            seed_builtin_copies: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(workspace: PathBuf, user_root: PathBuf, seed_builtin_copies: bool) -> Self {
+        Self {
+            workspace: Some(workspace),
+            user_root: Some(user_root),
+            seed_builtin_copies,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EffectiveMetaagentGuide {
+    id: String,
+    title: String,
+    summary: String,
+    tags: Vec<String>,
+    commands: Vec<String>,
+    body: String,
+    source_scope: MetaagentGuideSourceScope,
+    source_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct MetaagentGuideFrontmatter {
+    id: Option<String>,
+    title: Option<String>,
+    summary: Option<String>,
+    tags: Vec<String>,
+    commands: Vec<String>,
+}
+
 pub(crate) fn list_guides(args: MetaagentGuideSearchArgs) -> Vec<serde_json::Value> {
     search_guides(args).into_iter().collect()
 }
 
 pub(crate) fn search_guides(args: MetaagentGuideSearchArgs) -> Vec<serde_json::Value> {
+    search_guides_with_context(args, &MetaagentGuideContext::embedded_only())
+}
+
+pub(crate) fn list_guides_with_context(
+    args: MetaagentGuideSearchArgs,
+    context: &MetaagentGuideContext,
+) -> Vec<serde_json::Value> {
+    search_guides_with_context(args, context)
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn search_guides_with_context(
+    args: MetaagentGuideSearchArgs,
+    context: &MetaagentGuideContext,
+) -> Vec<serde_json::Value> {
     let query = args.query.as_deref().map(normalize_search_text);
     let tag = args.tag.as_deref().map(str::to_ascii_lowercase);
     let command = args.command.as_deref().map(normalize_search_text);
-    let mut matches = METAAGENT_GUIDES
-        .iter()
+    let mut matches = effective_guides(context)
+        .into_iter()
         .filter_map(|guide| {
             if let Some(tag) = tag.as_deref() {
-                if !guide.tags.iter().any(|candidate| *candidate == tag) {
+                if !guide
+                    .tags
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(tag))
+                {
                     return None;
                 }
             }
@@ -177,7 +280,7 @@ pub(crate) fn search_guides(args: MetaagentGuideSearchArgs) -> Vec<serde_json::V
             }
             let score = query
                 .as_deref()
-                .map(|query| score_guide(query, guide))
+                .map(|query| score_guide(query, &guide))
                 .unwrap_or(1);
             (score > 0).then_some((score, guide))
         })
@@ -185,38 +288,104 @@ pub(crate) fn search_guides(args: MetaagentGuideSearchArgs) -> Vec<serde_json::V
     matches.sort_by(|(left_score, left), (right_score, right)| {
         right_score
             .cmp(left_score)
-            .then_with(|| left.title.cmp(right.title))
+            .then_with(|| left.title.cmp(&right.title))
     });
     matches
         .into_iter()
         .take(args.limit.unwrap_or(20).clamp(1, 100))
-        .map(|(_, guide)| guide_summary(guide, false))
+        .map(|(_, guide)| guide_summary(&guide, false))
         .collect()
 }
 
 pub(crate) fn read_guide(guide_ref: &str) -> Option<serde_json::Value> {
-    let needle = normalize_search_text(guide_ref);
-    METAAGENT_GUIDES
-        .iter()
-        .find(|guide| {
-            normalize_search_text(guide.id) == needle
-                || normalize_search_text(guide.title) == needle
-        })
-        .map(|guide| guide_summary(guide, true))
+    read_guide_with_context(guide_ref, &MetaagentGuideContext::embedded_only())
 }
 
-fn guide_summary(guide: &MetaagentGuide, include_body: bool) -> serde_json::Value {
+pub(crate) fn read_guide_with_context(
+    guide_ref: &str,
+    context: &MetaagentGuideContext,
+) -> Option<serde_json::Value> {
+    let needle = normalize_search_text(guide_ref);
+    effective_guides(context)
+        .into_iter()
+        .find(|guide| {
+            normalize_search_text(&guide.id) == needle
+                || normalize_search_text(&guide.title) == needle
+        })
+        .map(|guide| guide_summary(&guide, true))
+}
+
+fn guide_summary(guide: &EffectiveMetaagentGuide, include_body: bool) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "id": guide.id,
         "title": guide.title,
         "summary": guide.summary,
         "tags": guide.tags,
         "commands": guide.commands,
+        "source_scope": guide.source_scope.as_str(),
     });
+    if let Some(path) = &guide.source_path {
+        payload["source_path"] = serde_json::Value::String(path.display().to_string());
+    }
     if include_body {
-        payload["body"] = serde_json::Value::String(guide_body(guide));
+        payload["body"] = serde_json::Value::String(guide.body.clone());
     }
     payload
+}
+
+fn effective_guides(context: &MetaagentGuideContext) -> Vec<EffectiveMetaagentGuide> {
+    if context.seed_builtin_copies {
+        if let Some(user_root) = &context.user_root {
+            let _ = seed_builtin_guide_copies(user_root);
+        }
+    }
+
+    let mut by_id = BTreeMap::<String, EffectiveMetaagentGuide>::new();
+    for guide in embedded_guides() {
+        by_id.insert(guide.id.clone(), guide);
+    }
+    if let Some(user_root) = &context.user_root {
+        for guide in read_guides_from_root(
+            &user_root.join(BUILTIN_GUIDE_DIR),
+            MetaagentGuideSourceScope::BuiltinCopy,
+            false,
+        ) {
+            by_id.insert(guide.id.clone(), guide);
+        }
+        for guide in read_guides_from_root(user_root, MetaagentGuideSourceScope::User, true) {
+            by_id.insert(guide.id.clone(), guide);
+        }
+    }
+    if let Some(workspace) = &context.workspace {
+        for guide in read_guides_from_root(
+            &workspace.join(".arroba").join(METAAGENT_GUIDE_DIR),
+            MetaagentGuideSourceScope::Workspace,
+            true,
+        ) {
+            by_id.insert(guide.id.clone(), guide);
+        }
+    }
+    by_id.into_values().collect()
+}
+
+fn embedded_guides() -> Vec<EffectiveMetaagentGuide> {
+    METAAGENT_GUIDES
+        .iter()
+        .map(|guide| EffectiveMetaagentGuide {
+            id: guide.id.to_string(),
+            title: guide.title.to_string(),
+            summary: guide.summary.to_string(),
+            tags: guide.tags.iter().map(|tag| (*tag).to_string()).collect(),
+            commands: guide
+                .commands
+                .iter()
+                .map(|command| (*command).to_string())
+                .collect(),
+            body: guide_body(guide),
+            source_scope: MetaagentGuideSourceScope::Embedded,
+            source_path: None,
+        })
+        .collect()
 }
 
 fn guide_body(guide: &MetaagentGuide) -> String {
@@ -239,7 +408,7 @@ fn guide_body(guide: &MetaagentGuide) -> String {
     }
 }
 
-fn score_guide(query: &str, guide: &MetaagentGuide) -> usize {
+fn score_guide(query: &str, guide: &EffectiveMetaagentGuide) -> usize {
     let haystack = normalize_search_text(&format!(
         "{} {} {} {} {}",
         guide.id,
@@ -248,15 +417,15 @@ fn score_guide(query: &str, guide: &MetaagentGuide) -> usize {
         guide.tags.join(" "),
         guide.commands.join(" ")
     ));
-    let body = normalize_search_text(&guide_body(guide));
+    let body = normalize_search_text(&guide.body);
     query
         .split_whitespace()
         .map(|term| {
             let mut score = 0;
-            if normalize_search_text(guide.id).contains(term) {
+            if normalize_search_text(&guide.id).contains(term) {
                 score += 8;
             }
-            if normalize_search_text(guide.title).contains(term) {
+            if normalize_search_text(&guide.title).contains(term) {
                 score += 6;
             }
             if haystack.contains(term) {
@@ -268,6 +437,164 @@ fn score_guide(query: &str, guide: &MetaagentGuide) -> usize {
             score
         })
         .sum()
+}
+
+fn read_guides_from_root(
+    root: &Path,
+    source_scope: MetaagentGuideSourceScope,
+    skip_builtin_dir: bool,
+) -> Vec<EffectiveMetaagentGuide> {
+    let mut guides = Vec::new();
+    collect_guide_files(root, root, source_scope, skip_builtin_dir, &mut guides);
+    guides
+}
+
+fn collect_guide_files(
+    root: &Path,
+    current: &Path,
+    source_scope: MetaagentGuideSourceScope,
+    skip_builtin_dir: bool,
+    guides: &mut Vec<EffectiveMetaagentGuide>,
+) {
+    let Ok(entries) = std::fs::read_dir(current) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if skip_builtin_dir
+                && path.file_name().and_then(|name| name.to_str()) == Some(BUILTIN_GUIDE_DIR)
+            {
+                continue;
+            }
+            collect_guide_files(root, &path, source_scope, skip_builtin_dir, guides);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        if let Some(guide) = read_file_guide(root, &path, source_scope) {
+            guides.push(guide);
+        }
+    }
+}
+
+fn read_file_guide(
+    root: &Path,
+    path: &Path,
+    source_scope: MetaagentGuideSourceScope,
+) -> Option<EffectiveMetaagentGuide> {
+    let source = std::fs::read_to_string(path).ok()?;
+    let (frontmatter, body) = split_frontmatter(&source);
+    let metadata = frontmatter
+        .and_then(|frontmatter| serde_yaml::from_str::<MetaagentGuideFrontmatter>(frontmatter).ok())
+        .unwrap_or_default();
+    let fallback_id = guide_id_from_path(root, path)?;
+    let body = body.trim_start_matches('\n').to_string();
+    let title = metadata
+        .title
+        .or_else(|| first_markdown_heading(&body))
+        .unwrap_or_else(|| fallback_id.clone());
+    Some(EffectiveMetaagentGuide {
+        id: metadata.id.unwrap_or(fallback_id),
+        title,
+        summary: metadata.summary.unwrap_or_default(),
+        tags: metadata.tags,
+        commands: metadata.commands,
+        body,
+        source_scope,
+        source_path: Some(path.to_path_buf()),
+    })
+}
+
+fn split_frontmatter(source: &str) -> (Option<&str>, &str) {
+    let Some(rest) = source.strip_prefix("---\n") else {
+        return (None, source);
+    };
+    let Some(end) = rest.find("\n---") else {
+        return (None, source);
+    };
+    let body_start = end + "\n---".len();
+    (Some(&rest[..end]), &rest[body_start..])
+}
+
+fn guide_id_from_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut without_extension = relative.to_path_buf();
+    without_extension.set_extension("");
+    Some(
+        without_extension
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
+fn first_markdown_heading(body: &str) -> Option<String> {
+    body.lines()
+        .find_map(|line| line.trim().strip_prefix("# ").map(str::trim))
+        .filter(|title| !title.is_empty())
+        .map(str::to_string)
+}
+
+fn seed_builtin_guide_copies(user_root: &Path) -> std::io::Result<()> {
+    let root = user_root.join(BUILTIN_GUIDE_DIR);
+    for guide in METAAGENT_GUIDES {
+        let path = root.join(format!("{}.md", guide.id));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let payload = builtin_guide_file(guide);
+        if std::fs::read_to_string(&path).ok().as_deref() == Some(payload.as_str()) {
+            continue;
+        }
+        std::fs::write(path, payload)?;
+    }
+    Ok(())
+}
+
+fn builtin_guide_file(guide: &MetaagentGuide) -> String {
+    let mut payload = String::new();
+    payload.push_str("---\n");
+    payload.push_str("id: ");
+    payload.push_str(guide.id);
+    payload.push('\n');
+    payload.push_str("title: ");
+    payload.push_str(&yaml_string(guide.title));
+    payload.push('\n');
+    payload.push_str("summary: ");
+    payload.push_str(&yaml_string(guide.summary));
+    payload.push('\n');
+    payload.push_str("tags:\n");
+    for tag in guide.tags {
+        payload.push_str("  - ");
+        payload.push_str(&yaml_string(tag));
+        payload.push('\n');
+    }
+    payload.push_str("commands:\n");
+    for command in guide.commands {
+        payload.push_str("  - ");
+        payload.push_str(&yaml_string(command));
+        payload.push('\n');
+    }
+    payload.push_str("---\n");
+    let body = guide_body(guide);
+    payload.push_str(body.trim_start_matches('\n'));
+    payload
+}
+
+fn yaml_string(value: &str) -> String {
+    serde_yaml::to_string(value)
+        .unwrap_or_else(|_| format!("{value:?}"))
+        .trim()
+        .to_string()
+}
+
+fn arroba_home() -> Option<PathBuf> {
+    std::env::var_os("ARROBA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
 }
 
 fn normalize_search_text(value: &str) -> String {
@@ -434,5 +761,183 @@ mod tests {
                 "workflow-code pattern guide should be discoverable for `{query}`"
             );
         }
+    }
+
+    #[test]
+    fn contextual_guides_use_workspace_user_builtin_embedded_precedence() {
+        let root = temp_guide_root("precedence");
+        let workspace = root.join("workspace");
+        let user_root = root.join("user-guides");
+        let guide_rel = "workflows/basic-components.md";
+        write_test_guide(
+            &user_root.join(BUILTIN_GUIDE_DIR).join(guide_rel),
+            "workflows/basic-components",
+            "Built-in Copy Components",
+            "builtin body",
+        );
+        write_test_guide(
+            &user_root.join(guide_rel),
+            "workflows/basic-components",
+            "User Components",
+            "user body",
+        );
+        write_test_guide(
+            &workspace
+                .join(".arroba")
+                .join(METAAGENT_GUIDE_DIR)
+                .join(guide_rel),
+            "workflows/basic-components",
+            "Workspace Components",
+            "workspace body",
+        );
+        let context = MetaagentGuideContext::for_test(workspace.clone(), user_root.clone(), false);
+
+        let guide =
+            read_guide_with_context("workflows/basic-components", &context).expect("guide exists");
+        assert_eq!(
+            guide.get("title").and_then(serde_json::Value::as_str),
+            Some("Workspace Components")
+        );
+        assert_eq!(
+            guide
+                .get("source_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("workspace")
+        );
+
+        std::fs::remove_file(
+            workspace
+                .join(".arroba")
+                .join(METAAGENT_GUIDE_DIR)
+                .join(guide_rel),
+        )
+        .expect("workspace guide should remove");
+        let guide =
+            read_guide_with_context("workflows/basic-components", &context).expect("guide exists");
+        assert_eq!(
+            guide.get("title").and_then(serde_json::Value::as_str),
+            Some("User Components")
+        );
+        assert_eq!(
+            guide
+                .get("source_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("user")
+        );
+
+        std::fs::remove_file(user_root.join(guide_rel)).expect("user guide should remove");
+        let guide =
+            read_guide_with_context("workflows/basic-components", &context).expect("guide exists");
+        assert_eq!(
+            guide.get("title").and_then(serde_json::Value::as_str),
+            Some("Built-in Copy Components")
+        );
+        assert_eq!(
+            guide
+                .get("source_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("builtin_copy")
+        );
+
+        std::fs::remove_file(user_root.join(BUILTIN_GUIDE_DIR).join(guide_rel))
+            .expect("builtin copy guide should remove");
+        let guide =
+            read_guide_with_context("workflows/basic-components", &context).expect("guide exists");
+        assert_eq!(
+            guide
+                .get("source_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("embedded")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn contextual_guide_search_reports_source_scope() {
+        let root = temp_guide_root("search-scope");
+        let workspace = root.join("workspace");
+        let user_root = root.join("user-guides");
+        write_test_guide(
+            &user_root.join("workflows/custom-routing.md"),
+            "workflows/custom-routing",
+            "Custom Routing Guide",
+            "routing body with specialist selection",
+        );
+        let context = MetaagentGuideContext::for_test(workspace, user_root, false);
+        let guides = search_guides_with_context(
+            MetaagentGuideSearchArgs {
+                query: Some("specialist selection".to_string()),
+                tag: Some("workflow".to_string()),
+                command: Some("workflow run".to_string()),
+                limit: Some(5),
+            },
+            &context,
+        );
+        let guide = guides
+            .iter()
+            .find(|guide| {
+                guide.get("id").and_then(serde_json::Value::as_str)
+                    == Some("workflows/custom-routing")
+            })
+            .expect("custom guide should be searchable");
+        assert_eq!(
+            guide
+                .get("source_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("user")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn contextual_guides_seed_builtin_copies_to_user_root() {
+        let root = temp_guide_root("seed");
+        let workspace = root.join("workspace");
+        let user_root = root.join("user-guides");
+        let context = MetaagentGuideContext::for_test(workspace, user_root.clone(), true);
+        let guide = read_guide_with_context("workflows/workflow-code-patterns", &context)
+            .expect("seeded guide should exist");
+        assert_eq!(
+            guide
+                .get("source_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("builtin_copy")
+        );
+        let seeded_path = user_root
+            .join(BUILTIN_GUIDE_DIR)
+            .join("workflows")
+            .join("workflow-code-patterns.md");
+        let seeded = std::fs::read_to_string(seeded_path).expect("builtin guide should be seeded");
+        for example in crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES {
+            assert!(
+                seeded.contains(example.source.trim()),
+                "seeded built-in copy should include source for `{}`",
+                example.slug
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn write_test_guide(path: &std::path::Path, id: &str, title: &str, body: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("guide parent should create");
+        }
+        std::fs::write(
+            path,
+            format!(
+                "---\nid: {id}\ntitle: {title:?}\nsummary: \"test guide\"\ntags:\n  - workflow\ncommands:\n  - workflow run\n---\n# {title}\n\n{body}\n"
+            ),
+        )
+        .expect("guide should write");
+    }
+
+    fn temp_guide_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-metaagent-guide-{name}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
     }
 }
