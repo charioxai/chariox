@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -42,6 +42,7 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: true,
     preserveOnSuccess: false,
     dryRun: false,
+    exampleSuite: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (arg === '--discard-artifacts-on-failure') options.keepArtifactsOnFailure = false
     else if (arg === '--preserve-on-success') options.preserveOnSuccess = true
     else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
+    else if (arg === '--example-suite') options.exampleSuite = true
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--help' || arg === '-h') {
       printHelp()
@@ -93,6 +95,7 @@ function printHelp() {
     '  --discard-artifacts-on-failure',
     '  --preserve-on-success',
     '  --discard-artifacts-on-success',
+    '  --example-suite',
     '  --dry-run',
   ].join('\n'))
 }
@@ -242,34 +245,112 @@ function providerRebindings() {
   }))
 }
 
-function validateApplyResult(result, label) {
+function defaultToyExpectation() {
+  return {
+    nodes: 3,
+    agents: 3,
+    edges: 2,
+    endpoints: 1,
+    requiredSchemas: ['handoff', 'final_output'],
+  }
+}
+
+function expectationFromDefinition(definition) {
+  return {
+    nodes: definition.nodes?.length ?? 0,
+    agents: definition.nodes?.length ?? 0,
+    edges: definition.edges?.length ?? 0,
+    endpoints: definition.endpoints?.length ?? 0,
+    requiredSchemas: (definition.schemas ?? []).map((schema) => schema.handle),
+  }
+}
+
+function rebindingsForDefinition(definition) {
+  return (definition.nodes ?? []).map((node) => ({
+    node: node.handle,
+    provider: 'dev-stub',
+    model: 'default',
+  }))
+}
+
+function validateApplyResult(result, label, expected = defaultToyExpectation()) {
   assert(result?.compile?.validation?.ok, `${label} compile validation failed`, result?.compile?.validation)
   const apply = result.apply
   assert(apply?.workflow_id, `${label} did not return workflow id`, result)
-  assert(Object.keys(apply.node_ids ?? {}).length === 3, `${label} should create three nodes`, apply)
-  assert(Object.keys(apply.agent_ids ?? {}).length === 3, `${label} should create three generated agents`, apply)
-  assert(Object.keys(apply.edge_ids ?? {}).length === 2, `${label} should create two edges`, apply)
-  assert(Object.keys(apply.endpoint_ids ?? {}).length === 1, `${label} should create one endpoint`, apply)
-  assert(apply.schema_refs?.handoff, `${label} should report handoff schema`, apply)
-  assert(apply.schema_refs?.final_output, `${label} should report final schema`, apply)
+  assert(Object.keys(apply.node_ids ?? {}).length === expected.nodes, `${label} should create ${expected.nodes} nodes`, apply)
+  assert(Object.keys(apply.agent_ids ?? {}).length === expected.agents, `${label} should create ${expected.agents} generated agents`, apply)
+  assert(Object.keys(apply.edge_ids ?? {}).length === expected.edges, `${label} should create ${expected.edges} edges`, apply)
+  assert(Object.keys(apply.endpoint_ids ?? {}).length === expected.endpoints, `${label} should create ${expected.endpoints} endpoints`, apply)
+  for (const schemaHandle of expected.requiredSchemas) {
+    assert(apply.schema_refs?.[schemaHandle], `${label} should report schema ${schemaHandle}`, apply)
+  }
   assert(apply.canvas_layout_applied === true, `${label} should create a canvas layout`, apply)
   return apply
 }
 
-function validateSessionProjection(session, apply, label) {
+function validateSessionProjection(session, apply, label, expected = defaultToyExpectation()) {
   const workflow = (session.workflows ?? []).find((entry) => entry.id === apply.workflow_id)
   assert(workflow, `${label} workflow should appear in session projection`, { workflowId: apply.workflow_id })
   assert(workflow.canvas_layout, `${label} workflow should include canvas layout`, workflow)
-  assert(workflow.run_output_schema_ref === apply.schema_refs.final_output, `${label} final schema ref should be assigned`, {
-    workflow,
-    schemaRefs: apply.schema_refs,
-  })
+  if (expected.requiredSchemas.includes('final_output')) {
+    assert(workflow.run_output_schema_ref === apply.schema_refs.final_output, `${label} final schema ref should be assigned`, {
+      workflow,
+      schemaRefs: apply.schema_refs,
+    })
+  }
   for (const [handle, agentId] of Object.entries(apply.agent_ids ?? {})) {
     const agent = (session.agents ?? []).find((entry) => entry.id === agentId)
     assert(agent, `${label} generated agent ${handle} should appear in session`, { agentId })
     assert(agent.provider === 'dev-stub', `${label} generated agent ${handle} should be rebound to dev-stub`, agent)
     assert(agent.model === 'default', `${label} generated agent ${handle} should use rebound default model`, agent)
   }
+}
+
+async function workflowCodeExamples() {
+  const examplesDir = path.join(repoRoot, 'examples', 'workflow-code')
+  const names = (await readdir(examplesDir))
+    .filter((name) => name.endsWith('.js'))
+    .sort()
+  return await Promise.all(names.map(async (name) => ({
+    name,
+    source: await readFile(path.join(examplesDir, name), 'utf8'),
+  })))
+}
+
+async function applyExampleSuite(client, sessionId, nodePath) {
+  const examples = await workflowCodeExamples()
+  const results = []
+  for (const [index, example] of examples.entries()) {
+    const artifactName = `pattern-${index + 1}-${example.name.replace(/\.js$/, '')}-${Date.now()}`
+    const created = unwrap(
+      await client.send(createWorkflowCodeArtifactRequest(sessionId, artifactName, nodePath, example.source)),
+      'WorkflowCodeArtifactCreated',
+    ).artifact
+    assert(created?.metadata?.validation?.ok, `example ${example.name} should validate`, created?.metadata?.validation)
+
+    const exported = unwrap(
+      await client.send(exportWorkflowCodeArtifactRequest(sessionId, artifactName)),
+      'WorkflowCodeArtifactExported',
+    ).package
+    const expected = expectationFromDefinition(exported.definition)
+    const rebindings = rebindingsForDefinition(exported.definition)
+    const appliedResponse = unwrap(
+      await client.send(applyWorkflowCodeArtifactRequest(sessionId, artifactName, rebindings)),
+      'WorkflowCodeApplied',
+    )
+    const apply = validateApplyResult(appliedResponse.result, `example ${example.name}`, expected)
+    validateSessionProjection(appliedResponse.session, apply, `example ${example.name}`, expected)
+    results.push({
+      example: example.name,
+      artifactName,
+      workflowId: apply.workflow_id,
+      nodes: expected.nodes,
+      edges: expected.edges,
+      endpoints: expected.endpoints,
+      schemas: Object.keys(apply.schema_refs ?? {}),
+    })
+  }
+  return results
 }
 
 function validateArtifactHistory(artifact, expectedActions) {
@@ -289,6 +370,7 @@ async function main() {
       kernel: options.kernel,
       source,
       providerRebindings: providerRebindings(),
+      exampleSuite: options.exampleSuite,
     }, null, 2))
     return
   }
@@ -394,6 +476,9 @@ async function main() {
     const state = unwrap(stateResponse, 'SessionStateLoaded')?.session
       ?? unwrap(stateResponse, 'SessionState')?.session
     assert((state?.workflows ?? []).some((workflow) => workflow.id === runApply.workflow_id), 'run workflow should be in loaded session state')
+    const exampleSuite = options.exampleSuite
+      ? await applyExampleSuite(client, session.id, nodePath)
+      : []
 
     summary = {
       sessionId: session.id,
@@ -405,6 +490,7 @@ async function main() {
       runInvocation: invocation.workflow_run ? 'started' : 'enqueued',
       generatedAgents: Object.values(runApply.agent_ids ?? {}),
       schemaRefs: runApply.schema_refs,
+      exampleSuite,
     }
     console.log(JSON.stringify(summary, null, 2))
 
