@@ -390,6 +390,54 @@ mod tests {
     }
 
     #[test]
+    fn workflow_code_apply_preflights_existing_agent_authorization_without_partial_mutation() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let metaagent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("meta")
+                    .with_role(crate::agent::AgentRole::Meta),
+            )
+            .expect("metaagent should spawn");
+        let peer_worker = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("peer"))
+            .expect("peer worker should spawn");
+        let agent_count_before = app.agents().get_session_agents(session.id()).len();
+
+        let mut definition = generated_workflow_code_definition();
+        definition.workflow.alias = Some("partial_mutation_guard".to_string());
+        definition.nodes[1].agent = WorkflowCodeAgentBinding::Existing(WorkflowCodeExistingAgent {
+            agent_ref: peer_worker.id().to_string(),
+        });
+
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                metaagent.owner_user_id().to_string(),
+                Some(metaagent.id().to_string()),
+            )
+            .expect_err("workflow-code should reject unauthorized existing-agent binding");
+
+        let message = format!("{error}");
+        assert!(message.contains("unauthorized_existing_agent_binding"));
+        assert!(message.contains(peer_worker.id()));
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(session.workflows().is_empty());
+        assert_eq!(
+            app.agents().get_session_agents(session.id()).len(),
+            agent_count_before
+        );
+    }
+
+    #[test]
     fn workflow_code_apply_grants_satisfied_node_extension_requirement() {
         let workspace = unique_workflow_code_test_workspace("extension-satisfied");
         install_test_skill(&workspace, "workflow-code-skill");
@@ -1091,8 +1139,25 @@ impl<'a> KernelSessionService<'a> {
             &mut definition,
             provider_rebindings,
         )?;
-        self.validate_workflow_code_generated_agent_providers(&definition)?;
-        self.validate_workflow_code_node_extensions(session_id, &definition)?;
+        let mut target_validation = WorkflowCodeValidationReport {
+            ok: true,
+            diagnostics: Vec::new(),
+        };
+        self.append_workflow_code_target_validation(
+            session_id,
+            &definition,
+            &mut target_validation,
+            controlled_by_metaagent_id.as_deref(),
+        )?;
+        if !target_validation.ok {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.apply",
+                message: workflow_code_validation_error_message(
+                    "workflow-code target validation failed",
+                    &target_validation,
+                ),
+            });
+        }
 
         let mut node_agent_ids = BTreeMap::new();
         for node in &definition.nodes {
@@ -1180,50 +1245,6 @@ impl<'a> KernelSessionService<'a> {
         )?;
         crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
         Ok(report)
-    }
-
-    fn validate_workflow_code_generated_agent_providers(
-        &self,
-        definition: &WorkflowCodeDefinition,
-    ) -> Result<(), DaemonError> {
-        let registry = self.app.providers.registry();
-        for node in &definition.nodes {
-            let WorkflowCodeAgentBinding::Create(agent) = &node.agent else {
-                continue;
-            };
-            let provider = agent.provider.trim();
-            let adapter_key = adapter_key_for_provider(provider);
-            if registry.resolve(adapter_key).is_none() {
-                return Err(DaemonError::LocalTransport {
-                    operation: "workflow_code.apply",
-                    message: format!(
-                        "node `{}` requests unavailable provider `{provider}`; available providers: {}",
-                        node.handle,
-                        registry.advertised_provider_ids().join(", ")
-                    ),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_workflow_code_node_extensions(
-        &self,
-        session_id: &str,
-        definition: &WorkflowCodeDefinition,
-    ) -> Result<(), DaemonError> {
-        let session = self.app.sessions().get_session(session_id)?;
-        let workspace_id = session.workspace_id();
-        for node in &definition.nodes {
-            for grant in &node.extensions {
-                self.validate_workflow_code_extension_requirement(
-                    workspace_id,
-                    &node.handle,
-                    grant,
-                )?;
-            }
-        }
-        Ok(())
     }
 
     fn validate_workflow_code_extension_requirement(
@@ -1824,4 +1845,28 @@ fn push_workflow_code_target_validation_error(
             handle,
             source_span: None,
         });
+}
+
+fn workflow_code_validation_error_message(
+    prefix: &'static str,
+    validation: &WorkflowCodeValidationReport,
+) -> String {
+    let details = validation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let handle = diagnostic
+                .handle
+                .as_deref()
+                .map(|handle| format!(" handle `{handle}`"))
+                .unwrap_or_default();
+            format!("{}{}: {}", diagnostic.code, handle, diagnostic.message)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    if details.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}: {details}")
+    }
 }
