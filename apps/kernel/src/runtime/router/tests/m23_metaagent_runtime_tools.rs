@@ -130,12 +130,25 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
             .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL),
         "metaagents should see the metaagent runtime MCP tools"
     );
-    assert!(
-        meta_specs.iter().any(
-            |spec| spec.name == crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL
-        ),
-        "metaagents should see workflow-code construction tools"
-    );
+    for workflow_code_tool in [
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_LIST_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_UPDATE_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_EXPORT_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_IMPORT_TOOL,
+    ] {
+        assert!(
+            meta_specs
+                .iter()
+                .any(|spec| spec.name == workflow_code_tool),
+            "metaagents should see workflow-code runtime MCP tool `{workflow_code_tool}`"
+        );
+    }
     assert!(
         meta_specs
             .iter()
