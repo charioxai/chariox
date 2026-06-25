@@ -238,7 +238,6 @@ impl KernelRuntimeOwnedState {
                 &workflow_run_id,
                 &update.dispatches,
             ));
-            let _ = self.session_snapshot(&context.session_id);
         }
         Ok((
             crate::transport::runtime_tools::RuntimeToolResult {
@@ -266,22 +265,22 @@ impl KernelRuntimeOwnedState {
         schema_ref: &str,
         output_json: &str,
     ) -> Result<(), String> {
-        let workflow_schema = self
-            .session_store
-            .read()
-            .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)
-            .ok()
-            .and_then(|workflow_run| {
-                self.session_store
-                    .read()
-                    .resolve_workflow_ref(&context.session_id, workflow_run.workflow_id())
-                    .ok()
-            })
-            .and_then(|workflow| {
-                workflow
-                    .schema(schema_ref)
-                    .map(|schema| schema.schema().clone())
-            });
+        let workflow_schema = {
+            let store = self.session_store.read();
+            store
+                .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)
+                .ok()
+                .and_then(|workflow_run| {
+                    store
+                        .resolve_workflow_ref(&context.session_id, workflow_run.workflow_id())
+                        .ok()
+                })
+                .and_then(|workflow| {
+                    workflow
+                        .schema(schema_ref)
+                        .map(|schema| schema.schema().clone())
+                })
+        };
         if let Some(schema) = workflow_schema {
             crate::transport::runtime_tools::validate_json_output_schema(
                 schema_ref,

@@ -143,9 +143,21 @@ const finalOutput = workflow.schema({
   alias: "Final",
   schema: {
     type: "object",
-    required: ["answer"],
+    required: ["value"],
     properties: {
-      answer: { type: "string" }
+      value: { type: "number" }
+    },
+    additionalProperties: false
+  }
+})
+const progressOutput = workflow.schema({
+  handle: "progress",
+  alias: "Progress",
+  schema: {
+    type: "object",
+    required: ["value"],
+    properties: {
+      value: { type: "number" }
     },
     additionalProperties: false
   }
@@ -153,14 +165,17 @@ const finalOutput = workflow.schema({
 workflow.define({
   alias: "scripted_run_flow",
   maxConcurrent: 4,
-  runOutputSchema: finalOutput
+  runOutputSchema: finalOutput,
+  intermediateOutputSchema: progressOutput
 })
 const planner = workflow.node({
   handle: "planner",
   agent: workflow.newAgent({ alias: "run-planner", provider: "dev-stub", model: "default" }),
   publicLabel: "Planner",
-  instructions: "Answer the invocation prompt and complete the workflow run with final JSON.",
+  instructions: "Submit schema-valid intermediate progress and complete the workflow run with final JSON.",
   canCompleteWorkflowRun: true,
+  canEmitIntermediateRunOutput: true,
+  intermediateOutputSchema: progressOutput,
   maxTurns: 2,
   canvas: { x: 24, y: 48 }
 })
@@ -197,7 +212,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         result.apply.compile.definition.workflow.alias.as_deref(),
         Some("scripted_run_flow")
     );
-    assert_eq!(result.apply.apply.schema_refs.len(), 1);
+    assert_eq!(result.apply.apply.schema_refs.len(), 2);
     assert_eq!(result.apply.apply.node_ids.len(), 1);
     assert_eq!(result.apply.apply.agent_ids.len(), 1);
     assert_eq!(result.apply.apply.endpoint_ids.len(), 1);
@@ -207,6 +222,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .iter()
         .any(|agent| agent.alias() == Some("run-planner")
             && agent.provider() == "dev-stub"
+            && agent.model() == Some("default")
             && Some(agent.id())
                 == result
                     .apply
@@ -220,7 +236,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .find(|workflow| workflow.id() == result.apply.apply.workflow_id)
         .expect("generated workflow should be in returned session");
     assert_eq!(workflow.alias(), Some("scripted_run_flow"));
-    assert_eq!(workflow.schemas().len(), 1);
+    assert_eq!(workflow.schemas().len(), 2);
     assert_eq!(
         workflow.run_output_schema_ref(),
         result
@@ -228,6 +244,36 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .apply
             .schema_refs
             .get("final")
+            .map(String::as_str)
+    );
+    assert_eq!(
+        workflow.intermediate_output_schema_ref(),
+        result
+            .apply
+            .apply
+            .schema_refs
+            .get("progress")
+            .map(String::as_str)
+    );
+    let planner_node_id = result
+        .apply
+        .apply
+        .node_ids
+        .get("planner")
+        .expect("planner node id should be reported");
+    let planner_node = workflow
+        .nodes()
+        .iter()
+        .find(|node| node.id() == planner_node_id)
+        .expect("planner node should be materialized");
+    assert!(planner_node.can_emit_intermediate_run_output());
+    assert_eq!(
+        planner_node.intermediate_output_schema_ref(),
+        result
+            .apply
+            .apply
+            .schema_refs
+            .get("progress")
             .map(String::as_str)
     );
     assert!(workflow
@@ -284,6 +330,136 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .workflow_runs()
         .iter()
         .any(|run| run.id() == workflow_run.id()));
+
+    let provider_run_id = harness.wait_for_active_provider_run(session.id());
+    let runtime_mcp_auth_token = harness.with_app(|app| {
+        app.providers()
+            .get_run(&provider_run_id)
+            .expect("active provider run should resolve")
+            .runtime_mcp_auth_token()
+            .expect("workflow provider should have runtime MCP auth token")
+            .to_string()
+    });
+    let delivery_token = harness.with_app(|app| {
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should resolve while reading workflow turn envelope");
+        let run = session
+            .workflow_run(workflow_run.id())
+            .expect("workflow run should resolve while reading workflow turn envelope");
+        run.node_runs()[0]
+            .turn_envelope()
+            .expect("workflow node run should have a delivery token")
+            .delivery_token()
+            .to_string()
+    });
+
+    let acked = harness
+        .dispatch_runtime_tool(
+            &runtime_mcp_auth_token,
+            crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL,
+            serde_json::json!({ "delivery_token": delivery_token.clone() }),
+        )
+        .expect("workflow turn ack should validate");
+    assert!(acked.ok, "{:?}", acked.payload);
+
+    let intermediate = harness
+        .dispatch_runtime_tool(
+            &runtime_mcp_auth_token,
+            crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
+            serde_json::json!({
+                "delivery_token": delivery_token.clone(),
+                "workflow_output_json": "{\"value\":1841}"
+            }),
+        )
+        .expect("intermediate workflow output should validate");
+    assert!(intermediate.ok, "{:?}", intermediate.payload);
+    assert_eq!(intermediate.payload["valid"], true);
+
+    let final_submission = harness
+        .dispatch_runtime_tool(
+            &runtime_mcp_auth_token,
+            crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL,
+            serde_json::json!({
+                "delivery_token": delivery_token,
+                "workflow_output_json": "{\"value\":1842}"
+            }),
+        )
+        .expect("final workflow output should validate");
+    assert!(final_submission.ok, "{:?}", final_submission.payload);
+    assert_eq!(final_submission.payload["valid"], true);
+
+    match harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow-code prompt should complete")
+    {
+        LocalDaemonResponse::PromptCompleted { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let completed_run = loop {
+        let resolved = match harness
+            .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: workflow_run.id().to_string(),
+            }))
+            .expect("workflow run should resolve")
+        {
+            LocalDaemonResponse::WorkflowRun { workflow_run } => workflow_run,
+            _ => panic!("unexpected local response"),
+        };
+        if resolved.status() == WorkflowRunStatus::Completed || Instant::now() >= deadline {
+            break resolved;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let recent_history = if completed_run.status() != WorkflowRunStatus::Completed {
+        harness.with_app_mut(|app| {
+            crate::app::KernelSessionReadService::new(app)
+                .session_history(session.id())
+                .expect("session history should load")
+                .into_iter()
+                .rev()
+                .take(8)
+                .map(|entry| {
+                    format!(
+                        "{:?} {:?}: {}",
+                        entry.kind, entry.provider_run_id, entry.text
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n---\n")
+        })
+    } else {
+        String::new()
+    };
+    assert_eq!(
+        completed_run.status(),
+        WorkflowRunStatus::Completed,
+        "workflow-code run should complete; failures: {:?}; recent history:\n{}",
+        completed_run.failure_events(),
+        recent_history
+    );
+    assert_eq!(completed_run.intermediate_outputs().len(), 1);
+    let intermediate = &completed_run.intermediate_outputs()[0];
+    assert!(intermediate.valid());
+    assert_eq!(intermediate.warning(), None);
+    let intermediate_json: serde_json::Value =
+        serde_json::from_str(intermediate.output().message())
+            .expect("intermediate output message should be JSON");
+    assert_eq!(intermediate_json["value"], 1841);
+    assert_eq!(completed_run.final_output_valid(), Some(true));
+    assert_eq!(completed_run.final_output_warning(), None);
+    let final_output = completed_run
+        .final_output()
+        .expect("completed workflow run should store final output");
+    let final_json: serde_json::Value =
+        serde_json::from_str(final_output.message()).expect("final output message should be JSON");
+    assert_eq!(final_json["value"], 1842);
 
     std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
 }

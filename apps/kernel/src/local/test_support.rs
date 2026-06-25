@@ -65,6 +65,18 @@ impl LocalRouterTestHarness {
         self.dispatch_with_caller(request, KernelCaller::default())
     }
 
+    pub(crate) fn dispatch_runtime_tool(
+        &self,
+        auth_token: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.runtime.block_on(
+            self.router
+                .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments),
+        )
+    }
+
     pub(crate) fn dispatch_as_user(
         &self,
         user_id: &str,
