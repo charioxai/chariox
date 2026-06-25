@@ -46,6 +46,7 @@ export function mergePrependedHistoryFragments(older: TranscriptEntry, newer: Tr
     text: newer.text,
     sourceText,
   }
+  mergeStitchedHistoryMetadata(mergedBase, older, newer)
   if (older.historyFragmentStart !== undefined) mergedBase.historyFragmentStart = older.historyFragmentStart
   if (newer.historyFragmentEnd !== undefined) mergedBase.historyFragmentEnd = newer.historyFragmentEnd
   const totalChars = newer.historyTotalChars ?? older.historyTotalChars
@@ -400,6 +401,25 @@ function sameTranscriptHistoryIdentity(
     return false
   }
   return true
+}
+
+function mergeStitchedHistoryMetadata(
+  target: TranscriptEntry,
+  older: TranscriptEntry,
+  newer: TranscriptEntry,
+) {
+  target.providerRunId ??= older.providerRunId
+  target.source ??= older.source
+  target.externalProvider ??= older.externalProvider
+  target.externalProviderSessionId ??= older.externalProviderSessionId
+  target.externalProviderTurnId ??= older.externalProviderTurnId
+  target.observedAtMs ??= older.observedAtMs
+  target.externalObservation ??= older.externalObservation
+  target.promptId ??= older.promptId
+  target.sourceAttachmentId ??= older.sourceAttachmentId
+  if (older.attachments !== undefined || newer.attachments !== undefined) {
+    target.attachments = mergeHistoryAttachments(older.attachments, newer.attachments ?? [])
+  }
 }
 
 function externalProviderObservedOptions(entry: SessionHistoryEntry): Partial<TranscriptEntry> {

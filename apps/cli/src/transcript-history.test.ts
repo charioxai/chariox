@@ -415,6 +415,38 @@ test("stitchPrependedHistory merges adjacent assistant fragments", () => {
   assert.equal(stitched[0]?.historyDeferred, undefined)
 })
 
+test("stitchPrependedHistory preserves prompt attachment metadata while merging fragments", () => {
+  const attachments = [{
+    url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+    mime: "image/png",
+    filename: "Screenshot.png",
+    preview_url: "data:image/png;base64,aW1hZ2U=",
+  }]
+  const stitched = stitchPrependedHistory(
+    [entry(1, "user", "inspect ", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 0,
+      historyFragmentEnd: 8,
+      historyTotalChars: 13,
+      promptId: "prompt-1",
+      sourceAttachmentId: "attachment-1",
+      attachments,
+    })],
+    [entry(2, "user", "image", {
+      historyEntryIndex: 8,
+      historyFragmentStart: 8,
+      historyFragmentEnd: 13,
+      historyTotalChars: 13,
+    })],
+  )
+
+  assert.equal(stitched.length, 1)
+  assert.equal(stitched[0]?.text, "inspect image")
+  assert.equal(stitched[0]?.promptId, "prompt-1")
+  assert.equal(stitched[0]?.sourceAttachmentId, "attachment-1")
+  assert.deepEqual(stitched[0]?.attachments, attachments)
+})
+
 test("stitchPrependedHistory rebuilds structured tool fragments", () => {
   const toolPayload = JSON.stringify({
     id: "tool-1",
