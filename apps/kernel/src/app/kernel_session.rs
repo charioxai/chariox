@@ -1361,6 +1361,7 @@ impl<'a> KernelSessionService<'a> {
         source: &str,
         limits: &WorkflowCodeLimitsConfig,
         provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+        caller_metaagent_id: Option<&str>,
     ) -> Result<WorkflowCodeCompileResult, DaemonError> {
         let mut compile = compile_workflow_code_javascript(node_path, source, limits)?;
         let mut definition = compile.definition.clone();
@@ -1373,6 +1374,7 @@ impl<'a> KernelSessionService<'a> {
                 session_id,
                 &definition,
                 &mut compile.validation,
+                caller_metaagent_id,
             )?;
         }
         compile.definition = definition;
@@ -1418,6 +1420,7 @@ impl<'a> KernelSessionService<'a> {
         session_id: &str,
         definition: &WorkflowCodeDefinition,
         validation: &mut WorkflowCodeValidationReport,
+        caller_metaagent_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let session = self.app.sessions().get_session(session_id)?;
         let registry = self.app.providers.registry();
@@ -1449,7 +1452,21 @@ impl<'a> KernelSessionService<'a> {
                 }
                 WorkflowCodeAgentBinding::Existing(existing) => {
                     match self.app.agents.get_agent(&existing.agent_ref) {
-                        Ok(agent) if agent.session_id() == session_id => {}
+                        Ok(agent) if agent.session_id() == session_id => {
+                            if caller_metaagent_id.is_some_and(|metaagent_id| {
+                                agent.controlled_by_metaagent_id() != Some(metaagent_id)
+                            }) {
+                                push_workflow_code_target_validation_error(
+                                    validation,
+                                    "unauthorized_existing_agent_binding",
+                                    format!(
+                                        "metaagent is not authorized to bind existing agent `{}`",
+                                        existing.agent_ref
+                                    ),
+                                    Some(node.handle.clone()),
+                                );
+                            }
+                        }
                         Ok(agent) => push_workflow_code_target_validation_error(
                             validation,
                             "invalid_existing_agent_binding",

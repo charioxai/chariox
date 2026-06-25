@@ -453,6 +453,119 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 }
 
 #[tokio::test]
+async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_binding() {
+    if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
+        eprintln!(
+            "skipping meta workflow-code existing-agent validation test because Node.js is unavailable: {error}"
+        );
+        return;
+    }
+
+    let env = TestMetaRuntimeEnv::new("workflow-code-existing-agent-auth");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let owned_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("owned-worker")
+                .with_owner_user_id(metaagent.owner_user_id()),
+        )
+        .expect("owned worker should spawn");
+    mark_test_agent_controlled_by_metaagent(&mut app, owned_worker.id(), metaagent.id());
+    let peer_worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("peer-worker")
+                .with_owner_user_id("peer-user"),
+        )
+        .expect("peer worker should spawn");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    let owned_source = workflow_code_existing_agent_source(owned_worker.id());
+    let owned_validated = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+            serde_json::json!({ "source": owned_source }),
+        )
+        .await
+        .expect("metaagent should validate owned existing-agent workflow-code");
+    assert!(owned_validated.ok, "{:?}", owned_validated.payload);
+    assert_eq!(
+        owned_validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/ok")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let peer_source = workflow_code_existing_agent_source(peer_worker.id());
+    let peer_validated = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+            serde_json::json!({ "source": peer_source }),
+        )
+        .await
+        .expect("metaagent should receive validation diagnostics for unauthorized existing agent");
+    assert!(peer_validated.ok, "{:?}", peer_validated.payload);
+    assert_eq!(
+        peer_validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/ok")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        peer_validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/diagnostics")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
+                diagnostic.get("code").and_then(serde_json::Value::as_str)
+                    == Some("unauthorized_existing_agent_binding")
+                    && diagnostic.get("handle").and_then(serde_json::Value::as_str)
+                        == Some("worker")
+            })),
+        "{:?}",
+        peer_validated.payload
+    );
+}
+
+fn workflow_code_existing_agent_source(agent_id: &str) -> String {
+    format!(
+        r#"
+workflow.define({{ alias: "existing-bind" }})
+const worker = workflow.node({{
+  handle: "worker",
+  agent: workflow.existingAgent("{agent_id}"),
+  instructions: "Complete.",
+  canCompleteWorkflowRun: true
+}})
+workflow.endpoint(worker, {{ handle: "entry", alias: "entry" }})
+"#
+    )
+}
+
+#[tokio::test]
 async fn metaagent_trace_subscription_drains_live_worker_output() {
     let env = TestMetaRuntimeEnv::new("trace-subscription");
     let workspace = env.root.join("workspace");

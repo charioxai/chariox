@@ -28,7 +28,11 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::ValidateWorkflowCode(request) => (
-                self.execute_workflow_code_validate_request(request).await,
+                self.execute_workflow_code_validate_request(
+                    request,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
                 None,
             ),
             LocalDaemonRequest::ApplyWorkflowCode(request) => {
@@ -318,7 +322,9 @@ impl KernelRuntimeState {
     async fn execute_workflow_code_validate_request(
         &self,
         request: crate::local::ValidateWorkflowCodeRequest,
+        caller_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let caller_metaagent_id = caller_metaagent_id.map(str::to_string);
         self.with_app_side_effect(move |app| {
             let limits = app.config().workflow_code_limits();
             let result = crate::app::KernelSessionService::new(app)
@@ -328,6 +334,7 @@ impl KernelRuntimeState {
                     &request.source,
                     &limits,
                     &request.provider_rebindings,
+                    caller_metaagent_id.as_deref(),
                 )?;
             Ok(LocalDaemonResponse::WorkflowCodeValidated { result })
         })
