@@ -1964,6 +1964,8 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                     name: name.clone(),
                 },
                 format: crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
+                agent_mode:
+                    crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
             },
         ))
         .expect("workflow-code inline source should export")
@@ -1983,6 +1985,8 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                     name: name.clone(),
                 },
                 format: crate::workflow_code::WorkflowCodeSourceExportFormat::Directory,
+                agent_mode:
+                    crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
             },
         ))
         .expect("workflow-code directory source should export")
@@ -2150,6 +2154,8 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                             workflow_ref: result.apply.workflow_id.clone(),
                         },
                         format: crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
+                        agent_mode:
+                            crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
                     },
                 ))
                 .expect("live workflow source should export")
@@ -2177,6 +2183,40 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                 &live_recompiled.definition.nodes[0].agent,
                 crate::workflow_code::WorkflowCodeAgentBinding::Create(agent)
                     if agent.provider == "dev-stub"
+            ));
+            let live_existing_agent_source = match harness
+                .dispatch(LocalDaemonRequest::ExportWorkflowCodeSource(
+                    crate::local::ExportWorkflowCodeSourceRequest {
+                        session_id: session.id().to_string(),
+                        target: crate::local::WorkflowCodeSourceExportTarget::Workflow {
+                            workflow_ref: result.apply.workflow_id.clone(),
+                        },
+                        format: crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
+                        agent_mode:
+                            crate::workflow_code::WorkflowCodeSourceExportAgentMode::ExistingAgents,
+                    },
+                ))
+                .expect("live workflow source should export with existing agents")
+            {
+                LocalDaemonResponse::WorkflowCodeSourceExported { export } => export,
+                _ => panic!("unexpected local response"),
+            };
+            assert!(live_existing_agent_source
+                .source
+                .contains("workflow.existingAgent"));
+            let live_existing_agent_recompiled =
+                crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
+                    &node_path,
+                    &live_existing_agent_source.source,
+                    live_existing_agent_source.language,
+                    &crate::config::WorkflowCodeLimitsConfig::default(),
+                    None,
+                )
+                .expect("live workflow existing-agent source export should recompile");
+            assert!(matches!(
+                &live_existing_agent_recompiled.definition.nodes[0].agent,
+                crate::workflow_code::WorkflowCodeAgentBinding::Existing(existing)
+                    if existing.agent_ref == *planner_agent_id
             ));
         }
         _ => panic!("unexpected local response"),

@@ -882,6 +882,8 @@ impl KernelRuntimeState {
                             name: args.name,
                         },
                         format: args.format,
+                        agent_mode:
+                            crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated,
                     },
                 ),
                 agent,

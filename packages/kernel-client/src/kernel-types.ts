@@ -1477,7 +1477,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 191
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 192
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2105,6 +2105,7 @@ export type WorkflowCodeArtifactPackage = {
 }
 
 export type WorkflowCodeSourceExportFormat = "inline" | "directory"
+export type WorkflowCodeSourceExportAgentMode = "portable_generated" | "existing_agents"
 
 export type WorkflowCodeSourceExportTarget =
   | { kind: "artifact"; name: string }

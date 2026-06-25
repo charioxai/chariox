@@ -5,6 +5,7 @@ import type {
   WorkflowCodeArtifact,
   WorkflowCodeArtifactPackage,
   WorkflowCodeProviderRebinding,
+  WorkflowCodeSourceExportAgentMode,
   WorkflowCodeSourceExport,
   WorkflowCodeSourceExportFormat,
 } from "./kernel-types.js"
@@ -321,6 +322,7 @@ async function exportWorkflowCodeSource(
     sessionId,
     parsed.target === "workflow" ? { kind: "workflow", workflow_ref: parsed.name } : { kind: "artifact", name: parsed.name },
     parsed.format,
+    parsed.agentMode,
   ))
   const exportResult = expectVariant<{ export: WorkflowCodeSourceExport }>(response, "WorkflowCodeSourceExported").export
   const resolved = resolveShellPath(context, parsed.outputPath)
@@ -347,11 +349,12 @@ async function exportWorkflowCodeSourceDirectory(
   return exportWorkflowCodeSource(sessionId, [...args, "--format", "directory"], context, deps)
 }
 
-function parseSourceExportOptions(args: string[]): { ok: true; name: string; outputPath: string; format: WorkflowCodeSourceExportFormat; target: "artifact" | "workflow" } | { ok: false; message: string } {
-  const usage = "usage: workflow code source export <artifact-or-workflow-ref> --out <file|directory> [--workflow] [--format inline|directory]"
+function parseSourceExportOptions(args: string[]): { ok: true; name: string; outputPath: string; format: WorkflowCodeSourceExportFormat; target: "artifact" | "workflow"; agentMode: WorkflowCodeSourceExportAgentMode } | { ok: false; message: string } {
+  const usage = "usage: workflow code source export <artifact-or-workflow-ref> --out <file|directory> [--workflow] [--existing-agents] [--format inline|directory]"
   const positionals: string[] = []
   let format: WorkflowCodeSourceExportFormat = "inline"
   let target: "artifact" | "workflow" = "artifact"
+  let agentMode: WorkflowCodeSourceExportAgentMode = "portable_generated"
   let outputPath: string | undefined
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
@@ -370,6 +373,10 @@ function parseSourceExportOptions(args: string[]): { ok: true; name: string; out
       target = "workflow"
       continue
     }
+    if (arg === "--existing-agents") {
+      agentMode = "existing_agents"
+      continue
+    }
     if (arg === "--format") {
       const value = args[index + 1]
       if (value !== "inline" && value !== "directory") {
@@ -386,7 +393,7 @@ function parseSourceExportOptions(args: string[]): { ok: true; name: string; out
   if (!name || extra.length > 0) return { ok: false, message: usage }
   outputPath ??= positionalOutput
   if (!outputPath) return { ok: false, message: usage }
-  return { ok: true, name, outputPath, format, target }
+  return { ok: true, name, outputPath, format, target, agentMode }
 }
 
 function parseNameAndOutput(args: string[], usage: string): { ok: true; name: string; outputPath: string } | { ok: false; message: string } {

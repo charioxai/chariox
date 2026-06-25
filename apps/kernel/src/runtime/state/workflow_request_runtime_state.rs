@@ -1042,6 +1042,15 @@ impl KernelRuntimeState {
             let registry = workflow_code_registry_for_session(app, &request.session_id)?;
             let export = match request.target {
                 crate::local::WorkflowCodeSourceExportTarget::Artifact { name } => {
+                    if request.agent_mode
+                        != crate::workflow_code::WorkflowCodeSourceExportAgentMode::PortableGenerated
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "workflow_code.source_export",
+                            message: "agent_mode is only supported when exporting an existing workflow"
+                                .to_string(),
+                        });
+                    }
                     registry.export_source(&name, request.format)?
                 }
                 crate::local::WorkflowCodeSourceExportTarget::Workflow { workflow_ref } => {
@@ -1051,6 +1060,7 @@ impl KernelRuntimeState {
                         &session,
                         &workflow_ref,
                         request.format,
+                        request.agent_mode,
                     )?
                 }
             };

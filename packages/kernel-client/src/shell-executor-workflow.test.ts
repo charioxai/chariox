@@ -157,7 +157,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
     const sourceInline = await executeShellCommand(parseShellCommand("workflow code source export toy-flow --out exports/toy.js"), context, { client: fake.client })
     const sourceDirectory = await executeShellCommand(parseShellCommand("workflow code source export toy-flow --out exports/toy-source --format directory"), context, { client: fake.client })
     const sourceDirectoryAlias = await executeShellCommand(parseShellCommand("workflow code source export-dir toy-flow --out exports/toy-source-alias"), context, { client: fake.client })
-    const workflowSource = await executeShellCommand(parseShellCommand("workflow code source export workflow-1 --out exports/workflow.js --workflow"), context, { client: fake.client })
+    const workflowSource = await executeShellCommand(parseShellCommand("workflow code source export workflow-1 --out exports/workflow.js --workflow --existing-agents"), context, { client: fake.client })
 
     assert.equal(packageExport.ok, true)
     assert.equal(packageImport.ok, true)
@@ -186,6 +186,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
           session_id: "session-1",
           target: { kind: "artifact", name: "toy-flow" },
           format: "inline",
+          agent_mode: "portable_generated",
         },
       },
       {
@@ -193,6 +194,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
           session_id: "session-1",
           target: { kind: "artifact", name: "toy-flow" },
           format: "directory",
+          agent_mode: "portable_generated",
         },
       },
       {
@@ -200,6 +202,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
           session_id: "session-1",
           target: { kind: "artifact", name: "toy-flow" },
           format: "directory",
+          agent_mode: "portable_generated",
         },
       },
       {
@@ -207,6 +210,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
           session_id: "session-1",
           target: { kind: "workflow", workflow_ref: "workflow-1" },
           format: "inline",
+          agent_mode: "existing_agents",
         },
       },
     ])

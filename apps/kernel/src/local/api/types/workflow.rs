@@ -135,6 +135,8 @@ pub struct ExportWorkflowCodeSourceRequest {
     pub target: WorkflowCodeSourceExportTarget,
     #[serde(default)]
     pub format: crate::workflow_code::WorkflowCodeSourceExportFormat,
+    #[serde(default)]
+    pub agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

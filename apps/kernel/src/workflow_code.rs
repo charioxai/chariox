@@ -554,6 +554,7 @@ pub fn export_workflow_code_source_from_session_workflow(
     session: &RuntimeSession,
     workflow_ref: &str,
     format: WorkflowCodeSourceExportFormat,
+    agent_mode: WorkflowCodeSourceExportAgentMode,
 ) -> Result<WorkflowCodeSourceExport, crate::DaemonError> {
     let workflow = session
         .workflows()
@@ -569,7 +570,7 @@ pub fn export_workflow_code_source_from_session_workflow(
                 session.id()
             ),
         })?;
-    let definition = workflow_code_definition_from_session_workflow(session, workflow)?;
+    let definition = workflow_code_definition_from_session_workflow(session, workflow, agent_mode)?;
     let name = workflow
         .alias()
         .filter(|alias| !alias.trim().is_empty())
@@ -643,6 +644,14 @@ pub enum WorkflowCodeSourceExportFormat {
     #[default]
     Inline,
     Directory,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowCodeSourceExportAgentMode {
+    #[default]
+    PortableGenerated,
+    ExistingAgents,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2446,6 +2455,7 @@ fn export_workflow_code_source_from_definition(
 fn workflow_code_definition_from_session_workflow(
     session: &RuntimeSession,
     workflow: &crate::session::WorkflowDefinition,
+    agent_mode: WorkflowCodeSourceExportAgentMode,
 ) -> Result<WorkflowCodeDefinition, crate::DaemonError> {
     let canvas = workflow.canvas_layout();
     let mut nodes = Vec::new();
@@ -2462,15 +2472,25 @@ fn workflow_code_definition_from_session_workflow(
                     node.agent_id()
                 ),
             })?;
+        let agent_binding = match agent_mode {
+            WorkflowCodeSourceExportAgentMode::PortableGenerated => {
+                WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                    alias: agent.alias().map(str::to_string),
+                    provider: agent.provider().to_string(),
+                    model: agent.model().map(str::to_string),
+                    effort: agent.effort().map(str::to_string),
+                    account_profile: agent.account_profile().map(str::to_string),
+                })
+            }
+            WorkflowCodeSourceExportAgentMode::ExistingAgents => {
+                WorkflowCodeAgentBinding::Existing(WorkflowCodeExistingAgent {
+                    agent_ref: agent.id().to_string(),
+                })
+            }
+        };
         nodes.push(WorkflowCodeNodeDefinition {
             handle: node.id().to_string(),
-            agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
-                alias: agent.alias().map(str::to_string),
-                provider: agent.provider().to_string(),
-                model: agent.model().map(str::to_string),
-                effort: agent.effort().map(str::to_string),
-                account_profile: agent.account_profile().map(str::to_string),
-            }),
+            agent: agent_binding,
             public_label: Some(node.public_label().to_string()),
             instructions: node.instructions().map(str::to_string),
             can_complete_workflow_run: Some(node.can_complete_workflow_run()),
