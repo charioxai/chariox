@@ -113,6 +113,182 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 }
 
 #[test]
+fn local_request_api_runs_workflow_code_with_generated_agent() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping workflow-code run local API test because node is not available");
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-run-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let worktree_root = workspace_root.join("worktree");
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+const finalOutput = workflow.schema({
+  handle: "final",
+  alias: "Final",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: {
+      answer: { type: "string" }
+    },
+    additionalProperties: false
+  }
+})
+workflow.define({
+  alias: "scripted_run_flow",
+  maxConcurrent: 4,
+  runOutputSchema: finalOutput
+})
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "run-planner", provider: "dev-stub", model: "default" }),
+  publicLabel: "Planner",
+  instructions: "Answer the invocation prompt and complete the workflow run with final JSON.",
+  canCompleteWorkflowRun: true,
+  maxTurns: 2,
+  canvas: { x: 24, y: 48 }
+})
+workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+"#;
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::RunWorkflowCode(
+            crate::local::RunWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                provider_rebindings: Vec::new(),
+                endpoint: Some("entry".to_string()),
+                queue_ref: None,
+                prompt: "Explain the smallest useful scripted workflow run.".to_string(),
+            },
+        ))
+        .expect("workflow-code should apply and run");
+
+    let LocalDaemonResponse::WorkflowCodeRun {
+        result,
+        session: run_session,
+    } = response
+    else {
+        panic!("unexpected local response");
+    };
+    assert!(
+        result.apply.compile.validation.ok,
+        "{:?}",
+        result.apply.compile.validation.diagnostics
+    );
+    assert_eq!(
+        result.apply.compile.definition.workflow.alias.as_deref(),
+        Some("scripted_run_flow")
+    );
+    assert_eq!(result.apply.apply.schema_refs.len(), 1);
+    assert_eq!(result.apply.apply.node_ids.len(), 1);
+    assert_eq!(result.apply.apply.agent_ids.len(), 1);
+    assert_eq!(result.apply.apply.endpoint_ids.len(), 1);
+    assert!(result.apply.apply.canvas_layout_applied);
+    assert!(run_session
+        .agents()
+        .iter()
+        .any(|agent| agent.alias() == Some("run-planner")
+            && agent.provider() == "dev-stub"
+            && Some(agent.id())
+                == result
+                    .apply
+                    .apply
+                    .agent_ids
+                    .get("planner")
+                    .map(String::as_str)));
+    let workflow = run_session
+        .workflows()
+        .iter()
+        .find(|workflow| workflow.id() == result.apply.apply.workflow_id)
+        .expect("generated workflow should be in returned session");
+    assert_eq!(workflow.alias(), Some("scripted_run_flow"));
+    assert_eq!(workflow.schemas().len(), 1);
+    assert_eq!(
+        workflow.run_output_schema_ref(),
+        result
+            .apply
+            .apply
+            .schema_refs
+            .get("final")
+            .map(String::as_str)
+    );
+    assert!(workflow
+        .endpoints()
+        .iter()
+        .any(|endpoint| endpoint.alias() == Some("entry")
+            && Some(endpoint.id())
+                == result
+                    .apply
+                    .apply
+                    .endpoint_ids
+                    .get("entry")
+                    .map(String::as_str)));
+    assert!(run_session.workflow_prompt_queues().iter().any(|queue| {
+        queue.workflow_id() == workflow.id()
+            && Some(queue.id())
+                == result
+                    .apply
+                    .apply
+                    .queue_ids
+                    .get("default")
+                    .map(String::as_str)
+    }));
+
+    let (workflow_run, workflow_from_run, endpoint_from_run) = match result.invocation {
+        crate::workflow_code::WorkflowCodeRunInvocation::Started {
+            workflow_run,
+            workflow,
+            endpoint,
+        } => (workflow_run, workflow, endpoint),
+        crate::workflow_code::WorkflowCodeRunInvocation::Enqueued { .. } => {
+            panic!("single generated-node workflow should start immediately")
+        }
+    };
+    assert_eq!(workflow_from_run.id(), workflow.id());
+    assert_eq!(
+        endpoint_from_run.id(),
+        result
+            .apply
+            .apply
+            .endpoint_ids
+            .get("entry")
+            .expect("entry endpoint id should be reported")
+    );
+    assert_eq!(workflow_run.workflow_id(), workflow.id());
+    assert_eq!(workflow_run.endpoint_id(), endpoint_from_run.id());
+    assert_eq!(
+        workflow_run.invocation_prompt(),
+        Some("Explain the smallest useful scripted workflow run.")
+    );
+    assert_eq!(format!("{:?}", workflow_run.status()), "Running");
+    assert_eq!(workflow_run.node_runs().len(), 1);
+    assert!(run_session
+        .workflow_runs()
+        .iter()
+        .any(|run| run.id() == workflow_run.id()));
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
 fn local_request_api_workflow_code_validate_checks_target_provider_rebindings() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!("skipping workflow-code local API test because node is not available");

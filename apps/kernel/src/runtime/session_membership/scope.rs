@@ -213,6 +213,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ApplyWorkflowCode(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::RunWorkflowCode(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

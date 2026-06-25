@@ -326,6 +326,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::CreateWorkflow(request) => request.session_id.clone(),
         LocalDaemonRequest::ValidateWorkflowCode(request) => request.session_id.clone(),
         LocalDaemonRequest::ApplyWorkflowCode(request) => request.session_id.clone(),
+        LocalDaemonRequest::RunWorkflowCode(request) => request.session_id.clone(),
         LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => request.session_id.clone(),
         LocalDaemonRequest::UpdateWorkflowCodeArtifact(request) => request.session_id.clone(),
         LocalDaemonRequest::GetWorkflowCodeArtifact(request) => request.session_id.clone(),
