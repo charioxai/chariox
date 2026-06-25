@@ -1828,10 +1828,20 @@ pub fn apply_workflow_code_provider_rebindings(
             WorkflowCodeAgentBinding::Create(agent) => {
                 agent.provider = rebinding.provider.trim().to_string();
                 if let Some(model) = rebinding.model.as_deref() {
-                    agent.model = Some(model.to_string());
+                    let model = model.trim();
+                    agent.model = if model.is_empty() {
+                        None
+                    } else {
+                        Some(model.to_string())
+                    };
                 }
                 if let Some(effort) = rebinding.effort.as_deref() {
-                    agent.effort = Some(effort.to_string());
+                    let effort = effort.trim();
+                    agent.effort = if effort.is_empty() {
+                        None
+                    } else {
+                        Some(effort.to_string())
+                    };
                 }
                 if let Some(account_profile) = rebinding.account_profile.as_deref() {
                     let account_profile = account_profile.trim();
@@ -2281,6 +2291,33 @@ mod tests {
         assert!(codes.contains(&"invalid_extension_name"));
         assert!(codes.contains(&"invalid_extension_environment"));
         assert!(codes.contains(&"invalid_connector_safety"));
+    }
+
+    #[test]
+    fn provider_rebindings_normalize_optional_fields() {
+        let mut definition = minimal_definition();
+
+        apply_workflow_code_provider_rebindings(
+            &mut definition,
+            &[WorkflowCodeProviderRebinding {
+                node: " planner ".to_string(),
+                provider: " dev-stub ".to_string(),
+                model: Some(" ".to_string()),
+                effort: Some(" low ".to_string()),
+                account_profile: Some(" default ".to_string()),
+            }],
+        )
+        .expect("rebinding should apply");
+
+        match &definition.nodes[0].agent {
+            WorkflowCodeAgentBinding::Create(agent) => {
+                assert_eq!(agent.provider, "dev-stub");
+                assert_eq!(agent.model, None);
+                assert_eq!(agent.effort.as_deref(), Some("low"));
+                assert_eq!(agent.account_profile, None);
+            }
+            WorkflowCodeAgentBinding::Existing(_) => panic!("planner should use generated agent"),
+        }
     }
 
     #[test]

@@ -1870,6 +1870,19 @@ impl<'a> KernelSessionService<'a> {
             &mut rebound_definition,
             provider_rebindings,
         )?;
+        let mut validation = rebound_definition.validate_with_limits(limits);
+        if validation.ok {
+            self.append_workflow_code_target_validation(
+                session_id,
+                &rebound_definition,
+                &mut validation,
+                controlled_by_metaagent_id.as_deref(),
+            )?;
+            crate::workflow_code::attach_workflow_code_diagnostic_spans(
+                &mut validation,
+                &compile.source_spans,
+            );
+        }
         let apply = self.apply_workflow_code_definition_with_rebindings(
             session_id,
             &rebound_definition,
@@ -1881,7 +1894,7 @@ impl<'a> KernelSessionService<'a> {
         Ok(WorkflowCodeCompileAndApplyResult {
             compile: crate::workflow_code::WorkflowCodeCompileResult {
                 definition: rebound_definition,
-                validation: compile.validation,
+                validation,
                 logs: compile.logs,
                 source_spans: compile.source_spans,
             },
