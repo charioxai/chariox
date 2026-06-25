@@ -1363,9 +1363,23 @@ unlock_policy = "{unlock_policy}"
         assert!(schema
             .iter()
             .any(|entry| entry.path == "workflow.session_default_max_agents"));
-        assert!(schema
-            .iter()
-            .any(|entry| entry.path == "workflow.code.max_concurrent"));
+        for path in [
+            "workflow.code.max_concurrent",
+            "workflow.code.max_nodes",
+            "workflow.code.max_agents",
+            "workflow.code.max_edges",
+            "workflow.code.max_queues",
+            "workflow.code.max_watchdogs",
+            "workflow.code.max_schema_bytes",
+            "workflow.code.max_generated_prompt_bytes",
+            "workflow.code.script_timeout_ms",
+            "workflow.code.script_memory_bytes",
+        ] {
+            assert!(
+                schema.iter().any(|entry| entry.path == path),
+                "user config schema should expose `{path}`"
+            );
+        }
     }
 
     #[test]

@@ -354,17 +354,24 @@
         Kernel configuration should set large but bounded defaults so generated workflows can fan out without
         making the runtime unbounded.
       </p>
-      <pre><code>[session]
-default_max_agents = 1024
+      <pre><code>[workflow]
+session_default_max_agents = 1024
+max_queues_per_workflow = 1024
 
-[workflow]
-default_max_concurrency = 32
+[workflow.code]
+max_concurrent = 32
 max_nodes = 1024
+max_agents = 1024
 max_edges = 4096
-max_generated_prompt_bytes = 1048576</code></pre>
+max_queues = 1024
+max_watchdogs = 1024
+max_schema_bytes = 1048576
+max_generated_prompt_bytes = 4194304
+script_timeout_ms = 30000
+script_memory_bytes = 268435456</code></pre>
       <ul>
-        <li>The session agent cap should move from a fixed default to TOML-backed configuration with default <code>1024</code>.</li>
-        <li><code>maxConcurrent</code> defaults to <code>32</code> and may be lowered or raised per workflow-code artifact if the kernel policy allows it.</li>
+        <li>The session agent cap is TOML-backed at <code>workflow.session_default_max_agents</code> with default <code>1024</code>.</li>
+        <li><code>maxConcurrent</code> defaults to <code>32</code> through <code>workflow.code.max_concurrent</code> and may be lowered or raised per workflow-code artifact up to the configured kernel limit.</li>
         <li>Compile validation must enforce max nodes, generated agents, edges, endpoints, queues, watchdogs, concurrency, schemas, and generated prompt bytes before the workflow is accepted.</li>
       </ul>
 
