@@ -1477,7 +1477,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 190
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 191
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2104,6 +2104,30 @@ export type WorkflowCodeArtifactPackage = {
   exported_at_ms: number
 }
 
+export type WorkflowCodeSourceExportFormat = "inline" | "directory"
+
+export type WorkflowCodeSourceExportTarget =
+  | { kind: "artifact"; name: string }
+  | { kind: "workflow"; workflow_ref: string }
+
+export type WorkflowCodeSourceExportFile = {
+  path: string
+  contents: string
+  sha256: string
+}
+
+export type WorkflowCodeSourceExport = {
+  name: string
+  language: WorkflowCodeLanguage
+  format: WorkflowCodeSourceExportFormat
+  source_path: string
+  source: string
+  source_sha256: string
+  source_bytes: number
+  definition_sha256: string
+  files?: WorkflowCodeSourceExportFile[]
+}
+
 export type WorkflowCodeValidatedResponse = {
   WorkflowCodeValidated: {
     result: WorkflowCodeCompileResult
@@ -2164,6 +2188,24 @@ export type WorkflowCodeArtifactExportedResponse = {
 export type WorkflowCodeArtifactImportedResponse = {
   WorkflowCodeArtifactImported: {
     artifact: WorkflowCodeArtifact
+  }
+}
+
+export type WorkflowCodePackageExportedResponse = {
+  WorkflowCodePackageExported: {
+    package: WorkflowCodeArtifactPackage
+  }
+}
+
+export type WorkflowCodePackageImportedResponse = {
+  WorkflowCodePackageImported: {
+    artifact: WorkflowCodeArtifact
+  }
+}
+
+export type WorkflowCodeSourceExportedResponse = {
+  WorkflowCodeSourceExported: {
+    export: WorkflowCodeSourceExport
   }
 }
 

@@ -1936,6 +1936,98 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         }
         _ => panic!("unexpected local response"),
     };
+
+    let package_alias = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowCodePackage(
+            crate::local::ExportWorkflowCodePackageRequest {
+                session_id: session.id().to_string(),
+                name: name.clone(),
+            },
+        ))
+        .expect("workflow-code package alias should export")
+    {
+        LocalDaemonResponse::WorkflowCodePackageExported { package } => {
+            assert_eq!(package.name, name);
+            assert_eq!(package.source, updated_source);
+            package
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(package_alias.source_sha256, package.source_sha256);
+    assert_eq!(package_alias.definition_sha256, package.definition_sha256);
+
+    let inline_source = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowCodeSource(
+            crate::local::ExportWorkflowCodeSourceRequest {
+                session_id: session.id().to_string(),
+                target: crate::local::WorkflowCodeSourceExportTarget::Artifact {
+                    name: name.clone(),
+                },
+                format: crate::workflow_code::WorkflowCodeSourceExportFormat::Inline,
+            },
+        ))
+        .expect("workflow-code inline source should export")
+    {
+        LocalDaemonResponse::WorkflowCodeSourceExported { export } => export,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(inline_source.name, name);
+    assert_eq!(inline_source.source, updated_source);
+    assert!(inline_source.files.is_empty());
+
+    let directory_source = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowCodeSource(
+            crate::local::ExportWorkflowCodeSourceRequest {
+                session_id: session.id().to_string(),
+                target: crate::local::WorkflowCodeSourceExportTarget::Artifact {
+                    name: name.clone(),
+                },
+                format: crate::workflow_code::WorkflowCodeSourceExportFormat::Directory,
+            },
+        ))
+        .expect("workflow-code directory source should export")
+    {
+        LocalDaemonResponse::WorkflowCodeSourceExported { export } => export,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(directory_source.source_path, "workflow.js");
+    assert!(directory_source
+        .files
+        .iter()
+        .any(|file| file.path == "workflow.js"));
+    assert!(directory_source
+        .files
+        .iter()
+        .any(|file| file.path == "manifest.json"));
+    assert!(directory_source
+        .files
+        .iter()
+        .any(|file| file.path == "schemas/final-output.json"));
+    let export_root = workspace_root.join("workflow-code-source-export");
+    for file in &directory_source.files {
+        let path = export_root.join(&file.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("source export parent should create");
+        }
+        std::fs::write(path, &file.contents).expect("source export file should write");
+    }
+    let recompiled = crate::workflow_code::compile_workflow_code_source_with_schema_import_root(
+        &node_path,
+        &directory_source.source,
+        directory_source.language,
+        &crate::config::WorkflowCodeLimitsConfig::default(),
+        Some(&export_root),
+    )
+    .expect("directory workflow-code source export should recompile");
+    assert!(recompiled.validation.ok);
+    assert_eq!(
+        recompiled.definition.workflow.alias.as_deref(),
+        Some("artifact_flow_updated")
+    );
+    assert_eq!(
+        recompiled.definition.workflow.run_output_schema.as_deref(),
+        Some("final")
+    );
     std::fs::remove_file(&schema_path)
         .expect("source schema file should be removable before portable import");
 
@@ -1981,6 +2073,30 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             assert_eq!(
                 artifact.definition.schemas[0].schema["properties"]["answer"]["type"],
                 "string"
+            );
+            assert!(artifact.metadata.validation.ok);
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let package_imported_name = format!("{name}-package-imported");
+    let package_imported = harness
+        .dispatch(LocalDaemonRequest::ImportWorkflowCodePackage(
+            crate::local::ImportWorkflowCodePackageRequest {
+                session_id: session.id().to_string(),
+                package: package_alias,
+                name: Some(package_imported_name.clone()),
+                overwrite: false,
+                node_path: node_path.display().to_string(),
+            },
+        ))
+        .expect("workflow-code package alias should import");
+    match package_imported {
+        LocalDaemonResponse::WorkflowCodePackageImported { artifact } => {
+            assert_eq!(artifact.metadata.name, package_imported_name);
+            assert_eq!(
+                artifact.definition.workflow.alias.as_deref(),
+                Some("artifact_flow_updated")
             );
             assert!(artifact.metadata.validation.ok);
         }

@@ -114,6 +114,25 @@ impl KernelRuntimeState {
                 .await,
                 None,
             ),
+            LocalDaemonRequest::ExportWorkflowCodePackage(request) => (
+                self.execute_workflow_code_package_export_request(request)
+                    .await,
+                None,
+            ),
+            LocalDaemonRequest::ImportWorkflowCodePackage(request) => (
+                self.execute_workflow_code_package_import_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await,
+                None,
+            ),
+            LocalDaemonRequest::ExportWorkflowCodeSource(request) => (
+                self.execute_workflow_code_source_export_request(request)
+                    .await,
+                None,
+            ),
             LocalDaemonRequest::ApplyWorkflowDesignOp(request) => {
                 let origin_client_id = request.origin_client_id.clone();
                 let op_id = request.op_id.clone();
@@ -888,12 +907,41 @@ impl KernelRuntimeState {
         &self,
         request: crate::local::ExportWorkflowCodeArtifactRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.export_workflow_code_package_response(
+            request.session_id,
+            request.name,
+            "workflow_code_artifact.exported",
+            true,
+        )
+        .await
+    }
+
+    async fn execute_workflow_code_package_export_request(
+        &self,
+        request: crate::local::ExportWorkflowCodePackageRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.export_workflow_code_package_response(
+            request.session_id,
+            request.name,
+            "workflow_code_package.exported",
+            false,
+        )
+        .await
+    }
+
+    async fn export_workflow_code_package_response(
+        &self,
+        session_id: String,
+        name: String,
+        event_kind: &'static str,
+        legacy_response: bool,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         self.with_app_side_effect(move |app| {
-            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
-            let package = registry.export_package(&request.name)?;
+            let registry = workflow_code_registry_for_session(app, &session_id)?;
+            let package = registry.export_package(&name)?;
             app.durable_state_store().append_event(
-                "workflow_code_artifact.exported",
-                Some(request.session_id),
+                event_kind,
+                Some(session_id),
                 serde_json::json!({
                     "name": &package.name,
                     "source_sha256": &package.source_sha256,
@@ -901,7 +949,11 @@ impl KernelRuntimeState {
                     "package_version": package.package_version,
                 }),
             )?;
-            Ok(LocalDaemonResponse::WorkflowCodeArtifactExported { package })
+            if legacy_response {
+                Ok(LocalDaemonResponse::WorkflowCodeArtifactExported { package })
+            } else {
+                Ok(LocalDaemonResponse::WorkflowCodePackageExported { package })
+            }
         })
         .await
     }
@@ -911,6 +963,40 @@ impl KernelRuntimeState {
         request: crate::local::ImportWorkflowCodeArtifactRequest,
         caller_user_id: &str,
         caller_metaagent_id: Option<&str>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.import_workflow_code_package_response(
+            request,
+            caller_user_id,
+            caller_metaagent_id,
+            "workflow_code_artifact.imported",
+            true,
+        )
+        .await
+    }
+
+    async fn execute_workflow_code_package_import_request(
+        &self,
+        request: crate::local::ImportWorkflowCodePackageRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.import_workflow_code_package_response(
+            request,
+            caller_user_id,
+            caller_metaagent_id,
+            "workflow_code_package.imported",
+            false,
+        )
+        .await
+    }
+
+    async fn import_workflow_code_package_response(
+        &self,
+        request: crate::local::ImportWorkflowCodePackageRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+        event_kind: &'static str,
+        legacy_response: bool,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let actor = workflow_code_artifact_actor(caller_user_id, caller_metaagent_id);
         self.with_app_side_effect(move |app| {
@@ -932,14 +1018,54 @@ impl KernelRuntimeState {
                 request.overwrite,
             )?;
             app.durable_state_store().append_event(
-                "workflow_code_artifact.imported",
+                event_kind,
                 Some(request.session_id),
                 serde_json::json!({
                     "artifact": &artifact.metadata,
                     "overwrite": request.overwrite,
                 }),
             )?;
-            Ok(LocalDaemonResponse::WorkflowCodeArtifactImported { artifact })
+            if legacy_response {
+                Ok(LocalDaemonResponse::WorkflowCodeArtifactImported { artifact })
+            } else {
+                Ok(LocalDaemonResponse::WorkflowCodePackageImported { artifact })
+            }
+        })
+        .await
+    }
+
+    async fn execute_workflow_code_source_export_request(
+        &self,
+        request: crate::local::ExportWorkflowCodeSourceRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let export = match request.target {
+                crate::local::WorkflowCodeSourceExportTarget::Artifact { name } => {
+                    registry.export_source(&name, request.format)?
+                }
+                crate::local::WorkflowCodeSourceExportTarget::Workflow { workflow_ref } => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "workflow_code.source_export",
+                        message: format!(
+                            "workflow source export from live workflow `{workflow_ref}` is not implemented yet; export a saved workflow-code artifact instead"
+                        ),
+                    });
+                }
+            };
+            app.durable_state_store().append_event(
+                "workflow_code_source.exported",
+                Some(request.session_id),
+                serde_json::json!({
+                    "name": &export.name,
+                    "format": export.format,
+                    "source_path": &export.source_path,
+                    "source_sha256": &export.source_sha256,
+                    "source_bytes": export.source_bytes,
+                    "definition_sha256": &export.definition_sha256,
+                }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowCodeSourceExported { export })
         })
         .await
     }

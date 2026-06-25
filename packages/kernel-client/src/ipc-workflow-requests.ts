@@ -2,6 +2,8 @@ import type {
   WorkflowCodeArtifactPackage,
   WorkflowCodeLanguage,
   WorkflowCodeProviderRebinding,
+  WorkflowCodeSourceExportFormat,
+  WorkflowCodeSourceExportTarget,
   WorkflowDesignOp,
   WorkflowPublicationSnapshot,
 } from "./kernel-types.js"
@@ -287,6 +289,25 @@ export function exportWorkflowCodeArtifactRequest(
   }
 }
 
+export type ExportWorkflowCodePackageRequest = {
+  ExportWorkflowCodePackage: {
+    session_id: string
+    name: string
+  }
+}
+
+export function exportWorkflowCodePackageRequest(
+  sessionId: string,
+  name: string,
+): ExportWorkflowCodePackageRequest {
+  return {
+    ExportWorkflowCodePackage: {
+      session_id: sessionId,
+      name,
+    },
+  }
+}
+
 export type ImportWorkflowCodeArtifactRequest = {
   ImportWorkflowCodeArtifact: {
     session_id: string
@@ -313,6 +334,58 @@ export function importWorkflowCodeArtifactRequest(
       ...(options.name !== undefined ? { name: options.name } : {}),
       ...(options.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
       node_path: nodePath,
+    },
+  }
+}
+
+export type ImportWorkflowCodePackageRequest = {
+  ImportWorkflowCodePackage: {
+    session_id: string
+    package: WorkflowCodeArtifactPackage
+    name?: string
+    overwrite?: boolean
+    node_path: string
+  }
+}
+
+export function importWorkflowCodePackageRequest(
+  sessionId: string,
+  workflowCodePackage: WorkflowCodeArtifactPackage,
+  nodePath: string,
+  options: {
+    name?: string
+    overwrite?: boolean
+  } = {},
+): ImportWorkflowCodePackageRequest {
+  return {
+    ImportWorkflowCodePackage: {
+      session_id: sessionId,
+      package: workflowCodePackage,
+      ...(options.name !== undefined ? { name: options.name } : {}),
+      ...(options.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
+      node_path: nodePath,
+    },
+  }
+}
+
+export type ExportWorkflowCodeSourceRequest = {
+  ExportWorkflowCodeSource: {
+    session_id: string
+    target: WorkflowCodeSourceExportTarget
+    format?: WorkflowCodeSourceExportFormat
+  }
+}
+
+export function exportWorkflowCodeSourceRequest(
+  sessionId: string,
+  target: WorkflowCodeSourceExportTarget,
+  format: WorkflowCodeSourceExportFormat = "inline",
+): ExportWorkflowCodeSourceRequest {
+  return {
+    ExportWorkflowCodeSource: {
+      session_id: sessionId,
+      target,
+      format,
     },
   }
 }
