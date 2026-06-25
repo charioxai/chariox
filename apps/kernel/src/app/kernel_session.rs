@@ -244,6 +244,14 @@ mod tests {
         assert_eq!(app.agents().get_session_agents(session.id()).len(), 3);
         assert_eq!(report.agent_ids.len(), 2);
         assert!(report.queue_ids.contains_key("default"));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "default_queue_created"));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "canvas_auto_layout_applied"));
 
         let events = app
             .durable_state_store()

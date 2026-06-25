@@ -171,6 +171,7 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert_eq!(report.queue_ids.len(), 1);
     assert_eq!(report.watchdog_ids.len(), 1);
     assert!(report.canvas_layout_applied);
+    assert!(report.warnings.is_empty());
 
     let session = service
         .get_session(session.id())
@@ -293,6 +294,14 @@ fn workflow_code_apply_auto_layouts_missing_canvas_coordinates() {
         .expect("workflow-code should apply");
 
     assert!(report.canvas_layout_applied);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "canvas_auto_layout_applied"));
+    assert!(!report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "default_queue_created"));
 
     let session = service
         .get_session(session.id())

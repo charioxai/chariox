@@ -1476,7 +1476,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 179
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 180
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -1999,6 +1999,13 @@ export type WorkflowCodeApplyReport = {
   queue_ids?: Record<string, string>
   watchdog_ids?: Record<string, string>
   canvas_layout_applied: boolean
+  warnings?: WorkflowCodeApplyWarning[]
+}
+
+export type WorkflowCodeApplyWarning = {
+  code: string
+  message: string
+  handle?: string | null
 }
 
 export type WorkflowCodeProviderRebinding = {

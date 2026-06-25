@@ -4,7 +4,8 @@ use super::*;
 use crate::config::WorkflowCodeLimitsConfig;
 use crate::session::{WorkflowCanvasLayoutPatch, WorkflowCanvasPoint};
 use crate::workflow_code::{
-    WorkflowCodeAgentBinding, WorkflowCodeApplyReport, WorkflowCodeDefinition,
+    WorkflowCodeAgentBinding, WorkflowCodeApplyReport, WorkflowCodeApplyWarning,
+    WorkflowCodeDefinition,
 };
 
 impl SessionService {
@@ -50,6 +51,7 @@ impl SessionService {
             queue_ids: BTreeMap::new(),
             watchdog_ids: BTreeMap::new(),
             canvas_layout_applied: false,
+            warnings: Vec::new(),
         };
 
         self.apply_workflow_code_workflow_settings(
@@ -179,10 +181,18 @@ impl SessionService {
                 .insert(watchdog.handle.clone(), created.id().to_string());
         }
 
+        let canvas_auto_layout_needed = workflow_code_canvas_auto_layout_needed(definition);
         let patches = workflow_code_canvas_patches(definition, &report);
         if !patches.is_empty() {
             self.update_workflow_canvas_layout(session_id, &workflow_id, patches)?;
             report.canvas_layout_applied = true;
+            if canvas_auto_layout_needed {
+                report.warnings.push(WorkflowCodeApplyWarning {
+                    code: "canvas_auto_layout_applied".to_string(),
+                    message: "one or more nodes or endpoints omitted canvas coordinates; the kernel assigned canvas positions".to_string(),
+                    handle: None,
+                });
+            }
         }
 
         Ok(report)
@@ -396,6 +406,11 @@ impl SessionService {
             report
                 .queue_ids
                 .insert("default".to_string(), default_queue.id().to_string());
+            report.warnings.push(WorkflowCodeApplyWarning {
+                code: "default_queue_created".to_string(),
+                message: "workflow-code omitted queues; the kernel used the workflow default prompt queue".to_string(),
+                handle: Some("default".to_string()),
+            });
             return Ok(());
         }
 
@@ -538,6 +553,14 @@ fn workflow_code_canvas_patches(
         }
     }
     patches
+}
+
+fn workflow_code_canvas_auto_layout_needed(definition: &WorkflowCodeDefinition) -> bool {
+    definition.nodes.iter().any(|node| node.canvas.is_none())
+        || definition
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.canvas.is_none())
 }
 
 fn workflow_code_node_depths(definition: &WorkflowCodeDefinition) -> BTreeMap<String, i32> {

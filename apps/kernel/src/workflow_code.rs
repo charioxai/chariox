@@ -321,6 +321,16 @@ pub struct WorkflowCodeApplyReport {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub watchdog_ids: BTreeMap<String, String>,
     pub canvas_layout_applied: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<WorkflowCodeApplyWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeApplyWarning {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
