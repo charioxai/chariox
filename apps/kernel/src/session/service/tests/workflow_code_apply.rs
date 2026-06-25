@@ -581,6 +581,54 @@ fn workflow_code_apply_auto_layouts_missing_canvas_coordinates() {
 }
 
 #[test]
+fn workflow_code_apply_maps_omitted_queues_to_kernel_default_queue() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let mut definition = workflow_code_definition();
+    definition.queues.clear();
+    definition.watchdogs.clear();
+
+    let agent_ids = BTreeMap::from([
+        ("planner".to_string(), "agent-1".to_string()),
+        ("worker".to_string(), "agent-2".to_string()),
+    ]);
+    let report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+        )
+        .expect("workflow-code should apply with the default prompt queue");
+
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "default_queue_created"
+            && warning.handle.as_deref() == Some("default")));
+
+    let session = service
+        .get_session(session.id())
+        .expect("session should still exist");
+    let default_queue = session
+        .workflow_prompt_queue(&report.workflow_id, "default")
+        .expect("kernel default workflow queue should exist");
+    assert_eq!(
+        report.queue_ids.get("default").map(String::as_str),
+        Some(default_queue.id())
+    );
+    assert_eq!(default_queue.alias(), "default");
+    assert_eq!(default_queue.priority(), 0);
+    assert!(default_queue.enabled());
+}
+
+#[test]
 fn workflow_code_apply_rejects_missing_agent_resolution() {
     let mut service = SessionService::new(&test_config());
     let session = service
