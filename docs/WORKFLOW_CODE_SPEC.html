@@ -258,7 +258,7 @@
           <tr>
             <td>Watchdog</td>
             <td><code>workflow_id</code>, <code>endpoint_id</code>, <code>enabled</code>, <code>interval_seconds</code>, <code>invocation_prompt</code>, <code>policy</code>, <code>max_wakeups</code></td>
-            <td><code>workflow.watchdog(endpoint, { queue, intervalSeconds, invocationPrompt, policy, maxWakeups })</code>.</td>
+            <td><code>workflow.watchdog(endpoint, { queue, intervalSeconds, invocationPrompt, policy, maxWakeups })</code>. <code>queue</code> is a script queue handle; <code>"default"</code> targets the kernel-created default queue even when the script defines additional queues.</td>
           </tr>
           <tr>
             <td>Run prompt</td>

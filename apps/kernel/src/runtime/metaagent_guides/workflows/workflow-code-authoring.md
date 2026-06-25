@@ -77,7 +77,7 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
 
 Canvas points are optional. Use `{ x, y }` for nodes/endpoints. Use `{ points: [{ x, y }] }` for edge waypoints. If canvas coordinates are absent, the kernel applies the session canvas auto-layout service during apply.
 
-If no queues are defined, the kernel creates the workflow default prompt queue and returns it in `queue_ids`. Define queues only when the workflow needs named priorities or disabled queues. Watchdogs reference endpoint and optional queue handles, not runtime ids.
+If no queues are defined, the kernel creates the workflow default prompt queue and returns it in `queue_ids`. Define queues only when the workflow needs named priorities or disabled queues. Watchdogs reference endpoint and optional queue handles, not runtime ids. Use `queue: "default"` when a watchdog should target the implicit default queue while the script also defines other queues.
 
 Workflow, endpoint, and queue aliases use the same rules as manual workflow commands: after trimming and lowercase normalization, aliases must contain only lowercase letters, digits, `-`, or `_`. Queue aliases must be unique after normalization; define at most one queue with alias `default` when you need to configure the implicit default queue.
 

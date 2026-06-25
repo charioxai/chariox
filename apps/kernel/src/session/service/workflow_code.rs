@@ -467,6 +467,25 @@ impl SessionService {
             }
             report.queue_ids.insert(queue.handle.clone(), queue_id);
         }
+        if definition
+            .watchdogs
+            .iter()
+            .any(|watchdog| watchdog.queue.as_deref() == Some("default"))
+            && !report.queue_ids.contains_key("default")
+        {
+            let session = self.get_session(session_id)?;
+            let default_queue = session
+                .workflow_prompt_queue(workflow_id, "default")
+                .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.to_string(),
+                    reference: "default".to_string(),
+                    message: "default workflow prompt queue was not created",
+                })?;
+            report
+                .queue_ids
+                .insert("default".to_string(), default_queue.id().to_string());
+        }
         Ok(())
     }
 }

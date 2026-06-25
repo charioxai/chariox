@@ -376,6 +376,7 @@ mod tests {
             "Script grants must include `environment`",
             "If no queues are defined",
             "Queue aliases must be unique after normalization",
+            "Use `queue: \"default\"`",
             "with `endpoint`, optional `queue`, and `prompt`",
             "`run` may pass `endpoint`, `queue`, and `prompt`",
             "`validationPolicy` (`\"warn\"` or `\"halt\"`)",
