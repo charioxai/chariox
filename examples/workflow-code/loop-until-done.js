@@ -68,4 +68,4 @@ const checker = workflow.node({
 
 workflow.edge(worker, checker, { handle: "work_to_checker", handoffSchema: workProduct, validationPolicy: "halt" });
 workflow.edge(checker, worker, { handle: "revise_loop", handoffSchema: feedback, validationPolicy: "warn" });
-workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });

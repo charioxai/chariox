@@ -81,4 +81,4 @@ const finisher = workflow.node({
 
 workflow.edge(generator, filter, { handle: "generated_candidates", handoffSchema: candidates });
 workflow.edge(filter, finisher, { handle: "filtered_candidates", handoffSchema: filtered });
-workflow.endpoint(generator, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(generator, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });

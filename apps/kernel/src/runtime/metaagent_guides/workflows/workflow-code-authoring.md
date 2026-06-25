@@ -78,6 +78,10 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
 
 Canvas points are optional. Use `{ x, y }` for nodes/endpoints. Use `{ points: [{ x, y }] }` for edge waypoints. If canvas coordinates are absent, the kernel applies the session canvas auto-layout service during apply.
 
+## Canvas Contract
+
+Use coordinate space `workflow-canvas-v1`. Workflow nodes are `232 x 96`, endpoints are `180 x 78`, and generated exit markers are `120 x 72` at `node.x + 268`, `node.y + 28` for nodes that can complete the run. Keep at least `36` canvas units between nodes, endpoints, and exit markers. A safe node grid is `320` horizontally and `160` vertically; place entry endpoints at `node.x - 220`, `node.y` unless you have a reason to custom-place them. Call `arroba.meta.workflow_code.canvas_contract` when you need the authoritative current dimensions programmatically.
+
 If no queues are defined, the kernel creates the workflow default prompt queue and returns it in `queue_ids`. Define queues only when the workflow needs named priorities or disabled queues. Watchdogs reference endpoint and optional queue handles, not runtime ids. Use `queue: "default"` when a watchdog should target the implicit default queue while the script also defines other queues. The queue handle `default` is reserved for the kernel default queue; only use that handle when the queue alias also normalizes to `default`.
 
 Workflow, endpoint, and queue aliases use the same rules as manual workflow commands: after trimming and lowercase normalization, aliases must contain only lowercase letters, digits, `-`, or `_`. Queue aliases must be unique after normalization; define at most one queue with alias `default` when you need to configure the implicit default queue.
@@ -201,7 +205,7 @@ const workerA = workflow.node({
   agent: workflow.newAgent({ alias: "worker-a", provider: "claude", model: "default" }),
   publicLabel: "Worker A",
   instructions: "Solve the task from angle A and hand off concise findings.",
-  canvas: { x: 260, y: 40 },
+  canvas: { x: 280, y: 40 },
 });
 
 const workerB = workflow.node({
@@ -209,7 +213,7 @@ const workerB = workflow.node({
   agent: workflow.newAgent({ alias: "worker-b", provider: "opencode", model: "default" }),
   publicLabel: "Worker B",
   instructions: "Solve the task from angle B and hand off concise findings.",
-  canvas: { x: 260, y: 200 },
+  canvas: { x: 280, y: 200 },
 });
 
 const synth = workflow.node({
@@ -219,7 +223,7 @@ const synth = workflow.node({
   instructions: "Synthesize worker findings. If more routing is needed, hand off to the router loop edge; otherwise submit final output matching the final_output schema.",
   canCompleteWorkflowRun: true,
   waitForAllInputs: true,
-  canvas: { x: 540, y: 120 },
+  canvas: { x: 560, y: 120 },
 });
 
 workflow.edge(router, workerA, { handle: "router_to_a", handoffSchema: handoff });
@@ -231,7 +235,7 @@ workflow.edge(synth, router, { handle: "synth_loop", handoffSchema: handoff });
 workflow.endpoint(router, {
   handle: "entry",
   alias: "entry",
-  canvas: { x: -180, y: 120 },
+  canvas: { x: -220, y: 120 },
 });
 ```
 

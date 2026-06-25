@@ -52,4 +52,4 @@ const refiner = workflow.node({
 });
 
 workflow.edge(drafter, refiner, { handle: "draft_to_refiner", handoffSchema: handoff });
-workflow.endpoint(drafter, { handle: "entry", alias: "entry", canvas: { x: -180, y: 80 } });
+workflow.endpoint(drafter, { handle: "entry", alias: "entry", canvas: { x: -220, y: 80 } });

@@ -7,19 +7,20 @@ use crate::transport::runtime_tools::{
     MetaResolveRuntimeInteractionArgs, MetaSessionOverviewArgs, MetaSubscribeEventsArgs,
     MetaSubscribeTraceArgs, MetaTurnBlobArgs, MetaTurnOverviewArgs, MetaUnsubscribeEventsArgs,
     MetaUnsubscribeTraceArgs, MetaUpdatePlanArgs, MetaUpdateTaskArgs, MetaWorkflowCodeApplyArgs,
-    MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs, MetaWorkflowCodeExportArgs,
-    MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs, MetaWorkflowCodePackageExportArgs,
-    MetaWorkflowCodePackageImportArgs, MetaWorkflowCodeReadArgs, MetaWorkflowCodeRunArgs,
-    MetaWorkflowCodeSourceExportArgs, MetaWorkflowCodeUpdateArgs, MetaWorkflowCodeValidateArgs,
-    RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL, META_COMPLETE_TASK_TOOL,
-    META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL, META_LIST_GUIDES_TOOL,
-    META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL, META_POLL_TRACE_TOOL,
-    META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL, META_READ_TASK_TOOL,
-    META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL, META_SEARCH_COMMANDS_TOOL,
-    META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL, META_SUBSCRIBE_EVENTS_TOOL,
-    META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL, META_TURN_OVERVIEW_TOOL,
-    META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL, META_UPDATE_PLAN_TOOL,
-    META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL, META_WORKFLOW_CODE_APPLY_TOOL,
+    MetaWorkflowCodeCanvasContractArgs, MetaWorkflowCodeCreateArgs, MetaWorkflowCodeDeleteArgs,
+    MetaWorkflowCodeExportArgs, MetaWorkflowCodeImportArgs, MetaWorkflowCodeListArgs,
+    MetaWorkflowCodePackageExportArgs, MetaWorkflowCodePackageImportArgs, MetaWorkflowCodeReadArgs,
+    MetaWorkflowCodeRunArgs, MetaWorkflowCodeSourceExportArgs, MetaWorkflowCodeUpdateArgs,
+    MetaWorkflowCodeValidateArgs, RuntimeToolResult, META_ACK_EVENT_TOOL, META_COMMAND_DOCS_TOOL,
+    META_COMPLETE_TASK_TOOL, META_EVENT_KINDS, META_LIST_COMMANDS_TOOL, META_LIST_EVENTS_TOOL,
+    META_LIST_GUIDES_TOOL, META_LIST_SUBSCRIPTIONS_TOOL, META_MARK_BLOCKED_TOOL,
+    META_POLL_TRACE_TOOL, META_READ_EVENT_TOOL, META_READ_GUIDE_TOOL, META_READ_PLAN_TOOL,
+    META_READ_TASK_TOOL, META_RESOLVE_RUNTIME_INTERACTION_TOOL, META_RUN_COMMAND_TOOL,
+    META_SEARCH_COMMANDS_TOOL, META_SEARCH_GUIDES_TOOL, META_SESSION_OVERVIEW_TOOL,
+    META_SUBSCRIBE_EVENTS_TOOL, META_SUBSCRIBE_TRACE_TOOL, META_TURN_BLOB_TOOL,
+    META_TURN_OVERVIEW_TOOL, META_UNSUBSCRIBE_EVENTS_TOOL, META_UNSUBSCRIBE_TRACE_TOOL,
+    META_UPDATE_PLAN_TOOL, META_UPDATE_TASK_TOOL, META_WAIT_TRACE_TOOL,
+    META_WORKFLOW_CODE_APPLY_TOOL, META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
     META_WORKFLOW_CODE_CREATE_TOOL, META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_EXPORT_TOOL,
     META_WORKFLOW_CODE_IMPORT_TOOL, META_WORKFLOW_CODE_LIST_TOOL,
     META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL, META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
@@ -528,6 +529,16 @@ impl KernelRuntimeState {
                     .map_err(invalid_meta_args)?;
                 self.meta_workflow_code_source_export(session, agent, args)
                     .await
+            }
+            META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL => {
+                let _args = serde_json::from_value::<MetaWorkflowCodeCanvasContractArgs>(arguments)
+                    .map_err(invalid_meta_args)?;
+                Ok(RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "canvas_contract": crate::workflow_code::workflow_code_canvas_contract(),
+                    }),
+                })
             }
             META_RESOLVE_RUNTIME_INTERACTION_TOOL => {
                 let args = serde_json::from_value::<MetaResolveRuntimeInteractionArgs>(arguments)

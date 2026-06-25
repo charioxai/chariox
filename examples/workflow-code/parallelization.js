@@ -87,4 +87,4 @@ workflow.edge(dispatcher, policyReviewer, { handle: "to_policy", handoffSchema: 
 workflow.edge(dispatcher, qualityReviewer, { handle: "to_quality", handoffSchema: reviewTask });
 workflow.edge(policyReviewer, aggregator, { handle: "policy_to_aggregator", handoffSchema: reviewResult });
 workflow.edge(qualityReviewer, aggregator, { handle: "quality_to_aggregator", handoffSchema: reviewResult });
-workflow.endpoint(dispatcher, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(dispatcher, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });

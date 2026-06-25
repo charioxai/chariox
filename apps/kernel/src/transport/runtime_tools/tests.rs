@@ -147,6 +147,9 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.name == META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL));
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__arroba_meta_workflow_code_create"),
             Some(META_WORKFLOW_CODE_CREATE_TOOL)
@@ -186,6 +189,10 @@ mod workspace_live_sync_tests {
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__meta_workflow_code_source_export"),
             Some(META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL)
+        );
+        assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_canvas_contract"),
+            Some(META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL)
         );
     }
 
@@ -232,6 +239,18 @@ mod workspace_live_sync_tests {
                 .input_schema
                 .pointer("/properties/provider_rebindings/items/properties/account_profile/type"),
             Some(&serde_json::json!("string"))
+        );
+
+        let canvas_contract = specs
+            .iter()
+            .find(|spec| spec.name == META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL)
+            .expect("workflow-code canvas contract tool should exist");
+        assert!(canvas_contract.description.contains("canvas dimensions"));
+        assert_eq!(
+            canvas_contract
+                .input_schema
+                .pointer("/additionalProperties"),
+            Some(&serde_json::json!(false))
         );
     }
 

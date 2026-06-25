@@ -61,7 +61,7 @@ const workerA = workflow.node({
   agent: workflow.newAgent({ alias: "worker-a", provider: "claude", model: "default" }),
   publicLabel: "Worker A",
   instructions: "Work your assigned angle and hand findings to the synthesizer.",
-  canvas: { x: 260, y: 40 },
+  canvas: { x: 280, y: 40 },
 });
 
 const workerB = workflow.node({
@@ -69,7 +69,7 @@ const workerB = workflow.node({
   agent: workflow.newAgent({ alias: "worker-b", provider: "opencode", model: "default" }),
   publicLabel: "Worker B",
   instructions: "Work your assigned angle and hand findings to the synthesizer.",
-  canvas: { x: 260, y: 200 },
+  canvas: { x: 280, y: 200 },
 });
 
 const synthesizer = workflow.node({
@@ -86,4 +86,4 @@ workflow.edge(planner, workerA, { handle: "planner_to_a", handoffSchema: assignm
 workflow.edge(planner, workerB, { handle: "planner_to_b", handoffSchema: assignment });
 workflow.edge(workerA, synthesizer, { handle: "a_to_synth", handoffSchema: finding });
 workflow.edge(workerB, synthesizer, { handle: "b_to_synth", handoffSchema: finding });
-workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });

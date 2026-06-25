@@ -293,6 +293,7 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL
                     | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
                     | crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL
             ) {
                 if let Some(result) = self

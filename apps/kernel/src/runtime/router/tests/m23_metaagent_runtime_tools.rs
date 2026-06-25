@@ -144,6 +144,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
         crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL,
         crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL,
         crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL,
+        crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
     ] {
         assert!(
             meta_specs
@@ -192,6 +193,31 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 .is_some_and(|message| message.contains("not available to metaagents")),
         "{:?}",
         denied_direct_tool.payload
+    );
+
+    let canvas_contract = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("metaagent should read workflow-code canvas contract");
+    assert!(canvas_contract.ok, "{:?}", canvas_contract.payload);
+    assert_eq!(
+        canvas_contract
+            .payload
+            .pointer("/canvas_contract/coordinate_space")
+            .and_then(serde_json::Value::as_str),
+        Some(crate::workflow_code::WORKFLOW_CODE_CANVAS_COORDINATE_SPACE)
+    );
+    assert_eq!(
+        canvas_contract
+            .payload
+            .pointer("/canvas_contract/minimum_gap")
+            .and_then(serde_json::Value::as_i64),
+        Some(crate::workflow_code::WORKFLOW_CODE_CANVAS_MIN_GAP)
     );
 
     let denied = router

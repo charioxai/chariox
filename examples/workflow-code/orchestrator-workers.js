@@ -74,4 +74,4 @@ const synthesizer = workflow.node({
 
 workflow.edge(orchestrator, worker, { handle: "orchestrator_to_worker", handoffSchema: assignment });
 workflow.edge(worker, synthesizer, { handle: "worker_to_synthesizer", handoffSchema: result });
-workflow.endpoint(orchestrator, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(orchestrator, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });

@@ -76,4 +76,4 @@ const judge = workflow.node({
 workflow.edge(proposer, critic, { handle: "proposal_to_critic", handoffSchema: proposal });
 workflow.edge(critic, proposer, { handle: "critic_loop", handoffSchema: critique, validationPolicy: "warn" });
 workflow.edge(critic, judge, { handle: "critic_to_judge", handoffSchema: critique, validationPolicy: "halt" });
-workflow.endpoint(proposer, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(proposer, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });

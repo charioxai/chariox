@@ -70,4 +70,4 @@ workflow.edge(classifier, researchSpecialist, {
   handoffSchema: routeTask,
   validationPolicy: "halt",
 });
-workflow.endpoint(classifier, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(classifier, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });

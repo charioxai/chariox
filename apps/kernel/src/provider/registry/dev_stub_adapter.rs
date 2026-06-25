@@ -228,7 +228,7 @@ const worker = workflow.node({
   canvas: { x: 0, y: 80 },
 });
 
-workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 80 } });
+workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -220, y: 80 } });
 "#;
     let source_json = serde_json::to_string(source).expect("workflow-code source should encode");
     let js = format!(

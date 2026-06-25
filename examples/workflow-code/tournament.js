@@ -85,4 +85,4 @@ workflow.edge(seeder, contestantA, { handle: "seed_a", handoffSchema: contestPro
 workflow.edge(seeder, contestantB, { handle: "seed_b", handoffSchema: contestPrompt });
 workflow.edge(contestantA, judge, { handle: "entry_a", handoffSchema: entry });
 workflow.edge(contestantB, judge, { handle: "entry_b", handoffSchema: entry });
-workflow.endpoint(seeder, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(seeder, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });

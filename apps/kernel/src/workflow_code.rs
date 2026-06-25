@@ -23,6 +23,20 @@ pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 2;
 pub const WORKFLOW_CODE_SOURCE_EXPORT_MANIFEST_VERSION: u32 = 1;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
+pub const WORKFLOW_CODE_CANVAS_COORDINATE_SPACE: &str = "workflow-canvas-v1";
+pub const WORKFLOW_CODE_CANVAS_NODE_WIDTH: i64 = 232;
+pub const WORKFLOW_CODE_CANVAS_NODE_HEIGHT: i64 = 96;
+pub const WORKFLOW_CODE_CANVAS_ENDPOINT_WIDTH: i64 = 180;
+pub const WORKFLOW_CODE_CANVAS_ENDPOINT_HEIGHT: i64 = 78;
+pub const WORKFLOW_CODE_CANVAS_EXIT_MARKER_WIDTH: i64 = 120;
+pub const WORKFLOW_CODE_CANVAS_EXIT_MARKER_HEIGHT: i64 = 72;
+pub const WORKFLOW_CODE_CANVAS_EXIT_MARKER_OFFSET_X: i64 = 268;
+pub const WORKFLOW_CODE_CANVAS_EXIT_MARKER_OFFSET_Y: i64 = 28;
+pub const WORKFLOW_CODE_CANVAS_MIN_GAP: i64 = 36;
+pub const WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_X: i64 = 320;
+pub const WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_Y: i64 = 160;
+pub const WORKFLOW_CODE_CANVAS_DEFAULT_ENDPOINT_OFFSET_X: i64 = -220;
+pub const WORKFLOW_CODE_CANVAS_DEFAULT_ENDPOINT_OFFSET_Y: i64 = 0;
 pub(crate) const WORKFLOW_CODE_ALIAS_ALLOCATION_ATTEMPTS: usize = 1000;
 const WORKFLOW_CODE_ARTIFACT_HISTORY_LIMIT: usize = 100;
 
@@ -107,6 +121,41 @@ pub const WORKFLOW_CODE_PATTERN_EXAMPLES: &[WorkflowCodePatternExample] = &[
         source: include_str!("../../../examples/workflow-code/evaluator-optimizer.js"),
     },
 ];
+
+pub fn workflow_code_canvas_contract() -> Value {
+    serde_json::json!({
+        "coordinate_space": WORKFLOW_CODE_CANVAS_COORDINATE_SPACE,
+        "node": {
+            "width": WORKFLOW_CODE_CANVAS_NODE_WIDTH,
+            "height": WORKFLOW_CODE_CANVAS_NODE_HEIGHT,
+        },
+        "endpoint": {
+            "width": WORKFLOW_CODE_CANVAS_ENDPOINT_WIDTH,
+            "height": WORKFLOW_CODE_CANVAS_ENDPOINT_HEIGHT,
+        },
+        "exit_marker": {
+            "width": WORKFLOW_CODE_CANVAS_EXIT_MARKER_WIDTH,
+            "height": WORKFLOW_CODE_CANVAS_EXIT_MARKER_HEIGHT,
+            "offset_from_node": {
+                "x": WORKFLOW_CODE_CANVAS_EXIT_MARKER_OFFSET_X,
+                "y": WORKFLOW_CODE_CANVAS_EXIT_MARKER_OFFSET_Y,
+            },
+        },
+        "minimum_gap": WORKFLOW_CODE_CANVAS_MIN_GAP,
+        "recommended_node_grid": {
+            "x": WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_X,
+            "y": WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_Y,
+        },
+        "default_endpoint_offset": {
+            "x": WORKFLOW_CODE_CANVAS_DEFAULT_ENDPOINT_OFFSET_X,
+            "y": WORKFLOW_CODE_CANVAS_DEFAULT_ENDPOINT_OFFSET_Y,
+        },
+        "validation": {
+            "explicit_coordinates_only": true,
+            "checks": ["nodes", "endpoints", "exit_markers"],
+        },
+    })
+}
 
 const NODE_WORKFLOW_CODE_COMPILER: &str = r#"
 import fs from "node:fs"
@@ -1341,6 +1390,61 @@ struct WorkflowCodeValidator<'a> {
     diagnostics: Vec<WorkflowCodeValidationDiagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkflowCodeCanvasRect {
+    kind: &'static str,
+    handle: String,
+    left: i64,
+    top: i64,
+    width: i64,
+    height: i64,
+}
+
+impl WorkflowCodeCanvasRect {
+    fn new(
+        kind: &'static str,
+        handle: String,
+        point: WorkflowCodeCanvasPoint,
+        width: i64,
+        height: i64,
+    ) -> Self {
+        Self::new_at(kind, handle, point.x as i64, point.y as i64, width, height)
+    }
+
+    fn new_at(
+        kind: &'static str,
+        handle: String,
+        left: i64,
+        top: i64,
+        width: i64,
+        height: i64,
+    ) -> Self {
+        Self {
+            kind,
+            handle,
+            left,
+            top,
+            width,
+            height,
+        }
+    }
+
+    fn right(&self) -> i64 {
+        self.left + self.width
+    }
+
+    fn bottom(&self) -> i64 {
+        self.top + self.height
+    }
+
+    fn conflicts_with(&self, other: &Self, minimum_gap: i64) -> bool {
+        !(self.right() + minimum_gap <= other.left
+            || other.right() + minimum_gap <= self.left
+            || self.bottom() + minimum_gap <= other.top
+            || other.bottom() + minimum_gap <= self.top)
+    }
+}
+
 impl<'a> WorkflowCodeValidator<'a> {
     fn new(limits: &'a WorkflowCodeLimitsConfig) -> Self {
         Self {
@@ -1530,6 +1634,7 @@ impl<'a> WorkflowCodeValidator<'a> {
             );
         }
         self.validate_endpoint_aliases(definition);
+        self.validate_canvas_layout(definition);
         let reachable_nodes = self.validate_reachable_nodes(definition, &node_handles);
         self.validate_reachable_edges(definition, &node_handles, &reachable_nodes);
 
@@ -1709,6 +1814,61 @@ impl<'a> WorkflowCodeValidator<'a> {
                     "unreachable_edge",
                     "edge is not reachable from any workflow endpoint",
                     Some(edge.handle.clone()),
+                );
+            }
+        }
+    }
+
+    fn validate_canvas_layout(&mut self, definition: &WorkflowCodeDefinition) {
+        let mut rects = Vec::<WorkflowCodeCanvasRect>::new();
+        for node in &definition.nodes {
+            let Some(point) = node.canvas else {
+                continue;
+            };
+            rects.push(WorkflowCodeCanvasRect::new(
+                "node",
+                node.handle.clone(),
+                point,
+                WORKFLOW_CODE_CANVAS_NODE_WIDTH,
+                WORKFLOW_CODE_CANVAS_NODE_HEIGHT,
+            ));
+            if node.can_complete_workflow_run == Some(true) {
+                rects.push(WorkflowCodeCanvasRect::new_at(
+                    "exit_marker",
+                    node.handle.clone(),
+                    point.x as i64 + WORKFLOW_CODE_CANVAS_EXIT_MARKER_OFFSET_X,
+                    point.y as i64 + WORKFLOW_CODE_CANVAS_EXIT_MARKER_OFFSET_Y,
+                    WORKFLOW_CODE_CANVAS_EXIT_MARKER_WIDTH,
+                    WORKFLOW_CODE_CANVAS_EXIT_MARKER_HEIGHT,
+                ));
+            }
+        }
+        for endpoint in &definition.endpoints {
+            let Some(point) = endpoint.canvas else {
+                continue;
+            };
+            rects.push(WorkflowCodeCanvasRect::new(
+                "endpoint",
+                endpoint.handle.clone(),
+                point,
+                WORKFLOW_CODE_CANVAS_ENDPOINT_WIDTH,
+                WORKFLOW_CODE_CANVAS_ENDPOINT_HEIGHT,
+            ));
+        }
+
+        for left_index in 0..rects.len() {
+            for right in rects.iter().skip(left_index + 1) {
+                let left = &rects[left_index];
+                if !left.conflicts_with(right, WORKFLOW_CODE_CANVAS_MIN_GAP) {
+                    continue;
+                }
+                self.error(
+                    "canvas_overlap",
+                    format!(
+                        "{} `{}` conflicts with {} `{}` in {WORKFLOW_CODE_CANVAS_COORDINATE_SPACE}; keep at least {WORKFLOW_CODE_CANVAS_MIN_GAP} canvas units between boxes",
+                        left.kind, left.handle, right.kind, right.handle
+                    ),
+                    Some(right.handle.clone()),
                 );
             }
         }
@@ -2974,6 +3134,102 @@ mod tests {
 
         assert!(report.ok, "{:?}", report.diagnostics);
         assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn canvas_contract_matches_documented_dimensions() {
+        let contract = workflow_code_canvas_contract();
+
+        assert_eq!(
+            contract
+                .pointer("/coordinate_space")
+                .and_then(Value::as_str),
+            Some(WORKFLOW_CODE_CANVAS_COORDINATE_SPACE)
+        );
+        assert_eq!(
+            contract.pointer("/node/width").and_then(Value::as_i64),
+            Some(232)
+        );
+        assert_eq!(
+            contract.pointer("/endpoint/width").and_then(Value::as_i64),
+            Some(180)
+        );
+        assert_eq!(
+            contract.pointer("/minimum_gap").and_then(Value::as_i64),
+            Some(36)
+        );
+        assert_eq!(
+            contract
+                .pointer("/default_endpoint_offset/x")
+                .and_then(Value::as_i64),
+            Some(-220)
+        );
+    }
+
+    #[test]
+    fn rejects_explicit_canvas_box_collisions() {
+        let mut definition = minimal_definition();
+        definition.endpoints[0].canvas = Some(WorkflowCodeCanvasPoint { x: -180, y: 0 });
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+
+        assert!(!report.ok);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "canvas_overlap"
+                && diagnostic.handle.as_deref() == Some("entry")
+                && diagnostic
+                    .message
+                    .contains(WORKFLOW_CODE_CANVAS_COORDINATE_SPACE)
+                && diagnostic.message.contains("36 canvas units")
+        }));
+
+        definition.endpoints[0].canvas = Some(WorkflowCodeCanvasPoint { x: -220, y: 0 });
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+
+        assert!(report.ok, "{:?}", report.diagnostics);
+    }
+
+    #[test]
+    fn rejects_exit_marker_canvas_collisions() {
+        let mut definition = minimal_definition();
+        definition.nodes.push(WorkflowCodeNodeDefinition {
+            handle: "next".to_string(),
+            agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                alias: Some("next".to_string()),
+                provider: "dev-stub".to_string(),
+                model: Some("default".to_string()),
+                effort: None,
+                account_profile: None,
+            }),
+            public_label: None,
+            instructions: None,
+            can_complete_workflow_run: None,
+            can_emit_intermediate_run_output: None,
+            wait_for_all_inputs: None,
+            intermediate_output_schema: None,
+            max_turns: None,
+            extensions: Vec::new(),
+            canvas: Some(WorkflowCodeCanvasPoint { x: 360, y: 28 }),
+        });
+        definition.edges.push(WorkflowCodeEdgeDefinition {
+            handle: "planner_to_next".to_string(),
+            from_node: "planner".to_string(),
+            to_node: "next".to_string(),
+            source_side: None,
+            target_side: None,
+            handoff_schema: None,
+            validation_policy: None,
+            canvas: None,
+        });
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+
+        assert!(!report.ok);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "canvas_overlap"
+                && diagnostic.message.contains("exit_marker `planner`")
+                && diagnostic.message.contains("node `next`")
+        }));
     }
 
     #[test]

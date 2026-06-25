@@ -5,7 +5,8 @@ use crate::config::WorkflowCodeLimitsConfig;
 use crate::session::{WorkflowCanvasLayoutPatch, WorkflowCanvasPoint};
 use crate::workflow_code::{
     WorkflowCodeAgentBinding, WorkflowCodeApplyReport, WorkflowCodeApplyWarning,
-    WorkflowCodeDefinition,
+    WorkflowCodeDefinition, WORKFLOW_CODE_CANVAS_DEFAULT_ENDPOINT_OFFSET_X,
+    WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_X, WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_Y,
 };
 
 impl SessionService {
@@ -528,8 +529,8 @@ fn workflow_code_canvas_patches(
         let depth = *node_depths.get(&node.handle).unwrap_or(&0);
         let row = rows_by_depth.entry(depth).or_insert(0);
         let auto_point = WorkflowCanvasPoint {
-            x: depth.saturating_mul(300),
-            y: row.saturating_mul(160),
+            x: depth.saturating_mul(WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_X as i32),
+            y: row.saturating_mul(WORKFLOW_CODE_CANVAS_RECOMMENDED_GRID_Y as i32),
         };
         *row = row.saturating_add(1);
         let point = node.canvas.map_or_else(
@@ -556,10 +557,15 @@ fn workflow_code_canvas_patches(
                 node_points
                     .get(&endpoint.entry_node)
                     .map(|point| WorkflowCanvasPoint {
-                        x: point.x.saturating_sub(180),
+                        x: point
+                            .x
+                            .saturating_add(WORKFLOW_CODE_CANVAS_DEFAULT_ENDPOINT_OFFSET_X as i32),
                         y: point.y,
                     })
-                    .unwrap_or(WorkflowCanvasPoint { x: -180, y: 0 })
+                    .unwrap_or(WorkflowCanvasPoint {
+                        x: WORKFLOW_CODE_CANVAS_DEFAULT_ENDPOINT_OFFSET_X as i32,
+                        y: 0,
+                    })
             },
             |point| WorkflowCanvasPoint {
                 x: point.x,

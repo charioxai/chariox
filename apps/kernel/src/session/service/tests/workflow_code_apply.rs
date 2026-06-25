@@ -91,7 +91,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
                 intermediate_output_schema: Some("progress".to_string()),
                 max_turns: Some(4),
                 extensions: Vec::new(),
-                canvas: Some(WorkflowCodeCanvasPoint { x: 10, y: 20 }),
+                canvas: Some(WorkflowCodeCanvasPoint { x: 0, y: 20 }),
             },
             WorkflowCodeNodeDefinition {
                 handle: "worker".to_string(),
@@ -110,7 +110,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
                 intermediate_output_schema: None,
                 max_turns: None,
                 extensions: Vec::new(),
-                canvas: Some(WorkflowCodeCanvasPoint { x: 220, y: 20 }),
+                canvas: Some(WorkflowCodeCanvasPoint { x: 280, y: 20 }),
             },
         ],
         edges: vec![WorkflowCodeEdgeDefinition {
@@ -129,7 +129,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
             handle: "entry".to_string(),
             entry_node: "planner".to_string(),
             alias: Some("entry".to_string()),
-            canvas: Some(WorkflowCodeCanvasPoint { x: -80, y: 20 }),
+            canvas: Some(WorkflowCodeCanvasPoint { x: -220, y: 20 }),
         }],
         queues: vec![WorkflowCodeQueueDefinition {
             handle: "urgent".to_string(),

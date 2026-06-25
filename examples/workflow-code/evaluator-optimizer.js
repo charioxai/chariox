@@ -68,4 +68,4 @@ const evaluator = workflow.node({
 
 workflow.edge(optimizer, evaluator, { handle: "candidate_to_evaluator", handoffSchema: candidate, validationPolicy: "halt" });
 workflow.edge(evaluator, optimizer, { handle: "revision_loop", handoffSchema: evaluation, validationPolicy: "warn" });
-workflow.endpoint(optimizer, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(optimizer, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });

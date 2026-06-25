@@ -121,6 +121,8 @@ pub const META_WORKFLOW_CODE_IMPORT_TOOL: &str = "arroba.meta.workflow_code.impo
 pub const META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.package_export";
 pub const META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL: &str = "arroba.meta.workflow_code.package_import";
 pub const META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.source_export";
+pub const META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL: &str =
+    "arroba.meta.workflow_code.canvas_contract";
 
 pub const META_EVENT_KIND_AGENT_TURN_COMPLETED: &str = "agent.turn.completed";
 pub const META_EVENT_KIND_AGENT_TURN_FAILED: &str = "agent.turn.failed";
@@ -626,6 +628,9 @@ pub struct MetaWorkflowCodeSourceExportArgs {
     #[serde(default)]
     pub format: crate::workflow_code::WorkflowCodeSourceExportFormat,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MetaWorkflowCodeCanvasContractArgs {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCredentialConfigInput {
@@ -1612,6 +1617,15 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL.to_string(),
+            description: "Return the authoritative workflow-code canvas dimensions and spacing contract for nodes, endpoints, generated exit markers, recommended grid placement, and validation scope.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: META_RESOLVE_RUNTIME_INTERACTION_TOOL.to_string(),
             description: "Resolve a kernel-owned runtime interaction for one of this user's regular agents. A metaagent can never resolve its own interactions.".to_string(),
             input_schema: serde_json::json!({
@@ -1807,6 +1821,12 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "mcp__arroba__meta_workflow_code_source_export"
         | "mcp__arroba__arroba_meta_workflow_code_source_export" => {
             Some(META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL)
+        }
+        META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
+        | "arroba_meta_workflow_code_canvas_contract"
+        | "mcp__arroba__meta_workflow_code_canvas_contract"
+        | "mcp__arroba__arroba_meta_workflow_code_canvas_contract" => {
+            Some(META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL)
         }
         META_RESOLVE_RUNTIME_INTERACTION_TOOL
         | "arroba_meta_resolve_runtime_interaction"

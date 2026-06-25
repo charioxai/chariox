@@ -6,6 +6,8 @@ Use these as templates, then validate the edited source with `arroba.meta.workfl
 
 The suite maps the Anthropic workflow vocabulary to Arroba workflow-code primitives: prompt chaining, routing, parallelization, orchestrator-workers, and evaluator-optimizer come from Anthropic's "Building effective agents"; adversarial verification, tournament, generate/filter, and loop-until-done cover the Claude Code dynamic-workflow shapes used for wide parallel work, independent verification, comparison, and iterative convergence.
 
+All examples follow `workflow-canvas-v1`: nodes are `232 x 96`, endpoints are `180 x 78`, generated exit markers are `120 x 72` at `node.x + 268`, `node.y + 28`, and explicit boxes keep at least `36` canvas units of separation. Use `arroba.meta.workflow_code.canvas_contract` for the authoritative runtime contract before designing custom layouts.
+
 References:
 - https://www.anthropic.com/engineering/building-effective-agents
 - https://code.claude.com/docs/en/workflows
@@ -69,7 +71,7 @@ const refiner = workflow.node({
 });
 
 workflow.edge(drafter, refiner, { handle: "draft_to_refiner", handoffSchema: handoff });
-workflow.endpoint(drafter, { handle: "entry", alias: "entry", canvas: { x: -180, y: 80 } });
+workflow.endpoint(drafter, { handle: "entry", alias: "entry", canvas: { x: -220, y: 80 } });
 ```
 
 ## Routing
@@ -149,7 +151,7 @@ workflow.edge(classifier, researchSpecialist, {
   handoffSchema: routeTask,
   validationPolicy: "halt",
 });
-workflow.endpoint(classifier, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(classifier, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 ```
 
 ## Fan-Out And Synthesize
@@ -220,7 +222,7 @@ const workerA = workflow.node({
   agent: workflow.newAgent({ alias: "worker-a", provider: "claude", model: "default" }),
   publicLabel: "Worker A",
   instructions: "Work your assigned angle and hand findings to the synthesizer.",
-  canvas: { x: 260, y: 40 },
+  canvas: { x: 280, y: 40 },
 });
 
 const workerB = workflow.node({
@@ -228,7 +230,7 @@ const workerB = workflow.node({
   agent: workflow.newAgent({ alias: "worker-b", provider: "opencode", model: "default" }),
   publicLabel: "Worker B",
   instructions: "Work your assigned angle and hand findings to the synthesizer.",
-  canvas: { x: 260, y: 200 },
+  canvas: { x: 280, y: 200 },
 });
 
 const synthesizer = workflow.node({
@@ -245,7 +247,7 @@ workflow.edge(planner, workerA, { handle: "planner_to_a", handoffSchema: assignm
 workflow.edge(planner, workerB, { handle: "planner_to_b", handoffSchema: assignment });
 workflow.edge(workerA, synthesizer, { handle: "a_to_synth", handoffSchema: finding });
 workflow.edge(workerB, synthesizer, { handle: "b_to_synth", handoffSchema: finding });
-workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 ```
 
 ## Parallelization
@@ -342,7 +344,7 @@ workflow.edge(dispatcher, policyReviewer, { handle: "to_policy", handoffSchema: 
 workflow.edge(dispatcher, qualityReviewer, { handle: "to_quality", handoffSchema: reviewTask });
 workflow.edge(policyReviewer, aggregator, { handle: "policy_to_aggregator", handoffSchema: reviewResult });
 workflow.edge(qualityReviewer, aggregator, { handle: "quality_to_aggregator", handoffSchema: reviewResult });
-workflow.endpoint(dispatcher, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(dispatcher, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 ```
 
 ## Adversarial Verification
@@ -428,7 +430,7 @@ const judge = workflow.node({
 workflow.edge(proposer, critic, { handle: "proposal_to_critic", handoffSchema: proposal });
 workflow.edge(critic, proposer, { handle: "critic_loop", handoffSchema: critique, validationPolicy: "warn" });
 workflow.edge(critic, judge, { handle: "critic_to_judge", handoffSchema: critique, validationPolicy: "halt" });
-workflow.endpoint(proposer, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(proposer, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 ```
 
 ## Generate And Filter
@@ -519,7 +521,7 @@ const finisher = workflow.node({
 
 workflow.edge(generator, filter, { handle: "generated_candidates", handoffSchema: candidates });
 workflow.edge(filter, finisher, { handle: "filtered_candidates", handoffSchema: filtered });
-workflow.endpoint(generator, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(generator, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });
 ```
 
 ## Tournament
@@ -614,7 +616,7 @@ workflow.edge(seeder, contestantA, { handle: "seed_a", handoffSchema: contestPro
 workflow.edge(seeder, contestantB, { handle: "seed_b", handoffSchema: contestPrompt });
 workflow.edge(contestantA, judge, { handle: "entry_a", handoffSchema: entry });
 workflow.edge(contestantB, judge, { handle: "entry_b", handoffSchema: entry });
-workflow.endpoint(seeder, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+workflow.endpoint(seeder, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
 ```
 
 ## Loop Until Done
@@ -692,7 +694,7 @@ const checker = workflow.node({
 
 workflow.edge(worker, checker, { handle: "work_to_checker", handoffSchema: workProduct, validationPolicy: "halt" });
 workflow.edge(checker, worker, { handle: "revise_loop", handoffSchema: feedback, validationPolicy: "warn" });
-workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });
 ```
 
 ## Orchestrator-Workers
@@ -776,7 +778,7 @@ const synthesizer = workflow.node({
 
 workflow.edge(orchestrator, worker, { handle: "orchestrator_to_worker", handoffSchema: assignment });
 workflow.edge(worker, synthesizer, { handle: "worker_to_synthesizer", handoffSchema: result });
-workflow.endpoint(orchestrator, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(orchestrator, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });
 ```
 
 ## Evaluator-Optimizer
@@ -854,5 +856,5 @@ const evaluator = workflow.node({
 
 workflow.edge(optimizer, evaluator, { handle: "candidate_to_evaluator", handoffSchema: candidate, validationPolicy: "halt" });
 workflow.edge(evaluator, optimizer, { handle: "revision_loop", handoffSchema: evaluation, validationPolicy: "warn" });
-workflow.endpoint(optimizer, { handle: "entry", alias: "entry", canvas: { x: -180, y: 100 } });
+workflow.endpoint(optimizer, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });
 ```
