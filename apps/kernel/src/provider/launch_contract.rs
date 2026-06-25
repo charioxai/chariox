@@ -167,6 +167,20 @@ impl ExternalProviderImportMetadata {
         self.observed_cursor = cursor;
         self
     }
+
+    pub fn same_observed_provider_session(&self, other: &Self) -> bool {
+        self.external_provider_session_id == other.external_provider_session_id
+            && self.external_provider == other.external_provider
+            && self.external_provider_session_provider_id
+                == other.external_provider_session_provider_id
+    }
+
+    pub fn import_order_key(&self) -> (u64, &str) {
+        (
+            self.imported_at_ms,
+            self.external_provider_session_id.as_str(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,7 +518,7 @@ pub struct ProviderLaunchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::LaunchProviderRequest;
+    use super::{ExternalProviderImportMetadata, LaunchProviderRequest};
 
     #[test]
     fn launch_request_tracks_managed_workspace_live_sync_mode() {
@@ -527,5 +541,26 @@ mod tests {
         assert!(request.tracks_workspace_live_sync());
         let json = serde_json::to_value(&request).expect("request should serialize");
         assert_eq!(json["write_access_mode"], "workspace_live_sync_tracked");
+    }
+
+    #[test]
+    fn external_provider_import_identity_ignores_cursor_and_import_time() {
+        let mut first =
+            ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+        first.imported_at_ms = 1;
+        let mut second = first
+            .clone()
+            .with_cursor(super::ExternalProviderObservedCursor {
+                last_observed_turn_id: Some("turn-2".to_string()),
+                last_observed_at_ms: Some(2),
+                last_observed_merge_key: Some("merge-2".to_string()),
+            });
+        second.imported_at_ms = 2;
+        let different =
+            ExternalProviderImportMetadata::observed_history("codex:thread-2", "codex", "thread-2");
+
+        assert!(first.same_observed_provider_session(&second));
+        assert!(!first.same_observed_provider_session(&different));
+        assert_eq!(first.import_order_key(), (1, "codex:thread-1"));
     }
 }

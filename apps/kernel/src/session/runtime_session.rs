@@ -698,21 +698,11 @@ impl RuntimeSession {
     }
 
     pub fn upsert_external_provider_import(&mut self, import: ExternalProviderImportMetadata) {
-        self.external_provider_imports.retain(|existing| {
-            existing.external_provider_session_id != import.external_provider_session_id
-                || existing.external_provider != import.external_provider
-                || existing.external_provider_session_provider_id
-                    != import.external_provider_session_provider_id
-        });
+        self.external_provider_imports
+            .retain(|existing| !existing.same_observed_provider_session(&import));
         self.external_provider_imports.push(import);
-        self.external_provider_imports.sort_by(|left, right| {
-            left.imported_at_ms
-                .cmp(&right.imported_at_ms)
-                .then_with(|| {
-                    left.external_provider_session_id
-                        .cmp(&right.external_provider_session_id)
-                })
-        });
+        self.external_provider_imports
+            .sort_by(|left, right| left.import_order_key().cmp(&right.import_order_key()));
     }
 
     pub fn workspace_live_sync_mode(&self) -> Option<crate::config::WorkspaceLiveSyncMode> {
