@@ -439,6 +439,7 @@ impl KernelRuntimeState {
                     controlled_by_metaagent_id,
                     crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
                     "workflow_code_artifact.apply",
+                    None,
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
@@ -466,6 +467,7 @@ impl KernelRuntimeState {
                 let session_id = session_id.clone();
                 let node_path = request.node_path.clone();
                 let source = request.source.clone();
+                let endpoint = request.endpoint.clone();
                 let language = request
                     .language
                     .unwrap_or(crate::workflow_code::WorkflowCodeLanguage::JavaScript);
@@ -473,16 +475,34 @@ impl KernelRuntimeState {
                 let caller_user_id = caller_user_id.clone();
                 move |app| {
                     let limits = app.config().workflow_code_limits();
-                    app.compile_and_apply_workflow_code_source_with_rebindings(
-                        &session_id,
-                        &node_path,
-                        &source,
-                        language,
-                        &limits,
-                        caller_user_id,
-                        controlled_by_metaagent_id,
-                        &provider_rebindings,
-                    )
+                    let compile = crate::app::KernelSessionService::new(app)
+                        .compile_and_validate_workflow_code_source_with_rebindings(
+                            &session_id,
+                            &node_path,
+                            &source,
+                            language,
+                            &limits,
+                            &provider_rebindings,
+                            controlled_by_metaagent_id.as_deref(),
+                        )?;
+                    reject_invalid_workflow_code_run_compile(
+                        "workflow_code.run",
+                        &compile.validation,
+                    )?;
+                    workflow_code_run_endpoint_preflight(
+                        &compile.definition,
+                        endpoint.as_deref(),
+                        "workflow_code.run",
+                    )?;
+                    let apply = crate::app::KernelSessionService::new(app)
+                        .apply_workflow_code_definition(
+                            &session_id,
+                            &compile.definition,
+                            &limits,
+                            caller_user_id,
+                            controlled_by_metaagent_id,
+                        )?;
+                    Ok(crate::workflow_code::WorkflowCodeCompileAndApplyResult { compile, apply })
                 }
             })
             .await
@@ -584,6 +604,7 @@ impl KernelRuntimeState {
                 let session_id = session_id.clone();
                 let name = request.name.clone();
                 let provider_rebindings = request.provider_rebindings.clone();
+                let endpoint = request.endpoint.clone();
                 let caller_user_id = caller_user_id.clone();
                 move |app| {
                     workflow_code_artifact_apply_result(
@@ -595,6 +616,7 @@ impl KernelRuntimeState {
                         controlled_by_metaagent_id,
                         crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
                         "workflow_code_artifact.run",
+                        Some(endpoint.as_deref()),
                     )
                 }
             })
@@ -944,6 +966,7 @@ fn workflow_code_artifact_apply_result(
     controlled_by_metaagent_id: Option<String>,
     history_action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
     operation: &'static str,
+    run_endpoint: Option<Option<&str>>,
 ) -> Result<crate::workflow_code::WorkflowCodeCompileAndApplyResult, DaemonError> {
     let artifact = {
         let registry = workflow_code_registry_for_session(app, session_id)?;
@@ -977,6 +1000,9 @@ fn workflow_code_artifact_apply_result(
                     .join(", ")
             ),
         });
+    }
+    if let Some(endpoint) = run_endpoint {
+        workflow_code_run_endpoint_preflight(&definition, endpoint, operation)?;
     }
     let apply = crate::app::KernelSessionService::new(app).apply_workflow_code_definition(
         session_id,
@@ -1049,6 +1075,61 @@ fn reject_invalid_workflow_code_artifact_validation(
     Err(DaemonError::LocalTransport {
         operation,
         message: format!("workflow-code artifact validation failed: {diagnostics}"),
+    })
+}
+
+fn reject_invalid_workflow_code_run_compile(
+    operation: &'static str,
+    validation: &crate::workflow_code::WorkflowCodeValidationReport,
+) -> Result<(), DaemonError> {
+    if validation.ok {
+        return Ok(());
+    }
+    let diagnostics = validation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic
+                .handle
+                .as_deref()
+                .map(|handle| format!("{}:{handle}", diagnostic.code))
+                .unwrap_or_else(|| diagnostic.code.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!("workflow-code definition is invalid: {diagnostics}"),
+    })
+}
+
+fn workflow_code_run_endpoint_preflight(
+    definition: &crate::workflow_code::WorkflowCodeDefinition,
+    endpoint: Option<&str>,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    if let Some(endpoint) = endpoint {
+        if definition
+            .endpoints
+            .iter()
+            .any(|definition_endpoint| definition_endpoint.handle == endpoint)
+        {
+            return Ok(());
+        }
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!("workflow-code endpoint handle `{endpoint}` is not defined"),
+        });
+    }
+    if definition.endpoints.len() == 1 {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "workflow-code defines {} endpoints; pass endpoint as a script handle",
+            definition.endpoints.len()
+        ),
     })
 }
 

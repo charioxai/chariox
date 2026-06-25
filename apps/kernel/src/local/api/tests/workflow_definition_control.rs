@@ -518,6 +518,165 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 }
 
 #[test]
+fn local_request_api_rejects_ambiguous_workflow_code_run_endpoint_without_applying() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping ambiguous workflow-code run local API test because node is not available"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-ambiguous-run-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let worktree_root = workspace_root.join("worktree");
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+workflow.define({ alias: "ambiguous_run_flow" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "ambiguous-worker", provider: "dev-stub", model: "default" }),
+  instructions: "Complete the workflow run.",
+  canCompleteWorkflowRun: true
+})
+workflow.endpoint(worker, { handle: "entry_a", alias: "entry-a" })
+workflow.endpoint(worker, { handle: "entry_b", alias: "entry-b" })
+"#;
+
+    let inline_error = harness
+        .dispatch(LocalDaemonRequest::RunWorkflowCode(
+            crate::local::RunWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+                endpoint: None,
+                queue_ref: None,
+                prompt: "Run without selecting an endpoint.".to_string(),
+            },
+        ))
+        .expect_err("ambiguous inline workflow-code run should fail before applying");
+    assert!(
+        format!("{inline_error:?}").contains("workflow-code defines 2 endpoints"),
+        "{inline_error:?}"
+    );
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed after rejected inline run");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => {
+            assert!(!workflows
+                .iter()
+                .any(|workflow| workflow.alias() == Some("ambiguous_run_flow")));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let missing_endpoint_error = harness
+        .dispatch(LocalDaemonRequest::RunWorkflowCode(
+            crate::local::RunWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+                endpoint: Some("missing_entry".to_string()),
+                queue_ref: None,
+                prompt: "Run with a missing endpoint handle.".to_string(),
+            },
+        ))
+        .expect_err("missing inline workflow-code endpoint handle should fail before applying");
+    assert!(
+        format!("{missing_endpoint_error:?}")
+            .contains("workflow-code endpoint handle `missing_entry` is not defined"),
+        "{missing_endpoint_error:?}"
+    );
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed after rejected missing endpoint run");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => {
+            assert!(!workflows
+                .iter()
+                .any(|workflow| workflow.alias() == Some("ambiguous_run_flow")));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let artifact_name = format!("ambiguous-run-{}", crate::session::unix_epoch_ms());
+    let created = harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowCodeArtifact(
+            crate::local::CreateWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: artifact_name.clone(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+            },
+        ))
+        .expect("ambiguous endpoint artifact should save because it is valid to apply");
+    match created {
+        LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact } => {
+            assert!(artifact.metadata.validation.ok);
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let artifact_error = harness
+        .dispatch(LocalDaemonRequest::RunWorkflowCodeArtifact(
+            crate::local::RunWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: artifact_name,
+                provider_rebindings: Vec::new(),
+                endpoint: None,
+                queue_ref: None,
+                prompt: "Run artifact without selecting an endpoint.".to_string(),
+            },
+        ))
+        .expect_err("ambiguous artifact workflow-code run should fail before applying");
+    assert!(
+        format!("{artifact_error:?}").contains("workflow-code defines 2 endpoints"),
+        "{artifact_error:?}"
+    );
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed after rejected artifact run");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => {
+            assert!(!workflows
+                .iter()
+                .any(|workflow| workflow.alias() == Some("ambiguous_run_flow")));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
 fn local_request_api_applies_workflow_code_extensions_to_generated_agents() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!("skipping workflow-code extension local API test because node is not available");
