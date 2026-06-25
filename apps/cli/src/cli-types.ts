@@ -725,6 +725,7 @@ export type AgentInstance = {
   provider: string
   model: string | null
   effort?: string | null
+  account_profile?: string | null
   primary_provider?: string | null
   primary_model?: string | null
   primary_effort?: string | null

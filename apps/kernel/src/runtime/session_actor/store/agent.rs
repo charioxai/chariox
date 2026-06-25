@@ -189,6 +189,7 @@ impl SessionRuntimeStore {
         let defaults = session.agent_defaults();
         let model = request.model.or_else(|| defaults.model.clone());
         let effort = request.effort.or_else(|| defaults.effort.clone());
+        let account_profile = defaults.account_profile.clone();
         let execution_mode = request.execution_mode.or(defaults.execution_mode);
         let permission_level = request.permission_level.or(defaults.permission_level);
         let create_request = CreateAgentRequest::new(
@@ -221,6 +222,11 @@ impl SessionRuntimeStore {
         };
         let create_request = if let Some(effort) = effort {
             create_request.with_effort(effort)
+        } else {
+            create_request
+        };
+        let create_request = if let Some(account_profile) = account_profile {
+            create_request.with_account_profile(account_profile)
         } else {
             create_request
         };

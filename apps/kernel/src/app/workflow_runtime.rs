@@ -403,7 +403,10 @@ mod tests {
             ))
             .expect("session should be created");
         let agent = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "codex")
+                    .with_account_profile("profile-b"),
+            )
             .expect("workflow-capable agent should be created");
         app.agents
             .set_agent_runtime_profile(
@@ -454,6 +457,13 @@ mod tests {
             Some("thread-1"),
             "queued workflow delivery must not flush provider runtime context"
         );
+        let run_id = ensure_workflow_provider_run_from_runtime(&mut app, session.id(), agent.id())
+            .expect("workflow provider ensure should launch a provider run");
+        let run = app
+            .providers()
+            .get_run(&run_id)
+            .expect("workflow prompt should launch a provider run");
+        assert_eq!(run.account_profile(), "profile-b");
     }
 
     #[test]

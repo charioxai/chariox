@@ -52,7 +52,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         ),
         entry("providers.default", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted provider default; currently not used by launch defaulting."),
         entry("providers.model", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted model default; currently not used by launch defaulting."),
-        entry("providers.account_profile", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted account profile default; currently not used by launch defaulting."),
+        entry("providers.account_profile", "string", &[], true, true, "session_default", "provider_launch", "Persisted account profile default available to session agent defaults and provider launches."),
         entry("providers.effort", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted effort default; currently not used by launch defaulting."),
         entry("ui.theme", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted UI theme value; terminal UI currently uses CLI preferences."),
         entry("ui.multi_agent_response_layout", "string", &[], true, true, "no_runtime_effect", "unwired", "Persisted response layout value; terminal UI currently uses CLI/session preferences."),

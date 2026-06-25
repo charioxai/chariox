@@ -956,6 +956,7 @@ export type AgentInstance = {
   provider: string
   model: string | null
   effort?: string | null
+  account_profile?: string | null
   primary_provider?: string | null
   primary_model?: string | null
   primary_effort?: string | null
@@ -1476,7 +1477,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 181
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 182
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2013,6 +2014,7 @@ export type WorkflowCodeProviderRebinding = {
   provider: string
   model?: string | null
   effort?: string | null
+  account_profile?: string | null
 }
 
 export type WorkflowCodeCompileAndApplyResult = {

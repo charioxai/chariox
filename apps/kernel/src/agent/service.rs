@@ -88,6 +88,7 @@ impl AgentService {
         agent.set_owner_user_id(request.owner_user_id);
         agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
         agent.set_role(request.role);
+        agent.set_account_profile(request.account_profile);
         agent.set_execution_mode_override(request.execution_mode_override);
         agent.set_permission_level_override(request.permission_level_override);
         let agent_id = agent.id().to_string();
@@ -367,6 +368,25 @@ impl AgentService {
         effort: Option<String>,
         resume_state: ProviderResumeState,
     ) -> Result<AgentInstance, DaemonError> {
+        self.set_agent_runtime_profile_with_account_profile(
+            agent_id,
+            provider,
+            model,
+            effort,
+            None,
+            resume_state,
+        )
+    }
+
+    pub fn set_agent_runtime_profile_with_account_profile(
+        &mut self,
+        agent_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        account_profile: Option<String>,
+        resume_state: ProviderResumeState,
+    ) -> Result<AgentInstance, DaemonError> {
         let agent = self
             .store
             .get_mut(agent_id)
@@ -376,6 +396,9 @@ impl AgentService {
         agent.set_provider(provider.to_string());
         agent.set_model(model);
         agent.set_effort(effort);
+        if account_profile.is_some() {
+            agent.set_account_profile(account_profile);
+        }
         if agent.active_substitute_index().is_none() {
             agent.set_primary_profile(
                 provider.to_string(),
@@ -931,6 +954,25 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_agent_runtime_profile(agent_id, provider, model, effort, resume_state)
+    }
+
+    pub fn set_agent_runtime_profile_with_account_profile(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        account_profile: Option<String>,
+        resume_state: ProviderResumeState,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_agent_runtime_profile_with_account_profile(
+            agent_id,
+            provider,
+            model,
+            effort,
+            account_profile,
+            resume_state,
+        )
     }
 
     pub fn set_remote_extension_manifest_sync(

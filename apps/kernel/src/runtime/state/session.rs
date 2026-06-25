@@ -363,6 +363,9 @@ pub(super) fn agent_request_from_session_defaults(
     if let Some(effort) = defaults.effort.as_deref() {
         request = request.with_effort(effort.to_string());
     }
+    if let Some(account_profile) = defaults.account_profile.as_deref() {
+        request = request.with_account_profile(account_profile.to_string());
+    }
     if let Some(execution_mode) = defaults.execution_mode {
         request = request.with_execution_mode_override(execution_mode);
     }

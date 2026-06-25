@@ -349,6 +349,8 @@ pub struct WorkflowCodeProviderRebinding {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1621,6 +1623,15 @@ pub fn apply_workflow_code_provider_rebindings(
                 }
                 if let Some(effort) = rebinding.effort.as_deref() {
                     agent.effort = Some(effort.to_string());
+                }
+                if let Some(account_profile) = rebinding.account_profile.as_deref() {
+                    let account_profile = account_profile.trim();
+                    agent.account_profile =
+                        if account_profile.is_empty() || account_profile == "default" {
+                            None
+                        } else {
+                            Some(account_profile.to_string())
+                        };
                 }
             }
             WorkflowCodeAgentBinding::Existing(_) => {

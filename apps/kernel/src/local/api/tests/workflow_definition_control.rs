@@ -175,6 +175,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                     provider: "dev-stub".to_string(),
                     model: Some("default".to_string()),
                     effort: None,
+                    account_profile: None,
                 }],
             },
         ))

@@ -284,6 +284,7 @@ mod tests {
                     provider: "opencode".to_string(),
                     model: Some("qwen3-coder".to_string()),
                     effort: Some("medium".to_string()),
+                    account_profile: Some("profile-a".to_string()),
                 }],
             )
             .expect("workflow-code should apply with provider rebinding");
@@ -296,6 +297,7 @@ mod tests {
         assert_eq!(planner.provider(), "opencode");
         assert_eq!(planner.model(), Some("qwen3-coder"));
         assert_eq!(planner.effort(), Some("medium"));
+        assert_eq!(planner.account_profile(), Some("profile-a"));
     }
 
     #[test]
@@ -352,6 +354,7 @@ mod tests {
                     provider: "dev-stub".to_string(),
                     model: Some("default".to_string()),
                     effort: None,
+                    account_profile: None,
                 }],
             )
             .expect("workflow-code should apply after rebinding unavailable provider");
@@ -578,6 +581,7 @@ workflow.endpoint(planner, { alias: "entry" })
                     provider: "dev-stub".to_string(),
                     model: Some("default".to_string()),
                     effort: None,
+                    account_profile: None,
                 })
                 .collect::<Vec<_>>();
 
@@ -1113,6 +1117,9 @@ impl<'a> KernelSessionService<'a> {
         if let Some(effort) = defaults.effort.as_deref() {
             agent_request = agent_request.with_effort(effort.to_string());
         }
+        if let Some(account_profile) = defaults.account_profile.as_deref() {
+            agent_request = agent_request.with_account_profile(account_profile.to_string());
+        }
         if let Some(execution_mode) = defaults.execution_mode {
             agent_request = agent_request.with_execution_mode_override(execution_mode);
         }
@@ -1315,15 +1322,6 @@ impl<'a> KernelSessionService<'a> {
         for node in &definition.nodes {
             let agent_id = match &node.agent {
                 WorkflowCodeAgentBinding::Create(agent) => {
-                    if agent.account_profile.is_some() {
-                        return Err(DaemonError::LocalTransport {
-                            operation: "workflow_code.apply",
-                            message: format!(
-                                "node `{}` requests account_profile, but provider account rebinding is not wired yet",
-                                node.handle
-                            ),
-                        });
-                    }
                     let mut request = CreateAgentRequest::new(session_id, agent.provider.clone())
                         .with_owner_user_id(created_by_user_id.clone());
                     if let Some(alias) = agent.alias.as_deref() {
@@ -1334,6 +1332,9 @@ impl<'a> KernelSessionService<'a> {
                     }
                     if let Some(effort) = agent.effort.as_deref() {
                         request = request.with_effort(effort.to_string());
+                    }
+                    if let Some(account_profile) = agent.account_profile.as_deref() {
+                        request = request.with_account_profile(account_profile.to_string());
                     }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
                         request = request.with_controlled_by_metaagent_id(metaagent_id.to_string());
@@ -1605,14 +1606,6 @@ impl<'a> KernelSessionService<'a> {
         for node in &definition.nodes {
             match &node.agent {
                 WorkflowCodeAgentBinding::Create(agent) => {
-                    if agent.account_profile.is_some() {
-                        push_workflow_code_target_validation_error(
-                            validation,
-                            "unsupported_account_profile",
-                            "generated agent account_profile is not supported by workflow-code apply yet",
-                            Some(node.handle.clone()),
-                        );
-                    }
                     let provider = agent.provider.trim();
                     let adapter_key = adapter_key_for_provider(provider);
                     if registry.resolve(adapter_key).is_none() {

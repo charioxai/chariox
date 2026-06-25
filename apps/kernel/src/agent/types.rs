@@ -123,6 +123,8 @@ pub struct AgentInstance {
     model: Option<String>,
     effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     primary_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     primary_model: Option<String>,
@@ -193,6 +195,7 @@ impl AgentInstance {
             provider: provider.into(),
             model,
             effort,
+            account_profile: None,
             primary_provider: None,
             primary_model: None,
             primary_effort: None,
@@ -261,6 +264,14 @@ impl AgentInstance {
 
     pub fn effort(&self) -> Option<&str> {
         self.effort.as_deref()
+    }
+
+    pub fn account_profile(&self) -> Option<&str> {
+        self.account_profile.as_deref()
+    }
+
+    pub fn provider_account_profile(&self) -> &str {
+        self.account_profile.as_deref().unwrap_or("default")
     }
 
     pub fn primary_provider(&self) -> &str {
@@ -417,6 +428,7 @@ impl AgentInstance {
         self.provider = "redacted".to_string();
         self.model = None;
         self.effort = None;
+        self.account_profile = None;
         self.primary_provider = None;
         self.primary_model = None;
         self.primary_effort = None;
@@ -476,6 +488,10 @@ impl AgentInstance {
 
     pub fn set_effort(&mut self, effort: Option<String>) {
         self.effort = effort;
+    }
+
+    pub fn set_account_profile(&mut self, account_profile: Option<String>) {
+        self.account_profile = normalized_agent_account_profile(account_profile);
     }
 
     pub fn set_primary_profile(
@@ -679,6 +695,8 @@ pub struct CreateAgentRequest {
     pub provider: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
     pub execution_mode_override: Option<AgentExecutionMode>,
     pub permission_level_override: Option<AgentPermissionLevel>,
     pub worktree_id: Option<String>,
@@ -697,6 +715,7 @@ impl CreateAgentRequest {
             provider: provider.into(),
             model: None,
             effort: None,
+            account_profile: None,
             execution_mode_override: None,
             permission_level_override: None,
             worktree_id: None,
@@ -732,6 +751,11 @@ impl CreateAgentRequest {
 
     pub fn with_effort(mut self, effort: impl Into<String>) -> Self {
         self.effort = Some(effort.into());
+        self
+    }
+
+    pub fn with_account_profile(mut self, account_profile: impl Into<String>) -> Self {
+        self.account_profile = normalized_agent_account_profile(Some(account_profile.into()));
         self
     }
 
@@ -774,6 +798,12 @@ fn default_visible_in_freeform() -> bool {
 
 fn is_default_visible_in_freeform(value: &bool) -> bool {
     *value
+}
+
+fn normalized_agent_account_profile(account_profile: Option<String>) -> Option<String> {
+    account_profile
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "default")
 }
 
 /// Calculates grid layout for agents based on count.

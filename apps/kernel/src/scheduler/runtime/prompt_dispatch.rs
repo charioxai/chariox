@@ -162,7 +162,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                     session_id,
                     adapter_key,
                     provider,
-                    "default",
+                    agent.provider_account_profile(),
                     agent.model().unwrap_or("default"),
                 )
                 .with_agent_id(agent.id().to_string())
@@ -192,7 +192,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                 session_id,
                 adapter_key,
                 provider,
-                "default",
+                agent.provider_account_profile(),
                 agent.model().unwrap_or("default"),
             )
             .with_agent_id(agent.id().to_string())

@@ -278,11 +278,12 @@ impl DaemonApp {
         );
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
-            let agent = self.agents.set_agent_runtime_profile(
+            let agent = self.agents.set_agent_runtime_profile_with_account_profile(
                 agent_id,
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
                 run.resume_state().clone(),
             )?;
             self.durable_state_store().append_event(
@@ -355,11 +356,12 @@ impl DaemonApp {
         let run = self.providers.get_run(run.id())?;
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
-            let agent = self.agents.set_agent_runtime_profile(
+            let agent = self.agents.set_agent_runtime_profile_with_account_profile(
                 agent_id,
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
                 run.resume_state().clone(),
             )?;
             self.durable_state_store().append_event(
@@ -549,10 +551,13 @@ mod tests {
                 CreateSessionRequest::new("workspace-1", "worktree-1")
                     .with_owner_user_id("cloud-user")
                     .with_agent_defaults(
-                        SessionAgentDefaults::new("dev-stub").with_model("sonnet"),
+                        SessionAgentDefaults::new("dev-stub")
+                            .with_model("sonnet")
+                            .with_account_profile("profile-a"),
                     ),
             )
             .expect("session create should succeed");
+        assert_eq!(agent.account_profile(), Some("profile-a"));
         let resume_state = ProviderResumeState::from_codex_thread_id("codex-thread-1");
         app.agents
             .set_agent_runtime_profile(
@@ -573,6 +578,7 @@ mod tests {
             .expect("provider run should exist");
 
         assert_eq!(run.owner_user_id(), "cloud-user");
+        assert_eq!(run.account_profile(), "profile-a");
         assert_eq!(run.resume_state(), &resume_state);
     }
 

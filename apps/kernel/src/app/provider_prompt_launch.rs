@@ -47,7 +47,7 @@ impl DaemonApp {
             session_id,
             adapter_key,
             provider,
-            "default",
+            agent.provider_account_profile(),
             agent.model().unwrap_or("default"),
         )
         .with_agent_id(agent.id().to_string())
