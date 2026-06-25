@@ -1114,6 +1114,7 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
                 .with_owner_user_id("peer-user"),
         )
         .expect("peer worker should spawn");
+    let agent_count_before_apply = app.agents().get_session_agents(session.id()).len();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
 
     let owned_source = workflow_code_existing_agent_source(owned_worker.id());
@@ -1135,6 +1136,59 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
+    let owned_applied = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
+            serde_json::json!({ "source": owned_source }),
+        )
+        .await
+        .expect("metaagent should apply owned existing-agent workflow-code");
+    assert!(owned_applied.ok, "{:?}", owned_applied.payload);
+    assert_eq!(
+        owned_applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/agent_ids/worker")
+            .and_then(serde_json::Value::as_str),
+        Some(owned_worker.id())
+    );
+    let owned_workflow_id = owned_applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/workflow_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("owned existing-agent apply should return workflow id");
+    assert!(
+        owned_applied
+            .payload
+            .pointer("/WorkflowCodeApplied/session/workflows")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|workflows| workflows.iter().any(|workflow| {
+                workflow.get("id").and_then(serde_json::Value::as_str) == Some(owned_workflow_id)
+                    && workflow
+                        .get("controlled_by_metaagent_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(metaagent.id())
+                    && workflow
+                        .get("nodes")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|nodes| nodes.iter().any(|node| {
+                            node.get("agent_id").and_then(serde_json::Value::as_str)
+                                == Some(owned_worker.id())
+                        }))
+            })),
+        "owned existing-agent workflow should be controlled by the metaagent and use the existing worker: {:?}",
+        owned_applied.payload
+    );
+    {
+        let app = router.app.lock().await;
+        assert_eq!(
+            app.agents().get_session_agents(session.id()).len(),
+            agent_count_before_apply,
+            "applying an existing-agent workflow-code source should not spawn a new agent"
+        );
+    }
 
     let peer_source = workflow_code_existing_agent_source(peer_worker.id());
     let peer_validated = router
