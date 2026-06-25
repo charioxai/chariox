@@ -351,7 +351,7 @@ async function waitForMetaagentTask(client, requests, sessionId, metaagentId, pr
   throw new Error(`timed out waiting for metaagent task projection\n${JSON.stringify(last, null, 2)}`)
 }
 
-async function verifyMetaWorkflowCodeTools(metaRun) {
+async function verifyMetaWorkflowCodeTools(metaRun, metaagentId) {
   const name = `meta-capabilities-flow-${Date.now()}`
   const importedName = `${name}-imported`
   const source = metaWorkflowCodeSource()
@@ -372,6 +372,11 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
   assert(created.ok, 'metaagent should create workflow-code artifacts through runtime MCP', created.payload)
   const createdArtifact = unwrap(created.payload, 'WorkflowCodeArtifactCreated').artifact
   assert(createdArtifact?.metadata?.validation?.ok, 'created workflow-code artifact should validate', created.payload)
+  assert(
+    createdArtifact?.metadata?.provenance?.created_by?.metaagent_id === metaagentId,
+    'created workflow-code artifact should record metaagent provenance',
+    created.payload,
+  )
 
   const listed = await callRuntimeTool(metaRun, 'arroba.meta.workflow_code.list')
   assert(
@@ -399,6 +404,11 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
   assert(
     updatedArtifact?.definition?.workflow?.alias === 'meta_capabilities_workflow_code_updated',
     'workflow-code update should replace the saved artifact source and definition',
+    updated.payload,
+  )
+  assert(
+    updatedArtifact?.metadata?.provenance?.updated_by?.metaagent_id === metaagentId,
+    'updated workflow-code artifact should record metaagent provenance',
     updated.payload,
   )
   assert(
@@ -431,12 +441,21 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
     applied.payload,
   )
   assert(
+    (appliedPayload.session?.workflows ?? []).some((workflow) => (
+      workflow.id === appliedWorkflowId
+      && workflow.controlled_by_metaagent_id === metaagentId
+    )),
+    'workflow-code apply should mark the generated workflow as controlled by the metaagent',
+    applied.payload,
+  )
+  assert(
     (appliedPayload.session?.agents ?? []).some((agent) => (
       agent.id === appliedWorkerAgentId
       && agent.provider === 'dev-stub'
       && agent.model === 'default'
+      && agent.controlled_by_metaagent_id === metaagentId
     )),
-    'workflow-code apply should create a rebound dev-stub/default node agent',
+    'workflow-code apply should create a rebound dev-stub/default node agent controlled by the metaagent',
     applied.payload,
   )
 
@@ -467,6 +486,11 @@ async function verifyMetaWorkflowCodeTools(metaRun) {
     assert(
       runPayload.result.invocation.workflow_run?.invocation_prompt === 'Complete the isolated metaagent workflow-code drill.',
       'workflow-code run should use the script-level prompt when the runtime MCP call omits prompt',
+      run.payload,
+    )
+    assert(
+      runPayload.result.invocation.workflow?.controlled_by_metaagent_id === metaagentId,
+      'workflow-code run should mark the invoked generated workflow as controlled by the metaagent',
       run.payload,
     )
   }
@@ -705,7 +729,7 @@ async function main() {
     const workflowCodeGuideSummary = await verifyMetaWorkflowCodeGuides(metaRun)
     log('workflow-code-guides-passed', workflowCodeGuideSummary)
 
-    const workflowCodeSummary = await verifyMetaWorkflowCodeTools(metaRun)
+    const workflowCodeSummary = await verifyMetaWorkflowCodeTools(metaRun, metaagent.id)
     log('workflow-code-capabilities-passed', workflowCodeSummary)
 
     const mcpConfig = {
