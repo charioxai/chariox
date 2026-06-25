@@ -102,6 +102,62 @@ export function runWorkflowCodeRequest(
   }
 }
 
+export type ApplyWorkflowCodeArtifactRequest = {
+  ApplyWorkflowCodeArtifact: {
+    session_id: string
+    name: string
+    provider_rebindings?: WorkflowCodeProviderRebinding[]
+  }
+}
+
+export function applyWorkflowCodeArtifactRequest(
+  sessionId: string,
+  name: string,
+  providerRebindings: WorkflowCodeProviderRebinding[] = [],
+): ApplyWorkflowCodeArtifactRequest {
+  return {
+    ApplyWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
+      ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+    },
+  }
+}
+
+export type RunWorkflowCodeArtifactRequest = {
+  RunWorkflowCodeArtifact: {
+    session_id: string
+    name: string
+    provider_rebindings?: WorkflowCodeProviderRebinding[]
+    endpoint?: string | null
+    queue_ref?: string | null
+    prompt: string
+  }
+}
+
+export function runWorkflowCodeArtifactRequest(
+  sessionId: string,
+  name: string,
+  prompt: string,
+  options: {
+    providerRebindings?: WorkflowCodeProviderRebinding[]
+    endpoint?: string | null
+    queueRef?: string | null
+  } = {},
+): RunWorkflowCodeArtifactRequest {
+  const providerRebindings = options.providerRebindings ?? []
+  return {
+    RunWorkflowCodeArtifact: {
+      session_id: sessionId,
+      name,
+      ...(providerRebindings.length > 0 ? { provider_rebindings: providerRebindings } : {}),
+      ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
+      ...(options.queueRef !== undefined ? { queue_ref: options.queueRef } : {}),
+      prompt,
+    },
+  }
+}
+
 export type CreateWorkflowCodeArtifactRequest = {
   CreateWorkflowCodeArtifact: {
     session_id: string

@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  applyWorkflowCodeArtifactRequest,
   applyWorkflowCodeRequest,
   createWorkflowCodeArtifactRequest,
   deleteWorkflowCodeArtifactRequest,
@@ -9,6 +10,7 @@ import {
   exportWorkflowPublicationPackageRequest,
   importWorkflowCodeArtifactRequest,
   listWorkflowCodeArtifactsRequest,
+  runWorkflowCodeArtifactRequest,
   runWorkflowCodeRequest,
   setWorkflowNodeWaitForAllInputsRequest,
 } from "./ipc-workflow-requests.js"
@@ -139,6 +141,59 @@ test("workflow-code artifact requests match kernel shape", () => {
         language: "java_script",
         node_path: "/usr/local/bin/node",
         source: "workflow.define({})",
+      },
+    },
+  )
+  assert.deepEqual(
+    applyWorkflowCodeArtifactRequest("session-1", "toy-flow", [
+      {
+        node: "planner",
+        provider: "opencode",
+        model: "qwen3-coder",
+      },
+    ]),
+    {
+      ApplyWorkflowCodeArtifact: {
+        session_id: "session-1",
+        name: "toy-flow",
+        provider_rebindings: [
+          {
+            node: "planner",
+            provider: "opencode",
+            model: "qwen3-coder",
+          },
+        ],
+      },
+    },
+  )
+  assert.deepEqual(
+    runWorkflowCodeArtifactRequest("session-1", "toy-flow", "Run this saved workflow.", {
+      endpoint: "entry",
+      queueRef: "default",
+      providerRebindings: [
+        {
+          node: "planner",
+          provider: "opencode",
+          model: "qwen3-coder",
+          account_profile: "work",
+        },
+      ],
+    }),
+    {
+      RunWorkflowCodeArtifact: {
+        session_id: "session-1",
+        name: "toy-flow",
+        provider_rebindings: [
+          {
+            node: "planner",
+            provider: "opencode",
+            model: "qwen3-coder",
+            account_profile: "work",
+          },
+        ],
+        endpoint: "entry",
+        queue_ref: "default",
+        prompt: "Run this saved workflow.",
       },
     },
   )
