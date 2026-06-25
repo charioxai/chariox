@@ -22,6 +22,9 @@ impl SessionService {
                         workflow.intermediate_output_schema_ref,
                     );
                 }
+                for schema in workflow.schemas {
+                    definition.add_schema(schema);
+                }
                 let session =
                     self.store
                         .get_mut(session_id)

@@ -5,7 +5,8 @@ use crate::workflow_code::{
     WorkflowCodeAgentBinding, WorkflowCodeAgentCreate, WorkflowCodeCanvasEdge,
     WorkflowCodeCanvasPoint, WorkflowCodeDefinition, WorkflowCodeEdgeDefinition,
     WorkflowCodeEndpointDefinition, WorkflowCodeNodeDefinition, WorkflowCodeQueueDefinition,
-    WorkflowCodeWatchdogDefinition, WorkflowCodeWorkflow, WORKFLOW_CODE_SCHEMA_VERSION,
+    WorkflowCodeSchemaDefinition, WorkflowCodeWatchdogDefinition, WorkflowCodeWorkflow,
+    WORKFLOW_CODE_SCHEMA_VERSION,
 };
 
 fn workflow_code_definition() -> WorkflowCodeDefinition {
@@ -15,10 +16,50 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
             alias: Some("coded_flow".to_string()),
             flush_agent_context_before_run: Some(false),
             max_concurrent: Some(2),
-            run_output_schema: None,
-            intermediate_output_schema: None,
+            run_output_schema: Some("final".to_string()),
+            intermediate_output_schema: Some("progress".to_string()),
         },
-        schemas: Vec::new(),
+        schemas: vec![
+            WorkflowCodeSchemaDefinition {
+                handle: "final".to_string(),
+                alias: Some("Final".to_string()),
+                description: Some("Final output".to_string()),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["answer"],
+                    "properties": {
+                        "answer": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            WorkflowCodeSchemaDefinition {
+                handle: "progress".to_string(),
+                alias: Some("Progress".to_string()),
+                description: None,
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["status"],
+                    "properties": {
+                        "status": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+            WorkflowCodeSchemaDefinition {
+                handle: "handoff".to_string(),
+                alias: Some("Handoff".to_string()),
+                description: None,
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["task"],
+                    "properties": {
+                        "task": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                }),
+            },
+        ],
         nodes: vec![
             WorkflowCodeNodeDefinition {
                 handle: "planner".to_string(),
@@ -34,7 +75,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
                 can_complete_workflow_run: Some(false),
                 can_emit_intermediate_run_output: Some(true),
                 wait_for_all_inputs: None,
-                intermediate_output_schema: None,
+                intermediate_output_schema: Some("progress".to_string()),
                 max_turns: Some(4),
                 extensions: Vec::new(),
                 canvas: Some(WorkflowCodeCanvasPoint { x: 10, y: 20 }),
@@ -65,7 +106,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
             to_node: "worker".to_string(),
             source_side: None,
             target_side: None,
-            handoff_schema: None,
+            handoff_schema: Some("handoff".to_string()),
             validation_policy: Some(WorkflowHandoffValidationPolicy::Warn),
             canvas: Some(WorkflowCodeCanvasEdge {
                 points: vec![WorkflowCodeCanvasPoint { x: 120, y: 40 }],
@@ -120,6 +161,11 @@ fn applies_workflow_code_definition_to_session_primitives() {
         .expect("workflow-code should apply");
 
     assert_eq!(report.node_ids.len(), 2);
+    assert_eq!(report.schema_refs.len(), 3);
+    assert_ne!(
+        report.schema_refs.get("final").map(String::as_str),
+        Some("final")
+    );
     assert_eq!(report.edge_ids.len(), 1);
     assert_eq!(report.endpoint_ids.len(), 1);
     assert_eq!(report.queue_ids.len(), 1);
@@ -138,6 +184,30 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert_eq!(workflow.nodes().len(), 2);
     assert_eq!(workflow.edges().len(), 1);
     assert_eq!(workflow.endpoints().len(), 1);
+    assert_eq!(workflow.schemas().len(), 3);
+    let final_schema_id = report.schema_refs.get("final").expect("final schema id");
+    let progress_schema_id = report
+        .schema_refs
+        .get("progress")
+        .expect("progress schema id");
+    let handoff_schema_id = report
+        .schema_refs
+        .get("handoff")
+        .expect("handoff schema id");
+    assert_eq!(
+        workflow.run_output_schema_ref(),
+        Some(final_schema_id.as_str())
+    );
+    assert_eq!(
+        workflow.intermediate_output_schema_ref(),
+        Some(progress_schema_id.as_str())
+    );
+    assert_eq!(
+        workflow
+            .schema(final_schema_id)
+            .and_then(|schema| schema.alias()),
+        Some("Final")
+    );
 
     let planner_id = report.node_ids.get("planner").expect("planner id");
     let planner = workflow.node(planner_id).expect("planner node");
@@ -145,7 +215,15 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert_eq!(planner.public_label(), "Planner");
     assert_eq!(planner.instructions(), Some("Plan the task."));
     assert!(planner.can_emit_intermediate_run_output());
+    assert_eq!(
+        planner.intermediate_output_schema_ref(),
+        Some(progress_schema_id.as_str())
+    );
     assert_eq!(planner.max_turns(), Some(4));
+
+    let edge_id = report.edge_ids.get("planner_to_worker").expect("edge id");
+    let edge = workflow.edge(edge_id).expect("workflow edge");
+    assert_eq!(edge.handoff_schema_ref(), Some(handoff_schema_id.as_str()));
 
     let urgent_queue_id = report.queue_ids.get("urgent").expect("urgent queue id");
     let urgent_queue = session

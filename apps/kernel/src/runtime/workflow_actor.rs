@@ -502,6 +502,7 @@ mod tests {
                     flush_agent_context_before_run: None,
                     run_output_schema_ref: None,
                     intermediate_output_schema_ref: None,
+                    schemas: Vec::new(),
                 },
             },
         });

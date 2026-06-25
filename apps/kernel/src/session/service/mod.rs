@@ -21,9 +21,9 @@ use super::{
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
     WorkflowQueuedPromptSource, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
-    WorkflowTurnEnvelope, WorkflowTurnRuntimeState, WorkflowWatchdogDefinition,
-    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
-    DEFAULT_LOCAL_USER_ID,
+    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
+    WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -114,6 +114,7 @@ pub struct SessionService {
     host_daemon_id: String,
     prompt_id_allocator: PromptIdAllocator,
     next_workflow_number: u64,
+    next_workflow_schema_number: u64,
     next_workflow_endpoint_number: u64,
     next_workflow_node_number: u64,
     next_workflow_edge_number: u64,

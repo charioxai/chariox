@@ -1155,11 +1155,8 @@ impl SessionService {
             .workflow
             .run_output_schema_ref()
             .and_then(|schema_ref| {
-                crate::transport::runtime_tools::validate_workflow_handoff_schema(
-                    schema_ref,
-                    output.message(),
-                )
-                .err()
+                validate_workflow_output_schema_ref(&context.workflow, schema_ref, output.message())
+                    .err()
             });
         Some(WorkflowRunOutputSubmission::new(
             output,
@@ -1301,4 +1298,19 @@ impl SessionService {
         workflow_run.set_status(WorkflowRunStatus::Failed);
         Ok(workflow_run.clone())
     }
+}
+
+fn validate_workflow_output_schema_ref(
+    workflow: &WorkflowDefinition,
+    schema_ref: &str,
+    output_json: &str,
+) -> Result<(), String> {
+    if let Some(schema) = workflow.schema(schema_ref) {
+        return crate::transport::runtime_tools::validate_json_output_schema(
+            schema_ref,
+            schema.schema(),
+            output_json,
+        );
+    }
+    crate::transport::runtime_tools::validate_workflow_handoff_schema(schema_ref, output_json)
 }

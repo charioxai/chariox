@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::types::unix_epoch_ms;
 use super::workflow_canvas::{
@@ -12,6 +13,50 @@ use super::workflow_graph::{
 
 fn default_workflow_flush_agent_context_before_run() -> bool {
     true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowSchemaDefinition {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    schema: Value,
+}
+
+impl Eq for WorkflowSchemaDefinition {}
+
+impl WorkflowSchemaDefinition {
+    pub fn new(
+        id: impl Into<String>,
+        alias: Option<String>,
+        description: Option<String>,
+        schema: Value,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            alias,
+            description,
+            schema,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    pub fn schema(&self) -> &Value {
+        &self.schema
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +77,8 @@ pub struct WorkflowDefinition {
     run_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     intermediate_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    schemas: Vec<WorkflowSchemaDefinition>,
     nodes: Vec<WorkflowNodeDefinition>,
     edges: Vec<WorkflowEdgeDefinition>,
     endpoints: Vec<WorkflowEndpointDefinition>,
@@ -49,6 +96,7 @@ impl WorkflowDefinition {
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             run_output_schema_ref: None,
             intermediate_output_schema_ref: None,
+            schemas: Vec::new(),
             nodes: Vec::new(),
             edges: Vec::new(),
             endpoints: Vec::new(),
@@ -109,6 +157,14 @@ impl WorkflowDefinition {
         self.intermediate_output_schema_ref.as_deref()
     }
 
+    pub fn schemas(&self) -> &[WorkflowSchemaDefinition] {
+        &self.schemas
+    }
+
+    pub fn schema(&self, schema_id: &str) -> Option<&WorkflowSchemaDefinition> {
+        self.schemas.iter().find(|schema| schema.id() == schema_id)
+    }
+
     pub fn edges(&self) -> &[WorkflowEdgeDefinition] {
         &self.edges
     }
@@ -140,6 +196,12 @@ impl WorkflowDefinition {
     pub fn set_intermediate_output_schema_ref(&mut self, value: Option<String>) {
         self.intermediate_output_schema_ref = value;
         self.bump_revision();
+    }
+
+    pub fn add_schema(&mut self, schema: WorkflowSchemaDefinition) -> WorkflowSchemaDefinition {
+        self.schemas.push(schema.clone());
+        self.bump_revision();
+        schema
     }
 
     pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {

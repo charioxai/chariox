@@ -563,6 +563,8 @@ pub struct WorkflowDesignWorkflow {
     pub run_output_schema_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intermediate_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemas: Vec<crate::session::WorkflowSchemaDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

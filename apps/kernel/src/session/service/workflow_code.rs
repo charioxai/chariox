@@ -39,13 +39,10 @@ impl SessionService {
             controlled_by_metaagent_id.clone(),
         )?;
         let workflow_id = workflow.id().to_string();
+        let schema_refs = self.apply_workflow_code_schemas(session_id, &workflow_id, definition)?;
         let mut report = WorkflowCodeApplyReport {
             workflow_id: workflow_id.clone(),
-            schema_refs: definition
-                .schemas
-                .iter()
-                .map(|schema| (schema.handle.clone(), schema.handle.clone()))
-                .collect(),
+            schema_refs: schema_refs.clone(),
             node_ids: BTreeMap::new(),
             agent_ids: BTreeMap::new(),
             edge_ids: BTreeMap::new(),
@@ -55,7 +52,12 @@ impl SessionService {
             canvas_layout_applied: false,
         };
 
-        self.apply_workflow_code_workflow_settings(session_id, &workflow_id, definition)?;
+        self.apply_workflow_code_workflow_settings(
+            session_id,
+            &workflow_id,
+            definition,
+            &schema_refs,
+        )?;
 
         for node in &definition.nodes {
             let agent_id =
@@ -86,7 +88,13 @@ impl SessionService {
             report
                 .agent_ids
                 .insert(node.handle.clone(), agent_id.to_string());
-            self.apply_workflow_code_node_settings(session_id, &workflow_id, created.id(), node)?;
+            self.apply_workflow_code_node_settings(
+                session_id,
+                &workflow_id,
+                created.id(),
+                node,
+                &schema_refs,
+            )?;
         }
 
         for edge in &definition.edges {
@@ -112,7 +120,7 @@ impl SessionService {
                 created_by_user_id.clone(),
                 edge.source_side,
                 edge.target_side,
-                edge.handoff_schema.clone(),
+                resolve_workflow_code_schema_ref(edge.handoff_schema.as_deref(), &schema_refs),
                 edge.validation_policy,
             )?;
             report
@@ -178,6 +186,39 @@ impl SessionService {
         }
 
         Ok(report)
+    }
+
+    fn apply_workflow_code_schemas(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        definition: &WorkflowCodeDefinition,
+    ) -> Result<BTreeMap<String, String>, DaemonError> {
+        let mut schema_refs = BTreeMap::new();
+        for schema in &definition.schemas {
+            let schema_id = self.next_workflow_schema_id();
+            let session =
+                self.store
+                    .get_mut(session_id)
+                    .ok_or_else(|| DaemonError::SessionNotFound {
+                        session_id: session_id.to_string(),
+                    })?;
+            let workflow =
+                session
+                    .workflow_mut(workflow_id)
+                    .ok_or_else(|| DaemonError::WorkflowNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.to_string(),
+                    })?;
+            workflow.add_schema(WorkflowSchemaDefinition::new(
+                schema_id.clone(),
+                schema.alias.clone(),
+                schema.description.clone(),
+                schema.schema.clone(),
+            ));
+            schema_refs.insert(schema.handle.clone(), schema_id);
+        }
+        Ok(schema_refs)
     }
 
     fn create_workflow_code_workflow(
@@ -259,6 +300,7 @@ impl SessionService {
         session_id: &str,
         workflow_id: &str,
         definition: &WorkflowCodeDefinition,
+        schema_refs: &BTreeMap<String, String>,
     ) -> Result<(), DaemonError> {
         let session =
             self.store
@@ -276,10 +318,14 @@ impl SessionService {
         if let Some(value) = definition.workflow.flush_agent_context_before_run {
             workflow.set_flush_agent_context_before_run(value);
         }
-        workflow.set_run_output_schema_ref(definition.workflow.run_output_schema.clone());
-        workflow.set_intermediate_output_schema_ref(
-            definition.workflow.intermediate_output_schema.clone(),
-        );
+        workflow.set_run_output_schema_ref(resolve_workflow_code_schema_ref(
+            definition.workflow.run_output_schema.as_deref(),
+            schema_refs,
+        ));
+        workflow.set_intermediate_output_schema_ref(resolve_workflow_code_schema_ref(
+            definition.workflow.intermediate_output_schema.as_deref(),
+            schema_refs,
+        ));
         Ok(())
     }
 
@@ -289,6 +335,7 @@ impl SessionService {
         workflow_id: &str,
         node_id: &str,
         node: &crate::workflow_code::WorkflowCodeNodeDefinition,
+        schema_refs: &BTreeMap<String, String>,
     ) -> Result<(), DaemonError> {
         if node.instructions.is_some() {
             self.update_workflow_node_instructions(
@@ -317,7 +364,10 @@ impl SessionService {
                 session_id,
                 workflow_id,
                 node_id,
-                node.intermediate_output_schema.clone(),
+                resolve_workflow_code_schema_ref(
+                    node.intermediate_output_schema.as_deref(),
+                    schema_refs,
+                ),
             )?;
         }
         if node.max_turns.is_some() {
@@ -395,6 +445,18 @@ impl SessionService {
         }
         Ok(())
     }
+}
+
+fn resolve_workflow_code_schema_ref(
+    schema_ref: Option<&str>,
+    schema_refs: &BTreeMap<String, String>,
+) -> Option<String> {
+    schema_ref.map(|schema_ref| {
+        schema_refs
+            .get(schema_ref)
+            .cloned()
+            .unwrap_or_else(|| schema_ref.to_string())
+    })
 }
 
 fn workflow_code_canvas_patches(

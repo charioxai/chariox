@@ -9,6 +9,7 @@ impl SessionService {
             host_daemon_id: config.daemon_id.clone(),
             prompt_id_allocator: PromptIdAllocator::default(),
             next_workflow_number: 0,
+            next_workflow_schema_number: 0,
             next_workflow_endpoint_number: 0,
             next_workflow_node_number: 0,
             next_workflow_edge_number: 0,

@@ -236,14 +236,7 @@ pub(super) fn validate_workflow_edge_handoff(
         Err(message) => return failure(message),
     };
 
-    let schema_source = std::fs::read_to_string(schema_ref)
-        .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"));
-    let schema_value = match schema_source {
-        Ok(source) => serde_json::from_str::<Value>(&source)
-            .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}")),
-        Err(message) => return failure(message),
-    };
-    let schema_value = match schema_value {
+    let schema_value = match workflow_schema_value(workflow, schema_ref) {
         Ok(value) => value,
         Err(message) => return failure(message),
     };
@@ -267,6 +260,16 @@ pub(super) fn validate_workflow_edge_handoff(
     }
 
     Ok(None)
+}
+
+fn workflow_schema_value(workflow: &WorkflowDefinition, schema_ref: &str) -> Result<Value, String> {
+    if let Some(schema) = workflow.schema(schema_ref) {
+        return Ok(schema.schema().clone());
+    }
+    let schema_source = std::fs::read_to_string(schema_ref)
+        .map_err(|error| format!("schema ref `{schema_ref}` could not be read: {error}"))?;
+    serde_json::from_str::<Value>(&schema_source)
+        .map_err(|error| format!("schema ref `{schema_ref}` is not valid JSON: {error}"))
 }
 
 pub fn classify_workflow_failure_kind(
@@ -423,6 +426,14 @@ impl SessionService {
         format!(
             "{:016x}",
             unix_epoch_ms() ^ self.next_workflow_endpoint_number.rotate_left(9)
+        )
+    }
+
+    pub(super) fn next_workflow_schema_id(&mut self) -> String {
+        self.next_workflow_schema_number = self.next_workflow_schema_number.wrapping_add(1);
+        format!(
+            "{:016x}",
+            unix_epoch_ms() ^ self.next_workflow_schema_number.rotate_left(21)
         )
     }
 

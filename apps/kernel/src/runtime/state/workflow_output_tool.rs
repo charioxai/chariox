@@ -29,11 +29,13 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
-        let warning = crate::transport::runtime_tools::validate_workflow_handoff_schema(
-            &args.handoff_schema_ref,
-            &args.handoff_json,
-        )
-        .err();
+        let warning = self
+            .validate_workflow_runtime_schema_ref(
+                context,
+                &args.handoff_schema_ref,
+                &args.handoff_json,
+            )
+            .err();
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
@@ -98,7 +100,8 @@ impl KernelRuntimeOwnedState {
             context.workflow_intermediate_output_schema_ref.as_deref()
         };
         let warning = schema_ref.and_then(|schema_ref| {
-            crate::transport::runtime_tools::validate_workflow_handoff_schema(
+            self.validate_workflow_runtime_schema_ref(
+                context,
                 schema_ref,
                 &args.workflow_output_json,
             )
@@ -255,6 +258,42 @@ impl KernelRuntimeOwnedState {
             },
             dispatches,
         ))
+    }
+
+    fn validate_workflow_runtime_schema_ref(
+        &self,
+        context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+        schema_ref: &str,
+        output_json: &str,
+    ) -> Result<(), String> {
+        let workflow_schema = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)
+            .ok()
+            .and_then(|workflow_run| {
+                self.session_store
+                    .read()
+                    .resolve_workflow_ref(&context.session_id, workflow_run.workflow_id())
+                    .ok()
+            })
+            .and_then(|workflow| {
+                workflow
+                    .schema(schema_ref)
+                    .map(|schema| schema.schema().clone())
+            });
+        if let Some(schema) = workflow_schema {
+            crate::transport::runtime_tools::validate_json_output_schema(
+                schema_ref,
+                &schema,
+                output_json,
+            )
+        } else {
+            crate::transport::runtime_tools::validate_workflow_handoff_schema(
+                schema_ref,
+                output_json,
+            )
+        }
     }
 
     fn workflow_publication_prompt_waits_for_provider_completion(
