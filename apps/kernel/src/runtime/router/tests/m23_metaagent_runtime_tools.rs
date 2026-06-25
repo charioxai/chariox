@@ -431,6 +431,47 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .and_then(serde_json::Value::as_str),
         Some("entry")
     );
+    let run_workflow_id = run
+        .payload
+        .pointer("/WorkflowCodeRun/result/apply/apply/workflow_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("run response should include generated workflow id");
+    let run_endpoint_id = run
+        .payload
+        .pointer("/WorkflowCodeRun/result/invocation/endpoint/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("run response should include invoked endpoint id");
+    let run_id = run
+        .payload
+        .pointer("/WorkflowCodeRun/result/invocation/workflow_run/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("run response should include workflow run id");
+    let durable_events = {
+        let app = router.app.lock().await;
+        app.durable_state_store()
+            .load_events_after(0)
+            .expect("durable state events should load")
+    };
+    let run_event = durable_events
+        .iter()
+        .find(|event| {
+            event.kind == "workflow_code.run"
+                && event.subject_id.as_deref() == Some(run_workflow_id)
+        })
+        .expect("meta workflow-code run should persist a durable workflow-code run event");
+    assert_eq!(run_event.payload["session_id"], session.id());
+    assert_eq!(
+        run_event.payload["caller_user_id"],
+        metaagent.owner_user_id()
+    );
+    assert_eq!(
+        run_event.payload["controlled_by_metaagent_id"],
+        metaagent.id()
+    );
+    assert_eq!(run_event.payload["outcome"], "invoked");
+    assert_eq!(run_event.payload["workflow_id"], run_workflow_id);
+    assert_eq!(run_event.payload["endpoint_id"], run_endpoint_id);
+    assert_eq!(run_event.payload["workflow_run_id"], run_id);
 
     let read = router
         .runtime_state

@@ -349,6 +349,31 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .workflow_runs()
         .iter()
         .any(|run| run.id() == workflow_run.id()));
+    let durable_events = harness.with_app(|app| {
+        app.durable_state_store()
+            .load_events_after(0)
+            .expect("durable state events should load")
+    });
+    assert!(durable_events
+        .iter()
+        .any(|event| event.kind == "workflow_code.applied"
+            && event.subject_id.as_deref() == Some(workflow.id())));
+    let run_event = durable_events
+        .iter()
+        .find(|event| {
+            event.kind == "workflow_code.run" && event.subject_id.as_deref() == Some(workflow.id())
+        })
+        .expect("workflow-code run should persist a durable audit event");
+    assert_eq!(run_event.payload["session_id"], session.id());
+    assert_eq!(run_event.payload["caller_user_id"], "local");
+    assert_eq!(
+        run_event.payload["controlled_by_metaagent_id"],
+        serde_json::Value::Null
+    );
+    assert_eq!(run_event.payload["outcome"], "invoked");
+    assert_eq!(run_event.payload["workflow_id"], workflow.id());
+    assert_eq!(run_event.payload["endpoint_id"], endpoint_from_run.id());
+    assert_eq!(run_event.payload["workflow_run_id"], workflow_run.id());
 
     let provider_run_id = harness.wait_for_active_provider_run(session.id());
     let runtime_mcp_auth_token = harness.with_app(|app| {

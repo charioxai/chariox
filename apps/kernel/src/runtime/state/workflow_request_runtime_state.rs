@@ -497,12 +497,50 @@ impl KernelRuntimeState {
             }),
             Err(error) => Err(error),
         };
+        if let Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun { result, .. }) = &result {
+            self.persist_workflow_code_run_event(
+                &session_id,
+                &caller_user_id,
+                caller_metaagent_id,
+                result,
+            );
+        }
         let session = result
             .as_ref()
             .ok()
             .and_then(workflow_response_session)
             .or(session);
         (result, session)
+    }
+
+    pub(crate) fn persist_workflow_code_run_event(
+        &self,
+        session_id: &str,
+        caller_user_id: &str,
+        controlled_by_metaagent_id: Option<&str>,
+        result: &crate::workflow_code::WorkflowCodeRunResult,
+    ) {
+        let payload = workflow_code_run_event_payload(
+            session_id,
+            caller_user_id,
+            controlled_by_metaagent_id,
+            result,
+        );
+        if let Err(error) = self.owned.durable_state_store.append_event(
+            "workflow_code.run",
+            Some(result.apply.apply.workflow_id.clone()),
+            payload,
+        ) {
+            crate::logging::warn_with_fields(
+                "workflow_code.run",
+                "failed to persist workflow-code run audit",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "workflow_id": &result.apply.apply.workflow_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     async fn execute_workflow_code_artifact_create_request(
@@ -776,6 +814,45 @@ fn reject_invalid_workflow_code_artifact_validation(
         operation,
         message: format!("workflow-code artifact validation failed: {diagnostics}"),
     })
+}
+
+fn workflow_code_run_event_payload(
+    session_id: &str,
+    caller_user_id: &str,
+    controlled_by_metaagent_id: Option<&str>,
+    result: &crate::workflow_code::WorkflowCodeRunResult,
+) -> serde_json::Value {
+    match &result.invocation {
+        crate::workflow_code::WorkflowCodeRunInvocation::Started {
+            workflow_run,
+            workflow,
+            endpoint,
+        } => serde_json::json!({
+            "session_id": session_id,
+            "caller_user_id": caller_user_id,
+            "controlled_by_metaagent_id": controlled_by_metaagent_id,
+            "outcome": "invoked",
+            "workflow_id": workflow.id(),
+            "endpoint_id": endpoint.id(),
+            "workflow_run_id": workflow_run.id(),
+            "apply": &result.apply.apply,
+        }),
+        crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
+            queued_prompt,
+            workflow,
+            endpoint,
+        } => serde_json::json!({
+            "session_id": session_id,
+            "caller_user_id": caller_user_id,
+            "controlled_by_metaagent_id": controlled_by_metaagent_id,
+            "outcome": "enqueued",
+            "workflow_id": workflow.id(),
+            "endpoint_id": endpoint.id(),
+            "queued_prompt_id": queued_prompt.id(),
+            "queue_id": queued_prompt.queue_id(),
+            "apply": &result.apply.apply,
+        }),
+    }
 }
 
 fn workflow_code_endpoint_ref(

@@ -968,7 +968,7 @@ impl KernelRuntimeState {
                 agent.owner_user_id(),
             )
             .await;
-        match invoke_response {
+        let response = match invoke_response {
             Ok(crate::local::LocalDaemonResponse::WorkflowRunInvoked {
                 workflow_run,
                 workflow,
@@ -1006,7 +1006,16 @@ impl KernelRuntimeState {
                 message: "workflow endpoint invocation returned an unexpected response".to_string(),
             }),
             Err(error) => Err(error),
+        }?;
+        if let crate::local::LocalDaemonResponse::WorkflowCodeRun { result, .. } = &response {
+            self.persist_workflow_code_run_event(
+                session.id(),
+                agent.owner_user_id(),
+                Some(agent.id()),
+                result,
+            );
         }
+        Ok(response)
     }
 
     async fn meta_workflow_code_apply_artifact_result(
