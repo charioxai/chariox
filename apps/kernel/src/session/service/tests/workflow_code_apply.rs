@@ -9,6 +9,16 @@ use crate::workflow_code::{
     WORKFLOW_CODE_SCHEMA_VERSION,
 };
 
+fn completion_with_message(message: impl Into<String>) -> WorkflowCompletionSnapshot {
+    WorkflowCompletionSnapshot::new(
+        "done",
+        Some(crate::session::WorkflowOutputPayload::new(
+            message.into(),
+            Vec::new(),
+        )),
+    )
+}
+
 fn workflow_code_definition() -> WorkflowCodeDefinition {
     WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
@@ -258,6 +268,248 @@ fn applies_workflow_code_definition_to_session_primitives() {
     assert!(layout
         .edges
         .contains_key(report.edge_ids.get("planner_to_worker").expect("edge id")));
+}
+
+#[test]
+fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(
+        &mut service,
+        session.id(),
+        &["router-agent", "worker-a-agent", "worker-b-agent"],
+    );
+
+    let definition = WorkflowCodeDefinition {
+        schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
+        workflow: WorkflowCodeWorkflow {
+            alias: Some("coded_router".to_string()),
+            flush_agent_context_before_run: None,
+            max_concurrent: Some(2),
+            run_output_schema: None,
+            intermediate_output_schema: None,
+        },
+        schemas: Vec::new(),
+        nodes: vec![
+            WorkflowCodeNodeDefinition {
+                handle: "router".to_string(),
+                agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                    alias: Some("router".to_string()),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                    account_profile: None,
+                }),
+                public_label: Some("Router".to_string()),
+                instructions: Some("Route the task to exactly one worker.".to_string()),
+                can_complete_workflow_run: None,
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema: None,
+                max_turns: None,
+                extensions: Vec::new(),
+                canvas: None,
+            },
+            WorkflowCodeNodeDefinition {
+                handle: "worker_a".to_string(),
+                agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                    alias: Some("worker-a".to_string()),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                    account_profile: None,
+                }),
+                public_label: Some("Worker A".to_string()),
+                instructions: None,
+                can_complete_workflow_run: Some(true),
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema: None,
+                max_turns: None,
+                extensions: Vec::new(),
+                canvas: None,
+            },
+            WorkflowCodeNodeDefinition {
+                handle: "worker_b".to_string(),
+                agent: WorkflowCodeAgentBinding::Create(WorkflowCodeAgentCreate {
+                    alias: Some("worker-b".to_string()),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                    account_profile: None,
+                }),
+                public_label: Some("Worker B".to_string()),
+                instructions: None,
+                can_complete_workflow_run: Some(true),
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema: None,
+                max_turns: None,
+                extensions: Vec::new(),
+                canvas: None,
+            },
+        ],
+        edges: vec![
+            WorkflowCodeEdgeDefinition {
+                handle: "router_to_a".to_string(),
+                from_node: "router".to_string(),
+                to_node: "worker_a".to_string(),
+                source_side: None,
+                target_side: None,
+                handoff_schema: None,
+                validation_policy: None,
+                canvas: None,
+            },
+            WorkflowCodeEdgeDefinition {
+                handle: "router_to_b".to_string(),
+                from_node: "router".to_string(),
+                to_node: "worker_b".to_string(),
+                source_side: None,
+                target_side: None,
+                handoff_schema: None,
+                validation_policy: None,
+                canvas: None,
+            },
+        ],
+        endpoints: vec![WorkflowCodeEndpointDefinition {
+            handle: "entry".to_string(),
+            entry_node: "router".to_string(),
+            alias: Some("entry".to_string()),
+            canvas: None,
+        }],
+        queues: Vec::new(),
+        watchdogs: Vec::new(),
+    };
+    let agent_ids = BTreeMap::from([
+        ("router".to_string(), "router-agent".to_string()),
+        ("worker_a".to_string(), "worker-a-agent".to_string()),
+        ("worker_b".to_string(), "worker-b-agent".to_string()),
+    ]);
+    let report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &WorkflowCodeLimitsConfig::default(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+        )
+        .expect("workflow-code should apply");
+    let edge_a_id = report
+        .edge_ids
+        .get("router_to_a")
+        .expect("router to worker a edge id");
+    let worker_a_node_id = report
+        .node_ids
+        .get("worker_a")
+        .expect("worker a node id")
+        .clone();
+    let worker_b_node_id = report
+        .node_ids
+        .get("worker_b")
+        .expect("worker b node id")
+        .clone();
+    let endpoint_id = report.endpoint_ids.get("entry").expect("entry endpoint id");
+
+    let workflow_run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            &report.workflow_id,
+            endpoint_id,
+            Some("classify this task".to_string()),
+        )
+        .expect("workflow run should create");
+    service
+        .start_workflow_node_run(
+            session.id(),
+            workflow_run.id(),
+            workflow_run.node_runs()[0].id(),
+        )
+        .expect("router should start");
+    let routed = serde_json::json!({
+        "workflow_handoffs": [{
+            "edge_id": edge_a_id,
+            "summary": "send to worker a",
+            "output": { "message": { "task": "only a" } }
+        }]
+    });
+
+    let completion = service
+        .complete_workflow_node_run(
+            session.id(),
+            workflow_run.id(),
+            workflow_run.node_runs()[0].id(),
+            Some(completion_with_message(routed.to_string())),
+            None,
+        )
+        .expect("router completion should route only to the selected edge");
+
+    assert_eq!(completion.dispatches.len(), 1);
+    assert_eq!(
+        completion.dispatches[0].node_run.node_id(),
+        worker_a_node_id
+    );
+    assert_ne!(
+        completion.dispatches[0].node_run.node_id(),
+        worker_b_node_id
+    );
+    let payload: WorkflowHandoffPayload =
+        serde_json::from_str(completion.dispatches[0].messages[0].handoff_payload())
+            .expect("handoff payload should deserialize");
+    let output = payload
+        .completion()
+        .and_then(|snapshot| snapshot.output())
+        .expect("payload should include routed output");
+    assert_eq!(output.message(), r#"{"task":"only a"}"#);
+
+    let second_run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            &report.workflow_id,
+            endpoint_id,
+            Some("classify another task".to_string()),
+        )
+        .expect("second workflow run should create");
+    service
+        .start_workflow_node_run(
+            session.id(),
+            second_run.id(),
+            second_run.node_runs()[0].id(),
+        )
+        .expect("router should start for second run");
+    let routed_by_target = serde_json::json!({
+        "workflow_handoffs": [{
+            "to_node_id": worker_b_node_id.clone(),
+            "summary": "send to worker b",
+            "message": "target-node selected task"
+        }]
+    });
+
+    let second_completion = service
+        .complete_workflow_node_run(
+            session.id(),
+            second_run.id(),
+            second_run.node_runs()[0].id(),
+            Some(completion_with_message(routed_by_target.to_string())),
+            None,
+        )
+        .expect("router completion should route by selected target node");
+
+    assert_eq!(second_completion.dispatches.len(), 1);
+    assert_eq!(
+        second_completion.dispatches[0].node_run.node_id(),
+        worker_b_node_id
+    );
+    let second_payload: WorkflowHandoffPayload =
+        serde_json::from_str(second_completion.dispatches[0].messages[0].handoff_payload())
+            .expect("second handoff payload should deserialize");
+    let second_output = second_payload
+        .completion()
+        .and_then(|snapshot| snapshot.output())
+        .expect("second payload should include routed output");
+    assert_eq!(second_output.message(), "target-node selected task");
 }
 
 #[test]
