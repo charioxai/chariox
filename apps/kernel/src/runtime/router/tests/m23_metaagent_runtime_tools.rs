@@ -1096,6 +1096,188 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" });
 }
 
 #[tokio::test]
+async fn metaagent_workflow_code_applies_canonical_fan_out_pattern() {
+    if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
+        eprintln!(
+            "skipping meta workflow-code fan-out pattern test because Node.js is unavailable: {error}"
+        );
+        return;
+    }
+
+    let env = TestMetaRuntimeEnv::new("workflow-code-fan-out-pattern");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("meta")
+                .with_role(crate::agent::AgentRole::Meta),
+        )
+        .expect("metaagent should spawn");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let fan_out_example = crate::workflow_code::WORKFLOW_CODE_PATTERN_EXAMPLES
+        .iter()
+        .find(|example| example.slug == "fan-out-synthesize")
+        .expect("fan-out pattern example should be bundled");
+
+    let validated = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL,
+            serde_json::json!({
+                "source": fan_out_example.source,
+                "provider_rebindings": [
+                    { "node": "planner", "provider": "dev-stub", "model": "default" },
+                    { "node": "worker_a", "provider": "dev-stub", "model": "default" },
+                    { "node": "worker_b", "provider": "dev-stub", "model": "default" },
+                    { "node": "synthesizer", "provider": "dev-stub", "model": "default" }
+                ]
+            }),
+        )
+        .await
+        .expect("metaagent should validate fan-out workflow-code source");
+    assert!(validated.ok, "{:?}", validated.payload);
+    assert_eq!(
+        validated
+            .payload
+            .pointer("/WorkflowCodeValidated/result/validation/ok")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let applied = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL,
+            serde_json::json!({
+                "source": fan_out_example.source,
+                "provider_rebindings": [
+                    { "node": "planner", "provider": "dev-stub", "model": "default" },
+                    { "node": "worker_a", "provider": "dev-stub", "model": "default" },
+                    { "node": "worker_b", "provider": "dev-stub", "model": "default" },
+                    { "node": "synthesizer", "provider": "dev-stub", "model": "default" }
+                ]
+            }),
+        )
+        .await
+        .expect("metaagent should apply fan-out workflow-code source");
+    assert!(applied.ok, "{:?}", applied.payload);
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/compile/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("pattern-fan-out-synthesize")
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/node_ids")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len),
+        Some(4)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/agent_ids")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len),
+        Some(4)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/edge_ids")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len),
+        Some(4)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/schema_refs")
+            .and_then(serde_json::Value::as_object)
+            .map(serde_json::Map::len),
+        Some(3)
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/endpoint_ids/entry")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        true
+    );
+    assert_eq!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/result/apply/canvas_layout_applied")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    let workflow_id = applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/workflow_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("apply should return workflow id");
+    let generated_agent_ids = applied
+        .payload
+        .pointer("/WorkflowCodeApplied/result/apply/agent_ids")
+        .and_then(serde_json::Value::as_object)
+        .expect("apply should return generated agent ids");
+    for handle in ["planner", "worker_a", "worker_b", "synthesizer"] {
+        let agent_id = generated_agent_ids
+            .get(handle)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("missing generated agent id for {handle}"));
+        assert!(
+            applied
+                .payload
+                .pointer("/WorkflowCodeApplied/session/agents")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|agents| agents.iter().any(|agent| {
+                    agent.get("id").and_then(serde_json::Value::as_str) == Some(agent_id)
+                        && agent.get("provider").and_then(serde_json::Value::as_str)
+                            == Some("dev-stub")
+                        && agent.get("model").and_then(serde_json::Value::as_str) == Some("default")
+                        && agent
+                            .get("controlled_by_metaagent_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(metaagent.id())
+                })),
+            "generated {handle} agent should be present with rebound provider/model: {:?}",
+            applied.payload
+        );
+    }
+    assert!(
+        applied
+            .payload
+            .pointer("/WorkflowCodeApplied/session/workflows")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|workflows| workflows.iter().any(|workflow| {
+                workflow.get("id").and_then(serde_json::Value::as_str) == Some(workflow_id)
+                    && workflow
+                        .get("controlled_by_metaagent_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(metaagent.id())
+            })),
+        "fan-out workflow should appear in session snapshot as metaagent-controlled"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_binding() {
     if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
         eprintln!(
