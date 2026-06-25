@@ -1,6 +1,6 @@
 use super::*;
 use crate::local::{
-    CreateWorkflowPublicationRequest, ExportWorkflowPublicationPackageRequest,
+    CreateWorkflowPublicationRequest, ExportWorkflowPublicationPackageRequest, InstallSkillRequest,
     RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
@@ -513,6 +513,99 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     let final_json: serde_json::Value =
         serde_json::from_str(final_output.message()).expect("final output message should be JSON");
     assert_eq!(final_json["value"], 1842);
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
+fn local_request_api_applies_workflow_code_extensions_to_generated_agents() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping workflow-code extension local API test because node is not available");
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-extension-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let skill_dir = workspace_root.join("workflow-code-skill");
+    std::fs::create_dir_all(&skill_dir).expect("test skill directory should be created");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: workflow-code-skill\ndescription: Workflow-code generated agent extension fixture.\n---\nUse this skill only in workflow-code local API tests.\n",
+    )
+    .expect("test skill should be written");
+
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-extension"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    match harness
+        .dispatch(LocalDaemonRequest::InstallSkill(InstallSkillRequest {
+            workspace_id: Some(workspace_root.display().to_string()),
+            source_path: skill_dir,
+        }))
+        .expect("test skill should install")
+    {
+        LocalDaemonResponse::SkillInstalled { skill, .. } => {
+            assert_eq!(skill.name, "workflow-code-skill");
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let source = r#"
+workflow.define({ alias: "scripted_extension_flow" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "extension-worker", provider: "dev-stub", model: "default" }),
+  publicLabel: "Worker",
+  instructions: "Use the granted skill if needed.",
+  canCompleteWorkflowRun: true,
+  extensions: [
+    { kind: "skill", name: "workflow-code-skill" }
+  ]
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+    let applied = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("workflow-code with satisfied extension requirement should apply");
+    let LocalDaemonResponse::WorkflowCodeApplied {
+        result,
+        session: applied_session,
+    } = applied
+    else {
+        panic!("unexpected local response");
+    };
+    assert!(result.compile.validation.ok);
+    let worker_agent_id = result
+        .apply
+        .agent_ids
+        .get("worker")
+        .expect("worker agent id should be reported");
+    assert!(applied_session.agents().iter().any(|agent| {
+        agent.id() == worker_agent_id
+            && agent.alias() == Some("extension-worker")
+            && agent.has_extension_grant(
+                crate::extension::ExtensionKind::Skill,
+                "workflow-code-skill",
+            )
+    }));
 
     std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
 }
