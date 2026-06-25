@@ -744,7 +744,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       <h2>Metaagent Authoring</h2>
       <p>
         Metaagents are normally in plan mode, so they should not depend on direct file writes or shell access
-        to author workflow code. The kernel should expose runtime MCP endpoints that create and manage
+        to author workflow code. The kernel exposes runtime MCP endpoints that create and manage
         workflow-code artifacts.
       </p>
       <table>
@@ -757,7 +757,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
         <tbody>
           <tr>
             <td><code>arroba.meta.workflow_code.create</code></td>
-            <td>Create a saved workflow-code artifact from source, language, name, and optional description.</td>
+            <td>Create a saved workflow-code artifact from name, source, optional language, and optional Node.js path.</td>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.update</code></td>
@@ -798,8 +798,8 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
         </tbody>
       </table>
       <p>
-        Metaagents should also receive a compact workflow-code authoring guide, probably as an automatically
-        granted skill. That guide should include the DSL reference, current kernel limits, examples, routing
+        Metaagents receive compact workflow-code authoring guides through the built-in meta guide tools.
+        Those guides include the DSL reference, current kernel limits, examples, routing
         rules, schema rules, and the required validate-before-apply loop.
       </p>
 
