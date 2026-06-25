@@ -277,6 +277,46 @@ fn applies_workflow_code_definition_to_session_primitives() {
 }
 
 #[test]
+fn workflow_code_apply_uses_configured_default_concurrency_when_script_omits_it() {
+    let mut config = test_config();
+    config.user_config.workflow.code = Some(crate::config::UserWorkflowCodeConfig {
+        max_concurrent: Some(7),
+        ..Default::default()
+    });
+    let mut service = SessionService::new(&config);
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+
+    let mut definition = workflow_code_definition();
+    definition.workflow.max_concurrent = None;
+    let agent_ids = BTreeMap::from([
+        ("planner".to_string(), "agent-1".to_string()),
+        ("worker".to_string(), "agent-2".to_string()),
+    ]);
+
+    let report = service
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &agent_ids,
+            &config.workflow_code_limits(),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+            None,
+        )
+        .expect("workflow-code should apply with configured default concurrency");
+
+    let session = service
+        .get_session(session.id())
+        .expect("session should still exist");
+    let workflow = session
+        .workflow(&report.workflow_id)
+        .expect("workflow should exist");
+    assert_eq!(workflow.max_concurrent(), 7);
+}
+
+#[test]
 fn workflow_code_apply_preserves_node_intermediate_schema_override() {
     let mut service = SessionService::new(&test_config());
     let session = service
