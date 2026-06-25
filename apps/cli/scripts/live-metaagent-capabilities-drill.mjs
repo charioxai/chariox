@@ -250,6 +250,65 @@ async function assertRuntimeToolDenied(providerRun, name, args, label) {
   return result
 }
 
+async function verifyMetaWorkflowCodeGuides(metaRun) {
+  const guideSearch = await callRuntimeTool(metaRun, 'arroba.meta.search_guides', {
+    query: 'workflow code authoring apply run export import',
+    tag: 'workflow-code',
+    limit: 5,
+  })
+  assert(guideSearch.ok, 'metaagent should discover workflow-code authoring guides', guideSearch.payload)
+  const searchedGuides = guideSearch.payload?.guides ?? []
+  assert(
+    searchedGuides.some((guide) => guide.id === 'workflows/workflow-code-authoring'),
+    'workflow-code guide search should return the authoring guide',
+    guideSearch.payload,
+  )
+  assert(
+    searchedGuides.every((guide) => guide.body === undefined),
+    'workflow-code guide search should return summaries without guide bodies',
+    guideSearch.payload,
+  )
+
+  const listedGuides = await callRuntimeTool(metaRun, 'arroba.meta.list_guides', {
+    command: 'arroba.meta.workflow_code.apply',
+    limit: 10,
+  })
+  assert(listedGuides.ok, 'metaagent should list guides by workflow-code command', listedGuides.payload)
+  assert(
+    (listedGuides.payload?.guides ?? []).some((guide) => guide.id === 'workflows/workflow-code-authoring'),
+    'workflow-code guide list should include the authoring guide for apply',
+    listedGuides.payload,
+  )
+
+  const authoringGuide = await callRuntimeTool(metaRun, 'arroba.meta.read_guide', {
+    guide: 'workflows/workflow-code-authoring',
+  })
+  assert(authoringGuide.ok, 'metaagent should read the workflow-code authoring guide', authoringGuide.payload)
+  const authoringBody = authoringGuide.payload?.body ?? ''
+  assert(
+    authoringBody.includes('workflow.node') && authoringBody.includes('workflow.endpoint') && authoringBody.includes('provider_rebindings'),
+    'workflow-code authoring guide should teach the real builder API and portable provider rebinding',
+    authoringGuide.payload,
+  )
+
+  const patternGuide = await callRuntimeTool(metaRun, 'arroba.meta.read_guide', {
+    guide: 'workflows/workflow-code-patterns',
+  })
+  assert(patternGuide.ok, 'metaagent should read the workflow-code pattern guide', patternGuide.payload)
+  const patternBody = patternGuide.payload?.body ?? ''
+  assert(
+    patternBody.includes('```js') && patternBody.includes('workflow.define') && patternBody.includes('workflow.edge'),
+    'workflow-code pattern guide should embed runnable JavaScript examples',
+    patternGuide.payload,
+  )
+
+  return {
+    searched: searchedGuides.map((guide) => guide.id),
+    authoringGuide: authoringGuide.payload?.id,
+    patternGuide: patternGuide.payload?.id,
+  }
+}
+
 async function waitForInteraction(client, requests, sessionId, agentId, title, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs
   let last = null
@@ -511,6 +570,9 @@ async function main() {
       'arroba.meta.update_plan',
       'arroba.meta.complete_task',
       'arroba.meta.mark_blocked',
+      'arroba.meta.search_guides',
+      'arroba.meta.list_guides',
+      'arroba.meta.read_guide',
       'arroba.read_artifact',
       'arroba.search_recall',
       'arroba.query_recall',
@@ -590,6 +652,9 @@ async function main() {
     const overview = await callRuntimeTool(metaRun, 'arroba.meta.session_overview')
     assert(overview.ok, 'session_overview should succeed', overview.payload)
     assert((overview.payload?.agents?.owned ?? []).some((agent) => agent.id === worker.id), 'session_overview should include owned worker', overview.payload)
+
+    const workflowCodeGuideSummary = await verifyMetaWorkflowCodeGuides(metaRun)
+    log('workflow-code-guides-passed', workflowCodeGuideSummary)
 
     const workflowCodeSummary = await verifyMetaWorkflowCodeTools(metaRun)
     log('workflow-code-capabilities-passed', workflowCodeSummary)
