@@ -237,6 +237,66 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code(
         )
         .expect("metaagent should spawn");
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let guide_search = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_SEARCH_GUIDES_TOOL,
+            serde_json::json!({
+                "query": "workflow code javascript builder",
+                "tag": "workflow-code",
+                "command": "arroba.meta.workflow_code.create",
+                "limit": 5
+            }),
+        )
+        .await
+        .expect("metaagent should discover workflow-code authoring guides");
+    assert!(guide_search.ok, "{:?}", guide_search.payload);
+    assert!(
+        guide_search
+            .payload
+            .get("guides")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|guides| guides.iter().any(|guide| {
+                guide.get("id").and_then(serde_json::Value::as_str)
+                    == Some("workflows/workflow-code-authoring")
+                    && guide.get("body").is_none()
+            })),
+        "workflow-code guide search should surface authoring guide summaries without bodies: {:?}",
+        guide_search.payload
+    );
+    let authoring_guide = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_READ_GUIDE_TOOL,
+            serde_json::json!({
+                "guide": "workflows/workflow-code-authoring"
+            }),
+        )
+        .await
+        .expect("metaagent should read workflow-code authoring guide");
+    assert!(authoring_guide.ok, "{:?}", authoring_guide.payload);
+    let authoring_body = authoring_guide
+        .payload
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .expect("authoring guide should include body");
+    for expected in [
+        "workflow.define(options)",
+        "workflow.newAgent(options)",
+        "workflow.schemaFromFile(options)",
+        "arroba.meta.workflow_code.validate",
+        "arroba.meta.workflow_code.apply",
+        "arroba.meta.workflow_code.run",
+    ] {
+        assert!(
+            authoring_body.contains(expected),
+            "authoring guide should teach `{expected}`"
+        );
+    }
     let source = r#"
 workflow.define({ alias: "meta_scripted_flow", maxConcurrent: 2 })
 const final = workflow.schemaFromFile({
