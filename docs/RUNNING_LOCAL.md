@@ -549,14 +549,14 @@ Remote leased agents that are working in the same repo/branch as the home sessio
 
 ## 14. Workflow Queues
 
-Workflow prompt queue limits are owned by the kernel config and read from the Arroba user config TOML:
+Workflow prompt queue limits are owned by the kernel config and read from the Arroba user config TOML. If unset, the kernel defaults to `1024` queues per workflow.
 
 ```toml
 [workflow]
 max_queues_per_workflow = 10
 ```
 
-The kernel rejects workflow queue creation if this setting is missing or if a workflow already has the configured number of queues.
+The kernel rejects workflow queue creation if this setting is zero or if a workflow already has the configured number of queues.
 
 ## 15. Current Limitations
 

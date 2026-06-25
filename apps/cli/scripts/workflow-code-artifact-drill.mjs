@@ -241,7 +241,16 @@ const reviewer = workflow.node({
 
 workflow.edge(planner, worker, { handle: "planner_to_worker", handoffSchema: handoff, validationPolicy: "warn" });
 workflow.edge(worker, reviewer, { handle: "worker_to_reviewer", handoffSchema: handoff, validationPolicy: "warn" });
-workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+const urgent = workflow.queue({ handle: "urgent", alias: "urgent", priority: 10, enabled: false });
+workflow.watchdog(entry, {
+  handle: "entry_watchdog",
+  queue: urgent,
+  intervalSeconds: 300,
+  invocationPrompt: "Wake the workflow-code artifact drill.",
+  policy: "skip",
+  maxWakeups: 2,
+});
 `.trim()
 }
 
@@ -375,6 +384,8 @@ function defaultToyExpectation(skillName = null) {
     agents: 3,
     edges: 2,
     endpoints: 1,
+    queues: 1,
+    watchdogs: 1,
     requiredSchemas: ['handoff', 'final_output'],
     nodeExtensions: skillName
       ? { planner: [{ kind: 'skill', name: skillName }] }
@@ -388,6 +399,8 @@ function expectationFromDefinition(definition) {
     agents: definition.nodes?.length ?? 0,
     edges: definition.edges?.length ?? 0,
     endpoints: definition.endpoints?.length ?? 0,
+    queues: (definition.queues?.length ?? 0) || 1,
+    watchdogs: definition.watchdogs?.length ?? 0,
     requiredSchemas: (definition.schemas ?? []).map((schema) => schema.handle),
     nodeExtensions: Object.fromEntries(
       (definition.nodes ?? [])
@@ -413,6 +426,8 @@ function validateApplyResult(result, label, expected = defaultToyExpectation()) 
   assert(Object.keys(apply.agent_ids ?? {}).length === expected.agents, `${label} should resolve ${expected.agents} node agents`, apply)
   assert(Object.keys(apply.edge_ids ?? {}).length === expected.edges, `${label} should create ${expected.edges} edges`, apply)
   assert(Object.keys(apply.endpoint_ids ?? {}).length === expected.endpoints, `${label} should create ${expected.endpoints} endpoints`, apply)
+  assert(Object.keys(apply.queue_ids ?? {}).length === (expected.queues ?? 1), `${label} should create ${expected.queues ?? 1} queues`, apply)
+  assert(Object.keys(apply.watchdog_ids ?? {}).length === (expected.watchdogs ?? 0), `${label} should create ${expected.watchdogs ?? 0} watchdogs`, apply)
   for (const schemaHandle of expected.requiredSchemas) {
     assert(apply.schema_refs?.[schemaHandle], `${label} should report schema ${schemaHandle}`, apply)
   }
@@ -429,6 +444,26 @@ function validateSessionProjection(session, apply, label, expected = defaultToyE
       workflow,
       schemaRefs: apply.schema_refs,
     })
+  }
+  for (const [handle, queueId] of Object.entries(apply.queue_ids ?? {})) {
+    const queue = (session.workflow_prompt_queues ?? []).find((entry) => entry.id === queueId)
+    assert(queue, `${label} prompt queue ${handle} should appear in session`, { queueId })
+    assert(queue.workflow_id === apply.workflow_id, `${label} prompt queue ${handle} should belong to workflow`, { queue, apply })
+    if (handle === 'urgent') {
+      assert(queue.alias === 'urgent', `${label} urgent queue alias should be projected`, queue)
+      assert(queue.priority === 10, `${label} urgent queue priority should be projected`, queue)
+      assert(queue.enabled === false, `${label} urgent queue enabled state should be projected`, queue)
+    }
+  }
+  for (const [handle, watchdogId] of Object.entries(apply.watchdog_ids ?? {})) {
+    const watchdog = (session.workflow_watchdogs ?? []).find((entry) => entry.id === watchdogId)
+    assert(watchdog, `${label} watchdog ${handle} should appear in session`, { watchdogId })
+    assert(watchdog.workflow_id === apply.workflow_id, `${label} watchdog ${handle} should belong to workflow`, { watchdog, apply })
+    if (handle === 'entry_watchdog') {
+      assert(watchdog.queue_id === apply.queue_ids?.urgent, `${label} watchdog should target the scripted urgent queue`, { watchdog, apply })
+      assert(watchdog.interval_seconds === 300, `${label} watchdog interval should be projected`, watchdog)
+      assert(watchdog.invocation_prompt === 'Wake the workflow-code artifact drill.', `${label} watchdog prompt should be projected`, watchdog)
+    }
   }
   for (const [handle, agentId] of Object.entries(apply.agent_ids ?? {})) {
     const agent = (session.agents ?? []).find((entry) => entry.id === agentId)

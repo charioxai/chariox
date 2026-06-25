@@ -125,7 +125,7 @@ pub struct SessionService {
     next_workflow_publication_number: u64,
     next_workflow_prompt_queue_number: u64,
     next_workflow_queued_prompt_number: u64,
-    max_workflow_queues_per_workflow: Option<usize>,
+    max_workflow_queues_per_workflow: usize,
     session_default_max_agents: i32,
     workflow_default_max_concurrent: u32,
     next_workspace_link_number: u64,

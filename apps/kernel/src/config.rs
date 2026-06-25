@@ -277,11 +277,11 @@ impl DaemonConfig {
         self.user_config.providers.workspace_live_sync.mode
     }
 
-    pub fn max_workflow_queues_per_workflow(&self) -> Option<usize> {
+    pub fn max_workflow_queues_per_workflow(&self) -> usize {
         self.user_config
             .workflow
             .max_queues_per_workflow
-            .map(|value| value as usize)
+            .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES) as usize
     }
 
     pub fn session_default_max_agents(&self) -> i32 {
@@ -1376,6 +1376,10 @@ unlock_policy = "{unlock_policy}"
         assert_eq!(
             config.session_default_max_agents(),
             crate::session::DEFAULT_SESSION_MAX_AGENTS
+        );
+        assert_eq!(
+            config.max_workflow_queues_per_workflow(),
+            crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES as usize
         );
         assert_eq!(
             limits.max_concurrent,

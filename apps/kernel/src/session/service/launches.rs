@@ -100,12 +100,7 @@ impl SessionService {
         alias: String,
         priority: i32,
     ) -> Result<WorkflowPromptQueueDefinition, DaemonError> {
-        let max_queues =
-            self.max_workflow_queues_per_workflow
-                .ok_or_else(|| DaemonError::InvalidConfig {
-                    field: "workflow.max_queues_per_workflow",
-                    message: "value must be configured in the user config file",
-                })?;
+        let max_queues = self.max_workflow_queues_per_workflow;
         let alias = normalize_workflow_queue_alias(alias)?;
         let queue_id = self.next_workflow_prompt_queue_id();
         let workflow_id = self
