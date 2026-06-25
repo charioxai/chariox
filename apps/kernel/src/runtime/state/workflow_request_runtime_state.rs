@@ -43,8 +43,24 @@ impl KernelRuntimeState {
                 )
                 .await
             }
+            LocalDaemonRequest::ApplyWorkflowCodeArtifact(request) => {
+                self.execute_workflow_code_artifact_apply_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
+            }
             LocalDaemonRequest::RunWorkflowCode(request) => {
                 self.execute_workflow_code_run_request(
+                    request,
+                    &caller_user_id,
+                    caller_metaagent_id.as_deref(),
+                )
+                .await
+            }
+            LocalDaemonRequest::RunWorkflowCodeArtifact(request) => {
+                self.execute_workflow_code_artifact_run_request(
                     request,
                     &caller_user_id,
                     caller_metaagent_id.as_deref(),
@@ -400,6 +416,39 @@ impl KernelRuntimeState {
         (result, session)
     }
 
+    async fn execute_workflow_code_artifact_apply_request(
+        &self,
+        request: crate::local::ApplyWorkflowCodeArtifactRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let caller_user_id = caller_user_id.to_string();
+        let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
+        let session_id = request.session_id.clone();
+        let result = self
+            .with_app_side_effect(move |app| {
+                let result = workflow_code_artifact_apply_result(
+                    app,
+                    &request.session_id,
+                    &request.name,
+                    &request.provider_rebindings,
+                    caller_user_id,
+                    controlled_by_metaagent_id,
+                    crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
+                    "workflow_code_artifact.apply",
+                )?;
+                let session =
+                    crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;
+                Ok(LocalDaemonResponse::WorkflowCodeApplied { result, session })
+            })
+            .await;
+        let session = result.as_ref().ok().and_then(workflow_response_session);
+        (result, session)
+    }
+
     async fn execute_workflow_code_run_request(
         &self,
         request: crate::local::RunWorkflowCodeRequest,
@@ -493,6 +542,114 @@ impl KernelRuntimeState {
             }),
             Ok(_) => Err(DaemonError::LocalTransport {
                 operation: "workflow_code.run",
+                message: "workflow endpoint invocation returned an unexpected response".to_string(),
+            }),
+            Err(error) => Err(error),
+        };
+        if let Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun { result, .. }) = &result {
+            self.persist_workflow_code_run_event(
+                &session_id,
+                &caller_user_id,
+                caller_metaagent_id,
+                result,
+            );
+        }
+        let session = result
+            .as_ref()
+            .ok()
+            .and_then(workflow_response_session)
+            .or(session);
+        (result, session)
+    }
+
+    async fn execute_workflow_code_artifact_run_request(
+        &self,
+        request: crate::local::RunWorkflowCodeArtifactRequest,
+        caller_user_id: &str,
+        caller_metaagent_id: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let caller_user_id = caller_user_id.to_string();
+        let controlled_by_metaagent_id = caller_metaagent_id.map(str::to_string);
+        let session_id = request.session_id.clone();
+        let apply_result = match self
+            .with_app_side_effect({
+                let session_id = session_id.clone();
+                let name = request.name.clone();
+                let provider_rebindings = request.provider_rebindings.clone();
+                let caller_user_id = caller_user_id.clone();
+                move |app| {
+                    workflow_code_artifact_apply_result(
+                        app,
+                        &session_id,
+                        &name,
+                        &provider_rebindings,
+                        caller_user_id,
+                        controlled_by_metaagent_id,
+                        crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
+                        "workflow_code_artifact.run",
+                    )
+                }
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return (Err(error), None),
+        };
+        let endpoint_ref = match workflow_code_endpoint_ref(&apply_result.apply, request.endpoint) {
+            Ok(endpoint_ref) => endpoint_ref,
+            Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
+        };
+        let (invoke_response, session) = self
+            .execute_workflow_invoke_endpoint_request(
+                crate::local::InvokeWorkflowEndpointRequest {
+                    session_id: session_id.clone(),
+                    workflow_ref: apply_result.apply.workflow_id.clone(),
+                    endpoint_ref,
+                    queue_ref: request.queue_ref,
+                    prompt: Some(request.prompt),
+                    publication_invocation: None,
+                },
+                &caller_user_id,
+            )
+            .await;
+        let result = match invoke_response {
+            Ok(crate::local::LocalDaemonResponse::WorkflowRunInvoked {
+                workflow_run,
+                workflow,
+                endpoint,
+                session,
+            }) => Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun {
+                result: crate::workflow_code::WorkflowCodeRunResult {
+                    apply: apply_result,
+                    invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
+                        workflow_run,
+                        workflow,
+                        endpoint,
+                    },
+                },
+                session,
+            }),
+            Ok(crate::local::LocalDaemonResponse::WorkflowPromptEnqueued {
+                queued_prompt,
+                workflow,
+                endpoint,
+                session,
+            }) => Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun {
+                result: crate::workflow_code::WorkflowCodeRunResult {
+                    apply: apply_result,
+                    invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
+                        queued_prompt,
+                        workflow,
+                        endpoint,
+                    },
+                },
+                session,
+            }),
+            Ok(_) => Err(DaemonError::LocalTransport {
+                operation: "workflow_code_artifact.run",
                 message: "workflow endpoint invocation returned an unexpected response".to_string(),
             }),
             Err(error) => Err(error),
@@ -766,6 +923,75 @@ fn workflow_code_registry_for_session(
     Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
         roots,
     ))
+}
+
+fn workflow_code_artifact_apply_result(
+    app: &mut crate::app::DaemonApp,
+    session_id: &str,
+    artifact_name: &str,
+    provider_rebindings: &[crate::workflow_code::WorkflowCodeProviderRebinding],
+    caller_user_id: String,
+    controlled_by_metaagent_id: Option<String>,
+    history_action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
+    operation: &'static str,
+) -> Result<crate::workflow_code::WorkflowCodeCompileAndApplyResult, DaemonError> {
+    let artifact = {
+        let registry = workflow_code_registry_for_session(app, session_id)?;
+        registry
+            .get(artifact_name)?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: format!("workflow-code artifact `{artifact_name}` is not saved"),
+            })?
+    };
+    let limits = app.config().workflow_code_limits();
+    let metaagent_id = controlled_by_metaagent_id.as_deref();
+    let (definition, validation) = crate::app::KernelSessionService::new(app)
+        .validate_workflow_code_definition_with_rebindings(
+            session_id,
+            &artifact.definition,
+            &limits,
+            provider_rebindings,
+            metaagent_id,
+        )?;
+    if !validation.ok {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "workflow-code artifact `{artifact_name}` is invalid for this target kernel: {}",
+                validation
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.code.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        });
+    }
+    let apply = crate::app::KernelSessionService::new(app).apply_workflow_code_definition(
+        session_id,
+        &definition,
+        &limits,
+        caller_user_id.clone(),
+        controlled_by_metaagent_id.clone(),
+    )?;
+    let actor =
+        workflow_code_artifact_actor(&caller_user_id, controlled_by_metaagent_id.as_deref());
+    workflow_code_registry_for_session(app, session_id)?.record_apply_history(
+        artifact_name,
+        actor,
+        history_action,
+        &apply,
+    )?;
+    Ok(crate::workflow_code::WorkflowCodeCompileAndApplyResult {
+        compile: crate::workflow_code::WorkflowCodeCompileResult {
+            definition,
+            validation,
+            logs: String::new(),
+            source_spans: std::collections::BTreeMap::new(),
+        },
+        apply,
+    })
 }
 
 fn workflow_code_schema_import_root_for_session(

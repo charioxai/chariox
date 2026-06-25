@@ -772,7 +772,7 @@ const final = workflow.schemaFromFile({
 workflow.define({ runOutputSchema: final })
 const planner = workflow.node({
   handle: "planner",
-  agent: workflow.newAgent({ alias: "planner", provider: "dev-stub", model: "default" }),
+  agent: workflow.newAgent({ alias: "planner", provider: "codex", model: "gpt-5" }),
   instructions: "Plan."
 })
 workflow.endpoint(planner, { handle: "entry", alias: "entry" })
@@ -936,6 +936,83 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         }
         _ => panic!("unexpected local response"),
     }
+
+    let provider_rebindings = vec![crate::workflow_code::WorkflowCodeProviderRebinding {
+        node: "planner".to_string(),
+        provider: "dev-stub".to_string(),
+        model: Some("default".to_string()),
+        effort: None,
+        account_profile: None,
+    }];
+    let applied = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCodeArtifact(
+            crate::local::ApplyWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: imported_name.clone(),
+                provider_rebindings: provider_rebindings.clone(),
+            },
+        ))
+        .expect("imported workflow-code artifact should apply with provider rebinding");
+    match applied {
+        LocalDaemonResponse::WorkflowCodeApplied {
+            result,
+            session: applied_session,
+        } => {
+            assert_eq!(
+                result.apply.schema_refs.get("final").map(String::as_str),
+                applied_session
+                    .workflows()
+                    .iter()
+                    .find(|workflow| workflow.id() == result.apply.workflow_id)
+                    .and_then(|workflow| workflow.run_output_schema_ref())
+            );
+            let planner_agent_id = result
+                .apply
+                .agent_ids
+                .get("planner")
+                .expect("planner agent id should be reported");
+            assert!(applied_session.agents().iter().any(|agent| {
+                agent.id() == planner_agent_id
+                    && agent.provider() == "dev-stub"
+                    && agent.model() == Some("default")
+            }));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let run = harness
+        .dispatch(LocalDaemonRequest::RunWorkflowCodeArtifact(
+            crate::local::RunWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                name: imported_name.clone(),
+                provider_rebindings,
+                endpoint: Some("entry".to_string()),
+                queue_ref: None,
+                prompt: "Run the portable imported artifact.".to_string(),
+            },
+        ))
+        .expect("imported workflow-code artifact should run with provider rebinding");
+    let run_result = match run {
+        LocalDaemonResponse::WorkflowCodeRun { result, session } => {
+            let planner_agent_id = result
+                .apply
+                .apply
+                .agent_ids
+                .get("planner")
+                .expect("planner run agent id should be reported");
+            assert!(session.agents().iter().any(|agent| {
+                agent.id() == planner_agent_id
+                    && agent.provider() == "dev-stub"
+                    && agent.model() == Some("default")
+            }));
+            result
+        }
+        _ => panic!("unexpected local response"),
+    };
+    assert!(matches!(
+        run_result.invocation,
+        crate::workflow_code::WorkflowCodeRunInvocation::Started { .. }
+    ));
 
     std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
 }
