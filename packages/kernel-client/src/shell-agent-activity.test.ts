@@ -125,6 +125,23 @@ test("sessionPromptForAgent rejects legacy prompts that do not match projected a
   assert.equal(sessionPromptForAgent(session, "agent-1"), null)
 })
 
+test("sessionHasActivePrompt does not invent prompt identity from anonymous projected activity", () => {
+  const session = makeSession({
+    prompt_states: {},
+    agent_activity: {
+      "agent-1": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+      },
+    },
+  })
+
+  assert.equal(sessionAgentIsBusy(session, "agent-1"), true)
+  assert.equal(sessionHasActivePrompt(session, "agent-1", "prompt-1"), false)
+  assert.equal(sessionPromptForAgent(session, "agent-1"), null)
+})
+
 test("sessionHasActivePrompt falls back to legacy fields when projection is unavailable", () => {
   const session = makeSession({
     prompt_states: {

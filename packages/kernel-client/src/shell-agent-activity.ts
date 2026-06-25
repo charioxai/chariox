@@ -31,7 +31,7 @@ export function sessionHasActivePrompt(session: RuntimeSession, agentId: string,
       return false
     }
     const prompt = legacyPromptForAgent(session, agentId)
-    return prompt ? prompt.id === promptId : true
+    return prompt ? prompt.id === promptId : false
   }
   return legacySessionHasPrompt(session, agentId, promptId)
 }
