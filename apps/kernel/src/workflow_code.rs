@@ -19,7 +19,7 @@ use crate::session::{
 };
 
 pub const WORKFLOW_CODE_SCHEMA_VERSION: u32 = 1;
-pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 1;
+pub const WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION: u32 = 2;
 pub const WORKFLOW_CODE_ARTIFACT_SOURCE_KIND: &str = "workflow_code";
 const WORKFLOW_CODE_ARTIFACT_HISTORY_LIMIT: usize = 100;
 
@@ -542,6 +542,7 @@ pub struct WorkflowCodeArtifactPackage {
     pub source: String,
     pub source_sha256: String,
     pub source_bytes: u64,
+    pub definition_sha256: String,
     pub definition: WorkflowCodeDefinition,
     pub validation: WorkflowCodeValidationReport,
     pub exported_at_ms: u64,
@@ -1660,6 +1661,7 @@ pub(crate) fn attach_workflow_code_diagnostic_spans(
 
 impl WorkflowCodeArtifact {
     pub fn into_package(self) -> WorkflowCodeArtifactPackage {
+        let definition_sha256 = workflow_code_definition_sha256_hex(&self.definition);
         WorkflowCodeArtifactPackage {
             package_version: WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION,
             name: self.metadata.name,
@@ -1667,6 +1669,7 @@ impl WorkflowCodeArtifact {
             source: self.source,
             source_sha256: self.metadata.source_sha256,
             source_bytes: self.metadata.source_bytes,
+            definition_sha256,
             definition: self.definition,
             validation: self.metadata.validation,
             exported_at_ms: crate::session::unix_epoch_ms(),
@@ -1701,6 +1704,13 @@ impl WorkflowCodeArtifactPackage {
             return Err(crate::DaemonError::LocalTransport {
                 operation: "workflow_code.import",
                 message: "workflow-code package source sha256 mismatch".to_string(),
+            });
+        }
+        let definition_sha256 = workflow_code_definition_sha256_hex(&self.definition);
+        if definition_sha256 != self.definition_sha256 {
+            return Err(crate::DaemonError::LocalTransport {
+                operation: "workflow_code.import",
+                message: "workflow-code package definition sha256 mismatch".to_string(),
             });
         }
         Ok(())
@@ -1855,6 +1865,11 @@ fn write_stored_artifact(
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub fn workflow_code_definition_sha256_hex(definition: &WorkflowCodeDefinition) -> String {
+    let bytes = serde_json::to_vec(definition).unwrap_or_default();
+    sha256_hex(&bytes)
 }
 
 fn arroba_home() -> Option<PathBuf> {

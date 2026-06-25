@@ -1477,7 +1477,7 @@ export type RuntimeProviderRun = {
   external_provider_import?: ExternalProviderImportMetadata | null
 }
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 188
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 189
 
 export type DebugBundleExportedResponse = {
   DebugBundleExported: {
@@ -2097,6 +2097,7 @@ export type WorkflowCodeArtifactPackage = {
   source: string
   source_sha256: string
   source_bytes: number
+  definition_sha256: string
   definition: WorkflowCodeDefinition
   validation: WorkflowCodeValidationReport
   exported_at_ms: number

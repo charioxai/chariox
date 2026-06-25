@@ -53,12 +53,13 @@ test("set workflow node wait-for-all-inputs request matches kernel shape", () =>
 
 test("workflow-code artifact requests match kernel shape", () => {
   const workflowCodePackage = {
-    package_version: 1,
+    package_version: 2,
     name: "toy-flow",
     language: "java_script" as const,
     source: "workflow.define({})",
     source_sha256: "sha256",
     source_bytes: 19,
+    definition_sha256: "definition-sha256",
     definition: {
       schema_version: 1,
       workflow: {},

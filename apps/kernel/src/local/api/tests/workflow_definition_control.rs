@@ -1231,6 +1231,7 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
         source: source.to_string(),
         source_sha256: workflow_code_test_sha256_hex(source.as_bytes()),
         source_bytes: source.len() as u64,
+        definition_sha256: crate::workflow_code::workflow_code_definition_sha256_hex(&definition),
         validation: definition
             .validate_with_limits(&crate::config::WorkflowCodeLimitsConfig::default()),
         definition,
@@ -1262,6 +1263,113 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
             assert!(!artifacts
                 .iter()
                 .any(|artifact| artifact.name == "invalid-import"));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
+fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_mismatch() {
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-hash-mismatch-import-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-mismatch"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let definition = crate::workflow_code::WorkflowCodeDefinition {
+        schema_version: crate::workflow_code::WORKFLOW_CODE_SCHEMA_VERSION,
+        workflow: crate::workflow_code::WorkflowCodeWorkflow {
+            alias: Some("mismatch_import".to_string()),
+            prompt: None,
+            flush_agent_context_before_run: None,
+            max_concurrent: None,
+            run_output_schema: None,
+            intermediate_output_schema: None,
+        },
+        schemas: Vec::new(),
+        nodes: vec![crate::workflow_code::WorkflowCodeNodeDefinition {
+            handle: "worker".to_string(),
+            agent: crate::workflow_code::WorkflowCodeAgentBinding::Create(
+                crate::workflow_code::WorkflowCodeAgentCreate {
+                    alias: Some("worker".to_string()),
+                    provider: "dev-stub".to_string(),
+                    model: Some("default".to_string()),
+                    effort: None,
+                    account_profile: None,
+                },
+            ),
+            public_label: None,
+            instructions: None,
+            can_complete_workflow_run: Some(true),
+            can_emit_intermediate_run_output: None,
+            wait_for_all_inputs: None,
+            intermediate_output_schema: None,
+            max_turns: None,
+            extensions: Vec::new(),
+            canvas: None,
+        }],
+        edges: Vec::new(),
+        endpoints: vec![crate::workflow_code::WorkflowCodeEndpointDefinition {
+            handle: "entry".to_string(),
+            entry_node: "worker".to_string(),
+            alias: Some("entry".to_string()),
+            canvas: None,
+        }],
+        queues: Vec::new(),
+        watchdogs: Vec::new(),
+    };
+    let source = "workflow.define({ alias: \"mismatch_import\" })";
+    let package = crate::workflow_code::WorkflowCodeArtifactPackage {
+        package_version: crate::workflow_code::WORKFLOW_CODE_ARTIFACT_PACKAGE_VERSION,
+        name: "hash-mismatch-import".to_string(),
+        language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+        source: source.to_string(),
+        source_sha256: workflow_code_test_sha256_hex(source.as_bytes()),
+        source_bytes: source.len() as u64,
+        definition_sha256: "not-the-definition-hash".to_string(),
+        validation: definition
+            .validate_with_limits(&crate::config::WorkflowCodeLimitsConfig::default()),
+        definition,
+        exported_at_ms: crate::session::unix_epoch_ms(),
+    };
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::ImportWorkflowCodeArtifact(
+            crate::local::ImportWorkflowCodeArtifactRequest {
+                session_id: session.id().to_string(),
+                package,
+                name: None,
+                overwrite: false,
+                node_path: "node".to_string(),
+            },
+        ))
+        .expect_err("definition hash mismatch should not import");
+
+    assert!(format!("{error}").contains("definition sha256 mismatch"));
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflowCodeArtifacts(
+            crate::local::ListWorkflowCodeArtifactsRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("workflow-code artifacts should list");
+    match listed {
+        LocalDaemonResponse::WorkflowCodeArtifactsListed { artifacts } => {
+            assert!(!artifacts
+                .iter()
+                .any(|artifact| artifact.name == "hash-mismatch-import"));
         }
         _ => panic!("unexpected local response"),
     }
