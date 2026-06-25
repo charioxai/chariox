@@ -181,7 +181,8 @@
         <div class="callout">
           <strong>Final objective:</strong> a metaagent can write a self-contained workflow-code file,
           validate it, apply it in the current kernel, and export or share it so another user or kernel can
-          apply the same workflow after rebinding unavailable providers, models, agents, or extensions.
+          apply the same workflow after rebinding unavailable generated-agent providers and models,
+          while validating target-kernel agent and extension availability before mutation.
         </div>
       </section>
 
@@ -421,7 +422,7 @@ max_generated_prompt_bytes = 1048576</code></pre>
 ]</code></pre>
       <ul>
         <li>Extension definitions are portability requirements, not hidden script execution privileges.</li>
-        <li>The compiler checks that declared extensions exist or can be imported in the target kernel.</li>
+        <li>Apply-time validation checks that declared extensions already exist in the target kernel registry and rejects the workflow before mutation when a requirement is unavailable.</li>
         <li>Credentialed connectors require target-kernel binding and must not be serialized with secrets.</li>
         <li>Home-worker and slice-backed behavior must follow existing Arroba provider and skill/MCP transfer rules.</li>
       </ul>
@@ -768,7 +769,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.apply</code></td>
-            <td>Compile and instantiate a workflow in the current session, using explicit provider/model/agent/extension bindings.</td>
+            <td>Compile and instantiate a workflow in the current session, using explicit provider/model rebinding for generated-agent nodes and strict validation for existing-agent and extension requirements.</td>
           </tr>
           <tr>
             <td><code>arroba.meta.workflow_code.run</code></td>

@@ -157,7 +157,8 @@
           <strong>Target outcome:</strong> a user or authorized metaagent can write a self-contained JS/TS
           workflow-code artifact, inject it into the kernel, have it validated against real Arroba workflow
           primitives, create or bind agents, see the workflow on the session canvas, run it, export it, and
-          apply it in another kernel with explicit provider/model/extension rebinding.
+          apply it in another kernel with explicit generated-agent provider/model rebinding and
+          target-kernel validation of existing-agent and extension requirements.
         </div>
       </section>
 
@@ -227,7 +228,7 @@
       <ul>
         <li>Represent provider/model choices as preferences that can be rebound at apply time.</li>
         <li>Require explicit provider remapping when a target kernel lacks a requested provider or model.</li>
-        <li>Represent extension requirements in workflow-code so generated agents can be provisioned consistently with Arroba extension rules.</li>
+        <li>Represent extension requirements in workflow-code so generated and authorized existing agents can receive the same Arroba extension grants used outside workflows.</li>
         <li>Reject apply when required providers, models, or extensions cannot be satisfied.</li>
       </ul>
 
