@@ -4,6 +4,7 @@ import test from "node:test"
 import type { AgentInstance, CliOptions, RuntimeSession } from "./cli-types.js"
 import {
   activeInteractionForAgent,
+  activePromptIdForAgent,
   agentPromptState,
   agentHasPromptWork,
   deriveAttachedCliTransitionState,
@@ -97,6 +98,52 @@ test("runtime session projections derive focus, interactions, provider run, and 
     "agent-a": false,
     "agent-b": true,
   })
+})
+
+test("activePromptIdForAgent prefers projected active turn and per-agent prompt state", () => {
+  assert.equal(activePromptIdForAgent(session({
+    agent_activity: {
+      "agent-a": {
+        status: "working",
+        prompt_status: "running",
+        busy: true,
+        active_turn: {
+          prompt_id: "projected-prompt",
+          status: "running",
+          phase: "streaming",
+        },
+      },
+    },
+    prompt_states: {
+      "agent-a": {
+        active_prompt: {
+          id: "stale-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-a",
+          prompt: "stale",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+  }), "agent-a"), "projected-prompt")
+
+  assert.equal(activePromptIdForAgent(session({
+    active_prompt: null,
+    queued_prompts: [],
+    prompt_states: {
+      "agent-a": {
+        active_prompt: {
+          id: "state-prompt",
+          source_attachment_id: "attachment-1",
+          target_agent_id: "agent-a",
+          prompt: "running",
+          status: "running",
+        },
+        queued_prompts: [],
+      },
+    },
+  }), "agent-a"), "state-prompt")
 })
 
 test("focusedAgentIdForSession does not fall back when focused id is not in the session", () => {

@@ -161,6 +161,22 @@ export function focusedProviderRunForAgent(
   return run && run.agent_instance_id === focusedAgentId ? run : null
 }
 
+export function activePromptIdForAgent(
+  session: RuntimeSession,
+  agentId: string | null | undefined,
+): string | null {
+  if (agentId) {
+    const projectedPromptId = session.agent_activity?.[agentId]?.active_turn?.prompt_id
+    if (projectedPromptId) {
+      return projectedPromptId
+    }
+    return agentPromptState(session, agentId)?.active_prompt?.id ?? null
+  }
+
+  const activePromptRecords = collectActivePromptRecords(session)
+  return activePromptRecords.length === 1 ? activePromptRecords[0]?.id ?? null : null
+}
+
 export function shouldConfirmIdleTurnCompletion(options: {
   nextSession: RuntimeSession
   currentWorking: boolean

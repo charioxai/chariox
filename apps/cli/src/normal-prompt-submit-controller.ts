@@ -12,6 +12,10 @@ import {
   pendingPromptAttachmentsToParts,
 } from "./prompt-submission-state.js"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
+import {
+  activePromptIdForAgent,
+  agentPromptState,
+} from "./session-state.js"
 
 export type NormalPromptSubmitControllerDeps = {
   getPendingAttachments: () => readonly PendingPromptAttachment[]
@@ -104,14 +108,18 @@ export function createNormalPromptSubmitController(
         deps.setStreamingAgentId(submittedTargetAgentId)
         deps.setWorking(true)
         deps.updateSessionChrome()
+        const activePromptId = activePromptIdForAgent(payload.session, submittedTargetAgentId)
+        const queuedPromptCount = submittedTargetAgentId
+          ? agentPromptState(payload.session, submittedTargetAgentId)?.queued_prompts.length ?? 0
+          : payload.session.queued_prompts.length
         deps.logInfo?.("prompt submitted", {
           outcome: outcomeName,
-          active_prompt_id: payload.session.active_prompt?.id ?? null,
-          queued_prompts: payload.session.queued_prompts.length,
+          active_prompt_id: activePromptId,
+          queued_prompts: queuedPromptCount,
         })
         deps.setStatusLine(formatPromptSubmissionStatusLine({
           outcomeName,
-          activePromptId: payload.session.active_prompt?.id ?? null,
+          activePromptId,
         }))
         deps.updateSessionChrome()
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)

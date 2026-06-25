@@ -75,6 +75,42 @@ test("normal prompt submit reports queued status with active prompt id", async (
   assert.deepEqual(harness.appendedPrompts(), [])
 })
 
+test("normal prompt submit reports queued status from per-agent active prompt state", async () => {
+  const harness = createHarness({
+    submitPrompt: async () => ({
+      ...promptSubmissionResult("session-submitted", "agent-1", "Queued"),
+      payload: {
+        outcome: {},
+        session: runtimeSession("session-submitted", null, {
+          prompt_states: {
+            "agent-1": {
+              active_prompt: {
+                id: "prompt-active-agent",
+                source_attachment_id: "attachment-1",
+                target_agent_id: "agent-1",
+                prompt: "running",
+                status: "running",
+              },
+              queued_prompts: [{
+                id: "prompt-queued-agent",
+                source_attachment_id: "attachment-1",
+                target_agent_id: "agent-1",
+                prompt: "hello",
+                status: "queued",
+              }],
+            },
+          },
+        }),
+      },
+    }),
+  })
+
+  await harness.controller.submit("hello")
+
+  assert.deepEqual(harness.statusLines(), ["Prompt queued behind prompt-active-agent."])
+  assert.deepEqual(harness.appendedPrompts(), [])
+})
+
 test("normal prompt submit restores UI after submit failure", async () => {
   const harness = createHarness({
     submitPrompt: async () => {
@@ -244,7 +280,11 @@ function promptSubmissionResult(
   }
 }
 
-function runtimeSession(id: string, activePromptId: string | null): RuntimeSession {
+function runtimeSession(
+  id: string,
+  activePromptId: string | null,
+  overrides: Partial<RuntimeSession> = {},
+): RuntimeSession {
   return {
     id,
     workspace_id: "/workspace",
@@ -257,6 +297,7 @@ function runtimeSession(id: string, activePromptId: string | null): RuntimeSessi
       ? {
         id: activePromptId,
         source_attachment_id: "attachment-1",
+        target_agent_id: "agent-1",
         prompt: "hello",
         status: "running",
       }
@@ -269,5 +310,6 @@ function runtimeSession(id: string, activePromptId: string | null): RuntimeSessi
       version: 1,
       values: {},
     },
+    ...overrides,
   }
 }
