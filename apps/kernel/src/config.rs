@@ -293,7 +293,11 @@ impl DaemonConfig {
     }
 
     pub fn workflow_code_limits(&self) -> WorkflowCodeLimitsConfig {
-        self.user_config.workflow.code_limits()
+        let mut limits = self.user_config.workflow.code_limits();
+        limits.max_queues = limits
+            .max_queues
+            .min(self.max_workflow_queues_per_workflow() as u32);
+        limits
     }
 
     pub fn operational_history_max_size_bytes(&self) -> u64 {
@@ -1454,6 +1458,19 @@ unlock_policy = "{unlock_policy}"
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_code_queue_limit_is_capped_by_runtime_queue_limit() {
+        let mut config = DaemonConfig::new("daemon", "machine", "tester");
+        config.user_config.workflow.max_queues_per_workflow = Some(2);
+        config.user_config.workflow.code = Some(UserWorkflowCodeConfig {
+            max_queues: Some(8),
+            ..UserWorkflowCodeConfig::default()
+        });
+
+        assert_eq!(config.max_workflow_queues_per_workflow(), 2);
+        assert_eq!(config.workflow_code_limits().max_queues, 2);
     }
 
     #[test]

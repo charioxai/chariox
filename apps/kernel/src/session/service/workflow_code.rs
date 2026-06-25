@@ -18,7 +18,11 @@ impl SessionService {
         created_by_user_id: String,
         controlled_by_metaagent_id: Option<String>,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
-        let validation = definition.validate_with_limits(limits);
+        let mut effective_limits = limits.clone();
+        effective_limits.max_queues = effective_limits
+            .max_queues
+            .min(self.max_workflow_queues_per_workflow as u32);
+        let validation = definition.validate_with_limits(&effective_limits);
         if !validation.ok {
             return Err(DaemonError::LocalTransport {
                 operation: "workflow_code.apply",

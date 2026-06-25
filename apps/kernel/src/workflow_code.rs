@@ -1276,7 +1276,11 @@ impl<'a> WorkflowCodeValidator<'a> {
         self.validate_count("nodes", definition.nodes.len(), self.limits.max_nodes);
         self.validate_count("agents", definition.nodes.len(), self.limits.max_agents);
         self.validate_count("edges", definition.edges.len(), self.limits.max_edges);
-        self.validate_count("queues", definition.queues.len(), self.limits.max_queues);
+        self.validate_count(
+            "queues",
+            workflow_code_materialized_queue_count(definition),
+            self.limits.max_queues,
+        );
         self.validate_count(
             "watchdogs",
             definition.watchdogs.len(),
@@ -2079,6 +2083,14 @@ fn workflow_code_generated_prompt_bytes(definition: &WorkflowCodeDefinition) -> 
     total
 }
 
+fn workflow_code_materialized_queue_count(definition: &WorkflowCodeDefinition) -> usize {
+    1 + definition
+        .queues
+        .iter()
+        .filter(|queue| queue.alias.trim().to_lowercase() != "default")
+        .count()
+}
+
 fn default_workflow_code_schema_version() -> u32 {
     WORKFLOW_CODE_SCHEMA_VERSION
 }
@@ -2377,6 +2389,29 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "limit_exceeded"));
+    }
+
+    #[test]
+    fn enforces_materialized_queue_limit_including_default_queue() {
+        let mut definition = minimal_definition();
+        definition.queues = vec![WorkflowCodeQueueDefinition {
+            handle: "urgent".to_string(),
+            alias: "urgent".to_string(),
+            priority: 5,
+            enabled: true,
+        }];
+        let limits = WorkflowCodeLimitsConfig {
+            max_queues: 1,
+            ..WorkflowCodeLimitsConfig::default()
+        };
+
+        let report = definition.validate_with_limits(&limits);
+
+        assert!(!report.ok);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "limit_exceeded"
+                && diagnostic.message.contains("queues count 2 exceeds")
+        }));
     }
 
     #[test]

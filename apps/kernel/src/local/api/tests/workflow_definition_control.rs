@@ -894,6 +894,118 @@ workflow.endpoint(worker, { handle: "entry_b", alias: "ENTRY" })
 }
 
 #[test]
+fn local_request_api_rejects_workflow_code_over_runtime_queue_limit_without_applying() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!(
+            "skipping workflow-code runtime queue limit local API test because node is not available"
+        );
+        return;
+    };
+    let workspace_root = std::env::temp_dir().join(format!(
+        "arroba-workflow-code-queue-limit-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    let worktree_root = workspace_root.join("worktree");
+    std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
+    let mut config = crate::DaemonConfig::for_tests();
+    config.user_config.workflow.max_queues_per_workflow = Some(2);
+    config.user_config.workflow.code = Some(crate::config::UserWorkflowCodeConfig {
+        max_queues: Some(4),
+        ..crate::config::UserWorkflowCodeConfig::default()
+    });
+    let harness = LocalRouterTestHarness::with_config(config);
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let source = r#"
+workflow.define({ alias: "queue_limit_flow" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "queue-limit-worker", provider: "dev-stub", model: "default" }),
+  instructions: "Complete.",
+  canCompleteWorkflowRun: true
+})
+workflow.queue({ handle: "urgent", alias: "urgent", priority: 5 })
+workflow.queue({ handle: "slow", alias: "slow", priority: -5 })
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+    let validated = harness
+        .dispatch(LocalDaemonRequest::ValidateWorkflowCode(
+            crate::local::ValidateWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect("over-limit workflow-code validate should return diagnostics");
+    match validated {
+        LocalDaemonResponse::WorkflowCodeValidated { result } => {
+            assert!(!result.validation.ok);
+            assert!(result.validation.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "limit_exceeded"
+                    && diagnostic
+                        .message
+                        .contains("queues count 3 exceeds configured limit 2")
+            }));
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let apply_error = harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowCode(
+            crate::local::ApplyWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source: source.to_string(),
+                language: None,
+                provider_rebindings: Vec::new(),
+            },
+        ))
+        .expect_err("over-limit workflow-code apply should fail before applying");
+    assert!(
+        format!("{apply_error:?}").contains("limit_exceeded"),
+        "{apply_error:?}"
+    );
+
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("workflow list should succeed after rejected queue-limit apply");
+    match listed {
+        LocalDaemonResponse::WorkflowsListed { workflows } => {
+            assert!(!workflows
+                .iter()
+                .any(|workflow| workflow.alias() == Some("queue_limit_flow")));
+        }
+        _ => panic!("unexpected local response"),
+    }
+    let session_after = harness.with_app(|app| {
+        crate::app::KernelSessionReadService::new(app)
+            .session_snapshot(session.id())
+            .expect("session snapshot should load")
+    });
+    assert!(!session_after
+        .agents()
+        .iter()
+        .any(|agent| agent.alias() == Some("queue-limit-worker")));
+
+    std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
+}
+
+#[test]
 fn local_request_api_applies_workflow_code_extensions_to_generated_agents() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!("skipping workflow-code extension local API test because node is not available");
