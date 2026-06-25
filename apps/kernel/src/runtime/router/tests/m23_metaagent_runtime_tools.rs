@@ -291,8 +291,60 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .and_then(serde_json::Value::as_str),
         Some("string")
     );
+    let listed = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_LIST_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .expect("metaagent should list workflow-code artifacts");
+    assert!(listed.ok, "{:?}", listed.payload);
+    assert!(
+        listed
+            .payload
+            .pointer("/WorkflowCodeArtifactsListed/artifacts")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|artifacts| artifacts.iter().any(|artifact| {
+                artifact.get("name").and_then(serde_json::Value::as_str) == Some("meta-flow")
+            })),
+        "{:?}",
+        listed.payload
+    );
+
+    let updated_source = source.replace("meta_scripted_flow", "meta_scripted_flow_updated");
+    let updated = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_UPDATE_TOOL,
+            serde_json::json!({
+                "name": "meta-flow",
+                "source": updated_source
+            }),
+        )
+        .await
+        .expect("metaagent should update workflow-code artifact");
+    assert!(updated.ok, "{:?}", updated.payload);
+    assert_eq!(
+        updated
+            .payload
+            .pointer("/WorkflowCodeArtifactUpdated/artifact/definition/workflow/alias")
+            .and_then(serde_json::Value::as_str),
+        Some("meta_scripted_flow_updated")
+    );
+    assert_eq!(
+        updated
+            .payload
+            .pointer("/WorkflowCodeArtifactUpdated/artifact/metadata/history/1/action")
+            .and_then(serde_json::Value::as_str),
+        Some("updated")
+    );
     std::fs::remove_file(&schema_path)
-        .expect("schema source file should be removable after artifact creation");
+        .expect("schema source file should be removable after artifact update");
 
     let validated = router
         .runtime_state
@@ -488,7 +540,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         read.payload
             .pointer("/WorkflowCodeArtifact/artifact/definition/workflow/alias")
             .and_then(serde_json::Value::as_str),
-        Some("meta_scripted_flow")
+        Some("meta_scripted_flow_updated")
     );
     assert_eq!(
         read.payload
@@ -506,17 +558,23 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         read.payload
             .pointer("/WorkflowCodeArtifact/artifact/metadata/history/1/action")
             .and_then(serde_json::Value::as_str),
-        Some("applied")
+        Some("updated")
     );
     assert_eq!(
         read.payload
             .pointer("/WorkflowCodeArtifact/artifact/metadata/history/2/action")
             .and_then(serde_json::Value::as_str),
+        Some("applied")
+    );
+    assert_eq!(
+        read.payload
+            .pointer("/WorkflowCodeArtifact/artifact/metadata/history/3/action")
+            .and_then(serde_json::Value::as_str),
         Some("run")
     );
     assert!(
         read.payload
-            .pointer("/WorkflowCodeArtifact/artifact/metadata/history/2/workflow_id")
+            .pointer("/WorkflowCodeArtifact/artifact/metadata/history/3/workflow_id")
             .and_then(serde_json::Value::as_str)
             .is_some(),
         "{:?}",
@@ -573,7 +631,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .payload
             .pointer("/WorkflowCodeArtifactImported/artifact/definition/workflow/alias")
             .and_then(serde_json::Value::as_str),
-        Some("meta_scripted_flow")
+        Some("meta_scripted_flow_updated")
     );
 
     let deleted = router

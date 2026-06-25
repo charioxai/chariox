@@ -21,9 +21,11 @@ import {
   installSkillRequest,
   invokeWorkflowEndpointRequest,
   launchProviderRunRequest,
+  listWorkflowCodeArtifactsRequest,
   runWorkflowCodeArtifactRequest,
   spawnAgentRequest,
   uninstallSkillRequest,
+  updateWorkflowCodeArtifactRequest,
 } from '@arroba/kernel-client'
 
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
@@ -810,6 +812,29 @@ async function main() {
     ).artifact
     assert(created?.metadata?.validation?.ok, 'created artifact should validate', created?.metadata?.validation)
     validateArtifactHistory(created, ['created'])
+
+    const listedAfterCreate = unwrap(
+      await client.send(listWorkflowCodeArtifactsRequest(session.id)),
+      'WorkflowCodeArtifactsListed',
+    ).artifacts
+    assert(
+      (listedAfterCreate ?? []).some((artifact) => artifact.name === artifactName),
+      'created artifact should appear in workflow-code artifact list',
+      listedAfterCreate,
+    )
+
+    const updatedSource = source.replace('workflow_code_artifact_drill', 'workflow_code_artifact_drill_updated')
+    const updated = unwrap(
+      await client.send(updateWorkflowCodeArtifactRequest(session.id, artifactName, nodePath, updatedSource)),
+      'WorkflowCodeArtifactUpdated',
+    ).artifact
+    assert(updated?.metadata?.validation?.ok, 'updated artifact should validate', updated?.metadata?.validation)
+    assert(
+      updated?.definition?.workflow?.alias === 'workflow_code_artifact_drill_updated',
+      'updated artifact should persist revised workflow-code source',
+      updated,
+    )
+    validateArtifactHistory(updated, ['created', 'updated'])
 
     const appliedResponse = unwrap(
       await client.send(applyWorkflowCodeArtifactRequest(session.id, artifactName, providerRebindings())),
