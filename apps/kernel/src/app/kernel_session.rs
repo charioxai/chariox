@@ -29,6 +29,7 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::WorkflowCodeLimitsConfig;
     use crate::extension::{ExtensionGrant, ExtensionKind};
+    use crate::provider::{OpenCodeProviderCatalog, OpenCodeProviderInfo, OpenCodeProviderModel};
     use crate::session::{
         CreateSessionRequest, SchedulerState, SessionStatus, WorkflowNodeRun,
         WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
@@ -40,6 +41,7 @@ mod tests {
         WORKFLOW_CODE_SCHEMA_VERSION,
     };
     use crate::{DaemonApp, DaemonConfig};
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -144,6 +146,28 @@ mod tests {
                 .status()
                 .is_ok_and(|status| status.success())
         })
+    }
+
+    fn cache_test_provider_catalog(app: &mut DaemonApp) {
+        app.cache_provider_catalog(OpenCodeProviderCatalog {
+            all: vec![OpenCodeProviderInfo {
+                id: "codex".to_string(),
+                name: "Codex".to_string(),
+                remote_machine_aliases: Vec::new(),
+                models: BTreeMap::from([(
+                    "gpt-5".to_string(),
+                    OpenCodeProviderModel {
+                        id: "gpt-5".to_string(),
+                        name: "GPT-5".to_string(),
+                        status: "available".to_string(),
+                        limit: None,
+                        variants: BTreeMap::new(),
+                    },
+                )]),
+            }],
+            default: BTreeMap::from([("codex".to_string(), "gpt-5".to_string())]),
+            connected: vec!["codex".to_string()],
+        });
     }
 
     fn unique_workflow_code_test_workspace(name: &str) -> PathBuf {
@@ -366,6 +390,79 @@ mod tests {
             .get_agent(planner_agent_id)
             .expect("planner agent should exist");
         assert_eq!(planner.provider(), "dev-stub");
+    }
+
+    #[test]
+    fn workflow_code_apply_rejects_unavailable_generated_agent_model_from_catalog() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        cache_test_provider_catalog(&mut app);
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut definition = generated_workflow_code_definition();
+        if let WorkflowCodeAgentBinding::Create(agent) = &mut definition.nodes[0].agent {
+            agent.provider = "codex".to_string();
+            agent.model = Some("missing-model".to_string());
+        }
+
+        let error = app
+            .apply_workflow_code_definition(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+            )
+            .expect_err("workflow-code should reject unavailable generated-agent model");
+
+        let message = format!("{error}");
+        assert!(message.contains("unavailable_model"));
+        assert!(message.contains("missing-model"));
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should exist");
+        assert!(session.workflows().is_empty());
+        assert_eq!(app.agents().get_session_agents(session.id()).len(), 1);
+    }
+
+    #[test]
+    fn workflow_code_apply_rebinding_can_replace_unavailable_model() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        cache_test_provider_catalog(&mut app);
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut definition = generated_workflow_code_definition();
+        if let WorkflowCodeAgentBinding::Create(agent) = &mut definition.nodes[0].agent {
+            agent.provider = "codex".to_string();
+            agent.model = Some("missing-model".to_string());
+        }
+
+        let report = app
+            .apply_workflow_code_definition_with_rebindings(
+                session.id(),
+                &definition,
+                &WorkflowCodeLimitsConfig::default(),
+                "local-user".to_string(),
+                None,
+                &[WorkflowCodeProviderRebinding {
+                    node: "planner".to_string(),
+                    provider: "codex".to_string(),
+                    model: Some("gpt-5".to_string()),
+                    effort: None,
+                    account_profile: None,
+                }],
+            )
+            .expect("workflow-code should apply after rebinding unavailable model");
+
+        let planner_agent_id = report.agent_ids.get("planner").expect("planner agent id");
+        let planner = app
+            .agents()
+            .get_agent(planner_agent_id)
+            .expect("planner agent should exist");
+        assert_eq!(planner.provider(), "codex");
+        assert_eq!(planner.model(), Some("gpt-5"));
     }
 
     #[test]
@@ -1781,6 +1878,35 @@ impl<'a> KernelSessionService<'a> {
                             ),
                             Some(node.handle.clone()),
                         );
+                    } else if let Some(model) = agent.model.as_deref() {
+                        if let Some(catalog) = self.app.cached_provider_catalog() {
+                            let model = model.trim();
+                            if model != "default" && !model.is_empty() {
+                                if let Some(provider_info) =
+                                    catalog.all.iter().find(|item| item.id == provider)
+                                {
+                                    if !provider_info.models.is_empty()
+                                        && !provider_info.models.contains_key(model)
+                                    {
+                                        push_workflow_code_target_validation_error(
+                                            validation,
+                                            "unavailable_model",
+                                            format!(
+                                                "node `{}` requests unavailable model `{model}` for provider `{provider}`; available models: {}",
+                                                node.handle,
+                                                provider_info
+                                                    .models
+                                                    .keys()
+                                                    .cloned()
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            ),
+                                            Some(node.handle.clone()),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 WorkflowCodeAgentBinding::Existing(existing) => {
