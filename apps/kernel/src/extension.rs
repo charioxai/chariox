@@ -269,7 +269,7 @@ pub struct ExtensionGrant {
     pub environment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "maxSafety", skip_serializing_if = "Option::is_none")]
     pub max_safety: Option<String>,
 }
 

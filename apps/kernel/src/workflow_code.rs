@@ -2673,6 +2673,43 @@ workflow.watchdog(entry, {
     }
 
     #[test]
+    fn compiles_javascript_connector_extension_with_js_safety_spelling() {
+        let Some(node) = find_node() else {
+            eprintln!("skipping workflow-code JS compiler test because node is not available");
+            return;
+        };
+
+        let source = r#"
+workflow.define({ alias: "connector_extension_flow" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
+  canCompleteWorkflowRun: true,
+  extensions: [
+    { kind: "connector", name: "linear", credential: "linear-api", maxSafety: "read" }
+  ]
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+        let result =
+            compile_workflow_code_javascript(node, source, &WorkflowCodeLimitsConfig::default())
+                .expect("workflow-code JS source should compile");
+
+        assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+        let extension = result
+            .definition
+            .nodes
+            .first()
+            .and_then(|node| node.extensions.first())
+            .expect("compiled worker should retain extension grant");
+        assert_eq!(extension.kind, ExtensionKind::Connector);
+        assert_eq!(extension.name, "linear");
+        assert_eq!(extension.credential.as_deref(), Some("linear-api"));
+        assert_eq!(extension.max_safety.as_deref(), Some("read"));
+    }
+
+    #[test]
     fn workflow_code_language_serializes_canonical_typescript_name() {
         assert_eq!(
             serde_json::to_value(WorkflowCodeLanguage::TypeScript)
