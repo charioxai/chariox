@@ -146,6 +146,12 @@ impl SessionService {
                 entry_node_id,
                 endpoint.alias.clone(),
             )?;
+            let created = self.set_workflow_endpoint_owner(
+                session_id,
+                &workflow_id,
+                created.id(),
+                created_by_user_id.clone(),
+            )?;
             report
                 .endpoint_ids
                 .insert(endpoint.handle.clone(), created.id().to_string());

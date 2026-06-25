@@ -159,13 +159,14 @@ fn applies_workflow_code_definition_to_session_primitives() {
         ("planner".to_string(), "agent-1".to_string()),
         ("worker".to_string(), "agent-2".to_string()),
     ]);
+    let owner_user_id = "workflow-code-owner".to_string();
     let report = service
         .apply_workflow_code_definition(
             session.id(),
             &definition,
             &agent_ids,
             &WorkflowCodeLimitsConfig::default(),
-            DEFAULT_LOCAL_USER_ID.to_string(),
+            owner_user_id.clone(),
             Some("meta-1".to_string()),
         )
         .expect("workflow-code should apply");
@@ -237,6 +238,10 @@ fn applies_workflow_code_definition_to_session_primitives() {
     let edge = workflow.edge(edge_id).expect("workflow edge");
     assert_eq!(edge.handoff_schema_ref(), Some(handoff_schema_id.as_str()));
 
+    let endpoint_id = report.endpoint_ids.get("entry").expect("entry id");
+    let endpoint = workflow.endpoint(endpoint_id).expect("workflow endpoint");
+    assert_eq!(endpoint.owner_user_id(), owner_user_id);
+
     let urgent_queue_id = report.queue_ids.get("urgent").expect("urgent queue id");
     let urgent_queue = session
         .workflow_prompt_queue(&report.workflow_id, urgent_queue_id)
@@ -262,9 +267,7 @@ fn applies_workflow_code_definition_to_session_primitives() {
         .canvas_layout()
         .expect("canvas layout should exist");
     assert!(layout.nodes.contains_key(planner_id));
-    assert!(layout
-        .endpoints
-        .contains_key(report.endpoint_ids.get("entry").expect("entry id")));
+    assert!(layout.endpoints.contains_key(endpoint_id));
     assert!(layout
         .edges
         .contains_key(report.edge_ids.get("planner_to_worker").expect("edge id")));

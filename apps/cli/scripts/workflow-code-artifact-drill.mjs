@@ -1,0 +1,453 @@
+#!/usr/bin/env node
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdir, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import {
+  LocalIpcClient,
+  applyWorkflowCodeArtifactRequest,
+  attachToSessionRequest,
+  createSessionRequest,
+  createWorkflowCodeArtifactRequest,
+  deleteWorkflowCodeArtifactRequest,
+  endSessionRequest,
+  exportWorkflowCodeArtifactRequest,
+  getSessionStateRequest,
+  getWorkflowCodeArtifactRequest,
+  importWorkflowCodeArtifactRequest,
+  runWorkflowCodeArtifactRequest,
+} from '@arroba/kernel-client'
+
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const cliRoot = path.resolve(scriptDir, '..')
+const repoRoot = path.resolve(cliRoot, '..', '..')
+const DEFAULT_TIMEOUT_MS = 120_000
+
+function nowStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+function parseArgs(argv) {
+  const options = {
+    kernel: null,
+    spawnDaemon: true,
+    workspace: null,
+    worktree: null,
+    artifactRoot: path.join(repoRoot, '.artifacts', 'workflow-code-artifact-drill', nowStamp()),
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    keepArtifactsOnFailure: true,
+    preserveOnSuccess: false,
+    dryRun: false,
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--') continue
+    else if (arg === '--kernel') {
+      options.kernel = argv[++index]
+      options.spawnDaemon = false
+    } else if (arg === '--spawn-daemon') options.spawnDaemon = true
+    else if (arg === '--no-spawn-daemon') options.spawnDaemon = false
+    else if (arg === '--workspace') options.workspace = argv[++index]
+    else if (arg === '--worktree') options.worktree = argv[++index]
+    else if (arg === '--artifact-root') options.artifactRoot = argv[++index]
+    else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++index])
+    else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--discard-artifacts-on-failure') options.keepArtifactsOnFailure = false
+    else if (arg === '--preserve-on-success') options.preserveOnSuccess = true
+    else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
+    else if (arg === '--dry-run') options.dryRun = true
+    else if (arg === '--help' || arg === '-h') {
+      printHelp()
+      process.exit(0)
+    } else {
+      throw new Error(`unknown option: ${arg}`)
+    }
+  }
+  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+    throw new Error('--timeout-ms must be positive')
+  }
+  return options
+}
+
+function printHelp() {
+  console.log([
+    'Usage: node apps/cli/scripts/workflow-code-artifact-drill.mjs [options]',
+    '',
+    'Creates a workflow-code artifact through public IPC, applies it, exports/imports it,',
+    'runs the imported artifact, and verifies generated agents, schemas, canvas layout,',
+    'artifact history, and provider/model rebinding.',
+    '',
+    'Options:',
+    '  --kernel ws://127.0.0.1:43284',
+    '  --spawn-daemon',
+    '  --no-spawn-daemon',
+    '  --workspace PATH',
+    '  --worktree PATH',
+    '  --artifact-root PATH',
+    `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
+    '  --keep-artifacts-on-failure',
+    '  --discard-artifacts-on-failure',
+    '  --preserve-on-success',
+    '  --discard-artifacts-on-success',
+    '  --dry-run',
+  ].join('\n'))
+}
+
+function assert(condition, message, details) {
+  if (!condition) {
+    throw new Error(`${message}${details ? `\n${JSON.stringify(details, null, 2)}` : ''}`)
+  }
+}
+
+function unwrap(response, key) {
+  return response?.[key] ?? response
+}
+
+function runChecked(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? repoRoot,
+    env: options.env ?? process.env,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
+  }
+  return result
+}
+
+function buildKernel() {
+  runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+}
+
+function spawnedKernel() {
+  const kernelPort = 45400 + Math.floor(Math.random() * 1000)
+  const socketPath = path.join(os.tmpdir(), `arroba-workflow-code-drill-${process.pid}-${Date.now()}.sock`)
+  return {
+    kernelUrl: `ws://127.0.0.1:${kernelPort}`,
+    env: {
+      ...process.env,
+      ARROBA_KERNEL_PORT: String(kernelPort),
+      ARROBA_MCP_PORT: String(kernelPort + 1000),
+      ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
+      ARROBA_CODEX_PORT: String(kernelPort + 2001),
+      ARROBA_DAEMON_SOCKET: socketPath,
+      ARROBA_DAEMON_ID: `workflow-code-drill-${process.pid}-${Date.now()}`,
+    },
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function waitForKernel(client, workspace, worktree, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const session = unwrap(
+        await client.send(createSessionRequest(workspace, worktree, 'workflow-code-ready-probe')),
+        'SessionCreated',
+      ).session
+      await client.send(endSessionRequest(session.id)).catch(() => {})
+      return
+    } catch (error) {
+      lastError = error
+      await sleep(250)
+    }
+  }
+  throw new Error(`kernel did not become ready: ${lastError?.message ?? 'unknown error'}`)
+}
+
+function workflowCodeSource() {
+  return `
+workflow.define({
+  alias: "workflow_code_artifact_drill",
+  prompt: "Coordinate the toy workflow and preserve structured output.",
+  maxConcurrent: 3,
+  flushAgentContextBeforeRun: true,
+});
+
+const handoff = workflow.schema({
+  handle: "handoff",
+  alias: "Handoff payload",
+  schema: {
+    type: "object",
+    required: ["value", "note"],
+    properties: {
+      value: { type: "number" },
+      note: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+});
+
+const finalOutput = workflow.schema({
+  handle: "final_output",
+  alias: "Final output",
+  schema: {
+    type: "object",
+    required: ["answer"],
+    properties: {
+      answer: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+});
+
+workflow.define({ runOutputSchema: finalOutput });
+
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "artifact-planner", provider: "codex", model: "gpt-5" }),
+  publicLabel: "Planner",
+  instructions: "Read the endpoint prompt and hand a numbered task to the worker.",
+  canCompleteWorkflowRun: false,
+  canvas: { x: 0, y: 120 },
+});
+
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "artifact-worker", provider: "opencode", model: "opencode/gpt-5" }),
+  publicLabel: "Worker",
+  instructions: "Transform the planner handoff and pass it to the reviewer.",
+  canCompleteWorkflowRun: false,
+  canvas: { x: 280, y: 120 },
+});
+
+const reviewer = workflow.node({
+  handle: "reviewer",
+  agent: workflow.newAgent({ alias: "artifact-reviewer", provider: "claude", model: "sonnet" }),
+  publicLabel: "Reviewer",
+  instructions: "Review the worker result and submit final output that matches final_output.",
+  canCompleteWorkflowRun: true,
+  canvas: { x: 560, y: 120 },
+});
+
+workflow.edge(planner, worker, { handle: "planner_to_worker", handoffSchema: handoff, validationPolicy: "warn" });
+workflow.edge(worker, reviewer, { handle: "worker_to_reviewer", handoffSchema: handoff, validationPolicy: "warn" });
+workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -180, y: 120 } });
+`.trim()
+}
+
+function providerRebindings() {
+  return ['planner', 'worker', 'reviewer'].map((node) => ({
+    node,
+    provider: 'dev-stub',
+    model: 'default',
+  }))
+}
+
+function validateApplyResult(result, label) {
+  assert(result?.compile?.validation?.ok, `${label} compile validation failed`, result?.compile?.validation)
+  const apply = result.apply
+  assert(apply?.workflow_id, `${label} did not return workflow id`, result)
+  assert(Object.keys(apply.node_ids ?? {}).length === 3, `${label} should create three nodes`, apply)
+  assert(Object.keys(apply.agent_ids ?? {}).length === 3, `${label} should create three generated agents`, apply)
+  assert(Object.keys(apply.edge_ids ?? {}).length === 2, `${label} should create two edges`, apply)
+  assert(Object.keys(apply.endpoint_ids ?? {}).length === 1, `${label} should create one endpoint`, apply)
+  assert(apply.schema_refs?.handoff, `${label} should report handoff schema`, apply)
+  assert(apply.schema_refs?.final_output, `${label} should report final schema`, apply)
+  assert(apply.canvas_layout_applied === true, `${label} should create a canvas layout`, apply)
+  return apply
+}
+
+function validateSessionProjection(session, apply, label) {
+  const workflow = (session.workflows ?? []).find((entry) => entry.id === apply.workflow_id)
+  assert(workflow, `${label} workflow should appear in session projection`, { workflowId: apply.workflow_id })
+  assert(workflow.canvas_layout, `${label} workflow should include canvas layout`, workflow)
+  assert(workflow.run_output_schema_ref === apply.schema_refs.final_output, `${label} final schema ref should be assigned`, {
+    workflow,
+    schemaRefs: apply.schema_refs,
+  })
+  for (const [handle, agentId] of Object.entries(apply.agent_ids ?? {})) {
+    const agent = (session.agents ?? []).find((entry) => entry.id === agentId)
+    assert(agent, `${label} generated agent ${handle} should appear in session`, { agentId })
+    assert(agent.provider === 'dev-stub', `${label} generated agent ${handle} should be rebound to dev-stub`, agent)
+    assert(agent.model === 'default', `${label} generated agent ${handle} should use rebound default model`, agent)
+  }
+}
+
+function validateArtifactHistory(artifact, expectedActions) {
+  const actions = (artifact?.metadata?.history ?? []).map((entry) => entry.action)
+  for (const action of expectedActions) {
+    assert(actions.includes(action), `artifact history should include ${action}`, actions)
+  }
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  const source = workflowCodeSource()
+  if (options.dryRun) {
+    console.log(JSON.stringify({
+      artifactRoot: options.artifactRoot,
+      spawnDaemon: options.spawnDaemon,
+      kernel: options.kernel,
+      source,
+      providerRebindings: providerRebindings(),
+    }, null, 2))
+    return
+  }
+
+  await prepareDrillArtifacts(options.artifactRoot)
+  const generatedRoot = path.join(repoRoot, 'target', 'workflow-code-artifact-drill', `${process.pid}-${Date.now()}`)
+  const workspace = options.workspace ?? path.join(generatedRoot, 'workspace')
+  const worktree = options.worktree ?? path.join(generatedRoot, 'worktree')
+  await mkdir(workspace, { recursive: true })
+  await mkdir(worktree, { recursive: true })
+
+  let passed = false
+  let failure = null
+  let daemonChild = null
+  let sessionId = null
+  let attachmentId = null
+  let kernelUrl = options.kernel ?? 'ws://127.0.0.1:43284'
+  let summary = {}
+  let client = null
+
+  try {
+    if (options.spawnDaemon) {
+      const spawned = spawnedKernel()
+      kernelUrl = spawned.kernelUrl
+      daemonChild = spawn(buildKernel(), [], {
+        cwd: repoRoot,
+        env: spawned.env,
+        stdio: ['ignore', 'ignore', 'inherit'],
+      })
+    }
+
+    client = new LocalIpcClient(kernelUrl, {
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    await waitForKernel(client, workspace, worktree, options.timeoutMs)
+
+    const session = unwrap(
+      await client.send(createSessionRequest(workspace, worktree, 'workflow-code-artifact-drill')),
+      'SessionCreated',
+    ).session
+    sessionId = session.id
+    const attachment = unwrap(
+      await client.send(attachToSessionRequest(session.id, `workflow-code-artifact-drill-${Date.now()}`)),
+      'SessionAttached',
+    ).attachment
+    attachmentId = attachment.id
+
+    const artifactName = `artifact-drill-${Date.now()}`
+    const importedName = `${artifactName}-imported`
+    const nodePath = process.execPath
+
+    const created = unwrap(
+      await client.send(createWorkflowCodeArtifactRequest(session.id, artifactName, nodePath, source)),
+      'WorkflowCodeArtifactCreated',
+    ).artifact
+    assert(created?.metadata?.validation?.ok, 'created artifact should validate', created?.metadata?.validation)
+    validateArtifactHistory(created, ['created'])
+
+    const appliedResponse = unwrap(
+      await client.send(applyWorkflowCodeArtifactRequest(session.id, artifactName, providerRebindings())),
+      'WorkflowCodeApplied',
+    )
+    const firstApply = validateApplyResult(appliedResponse.result, 'artifact apply')
+    validateSessionProjection(appliedResponse.session, firstApply, 'artifact apply')
+
+    const exported = unwrap(
+      await client.send(exportWorkflowCodeArtifactRequest(session.id, artifactName)),
+      'WorkflowCodeArtifactExported',
+    ).package
+    assert(exported?.source_sha256, 'exported package should include source hash', exported)
+
+    await client.send(deleteWorkflowCodeArtifactRequest(session.id, artifactName))
+
+    const imported = unwrap(
+      await client.send(importWorkflowCodeArtifactRequest(session.id, exported, nodePath, {
+        name: importedName,
+        overwrite: false,
+      })),
+      'WorkflowCodeArtifactImported',
+    ).artifact
+    assert(imported?.metadata?.validation?.ok, 'imported artifact should validate', imported?.metadata?.validation)
+
+    const runResponse = unwrap(
+      await client.send(runWorkflowCodeArtifactRequest(session.id, importedName, 'Run the imported workflow-code artifact.', {
+        endpoint: 'entry',
+        providerRebindings: providerRebindings(),
+      })),
+      'WorkflowCodeRun',
+    )
+    const runApply = validateApplyResult(runResponse.result.apply, 'artifact run')
+    validateSessionProjection(runResponse.session, runApply, 'artifact run')
+    const invocation = runResponse.result.invocation
+    assert(invocation?.workflow_run || invocation?.queued_prompt, 'artifact run should invoke or enqueue a workflow run', invocation)
+
+    const readBack = unwrap(
+      await client.send(getWorkflowCodeArtifactRequest(session.id, importedName)),
+      'WorkflowCodeArtifact',
+    ).artifact
+    validateArtifactHistory(readBack, ['imported', 'run'])
+
+    const stateResponse = await client.send(getSessionStateRequest(session.id))
+    const state = unwrap(stateResponse, 'SessionStateLoaded')?.session
+      ?? unwrap(stateResponse, 'SessionState')?.session
+    assert((state?.workflows ?? []).some((workflow) => workflow.id === runApply.workflow_id), 'run workflow should be in loaded session state')
+
+    summary = {
+      sessionId: session.id,
+      attachmentId,
+      createdArtifact: artifactName,
+      importedArtifact: importedName,
+      appliedWorkflowId: firstApply.workflow_id,
+      runWorkflowId: runApply.workflow_id,
+      runInvocation: invocation.workflow_run ? 'started' : 'enqueued',
+      generatedAgents: Object.values(runApply.agent_ids ?? {}),
+      schemaRefs: runApply.schema_refs,
+    }
+    console.log(JSON.stringify(summary, null, 2))
+
+    await client.send(endSessionRequest(session.id)).catch(() => {})
+    await client.close()
+    passed = true
+  } catch (error) {
+    failure = error
+    console.error(error)
+    if (client && sessionId) {
+      await client.send(endSessionRequest(sessionId)).catch(() => {})
+    }
+    if (client) {
+      await client.close().catch(() => {})
+    }
+    process.exitCode = 1
+  } finally {
+    if (daemonChild) {
+      daemonChild.kill('SIGTERM')
+      await sleep(1000)
+    }
+    if (passed || !options.keepArtifactsOnFailure) {
+      await rm(generatedRoot, { recursive: true, force: true }).catch(() => {})
+    }
+    await finalizeDrillArtifacts({
+      rootDir: options.artifactRoot,
+      passed,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      preserveOnSuccess: options.preserveOnSuccess,
+      failure,
+      metadata: {
+        drill: 'workflow-code-artifact',
+        kernelUrl,
+        workspace,
+        worktree,
+        sessionId,
+        attachmentId,
+        summary,
+      },
+    })
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  await main()
+}

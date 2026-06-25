@@ -64,6 +64,7 @@
     "publication:container-drill": "pnpm --filter @arroba/server run build && pnpm --workspace-root run build:kernel-client && env ARROBA_PUBLICATION_CONTAINER_DRILL=1 node scripts/live-workflow-publication-drill.mjs",
     "semantic-url-renderer:drill": "pnpm --filter @arroba/server run build && pnpm --workspace-root run build:kernel-client && node scripts/live-semantic-url-renderer-drill.mjs",
     "workflow-to-workflow-publication:drill": "pnpm --filter @arroba/server run build && pnpm --workspace-root run build:kernel-client && node scripts/live-workflow-to-workflow-publication-drill.mjs",
+    "workflow-code:artifact-drill": "pnpm --workspace-root run build:kernel-client && node scripts/workflow-code-artifact-drill.mjs",
     "relay-identity:drill": "node scripts/live-relay-identity-security-drill.mjs",
     "cloud-relay:drill": "pnpm run build && node scripts/live-cloud-relay-drill.mjs",
     "hosted-terminal-pairing-tui:drill": "node scripts/live-hosted-terminal-pairing-tui-drill.mjs",
