@@ -40,9 +40,10 @@ export async function executeWorkflowCodeCommand(
   }
   if (area === "source") {
     if (action === "export") return exportWorkflowCodeSource(sessionId, rest, context, deps)
-    return { ok: false, message: "usage: workflow code source export <artifact-or-workflow-ref> <file|directory> [--workflow] [--format inline|directory]" }
+    if (action === "export-dir") return exportWorkflowCodeSourceDirectory(sessionId, rest, context, deps)
+    return { ok: false, message: "usage: workflow code source export <artifact-or-workflow-ref> <file> [--workflow] | workflow code source export-dir <artifact-or-workflow-ref> <directory> [--workflow]" }
   }
-  return { ok: false, message: "usage: workflow code package export|import | workflow code source export" }
+  return { ok: false, message: "usage: workflow code package export|import | workflow code source export|export-dir" }
 }
 
 async function exportWorkflowCodePackage(
@@ -123,6 +124,15 @@ async function exportWorkflowCodeSource(
     message: `exported workflow-code source ${exportResult.name} to ${resolved}`,
     data: { export: exportResult, path: resolved },
   }
+}
+
+async function exportWorkflowCodeSourceDirectory(
+  sessionId: string,
+  args: string[],
+  context: ShellContext,
+  deps: ShellWorkflowCodeCommandDeps,
+): Promise<ShellCommandResult> {
+  return exportWorkflowCodeSource(sessionId, [...args, "--format", "directory"], context, deps)
 }
 
 function parseSourceExportOptions(args: string[]): { ok: true; format: WorkflowCodeSourceExportFormat; target: "artifact" | "workflow" } | { ok: false; message: string } {
