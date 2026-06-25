@@ -402,6 +402,25 @@ fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
         .expect("reviewer node should be added")
         .id()
         .to_string();
+    app.sessions_mut()
+        .update_workflow_node_instructions(
+            session.id(),
+            &workflow_id,
+            &analyst_node_id,
+            Some("Analyze quantitative evidence and route only analysis tasks here.".to_string()),
+        )
+        .expect("analyst instructions should update");
+    app.sessions_mut()
+        .update_workflow_node_instructions(
+            session.id(),
+            &workflow_id,
+            &reviewer_node_id,
+            Some(
+                "Review wording, risks, and acceptance criteria for routed review tasks."
+                    .to_string(),
+            ),
+        )
+        .expect("reviewer instructions should update");
     let analyst_edge_id = app
         .sessions_mut()
         .add_workflow_edge(
@@ -463,10 +482,10 @@ fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
 
     assert!(prompt.contains("Outgoing edge contracts:"));
     assert!(prompt.contains(&format!(
-        "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), handoff_schema_ref: schema:analysis, validation_policy: halt"
+        "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), target_instructions: \"Analyze quantitative evidence and route only analysis tasks here.\", handoff_schema_ref: schema:analysis, validation_policy: halt"
     )));
     assert!(prompt.contains(&format!(
-        "- edge {reviewer_edge_id} -> {reviewer_node_id} (Reviewer), handoff_schema_ref: schema:review, validation_policy: warn"
+        "- edge {reviewer_edge_id} -> {reviewer_node_id} (Reviewer), target_instructions: \"Review wording, risks, and acceptance criteria for routed review tasks.\", handoff_schema_ref: schema:review, validation_policy: warn"
     )));
     assert!(prompt.contains("workflow_handoffs"));
     assert!(prompt.contains("edge_id"));

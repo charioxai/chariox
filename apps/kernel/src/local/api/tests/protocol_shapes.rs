@@ -633,12 +633,10 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         snapshot.pointer("/9/ImportWorkflowCodeArtifact/package/package_version"),
         Some(&serde_json::json!(2))
     );
-    assert!(
-        snapshot
-            .pointer("/9/ImportWorkflowCodeArtifact/package/definition_sha256")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.is_empty())
-    );
+    assert!(snapshot
+        .pointer("/9/ImportWorkflowCodeArtifact/package/definition_sha256")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.is_empty()));
     assert_eq!(
         snapshot.pointer("/10/WorkflowCodeValidated/result/validation/ok"),
         Some(&serde_json::json!(false))

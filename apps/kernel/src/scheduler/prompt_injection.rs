@@ -529,10 +529,19 @@ fn workflow_outgoing_edge_contract_line(
         .node(edge.to_node_id())
         .map(|node| node.public_label())
         .filter(|label| !label.trim().is_empty());
+    let target_instructions = workflow
+        .node(edge.to_node_id())
+        .and_then(|node| node.instructions())
+        .map(compact_workflow_edge_contract_instructions)
+        .filter(|instructions| !instructions.is_empty());
     let mut line = match target_label {
         Some(label) => format!("- edge {} -> {} ({label})", edge.id(), edge.to_node_id()),
         None => format!("- edge {} -> {}", edge.id(), edge.to_node_id()),
     };
+    if let Some(instructions) = target_instructions {
+        let escaped = serde_json::to_string(&instructions).unwrap_or_else(|_| "\"\"".to_string());
+        line.push_str(&format!(", target_instructions: {escaped}"));
+    }
     if let Some(schema_ref) = edge.handoff_schema_ref() {
         line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));
     }
@@ -544,6 +553,19 @@ fn workflow_outgoing_edge_contract_line(
         line.push_str(&format!(", validation_policy: {validation_policy}"));
     }
     line
+}
+
+fn compact_workflow_edge_contract_instructions(instructions: &str) -> String {
+    const MAX_CHARS: usize = 240;
+    let compact = instructions
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.chars().count() <= MAX_CHARS {
+        return compact;
+    }
+    let truncated = compact.chars().take(MAX_CHARS).collect::<String>();
+    format!("{truncated}...")
 }
 
 fn workflow_node_instruction_reference(
@@ -808,6 +830,9 @@ mod tests {
         ));
         let mut reviewer = crate::session::WorkflowNodeDefinition::new("node-2", "agent-2");
         reviewer.set_public_label("Reviewer");
+        reviewer.set_instructions(Some(
+            "Review legal and policy risk before accepting a candidate.".to_string(),
+        ));
         workflow.add_node(reviewer);
         let edge = WorkflowEdgeDefinition::new(
             "edge-1",
@@ -821,7 +846,7 @@ mod tests {
 
         assert_eq!(
             line,
-            "- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
+            "- edge edge-1 -> node-2 (Reviewer), target_instructions: \"Review legal and policy risk before accepting a candidate.\", handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
         );
     }
 
