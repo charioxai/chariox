@@ -483,6 +483,10 @@ mod tests {
         let base = fs::read_to_string(root.join("runtime").join("base.md"))
             .expect("base prompt should read");
         assert!(base.contains("arroba.list_extensions"));
+        let workflow_turn = fs::read_to_string(root.join("workflow").join("turn.md"))
+            .expect("workflow turn prompt should read");
+        assert!(workflow_turn.contains("workflow_handoffs"));
+        assert!(workflow_turn.contains("validate_workflow_handoff"));
     }
 
     #[test]
