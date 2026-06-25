@@ -67,6 +67,135 @@ test("executeShellCommand manages workflow list, create, show, and alias", async
   ])
 })
 
+test("executeShellCommand exports and imports workflow-code packages and source", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-code-shell-"))
+  try {
+    const workflowCodePackage = {
+      package_version: 2,
+      name: "toy-flow",
+      language: "JavaScript",
+      source: "workflow.define({ alias: \"toy\" })\n",
+      source_sha256: "source-sha256",
+      source_bytes: 34,
+      definition_sha256: "definition-sha256",
+      definition: {
+        schema_version: 1,
+        workflow: { alias: "toy" },
+      },
+      validation: { ok: true },
+      exported_at_ms: 1_000,
+    }
+    const artifact = {
+      metadata: {
+        name: "imported-toy",
+        language: "JavaScript",
+        path: "/repo/.arroba/workflow-code/imported-toy.json",
+        source_sha256: "source-sha256",
+        source_bytes: 34,
+        validation: { ok: true },
+        provenance: { created_by: { user_id: "user-1" }, updated_by: { user_id: "user-1" } },
+        created_at_ms: 1_000,
+        updated_at_ms: 1_000,
+      },
+      source: workflowCodePackage.source,
+      definition: workflowCodePackage.definition,
+    }
+    const requests: Record<string, unknown>[] = []
+    const fake = {
+      client: {
+        send: async (request: Record<string, unknown>) => {
+          requests.push(request)
+          if ("ExportWorkflowCodePackage" in request) {
+            return { WorkflowCodePackageExported: { package: workflowCodePackage } }
+          }
+          if ("ImportWorkflowCodePackage" in request) {
+            return { WorkflowCodePackageImported: { artifact } }
+          }
+          const payload = request.ExportWorkflowCodeSource as { format?: string }
+          if (payload.format === "directory") {
+            return {
+              WorkflowCodeSourceExported: {
+                export: {
+                  name: "toy-flow",
+                  language: "JavaScript",
+                  format: "directory",
+                  source_path: "workflow.js",
+                  source: "async function defineWorkflow(workflow) {}\n",
+                  source_sha256: "dir-source-sha256",
+                  source_bytes: 43,
+                  definition_sha256: "definition-sha256",
+                  files: [
+                    { path: "workflow.js", contents: "async function defineWorkflow(workflow) {}\n", sha256: "dir-source-sha256" },
+                    { path: "schemas/final.json", contents: "{\n  \"type\": \"object\"\n}\n", sha256: "schema-sha256" },
+                    { path: "manifest.json", contents: "{\n  \"manifest_version\": 1\n}\n", sha256: "manifest-sha256" },
+                  ],
+                },
+              },
+            }
+          }
+          return {
+            WorkflowCodeSourceExported: {
+              export: {
+                name: "toy-flow",
+                language: "JavaScript",
+                format: "inline",
+                source_path: "workflow.js",
+                source: workflowCodePackage.source,
+                source_sha256: "source-sha256",
+                source_bytes: 34,
+                definition_sha256: "definition-sha256",
+                files: [],
+              },
+            },
+          }
+        },
+      },
+    }
+    const context = createDefaultShellContext({ workspace: root, worktree: root, sessionId: "session-1" })
+    const packageExport = await executeShellCommand(parseShellCommand("workflow code package export toy-flow exports/toy.workflow-code.json"), context, { client: fake.client })
+    const packageImport = await executeShellCommand(parseShellCommand("workflow code package import exports/toy.workflow-code.json imported-toy --overwrite"), context, { client: fake.client })
+    const sourceInline = await executeShellCommand(parseShellCommand("workflow code source export toy-flow exports/toy.js"), context, { client: fake.client })
+    const sourceDirectory = await executeShellCommand(parseShellCommand("workflow code source export toy-flow exports/toy-source --format directory"), context, { client: fake.client })
+
+    assert.equal(packageExport.ok, true)
+    assert.equal(packageImport.ok, true)
+    assert.equal(sourceInline.ok, true)
+    assert.equal(sourceDirectory.ok, true)
+    assert.equal(JSON.parse(await readFile(join(root, "exports/toy.workflow-code.json"), "utf8")).name, "toy-flow")
+    assert.equal(await readFile(join(root, "exports/toy.js"), "utf8"), workflowCodePackage.source)
+    assert.equal(await readFile(join(root, "exports/toy-source/workflow.js"), "utf8"), "async function defineWorkflow(workflow) {}\n")
+    assert.equal(await readFile(join(root, "exports/toy-source/schemas/final.json"), "utf8"), "{\n  \"type\": \"object\"\n}\n")
+    assert.deepEqual(requests, [
+      { ExportWorkflowCodePackage: { session_id: "session-1", name: "toy-flow" } },
+      {
+        ImportWorkflowCodePackage: {
+          session_id: "session-1",
+          package: workflowCodePackage,
+          name: "imported-toy",
+          overwrite: true,
+          node_path: "node",
+        },
+      },
+      {
+        ExportWorkflowCodeSource: {
+          session_id: "session-1",
+          target: { kind: "artifact", name: "toy-flow" },
+          format: "inline",
+        },
+      },
+      {
+        ExportWorkflowCodeSource: {
+          session_id: "session-1",
+          target: { kind: "artifact", name: "toy-flow" },
+          format: "directory",
+        },
+      },
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("executeShellCommand runs and controls workflow runs", async () => {
   const workflow = makeWorkflow()
   const workflowRun = makeWorkflowRun()

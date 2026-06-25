@@ -33,6 +33,7 @@ import {
   executeWorkflowEndpointCommand,
   executeWorkflowNodeCommand,
 } from "./shell-workflow-graph-command.js"
+import { executeWorkflowCodeCommand } from "./shell-workflow-code-command.js"
 import { executeWorkflowPublicationCommand } from "./shell-workflow-publication-command.js"
 import {
   formatWorkflowDetails,
@@ -233,8 +234,11 @@ export async function executeWorkflowCommand(
       return executeWorkflowWatchdogCommand(args, context, deps)
     case "queue":
       return executeWorkflowQueueCommand(args, context, deps)
+    case "code":
+    case "workflow-code":
+      return executeWorkflowCodeCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint|publication|watchdog|queue" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|run|runs|run-show|cancel|resume|node|edge|endpoint|publication|watchdog|queue|code" }
   }
 }
 
