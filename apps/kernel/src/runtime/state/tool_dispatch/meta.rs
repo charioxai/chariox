@@ -25,7 +25,7 @@ use crate::transport::runtime_tools::{
     META_WORKFLOW_CODE_DELETE_TOOL, META_WORKFLOW_CODE_EXPORT_TOOL, META_WORKFLOW_CODE_IMPORT_TOOL,
     META_WORKFLOW_CODE_LIST_TOOL, META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL,
     META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL, META_WORKFLOW_CODE_READ_TOOL,
-    META_WORKFLOW_CODE_RUN_TOOL, META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL,
+    META_WORKFLOW_CODE_RUN_TOOL, META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL,
     META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL, META_WORKFLOW_CODE_UPDATE_TOOL,
     META_WORKFLOW_CODE_VALIDATE_TOOL,
 };
@@ -548,7 +548,7 @@ impl KernelRuntimeState {
                 self.meta_workflow_code_source_export(session, agent, args)
                     .await
             }
-            META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL => {
+            META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL => {
                 let args = serde_json::from_value::<MetaWorkflowCodeSourceExportDirArgs>(arguments)
                     .map_err(invalid_meta_args)?;
                 self.meta_workflow_code_source_export(

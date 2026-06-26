@@ -149,7 +149,7 @@ mod workspace_live_sync_tests {
             .any(|spec| spec.name == META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL));
         assert!(specs
             .iter()
-            .any(|spec| spec.name == META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL));
+            .any(|spec| spec.name == META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL));
         assert!(specs
             .iter()
             .any(|spec| spec.name == META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL));
@@ -194,8 +194,12 @@ mod workspace_live_sync_tests {
             Some(META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL)
         );
         assert_eq!(
+            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_source_export_directory"),
+            Some(META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL)
+        );
+        assert_eq!(
             canonical_meta_tool_name("mcp__arroba__meta_workflow_code_source_export_dir"),
-            Some(META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL)
+            Some(META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL)
         );
         assert_eq!(
             canonical_meta_tool_name("mcp__arroba__meta_workflow_code_canvas_contract"),

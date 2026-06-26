@@ -870,7 +870,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .dispatch_meta_runtime_tool_call_for_agent(
             session.id(),
             metaagent.id(),
-            crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL,
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL,
             serde_json::json!({ "name": "meta-flow-imported" }),
         )
         .await
@@ -891,7 +891,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             .is_some_and(|files| files.iter().any(|file| {
                 file.get("path").and_then(serde_json::Value::as_str) == Some("manifest.json")
             })),
-        "source_export_dir should return a manifest file"
+        "source_export_directory should return a manifest file"
     );
 
     let deleted = router

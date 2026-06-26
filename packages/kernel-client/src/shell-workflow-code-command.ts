@@ -57,8 +57,8 @@ export async function executeWorkflowCodeCommand(
   }
   if (area === "source") {
     if (action === "export") return exportWorkflowCodeSource(sessionId, rest, context, deps)
-    if (action === "export-dir") return exportWorkflowCodeSourceDirectory(sessionId, rest, context, deps)
-    return { ok: false, message: "usage: workflow code source export <artifact-or-workflow-ref> <file> [--workflow] | workflow code source export-dir <artifact-or-workflow-ref> <directory> [--workflow]" }
+    if (action === "export-directory" || action === "export-dir") return exportWorkflowCodeSourceDirectory(sessionId, rest, context, deps)
+    return { ok: false, message: "usage: workflow code source export <artifact-or-workflow-ref> <file> [--workflow] | workflow code source export-directory <artifact-or-workflow-ref> <directory> [--workflow]" }
   }
   return { ok: false, message: "usage: workflow code validate|apply|run|save|artifact|package|source ..." }
 }

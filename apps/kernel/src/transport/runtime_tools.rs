@@ -121,7 +121,9 @@ pub const META_WORKFLOW_CODE_IMPORT_TOOL: &str = "arroba.meta.workflow_code.impo
 pub const META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.package_export";
 pub const META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL: &str = "arroba.meta.workflow_code.package_import";
 pub const META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL: &str = "arroba.meta.workflow_code.source_export";
-pub const META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL: &str =
+pub const META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL: &str =
+    "arroba.meta.workflow_code.source_export_directory";
+pub const META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_ALIAS_TOOL: &str =
     "arroba.meta.workflow_code.source_export_dir";
 pub const META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL: &str =
     "arroba.meta.workflow_code.canvas_contract";
@@ -1624,7 +1626,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
-            name: META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL.to_string(),
+            name: META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL.to_string(),
             description: "Export a saved workflow-code artifact as a source directory package with workflow.js, external schemas/*.json files, and manifest.json hashes. This is the explicit directory-named form of source_export with format directory.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -1841,11 +1843,15 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
         | "mcp__arroba__arroba_meta_workflow_code_source_export" => {
             Some(META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL)
         }
-        META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL
+        META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL
+        | META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_ALIAS_TOOL
+        | "arroba_meta_workflow_code_source_export_directory"
+        | "mcp__arroba__meta_workflow_code_source_export_directory"
+        | "mcp__arroba__arroba_meta_workflow_code_source_export_directory"
         | "arroba_meta_workflow_code_source_export_dir"
         | "mcp__arroba__meta_workflow_code_source_export_dir"
         | "mcp__arroba__arroba_meta_workflow_code_source_export_dir" => {
-            Some(META_WORKFLOW_CODE_SOURCE_EXPORT_DIR_TOOL)
+            Some(META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL)
         }
         META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
         | "arroba_meta_workflow_code_canvas_contract"

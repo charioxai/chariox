@@ -156,6 +156,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
     const packageImport = await executeShellCommand(parseShellCommand("workflow code package import exports/toy.workflow-code.json --name imported-toy --overwrite"), context, { client: fake.client })
     const sourceInline = await executeShellCommand(parseShellCommand("workflow code source export toy-flow --out exports/toy.js"), context, { client: fake.client })
     const sourceDirectory = await executeShellCommand(parseShellCommand("workflow code source export toy-flow --out exports/toy-source --format directory"), context, { client: fake.client })
+    const sourceDirectoryPrimary = await executeShellCommand(parseShellCommand("workflow code source export-directory toy-flow --out exports/toy-source-primary"), context, { client: fake.client })
     const sourceDirectoryAlias = await executeShellCommand(parseShellCommand("workflow code source export-dir toy-flow --out exports/toy-source-alias"), context, { client: fake.client })
     const workflowSource = await executeShellCommand(parseShellCommand("workflow code source export workflow-1 --out exports/workflow.js --workflow --existing-agents"), context, { client: fake.client })
 
@@ -163,12 +164,14 @@ test("executeShellCommand exports and imports workflow-code packages and source"
     assert.equal(packageImport.ok, true)
     assert.equal(sourceInline.ok, true)
     assert.equal(sourceDirectory.ok, true)
+    assert.equal(sourceDirectoryPrimary.ok, true)
     assert.equal(sourceDirectoryAlias.ok, true)
     assert.equal(workflowSource.ok, true)
     assert.equal(JSON.parse(await readFile(join(root, "exports/toy.workflow-code.json"), "utf8")).name, "toy-flow")
     assert.equal(await readFile(join(root, "exports/toy.js"), "utf8"), workflowCodePackage.source)
     assert.equal(await readFile(join(root, "exports/toy-source/workflow.js"), "utf8"), "async function defineWorkflow(workflow) {}\n")
     assert.equal(await readFile(join(root, "exports/toy-source/schemas/final.json"), "utf8"), "{\n  \"type\": \"object\"\n}\n")
+    assert.equal(await readFile(join(root, "exports/toy-source-primary/manifest.json"), "utf8"), "{\n  \"manifest_version\": 1\n}\n")
     assert.equal(await readFile(join(root, "exports/toy-source-alias/manifest.json"), "utf8"), "{\n  \"manifest_version\": 1\n}\n")
     assert.deepEqual(requests, [
       { ExportWorkflowCodePackage: { session_id: "session-1", name: "toy-flow" } },
@@ -186,6 +189,14 @@ test("executeShellCommand exports and imports workflow-code packages and source"
           session_id: "session-1",
           target: { kind: "artifact", name: "toy-flow" },
           format: "inline",
+          agent_mode: "portable_generated",
+        },
+      },
+      {
+        ExportWorkflowCodeSource: {
+          session_id: "session-1",
+          target: { kind: "artifact", name: "toy-flow" },
+          format: "directory",
           agent_mode: "portable_generated",
         },
       },
