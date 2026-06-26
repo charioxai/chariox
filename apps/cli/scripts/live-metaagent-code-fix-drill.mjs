@@ -459,6 +459,9 @@ async function observeUntilComplete({
     if (task?.status === 'blocked' || task?.status === 'aborted') {
       throw new Error(`metaagent task ended as ${task.status}: ${task.blocked_reason ?? task.aborted_reason ?? 'no reason'}`)
     }
+    if (task?.status === 'completed' && !task.plan_markdown?.trim()) {
+      throw new Error(`metaagent task completed without a kernel plan\n${JSON.stringify(task, null, 2)}`)
+    }
 
     const workerEventCount = finalEvents.filter((event) => event.source_agent_id && workerIds.has(event.source_agent_id)).length
     const workerEvidenceCount = workerEventCount + workerHistoryToolEvidence.size

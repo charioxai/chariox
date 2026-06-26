@@ -553,6 +553,9 @@ async function waitForTaskComplete(observer, options, workspace, expectedSource,
     if (last.task?.status === 'blocked' || last.task?.status === 'aborted') {
       throw new Error(`${label} ended as ${last.task.status}: ${last.task.blocked_reason ?? last.task.aborted_reason ?? 'no reason'}`)
     }
+    if (last.task?.status === 'completed' && !last.task.plan_markdown?.trim()) {
+      throw new Error(`${label} completed without a kernel plan\n${JSON.stringify(last.task, null, 2)}`)
+    }
     if (
       last.task?.status === 'completed'
       && last.task.plan_markdown?.trim()

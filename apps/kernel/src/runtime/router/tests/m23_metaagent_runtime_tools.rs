@@ -605,12 +605,14 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                     && agent
                         .get("extension_grants")
                         .and_then(serde_json::Value::as_array)
-                        .is_some_and(|grants| grants.iter().any(|grant| {
-                            grant.get("kind").and_then(serde_json::Value::as_str)
-                                == Some("skill")
-                                && grant.get("name").and_then(serde_json::Value::as_str)
-                                    == Some("meta-workflow-code-skill")
-                        }))
+                        .is_some_and(|grants| {
+                            grants.iter().any(|grant| {
+                                grant.get("kind").and_then(serde_json::Value::as_str)
+                                    == Some("skill")
+                                    && grant.get("name").and_then(serde_json::Value::as_str)
+                                        == Some("meta-workflow-code-skill")
+                            })
+                        })
             })),
         "applied workflow-code should create the planner with the rebound provider/model and skill grant: {:?}",
         applied.payload
@@ -1622,10 +1624,12 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
                     && workflow
                         .get("nodes")
                         .and_then(serde_json::Value::as_array)
-                        .is_some_and(|nodes| nodes.iter().any(|node| {
-                            node.get("agent_id").and_then(serde_json::Value::as_str)
-                                == Some(owned_worker.id())
-                        }))
+                        .is_some_and(|nodes| {
+                            nodes.iter().any(|node| {
+                                node.get("agent_id").and_then(serde_json::Value::as_str)
+                                    == Some(owned_worker.id())
+                            })
+                        })
             })),
         "owned existing-agent workflow should be controlled by the metaagent and use the existing worker: {:?}",
         owned_applied.payload
@@ -3140,9 +3144,11 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .pointer("/agents/owned")
         .and_then(serde_json::Value::as_array)
         .expect("owned agents should be included");
-    assert!(owned_agents
-        .iter()
-        .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
+    assert!(
+        owned_agents.iter().any(|agent| {
+            agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id())
+        })
+    );
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -3277,20 +3283,22 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .await
         .expect("meta guide list should dispatch");
     assert!(listed_guides.ok);
-    assert!(listed_guides
-        .payload
-        .get("guides")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|guides| guides.iter().any(|guide| {
-            guide
-                .get("commands")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|commands| {
-                    commands
-                        .iter()
-                        .any(|command| command.as_str() == Some("workflow run"))
-                })
-        })));
+    assert!(
+        listed_guides
+            .payload
+            .get("guides")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|guides| guides.iter().any(|guide| {
+                guide
+                    .get("commands")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|commands| {
+                        commands
+                            .iter()
+                            .any(|command| command.as_str() == Some("workflow run"))
+                    })
+            }))
+    );
 
     let guide = router
         .runtime_state
@@ -3304,11 +3312,13 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .await
         .expect("meta guide read should dispatch");
     assert!(guide.ok);
-    assert!(guide
-        .payload
-        .get("body")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|body| body.contains("Do not implement directly")));
+    assert!(
+        guide
+            .payload
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|body| body.contains("Do not implement directly"))
+    );
 }
 
 #[test]
@@ -3512,6 +3522,9 @@ async fn multiple_metaagents_in_one_session_are_isolated_inner() {
         .expect("meta A task should be projected")
         .task_id()
         .to_string();
+    app.sessions_mut()
+        .update_metaagent_plan_markdown(session.id(), meta_a.id(), "- Spawn alpha worker.")
+        .expect("meta A plan should be recorded");
     app.agents_mut()
         .activate_agent_meta_mode(meta_a.id(), Some(task_a_id))
         .expect("meta A should enter meta mode");
@@ -3523,6 +3536,9 @@ async fn multiple_metaagents_in_one_session_are_isolated_inner() {
         .expect("meta B task should be projected")
         .task_id()
         .to_string();
+    app.sessions_mut()
+        .update_metaagent_plan_markdown(session.id(), meta_b.id(), "- Spawn beta worker.")
+        .expect("meta B plan should be recorded");
     app.agents_mut()
         .activate_agent_meta_mode(meta_b.id(), Some(task_b_id))
         .expect("meta B should enter meta mode");
@@ -4377,11 +4393,13 @@ async fn metaagent_workflow_run_commands_expose_execution_visibility_inner() {
             .and_then(serde_json::Value::as_str),
         Some("WorkflowRun")
     );
-    assert!(run_status
-        .payload
-        .pointer("/response/workflow_run/node_run_counts_by_status")
-        .and_then(serde_json::Value::as_object)
-        .is_some_and(|counts| !counts.is_empty()));
+    assert!(
+        run_status
+            .payload
+            .pointer("/response/workflow_run/node_run_counts_by_status")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|counts| !counts.is_empty())
+    );
 }
 
 #[test]
@@ -4390,6 +4408,96 @@ fn metaagent_run_command_routes_owned_agent_lifecycle_commands() {
         "metaagent-run-command-agent-lifecycle",
         metaagent_run_command_routes_owned_agent_lifecycle_commands_inner,
     );
+}
+
+#[test]
+fn metaagent_run_command_requires_plan_before_delegation() {
+    run_large_stack_async_test(
+        "metaagent-run-command-requires-plan",
+        metaagent_run_command_requires_plan_before_delegation_inner,
+    );
+}
+
+async fn metaagent_run_command_requires_plan_before_delegation_inner() {
+    let env = TestMetaRuntimeEnv::new("run-command-requires-plan");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let task_id = app
+        .sessions_mut()
+        .ensure_metaagent_task(session.id(), metaagent.id(), "Fix the bug by delegation.")
+        .expect("metaagent task should start")
+        .metaagent_task(metaagent.id())
+        .expect("metaagent task should be projected")
+        .task_id()
+        .to_string();
+    app.agents_mut()
+        .activate_agent_meta_mode(metaagent.id(), Some(task_id))
+        .expect("agent should enter meta mode");
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let denied = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent spawn fixer" }),
+        )
+        .await
+        .expect("planless delegation should return structured denial");
+    assert!(!denied.ok);
+    assert!(
+        denied
+            .payload
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.contains("call `arroba.meta.update_plan`")),
+        "{:?}",
+        denied.payload
+    );
+
+    let plan = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_UPDATE_PLAN_TOOL,
+            serde_json::json!({
+                "markdown": "- Spawn a fixer worker.\n- Review the fix and verification."
+            }),
+        )
+        .await
+        .expect("update_plan should dispatch");
+    assert!(plan.ok, "{:?}", plan.payload);
+
+    let spawned = router
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+            serde_json::json!({ "command": "agent spawn fixer" }),
+        )
+        .await
+        .expect("planned delegation should dispatch");
+    assert!(spawned.ok, "{:?}", spawned.payload);
 }
 
 async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
@@ -4489,10 +4597,12 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
         .sessions()
         .get_session(session.id())
         .expect("session should remain");
-    assert!(session
-        .agents()
-        .iter()
-        .all(|agent| agent.id() != worker.id()));
+    assert!(
+        session
+            .agents()
+            .iter()
+            .all(|agent| agent.id() != worker.id())
+    );
 }
 
 #[test]
@@ -4503,8 +4613,8 @@ fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_managemen
     );
 }
 
-async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(
-) {
+async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner()
+ {
     let env = TestMetaRuntimeEnv::new("run-command-slice-policy");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -4643,11 +4753,12 @@ async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
     app.sessions_mut()
         .join_session_invite(&session_id, invite.invite_id(), "user-2".to_string(), 1)
         .expect("collaborator should join session");
-    assert!(app
-        .sessions()
-        .get_session(&session_id)
-        .expect("session should remain")
-        .has_member("user-2"));
+    assert!(
+        app.sessions()
+            .get_session(&session_id)
+            .expect("session should remain")
+            .has_member("user-2")
+    );
 
     let owner_metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(&session_id, "dev-stub").with_alias("owner-meta"))

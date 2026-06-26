@@ -94,6 +94,22 @@ impl CommandRouter {
                 return Ok(result);
             }
         }
+        if meta_command_requires_task_plan(&tokens)
+            && metaagent_active_task_plan_is_empty(&session, &metaagent)
+        {
+            let result =
+                meta_command_failure_result(&args.command, meta_task_plan_required_error());
+            self.audit_meta_run_command(
+                Some(provider_run.id()),
+                &session,
+                &metaagent,
+                &args.command,
+                "denied",
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
+        }
         if tokens.first().map(String::as_str) == Some("prompt") {
             let result = self
                 .dispatch_meta_prompt_command(&session, &metaagent, &args.command, &tokens[1..])
@@ -266,6 +282,22 @@ impl CommandRouter {
                 .await;
                 return Ok(result);
             }
+        }
+        if meta_command_requires_task_plan(&tokens)
+            && metaagent_active_task_plan_is_empty(&session, &metaagent)
+        {
+            let result =
+                meta_command_failure_result(&args.command, meta_task_plan_required_error());
+            self.audit_meta_run_command(
+                None,
+                &session,
+                &metaagent,
+                &args.command,
+                "denied",
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
         }
         if tokens.first().map(String::as_str) == Some("prompt") {
             let result = self
@@ -519,7 +551,7 @@ impl CommandRouter {
                     return Ok(meta_command_failure_result(
                         command,
                         meta_command_error(format!("unexpected slice create response: {other:?}")),
-                    ))
+                    ));
                 }
             };
             let start_request = LocalDaemonRequest::StartSlice(SliceRefRequest {
@@ -540,7 +572,7 @@ impl CommandRouter {
                     return Ok(meta_command_failure_result(
                         command,
                         meta_command_error(format!("unexpected slice start response: {other:?}")),
-                    ))
+                    ));
                 }
             };
             spawn.slice_ref = Some(slice.id.clone());
@@ -1177,10 +1209,12 @@ fn meta_workflow_request(
             if args.len() > 2 {
                 return Err(meta_command_error("usage: workflow resolve <workflow-ref>"));
             }
-            Ok(LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
-                session_id: session.id().to_string(),
-                workflow_ref: workflow_ref.clone(),
-            }))
+            Ok(LocalDaemonRequest::ResolveWorkflow(
+                ResolveWorkflowRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_ref.clone(),
+                },
+            ))
         }
         Some("alias" | "name") => {
             if args.len() < 3 {
@@ -1268,15 +1302,17 @@ fn meta_workflow_request(
                         "usage: workflow node intermediate-output <workflow-ref> <node-id> <true|false>",
                     ));
                 }
-                Ok(LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(
-                    SetWorkflowNodeCanEmitIntermediateOutputRequest {
-                        session_id: session.id().to_string(),
-                        workflow_ref: args[2].clone(),
-                        node_id: args[3].clone(),
-                        can_emit_intermediate_workflow_run_output: parse_meta_bool(&args[4])?,
-                        expected_workflow_revision: None,
-                    },
-                ))
+                Ok(
+                    LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(
+                        SetWorkflowNodeCanEmitIntermediateOutputRequest {
+                            session_id: session.id().to_string(),
+                            workflow_ref: args[2].clone(),
+                            node_id: args[3].clone(),
+                            can_emit_intermediate_workflow_run_output: parse_meta_bool(&args[4])?,
+                            expected_workflow_revision: None,
+                        },
+                    ),
+                )
             }
             Some("wait-for-all-inputs" | "wait-all" | "join") => {
                 if args.len() != 5 {
@@ -1364,17 +1400,19 @@ fn meta_workflow_request(
                         "usage: workflow edge add <workflow-ref> <from-node-id> <to-node-id>",
                     ));
                 }
-                Ok(LocalDaemonRequest::AddWorkflowEdge(AddWorkflowEdgeRequest {
-                    session_id: session.id().to_string(),
-                    workflow_ref: args[2].clone(),
-                    from_node_id: args[3].clone(),
-                    to_node_id: args[4].clone(),
-                    handoff_schema_ref: None,
-                    validation_policy: None,
-                    source_side: None,
-                    target_side: None,
-                    expected_workflow_revision: None,
-                }))
+                Ok(LocalDaemonRequest::AddWorkflowEdge(
+                    AddWorkflowEdgeRequest {
+                        session_id: session.id().to_string(),
+                        workflow_ref: args[2].clone(),
+                        from_node_id: args[3].clone(),
+                        to_node_id: args[4].clone(),
+                        handoff_schema_ref: None,
+                        validation_policy: None,
+                        source_side: None,
+                        target_side: None,
+                        expected_workflow_revision: None,
+                    },
+                ))
             }
             Some("remove" | "delete") => {
                 if args.len() != 4 {
@@ -1391,9 +1429,7 @@ fn meta_workflow_request(
                     },
                 ))
             }
-            _ => Err(meta_command_error(
-                "usage: workflow edge <add|remove> ...",
-            )),
+            _ => Err(meta_command_error("usage: workflow edge <add|remove> ...")),
         },
         Some("run") if args.get(1).map(String::as_str) == Some("get") => {
             let Some(workflow_run_ref) = args.get(2) else {
@@ -1869,6 +1905,41 @@ fn meta_kernel_command_without_request(
 
 fn metaagent_command_client_id(metaagent_id: &str) -> String {
     format!("metaagent:{metaagent_id}:commands")
+}
+
+fn meta_command_requires_task_plan(tokens: &[String]) -> bool {
+    match tokens.first().map(String::as_str) {
+        Some("prompt") => true,
+        Some("agent") => matches!(tokens.get(1).map(String::as_str), Some("spawn")),
+        Some("workflow") => matches!(
+            tokens.get(1).map(String::as_str),
+            Some("new")
+                | Some("alias")
+                | Some("node")
+                | Some("endpoint")
+                | Some("edge")
+                | Some("run")
+                | Some("cancel")
+                | Some("resume")
+        ),
+        _ => false,
+    }
+}
+
+fn metaagent_active_task_plan_is_empty(
+    session: &crate::session::RuntimeSession,
+    metaagent: &crate::agent::AgentInstance,
+) -> bool {
+    session.metaagent_task(metaagent.id()).is_some_and(|task| {
+        task.status() == crate::session::MetaagentTaskStatus::Active
+            && task.plan_markdown().trim().is_empty()
+    })
+}
+
+fn meta_task_plan_required_error() -> DaemonError {
+    meta_command_error(
+        "active meta task has no plan; call `arroba.meta.update_plan` with a concise plan before delegating work through run_command",
+    )
 }
 
 fn meta_command_error(message: impl Into<String>) -> DaemonError {
