@@ -1561,6 +1561,7 @@ async function validateHetznerSecondKernelDistribution({
   inlineSource,
   directorySource,
   sourceWorkflowId,
+  liveExports,
   skillSourceDir,
   skillName,
   generatedRoot,
@@ -1577,6 +1578,7 @@ async function validateHetznerSecondKernelDistribution({
     inlineSource,
     directorySource,
     sourceWorkflowId,
+    liveExports,
     skillName,
     skillSourceDir,
   })
@@ -1669,6 +1671,7 @@ async function writeHetznerWorkflowCodeBundle(localBundle, {
   inlineSource,
   directorySource,
   sourceWorkflowId,
+  liveExports,
   skillName,
   skillSourceDir,
 }) {
@@ -1678,6 +1681,7 @@ async function writeHetznerWorkflowCodeBundle(localBundle, {
   await writeFile(path.join(localBundle, 'package.json'), JSON.stringify({ type: 'module' }, null, 2), 'utf8')
   await writeFile(path.join(localBundle, 'inline-source.json'), JSON.stringify(inlineSource, null, 2), 'utf8')
   await writeFile(path.join(localBundle, 'directory-source.json'), JSON.stringify(directorySource, null, 2), 'utf8')
+  await writeFile(path.join(localBundle, 'topology-live-exports.json'), JSON.stringify(liveExports ?? [], null, 2), 'utf8')
   await writeFile(path.join(localBundle, 'metadata.json'), JSON.stringify({ sourceWorkflowId, skillName }, null, 2), 'utf8')
   await copyDirectory(skillSourceDir, path.join(localBundle, 'skill', path.basename(skillSourceDir)))
   await cp(path.join(repoRoot, 'packages/kernel-client/dist'), path.join(localBundle, 'kernel-client-dist'), {
@@ -1781,6 +1785,7 @@ function validateSessionProjection(session, apply, label) {
   const workflow = (session.workflows ?? []).find((entry) => entry.id === apply.workflow_id)
   assert(workflow, label + ' workflow should appear in session projection', { workflowId: apply.workflow_id })
   assert(workflow.canvas_layout, label + ' workflow should include canvas layout', workflow)
+  return workflow
 }
 
 async function waitForKernel(client, requests, workspace, worktree, timeoutMs) {
@@ -1936,6 +1941,162 @@ async function validateSourceExportOnKernel(client, requests, session, nodePath,
   }
 }
 
+function topologyRuntimeExpectation(definition) {
+  return {
+    ...expectationFromDefinition(definition),
+  }
+}
+
+function parseWorkflowOutputMessage(output) {
+  const message = output?.message
+  if (message == null) return null
+  if (typeof message !== 'string') return message
+  try {
+    return JSON.parse(message)
+  } catch {
+    return message
+  }
+}
+
+function validateTopologyRuntimeResult(exampleName, run) {
+  assert(run?.status === 'Completed', 'topology ' + exampleName + ' should complete', run)
+  assert(run.final_output_valid !== false, 'topology ' + exampleName + ' final output should be schema-valid', run)
+  const finalOutput = parseWorkflowOutputMessage(run.final_output)
+  assert(finalOutput && typeof finalOutput === 'object', 'topology ' + exampleName + ' should produce structured final output', run.final_output)
+  const expectations = {
+    'adversarial-verification.js': { decision: 'accept' },
+    'evaluator-optimizer.js': { accepted: true },
+    'fan-out-synthesize.js': { source_count: 2 },
+    'generate-filter.js': { selected_count: 1 },
+    'loop-until-done.js': { iterations: 2 },
+    'orchestrator-workers.js': { delegated: true },
+    'parallelization.js': { reviewer_count: 2 },
+    'prompt-chaining.js': { answer: 'refined draft accepted' },
+    'routing.js': { specialist: 'code' },
+    'tournament.js': { winner: 'a' },
+  }[exampleName]
+  assert(expectations, 'missing topology runtime expectation for ' + exampleName)
+  for (const [field, value] of Object.entries(expectations)) {
+    assert(finalOutput[field] === value, 'topology ' + exampleName + ' final output field ' + field + ' mismatch', {
+      finalOutput,
+      expected: value,
+    })
+  }
+  return finalOutput
+}
+
+async function waitForProviderRunReady(client, requests, providerRunId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const providerRun = unwrap(
+      await send(client, requests.getProviderRunRequest(providerRunId), 'get provider run ' + providerRunId, 10_000),
+      'ProviderRun',
+    )?.provider_run
+    if (providerRun?.state && providerRun.state !== 'Starting') {
+      if (providerRun.state !== 'Running' && providerRun.state !== 'Parked') {
+        throw new Error('provider run ' + providerRunId + ' reached unexpected state ' + providerRun.state)
+      }
+      return providerRun
+    }
+    await sleep(250)
+  }
+  throw new Error('provider run ' + providerRunId + ' did not become ready')
+}
+
+async function waitForCompletedWorkflowRun(client, requests, sessionId, workflowRunId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastRun = null
+  while (Date.now() < deadline) {
+    const stateResponse = await send(client, requests.getSessionStateRequest(sessionId), 'load session state for workflow run ' + workflowRunId, 10_000)
+    const state = unwrap(stateResponse, 'SessionStateLoaded')?.session
+      ?? unwrap(stateResponse, 'SessionState')?.session
+    const run = (state?.workflow_runs ?? []).find((entry) => entry.id === workflowRunId)
+    if (run) {
+      lastRun = run
+      if (['Completed', 'Failed', 'Stopped'].includes(run.status)) {
+        return run
+      }
+    }
+    await sleep(500)
+  }
+  throw new Error('workflow run ' + workflowRunId + ' did not complete before timeout' + (lastRun ? '\n' + JSON.stringify(lastRun, null, 2) : ''))
+}
+
+async function completeAppliedTopologyWorkflow(client, requests, sessionId, exampleName, definition, apply, timeoutMs) {
+  const endpoint = (definition.endpoints ?? []).find((entry) => entry.handle === 'entry' || entry.alias === 'entry')
+    ?? definition.endpoints?.[0]
+  const entryNodeHandle = endpoint?.entry_node
+  assert(entryNodeHandle, 'topology ' + exampleName + ' should resolve entry node', { definition, apply })
+  const runtimeAgentEntries = Object.entries(apply.agent_ids ?? {})
+    .sort(([left], [right]) => {
+      if (left === entryNodeHandle) return 1
+      if (right === entryNodeHandle) return -1
+      return left.localeCompare(right)
+    })
+  for (const [handle, agentId] of runtimeAgentEntries) {
+    const launchResponse = unwrap(
+      await send(
+        client,
+        requests.launchProviderRunRequest(sessionId, 'dev-stub', 'default', 'workflow-code-topology-node', 'low', agentId),
+        'launch topology provider ' + exampleName + ':' + handle,
+        30_000,
+      ),
+      'ProviderRunLaunchAccepted',
+    )
+    assert(launchResponse?.provider_run?.id, 'topology ' + exampleName + ' should launch provider for node ' + handle, launchResponse)
+    await waitForProviderRunReady(client, requests, launchResponse.provider_run.id, timeoutMs)
+  }
+  const endpointId = apply.endpoint_ids?.[endpoint.handle]
+  assert(endpointId, 'topology ' + exampleName + ' should resolve entry endpoint', { endpoint, apply })
+  const entryAgentId = apply.agent_ids?.[entryNodeHandle]
+  assert(entryAgentId, 'topology ' + exampleName + ' should resolve entry agent', { entryNodeHandle, apply })
+  await send(client, requests.focusAgentRequest(sessionId, entryAgentId), 'focus topology entry agent ' + exampleName, 10_000)
+  const invokeResponse = unwrap(
+    await send(
+      client,
+      requests.invokeWorkflowEndpointRequest(sessionId, apply.workflow_id, endpointId, 'Run ' + exampleName + ' Hetzner topology validation.'),
+      'invoke topology workflow ' + exampleName,
+      30_000,
+    ),
+    'WorkflowRunInvoked',
+  )
+  const workflowRun = invokeResponse?.workflow_run
+  assert(workflowRun?.id, 'topology ' + exampleName + ' should start a workflow run', invokeResponse)
+  const completed = await waitForCompletedWorkflowRun(client, requests, sessionId, workflowRun.id, timeoutMs)
+  return {
+    workflowRunId: completed.id,
+    finalOutput: validateTopologyRuntimeResult(exampleName, completed),
+  }
+}
+
+async function validateTopologySourceExportOnKernel(client, requests, session, nodePath, workspace, exportResult, exampleName, label, timeoutMs) {
+  assert(exportResult?.source, label + ' should include source', exportResult)
+  assert(sha256Hex(exportResult.source) === exportResult.source_sha256, label + ' source hash mismatch', exportResult)
+  if (exportResult.format === 'directory') {
+    await writeSourceDirectoryExport(workspace, exportResult, label)
+  }
+  const validated = unwrap(
+    await send(client, requests.validateWorkflowCodeRequest(session.id, nodePath, exportResult.source), label + ': validate topology source', 60_000),
+    'WorkflowCodeValidated',
+  ).result
+  assert(validated?.validation?.ok, label + ' should validate', validated?.validation)
+  const appliedResponse = unwrap(
+    await send(client, requests.applyWorkflowCodeRequest(session.id, nodePath, exportResult.source), label + ': apply topology source', 60_000),
+    'WorkflowCodeApplied',
+  )
+  const expected = topologyRuntimeExpectation(validated.definition)
+  const apply = validateApplyResult(appliedResponse.result, label + ' apply', expected)
+  validateSessionProjection(appliedResponse.session, apply, label + ' apply')
+  assert(apply.workflow_id !== exportResult.source_workflow_id, label + ' apply workflow id must be fresh', apply)
+  const completed = await completeAppliedTopologyWorkflow(client, requests, session.id, exampleName, validated.definition, apply, timeoutMs)
+  return {
+    applyWorkflowId: apply.workflow_id,
+    workflowRunId: completed.workflowRunId,
+    finalOutput: completed.finalOutput,
+    sourceSha256: exportResult.source_sha256,
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   stage('loading bundled kernel client and workflow-code exports')
@@ -1944,6 +2105,7 @@ async function main() {
   const packageExport = JSON.parse(await readFile(path.join(options.bundle, 'package-export.json'), 'utf8'))
   const inlineSource = JSON.parse(await readFile(path.join(options.bundle, 'inline-source.json'), 'utf8'))
   const directorySource = JSON.parse(await readFile(path.join(options.bundle, 'directory-source.json'), 'utf8'))
+  const topologyLiveExports = JSON.parse(await readFile(path.join(options.bundle, 'topology-live-exports.json'), 'utf8'))
   const metadata = JSON.parse(await readFile(path.join(options.bundle, 'metadata.json'), 'utf8'))
   const kernel = await startKernel(options.repo, options.bundle, options.timeoutMs, ipcModule.LocalIpcClient, requests)
   let sessionId = null
@@ -2008,6 +2170,37 @@ async function main() {
     const inline = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, inlineSource, 'Hetzner inline source')
     await writeSourceDirectoryExport(kernel.workspace, directorySource, 'Hetzner source directory')
     const directory = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, directorySource, 'Hetzner source directory')
+    const topologySourceRuns = []
+    for (const liveExport of topologyLiveExports ?? []) {
+      const inlineTopology = await validateTopologySourceExportOnKernel(
+        kernel.client,
+        requests,
+        session,
+        nodePath,
+        kernel.workspace,
+        { ...liveExport.inlineSource, source_workflow_id: liveExport.sourceWorkflowId },
+        liveExport.exampleName,
+        'Hetzner ' + liveExport.exampleName + ' live inline source',
+        options.timeoutMs,
+      )
+      const directoryTopology = await validateTopologySourceExportOnKernel(
+        kernel.client,
+        requests,
+        session,
+        nodePath,
+        kernel.workspace,
+        { ...liveExport.directorySource, source_workflow_id: liveExport.sourceWorkflowId },
+        liveExport.exampleName,
+        'Hetzner ' + liveExport.exampleName + ' live source directory',
+        options.timeoutMs,
+      )
+      topologySourceRuns.push({
+        example: liveExport.exampleName,
+        sourceWorkflowId: liveExport.sourceWorkflowId,
+        inline: inlineTopology,
+        directory: directoryTopology,
+      })
+    }
     console.log(JSON.stringify({
       kernelUrl: kernel.kernelUrl,
       sessionId: session.id,
@@ -2016,6 +2209,7 @@ async function main() {
       packageRunWorkflowId: packageRunApply.workflow_id,
       inline,
       directory,
+      topologySourceRuns,
     }, null, 2))
   } catch (error) {
     printKernelLogTail(kernel)
@@ -2451,6 +2645,7 @@ async function main() {
         inlineSource: liveInlineSource,
         directorySource: liveDirectorySource,
         sourceWorkflowId: firstApply.workflow_id,
+        liveExports: exampleSuiteLiveExports,
         skillSourceDir,
         skillName,
         generatedRoot,
