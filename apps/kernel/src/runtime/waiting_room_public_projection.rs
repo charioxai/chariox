@@ -372,7 +372,7 @@ fn waiting_room_public_workflow_summaries(
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::{AgentInstance, AgentRole, GridPosition};
+    use crate::agent::{AgentInstance, GridPosition};
     use crate::local::{RelayStatus, TerminalType};
     use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
@@ -436,7 +436,7 @@ mod tests {
             None,
             GridPosition::new(0, 0, 1, 1),
         );
-        metaagent.set_role(AgentRole::Meta);
+        metaagent.activate_meta_mode(None);
         let worker = AgentInstance::new(
             "agent-1",
             "A1",
