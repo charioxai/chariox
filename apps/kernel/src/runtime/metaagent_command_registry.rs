@@ -127,7 +127,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Create a regular agent owned by the current user. Metaagents cannot spawn another metaagent. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation.",
+        description: "Create a regular agent owned by the current user. Agents in Meta mode cannot spawn another agent in Meta mode. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation.",
     },
     MetaCommandDoc {
         name: "agent focus",
@@ -248,7 +248,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "session workflow policy; regular agents only",
         routed: true,
-        description: "Add a regular agent as a node in a workflow. Use the agent alias as the human label; workflow nodes do not take a separate alias. Metaagents cannot be workflow nodes.",
+        description: "Add a regular agent as a node in a workflow. Use the agent alias as the human label; workflow nodes do not take a separate alias. Agents in Meta mode cannot be workflow nodes.",
     },
     MetaCommandDoc {
         name: "workflow node remove",
@@ -778,7 +778,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Grant or revoke an MCP extension for one of this user's regular agents. Metaagents cannot grant MCP tools to themselves.",
+        description: "Grant or revoke an MCP extension for one of this user's regular agents. Agents in Meta mode cannot grant MCP tools to themselves.",
     },
     MetaCommandDoc {
         name: "mcp uninstall",
@@ -927,7 +927,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Grant or revoke a skill for one of this user's regular agents. Metaagents cannot grant skills to themselves.",
+        description: "Grant or revoke a skill for one of this user's regular agents. Agents in Meta mode cannot grant skills to themselves.",
     },
     MetaCommandDoc {
         name: "skill uninstall",
@@ -1146,7 +1146,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Deny,
         authority: "denied",
         routed: false,
-        description: "Denied for metaagents. Secret values must be entered through user or worker credential interactions, not metaagent command text.",
+        description: "Denied for agents in Meta mode. Secret values must be entered through user or worker credential interactions, not Meta mode command text.",
     },
     MetaCommandDoc {
         name: "session new",
@@ -1165,7 +1165,7 @@ pub(crate) const META_COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Deny,
         authority: "denied",
         routed: false,
-        description: "Denied for metaagents. Metaagents must operate inside their containing session.",
+        description: "Denied for agents in Meta mode. Agents in Meta mode must operate inside their containing session.",
     },
 ];
 
@@ -1345,7 +1345,7 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
     };
     match command.policy {
         MetaCommandPolicy::Deny => MetaCommandExecutionPolicy::Denied {
-            message: "metaagents cannot create, attach to, switch, or delete sessions",
+            message: "agents in Meta mode cannot create, attach to, switch, or delete sessions",
         },
         MetaCommandPolicy::Approval if !command.routed => MetaCommandExecutionPolicy::NotRouted {
             message: format!(
@@ -1468,7 +1468,7 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }
             Some("set" | "set-secret" | "delete" | "delete-secret") => {
                 Some(MetaCommandExecutionPolicy::Denied {
-                    message: "metaagents cannot pass credential secret values through run_command; use worker credential interactions and resolve them explicitly",
+                    message: "agents in Meta mode cannot pass credential secret values through run_command; use worker credential interactions and resolve them explicitly",
                 })
             }
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
