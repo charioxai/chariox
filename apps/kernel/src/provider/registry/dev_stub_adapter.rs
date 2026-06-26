@@ -129,6 +129,7 @@ fn dev_stub_pty_args(model: &str) -> Vec<String> {
         "workflow-dashboard-producer-node" => Some(dev_stub_workflow_dashboard_producer_script()),
         "workflow-final-passthrough-node" => Some(dev_stub_workflow_final_passthrough_script()),
         "workflow-html-final-node" => Some(dev_stub_workflow_html_final_script()),
+        "workflow-code-topology-node" => Some(dev_stub_workflow_code_topology_script()),
         "semantic-url-renderer-stub" => Some(dev_stub_semantic_renderer_script()),
         "slow-first-output-drill" => Some(dev_stub_slow_first_output_script()),
         "large-output-drill" => Some(dev_stub_large_output_script()),
@@ -149,6 +150,7 @@ fn is_dev_stub_workflow_drill_model(model: &str) -> bool {
             | "workflow-dashboard-producer-node"
             | "workflow-final-passthrough-node"
             | "workflow-html-final-node"
+            | "workflow-code-topology-node"
             | "semantic-url-renderer-stub"
             | "slow-first-output-drill"
             | "large-output-drill"
@@ -180,6 +182,7 @@ fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<String, String>
         "workflow-intermediate-node"
             | "workflow-dashboard-producer-node"
             | "workflow-final-passthrough-node"
+            | "workflow-code-topology-node"
             | "metaagent-workflow-code-author"
     ) {
         if let Some(binding) = request.runtime_mcp_binding.as_ref() {
@@ -194,6 +197,262 @@ fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<String, String>
         }
     }
     env
+}
+
+fn dev_stub_workflow_code_topology_script() -> String {
+    let js = r#"const http = require("node:http");
+const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const emittedDeliveryTokens = new Set();
+let promptBuffer = "";
+let pendingTimer = null;
+
+function callRuntimeTool(name, args = {}) {
+  return new Promise((resolve, reject) => {
+    if (!runtimeUrl || !runtimeToken) return reject(new Error("runtime MCP binding missing"));
+    const parsed = new URL(runtimeUrl);
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: `workflow-code-topology-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    const req = http.request({
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname || "/mcp",
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${runtimeToken}`,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        if (res.statusCode !== 200) return reject(new Error(`runtime MCP HTTP ${res.statusCode}: ${text}`));
+        const response = JSON.parse(text);
+        if (response.error) return reject(new Error(JSON.stringify(response.error)));
+        if (response.result && response.result.isError) return reject(new Error(JSON.stringify(response.result)));
+        resolve(response.result && (response.result.structuredContent || response.result.payload) || response.result);
+      });
+    });
+    req.setTimeout(5000, () => {
+      req.destroy(new Error(`runtime MCP ${name} timeout`));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+function parseDeliveryToken() {
+  const matches = [...promptBuffer.matchAll(/workflow-ack:[A-Za-z0-9_-]+/g)];
+  return matches.length ? matches[matches.length - 1][0] : undefined;
+}
+
+function text(value) {
+  return String(value || "").toLowerCase();
+}
+
+function inboundCount(context) {
+  return Array.isArray(context && context.messages) ? context.messages.length : 0;
+}
+
+function currentTurnIndex() {
+  const matches = [...promptBuffer.matchAll(/This is turn (\d+) for this node/g)];
+  if (!matches.length) return 1;
+  return Number(matches[matches.length - 1][1]) || 1;
+}
+
+function selectFinalOutput() {
+  const prompt = text(promptBuffer);
+  if (prompt.includes("refine the draft")) {
+    return { answer: "refined draft accepted", changes: ["tightened structure", "preserved requirements"] };
+  }
+  if (prompt.includes("answer code")) {
+    return { answer: "code specialist handled the routed implementation task", specialist: "code" };
+  }
+  if (prompt.includes("answer analysis") || prompt.includes("research specialist")) {
+    return { answer: "research specialist handled the routed analysis task", specialist: "research" };
+  }
+  if (prompt.includes("synthesize them")) {
+    return { answer: "synthesized findings from both workers", source_count: 2 };
+  }
+  if (prompt.includes("aggregate their votes")) {
+    return { decision: "pass", rationale: "both reviewers returned passing structured outputs", reviewer_count: 2 };
+  }
+  if (prompt.includes("survives critique")) {
+    return { decision: "accept", rationale: "proposal survived one critique loop" };
+  }
+  if (prompt.includes("filtered candidates into the final result")) {
+    return { result: "selected candidate alpha", selected_count: 1 };
+  }
+  if (prompt.includes("accepted, submit final output")) {
+    return { answer: "accepted after one revision", iterations: 2 };
+  }
+  if (prompt.includes("accepted final output") || prompt.includes("evaluate the candidate")) {
+    return { answer: "optimized answer accepted", accepted: true };
+  }
+  if (prompt.includes("compare them") || prompt.includes("tournament")) {
+    return { winner: "a", reason: "contestant a gave the clearer structured answer" };
+  }
+  if (prompt.includes("combine the orchestration context")) {
+    return { answer: "delegated worker result consolidated", delegated: true };
+  }
+  return { answer: "workflow-code topology completed" };
+}
+
+function payloadForEdge(edge, index, context) {
+  const target = text(edge.target_instructions);
+  const messages = inboundCount(context);
+  if (target.includes("refine the draft")) {
+    return { draft: "first complete draft", notes: ["ready for refinement"] };
+  }
+  if (target.includes("answer code")) {
+    return { task: "implement the requested code path", reason: "prompt asks for repository implementation" };
+  }
+  if (target.includes("answer analysis") || target.includes("research")) {
+    return { task: "analyze the requested topic", reason: "prompt asks for research" };
+  }
+  if (target.includes("work your assigned angle")) {
+    return { question: "validate the workflow-code fan-out behavior", angle: index === 0 ? "evidence" : "risk" };
+  }
+  if (target.includes("wait for all worker inputs")) {
+    return { finding: "worker finding for synthesis", evidence: [`worker-${index + 1}`] };
+  }
+  if (target.includes("review the task from the policy") || target.includes("review the task from the quality")) {
+    return { subject: "parallel workflow-code review", criteria: ["correctness", "coverage"] };
+  }
+  if (target.includes("wait for both reviewer results")) {
+    return { verdict: "pass", notes: [`reviewer-${index + 1} passed`] };
+  }
+  if (target.includes("find flaws")) {
+    return { claim: "workflow-code proposal is testable", evidence: ["deterministic stub", "schema validation"] };
+  }
+  if (target.includes("produce a proposal")) {
+    return { issues: ["tighten evidence"], recommendation: "revise" };
+  }
+  if (target.includes("decide whether the proposal")) {
+    return { issues: ["resolved after revision"], recommendation: "judge" };
+  }
+  if (target.includes("filter the candidate list")) {
+    return { items: [{ value: "alpha", score: 0.92 }, { value: "beta", score: 0.37 }] };
+  }
+  if (target.includes("turn the filtered candidates")) {
+    return { selected: ["alpha"], rationale: "highest score and complete rationale" };
+  }
+  if (target.includes("produce a tournament entry")) {
+    return { task: "solve the toy tournament prompt", slot: index === 0 ? "a" : "b" };
+  }
+  if (target.includes("wait for both entries")) {
+    return { answer: `contestant ${index === 0 ? "a" : "b"} answer`, strategy: "direct structured response" };
+  }
+  if (target.includes("complete the assigned subtask")) {
+    return { subtask: "inspect workflow-code portability", acceptance_criteria: ["structured result", "no open blocker"] };
+  }
+  if (target.includes("combine the orchestration context")) {
+    return { result: "worker completed delegated subtask", open_questions: [] };
+  }
+  if (target.includes("evaluate the candidate")) {
+    return { candidate: messages > 0 ? "revised candidate" : "initial candidate", version: messages > 0 ? 2 : 1 };
+  }
+  if (target.includes("produce an improved candidate")) {
+    return { decision: "revise", feedback: "improve specificity before acceptance" };
+  }
+  if (target.includes("if work is insufficient")) {
+    return { artifact: messages > 0 ? "revised artifact" : "initial artifact", iteration: messages > 0 ? 2 : 1 };
+  }
+  if (target.includes("create or revise the artifact")) {
+    return { status: "revise", notes: "one revision required before completion" };
+  }
+  return { value: index + 1, note: "generic workflow-code topology handoff" };
+}
+
+function shouldSendEdge(edge, index, context) {
+  const target = text(edge.target_instructions);
+  const turn = currentTurnIndex();
+  if (promptBuffer.includes("Classify the request") || promptBuffer.includes("Classify")) {
+    return target.includes("answer code") || (!target.includes("research") && index === 0);
+  }
+  if (target.includes("produce a proposal")) {
+    return turn <= 1;
+  }
+  if (target.includes("decide whether the proposal")) {
+    return turn > 1;
+  }
+  if (target.includes("produce an improved candidate")) {
+    return turn <= 1;
+  }
+  if (target.includes("create or revise the artifact")) {
+    return turn <= 1;
+  }
+  return true;
+}
+
+async function emitForDeliveryToken(deliveryToken) {
+  if (deliveryToken) {
+    await callRuntimeTool("ack_workflow_turn", { delivery_token: deliveryToken });
+  }
+  const context = await callRuntimeTool("read_workflow_turn_context", {
+    ...(deliveryToken ? { delivery_token: deliveryToken } : {}),
+  });
+  const edges = Array.isArray(context && context.outgoing_edges) ? context.outgoing_edges : [];
+  const selectedEdges = edges.filter((edge, index) => shouldSendEdge(edge, index, context));
+  if (selectedEdges.length > 0) {
+    const workflow_handoffs = selectedEdges.map((edge, index) => ({
+      edge_id: edge.edge_id,
+      message: payloadForEdge(edge, index, context),
+    }));
+    const payload = {
+      summary: `workflow-code topology handoff to ${workflow_handoffs.length} edge(s)`,
+      output: { message: { workflow_handoffs } },
+    };
+    process.stdout.write("```json\n" + JSON.stringify(payload) + "\n```\n");
+    return;
+  }
+  const output = selectFinalOutput();
+  await callRuntimeTool("validate_and_submit_workflow_run_output", {
+    workflow_output_json: JSON.stringify(output),
+    ...(deliveryToken ? { delivery_token: deliveryToken } : {}),
+  });
+  const payload = {
+    summary: "workflow-code topology final output",
+    output: { message: output },
+  };
+  process.stdout.write("```json\n" + JSON.stringify(payload) + "\n```\n");
+}
+
+function scheduleEmit() {
+  if (pendingTimer) return;
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null;
+    const deliveryToken = parseDeliveryToken();
+    if (!deliveryToken || emittedDeliveryTokens.has(deliveryToken)) return;
+    emittedDeliveryTokens.add(deliveryToken);
+    emitForDeliveryToken(deliveryToken).catch((error) => {
+      emittedDeliveryTokens.delete(deliveryToken);
+      process.stdout.write("workflow-code topology stub error: " + (error && error.message || error) + "\n");
+    });
+  }, 100);
+}
+
+process.stdin.setEncoding("utf8");
+if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
+  process.stdin.setRawMode(true);
+}
+process.stdin.on("data", (chunk) => {
+  promptBuffer += chunk;
+  scheduleEmit();
+});
+setInterval(scheduleEmit, 500);
+process.stdin.resume();
+"#;
+    format!(
+        "stty -echo 2>/dev/null || true; node -e {}",
+        shell_single_quote(js)
+    )
 }
 
 fn dev_stub_metaagent_workflow_code_author_script() -> String {

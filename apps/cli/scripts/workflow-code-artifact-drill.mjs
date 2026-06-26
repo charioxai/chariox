@@ -19,6 +19,7 @@ import {
   exportWorkflowCodeArtifactRequest,
   exportWorkflowCodePackageRequest,
   exportWorkflowCodeSourceRequest,
+  focusAgentRequest,
   getSessionStateRequest,
   getWorkflowCodeArtifactRequest,
   getProviderRunRequest,
@@ -441,6 +442,7 @@ function expectationFromDefinition(definition) {
     queues: (definition.queues?.length ?? 0) || 1,
     watchdogs: definition.watchdogs?.length ?? 0,
     requiredSchemas: (definition.schemas ?? []).map((schema) => schema.handle),
+    agentModel: 'default',
     nodeExtensions: Object.fromEntries(
       (definition.nodes ?? [])
         .filter((node) => (node.extensions ?? []).length > 0)
@@ -449,11 +451,26 @@ function expectationFromDefinition(definition) {
   }
 }
 
+function topologyRuntimeExpectation(definition) {
+  return {
+    ...expectationFromDefinition(definition),
+    agentModel: 'workflow-code-topology-node',
+  }
+}
+
 function rebindingsForDefinition(definition) {
   return (definition.nodes ?? []).map((node) => ({
     node: node.handle,
     provider: 'dev-stub',
     model: 'default',
+  }))
+}
+
+function topologyRuntimeRebindingsForDefinition(definition) {
+  return (definition.nodes ?? []).map((node) => ({
+    node: node.handle,
+    provider: 'dev-stub',
+    model: 'workflow-code-topology-node',
   }))
 }
 
@@ -642,6 +659,97 @@ function validateExampleTopologyDefinition(exampleName, definition, validation) 
   }
 }
 
+function parseWorkflowOutputMessage(output) {
+  const message = output?.message
+  if (message == null) return null
+  if (typeof message !== 'string') return message
+  try {
+    return JSON.parse(message)
+  } catch {
+    return message
+  }
+}
+
+function validateExampleRuntimeResult(exampleName, run) {
+  assert(run?.status === 'Completed', `example ${exampleName} runtime should complete`, run)
+  assert(run.final_output_valid !== false, `example ${exampleName} final output should be schema-valid`, run)
+  const finalOutput = parseWorkflowOutputMessage(run.final_output)
+  assert(finalOutput && typeof finalOutput === 'object', `example ${exampleName} should produce structured final output`, run.final_output)
+  const completionHandoffCount = (run.node_runs ?? []).reduce((count, nodeRun) => {
+    const output = parseWorkflowOutputMessage(nodeRun.completion?.output)
+    return count + (Array.isArray(output?.workflow_handoffs) ? output.workflow_handoffs.length : 0)
+  }, 0)
+  const messageCount = (run.messages?.length ?? 0) || completionHandoffCount
+  const nodeRunCount = run.node_runs?.length ?? 0
+  const expectations = {
+    'adversarial-verification.js': {
+      minMessages: 4,
+      fields: { decision: 'accept' },
+      note: 'proposer/critic loop plus judge handoff',
+    },
+    'evaluator-optimizer.js': {
+      minMessages: 3,
+      fields: { accepted: true },
+      note: 'optimizer revision loop',
+    },
+    'fan-out-synthesize.js': {
+      minMessages: 4,
+      fields: { source_count: 2 },
+      note: 'two workers and synthesizer join',
+    },
+    'generate-filter.js': {
+      minMessages: 2,
+      fields: { selected_count: 1 },
+      note: 'candidate generation and filter',
+    },
+    'loop-until-done.js': {
+      minMessages: 3,
+      fields: { iterations: 2 },
+      note: 'one revise loop before completion',
+    },
+    'orchestrator-workers.js': {
+      minMessages: 2,
+      fields: { delegated: true },
+      note: 'orchestrator assignment and synthesis',
+    },
+    'parallelization.js': {
+      minMessages: 4,
+      fields: { reviewer_count: 2 },
+      note: 'two independent reviewers and aggregation',
+    },
+    'prompt-chaining.js': {
+      minMessages: 1,
+      fields: { answer: 'refined draft accepted' },
+      note: 'draft handoff to refiner',
+    },
+    'routing.js': {
+      minMessages: 1,
+      maxMessages: 1,
+      fields: { specialist: 'code' },
+      note: 'router chooses exactly one specialist edge',
+    },
+    'tournament.js': {
+      minMessages: 4,
+      fields: { winner: 'a' },
+      note: 'two contestants and judge',
+    },
+  }[exampleName]
+  assert(expectations, `missing runtime expectation for ${exampleName}`)
+  assert(messageCount >= expectations.minMessages, `example ${exampleName} runtime should emit enough handoffs for ${expectations.note}`, { messageCount, run })
+  if (expectations.maxMessages != null) {
+    assert(messageCount <= expectations.maxMessages, `example ${exampleName} runtime should not emit extra routed handoffs`, { messageCount, run })
+  }
+  for (const [field, value] of Object.entries(expectations.fields)) {
+    assert(finalOutput[field] === value, `example ${exampleName} final output field ${field} mismatch`, { finalOutput, expected: value })
+  }
+  return {
+    status: run.status,
+    messages: messageCount,
+    nodeRuns: nodeRunCount,
+    finalOutput,
+  }
+}
+
 function validateApplyResult(result, label, expected = defaultToyExpectation()) {
   assert(result?.compile?.validation?.ok, `${label} compile validation failed`, result?.compile?.validation)
   const apply = result.apply
@@ -693,7 +801,7 @@ function validateSessionProjection(session, apply, label, expected = defaultToyE
     const agent = (session.agents ?? []).find((entry) => entry.id === agentId)
     assert(agent, `${label} node agent ${handle} should appear in session`, { agentId })
     assert(agent.provider === 'dev-stub', `${label} node agent ${handle} should use dev-stub`, agent)
-    assert(agent.model === 'default', `${label} node agent ${handle} should use default model`, agent)
+    assert(agent.model === (expected.agentModel ?? 'default'), `${label} node agent ${handle} should use ${expected.agentModel ?? 'default'} model`, agent)
     for (const extension of expected.nodeExtensions?.[handle] ?? []) {
       assert(
         (agent.extension_grants ?? []).some((grant) => (
@@ -739,7 +847,7 @@ async function workflowCodeExamples() {
   })))
 }
 
-async function applyExampleSuite(client, sessionId, nodePath, workspace) {
+async function applyExampleSuite(client, sessionId, nodePath, workspace, timeoutMs) {
   const examples = await workflowCodeExamples()
   const results = []
   for (const [index, example] of examples.entries()) {
@@ -831,12 +939,64 @@ async function applyExampleSuite(client, sessionId, nodePath, workspace) {
       directoryRoundTrip.metadata.validation,
     )
 
+    const runtimeRebindings = topologyRuntimeRebindingsForDefinition(exported.definition)
+    const runtimeExpected = topologyRuntimeExpectation(exported.definition)
+    const runtimeAppliedResponse = unwrap(
+      await client.send(applyWorkflowCodeArtifactRequest(sessionId, importedArtifactName, runtimeRebindings)),
+      'WorkflowCodeApplied',
+    )
+    const runtimeApply = validateApplyResult(runtimeAppliedResponse.result, `example ${example.name} runtime`, runtimeExpected)
+    validateSessionProjection(runtimeAppliedResponse.session, runtimeApply, `example ${example.name} runtime`, runtimeExpected)
+    const entryNodeHandle = exported.definition.endpoints?.find((endpoint) => endpoint.handle === 'entry')?.entry_node
+    const runtimeAgentEntries = Object.entries(runtimeApply.agent_ids ?? {})
+      .sort(([left], [right]) => {
+        if (left === entryNodeHandle) return 1
+        if (right === entryNodeHandle) return -1
+        return left.localeCompare(right)
+      })
+    for (const [handle, agentId] of runtimeAgentEntries) {
+      const launchResponse = unwrap(
+        await client.send(launchProviderRunRequest(
+          sessionId,
+          'dev-stub',
+          'default',
+          'workflow-code-topology-node',
+          'low',
+          agentId,
+        )),
+        'ProviderRunLaunchAccepted',
+      )
+      assert(launchResponse?.provider_run?.id, `example ${example.name} runtime should launch provider for node ${handle}`, launchResponse)
+      await waitForProviderRunReady(client, launchResponse.provider_run.id, timeoutMs)
+    }
+    const endpointId = runtimeApply.endpoint_ids?.entry
+    assert(endpointId, `example ${example.name} runtime should resolve entry endpoint`, runtimeApply)
+    const entryAgentId = entryNodeHandle ? runtimeApply.agent_ids?.[entryNodeHandle] : null
+    assert(entryAgentId, `example ${example.name} runtime should resolve entry agent`, { entryNodeHandle, runtimeApply })
+    await client.send(focusAgentRequest(sessionId, entryAgentId))
+    const invokeResponse = unwrap(
+      await client.send(invokeWorkflowEndpointRequest(
+        sessionId,
+        runtimeApply.workflow_id,
+        endpointId,
+        `Run ${example.name} topology runtime validation.`,
+      )),
+      'WorkflowRunInvoked',
+    )
+    const runtimeRun = invokeResponse?.workflow_run
+    assert(runtimeRun?.id, `example ${example.name} runtime should start a workflow run`, invokeResponse)
+    const completedRun = await waitForCompletedWorkflowRun(client, sessionId, runtimeRun.id, timeoutMs)
+    const runtime = validateExampleRuntimeResult(example.name, completedRun)
+
     results.push({
       example: example.name,
       artifactName,
       topology,
+      runtime,
       packageImportedArtifactName: importedArtifactName,
       workflowId: apply.workflow_id,
+      runtimeWorkflowId: runtimeApply.workflow_id,
+      runtimeWorkflowRunId: completedRun.id,
       nodes: expected.nodes,
       edges: expected.edges,
       endpoints: expected.endpoints,
@@ -1906,9 +2066,20 @@ async function main() {
       ?? unwrap(stateResponse, 'SessionState')?.session
     assert((state?.workflows ?? []).some((workflow) => workflow.id === runApply.workflow_id), 'run workflow should be in loaded session state')
     const existingAgentArtifact = await applyExistingAgentArtifact(client, session, nodePath, workspace)
-    const exampleSuite = options.exampleSuite
-      ? await applyExampleSuite(client, session.id, nodePath, workspace)
-      : []
+    let exampleSuite = []
+    if (options.exampleSuite) {
+      const exampleWorkspace = path.join(generatedRoot, 'example-suite', 'workspace')
+      const exampleWorktree = path.join(generatedRoot, 'example-suite', 'worktree')
+      const exampleSession = unwrap(
+        await client.send(createSessionRequest(exampleWorkspace, exampleWorktree, 'workflow-code-example-suite-drill', undefined, null, 'off')),
+        'SessionCreated',
+      ).session
+      try {
+        exampleSuite = await applyExampleSuite(client, exampleSession.id, nodePath, exampleWorkspace, options.timeoutMs)
+      } finally {
+        await client.send(endSessionRequest(exampleSession.id)).catch(() => {})
+      }
+    }
     if ((options.secondKernel || options.hetznerSecondKernel) && installedSkill) {
       await client.send(uninstallSkillRequest(workspace, skillName)).catch(() => {})
       installedSkill = false
