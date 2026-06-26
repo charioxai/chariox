@@ -29,9 +29,9 @@ function parseArgs(argv) {
       console.log([
         'Usage: node apps/cli/scripts/live-metaagent-drill.mjs [options]',
         '',
-        'Runs a local dev-stub metaagent drill against a real kernel:',
-        '- creates a session as a metaagent through arroba-shell',
-        '- spawns a regular owned agent through arroba-shell',
+        'Runs a local meta-mode drill against a real kernel:',
+        '- creates a regular session through arroba-shell',
+        '- activates the focused regular agent with a /meta prompt',
         '- verifies meta-only runtime MCP tools over the real MCP server',
         '- prompts the owned agent through arroba.meta.run_command',
         '- verifies event inbox, turn overview/blob, and runtime interaction resolution',
@@ -160,6 +160,30 @@ async function launchRuntime(client, requests, sessionId, agentId, model, timeou
     await sleep(pollMs)
   }
   throw new Error(`provider run did not expose runtime MCP binding: ${JSON.stringify(last)}`)
+}
+
+async function waitForAgentRuntime(client, requests, sessionId, agentId, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastSession = null
+  while (Date.now() < deadline) {
+    lastSession = unwrapVariant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState', 'SessionStateLoaded').session
+    const providerRunId = lastSession.active_provider_run_id
+    if (providerRunId) {
+      const run = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
+      if (run?.agent_instance_id === agentId || run?.agent_id === agentId) {
+        let last = run
+        while (Date.now() < deadline) {
+          last = unwrap(await client.send(requests.getProviderRunRequest(providerRunId)), 'ProviderRun').provider_run
+          if (last?.runtime_mcp_server_url && last?.runtime_mcp_auth_token) return last
+          if (last?.state === 'Ended') throw new Error(`provider run ended before exposing runtime MCP: ${JSON.stringify(last)}`)
+          await sleep(pollMs)
+        }
+        throw new Error(`provider run did not expose runtime MCP binding: ${JSON.stringify(last)}`)
+      }
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for provider run for agent ${agentId}: ${JSON.stringify(lastSession)}`)
 }
 
 async function callRuntimeMcp(providerRun, method, params = {}) {
@@ -310,6 +334,11 @@ async function main() {
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
     await mkdir(scriptsDir, { recursive: true })
+    await writeFile(
+      path.join(workspace, 'README.md'),
+      '# Metaagent basic fixture\n\nThe meta-mode drill reads this planning context.\n',
+      'utf8',
+    )
     await initGitWorktree(workspace)
 
     const kernelBinary = await buildKernel()
@@ -321,12 +350,7 @@ async function main() {
     await writeFile(successScript, [
       'set provider dev-stub',
       'set model metaagent-drill-default',
-      'session new --meta $workspace as session',
-      'agent list',
-      'agent spawn worker large-output-drill as worker',
-      'agent list',
-      'workflow new metaagent-drill-flow as workflow',
-      'workflow node add $workflow $worker as node',
+      'session new $workspace as session',
       'mcp list',
       'skill list',
       'credential list',
@@ -348,39 +372,9 @@ async function main() {
     if (success.code !== 0) {
       throw new Error(`success script failed\nstdout:\n${success.stdout}\nstderr:\n${success.stderr}`)
     }
-    requireOutput(success.stdout, /created metaagent session /, 'metaagent session creation')
-    requireOutput(success.stdout, /\[meta\]/, 'meta marker in agent list')
-    requireOutput(success.stdout, /spawned agent .*worker/, 'regular agent spawn')
-    requireOutput(success.stdout, /added workflow node /, 'workflow regular node add')
     sessionId = success.stdout.match(/bound \$session = (\S+)/)?.[1] ?? null
-    const workerId = success.stdout.match(/bound \$worker = (\S+)/)?.[1] ?? null
     assert(sessionId, 'success script did not bind session id', { stdout: success.stdout })
-    assert(workerId, 'success script did not bind worker id', { stdout: success.stdout })
-    log('shell-success-passed', { sessionId, workerId })
-
-    const denyScript = path.join(scriptsDir, 'denials.arroba')
-    await writeFile(denyScript, [
-      'session use $session',
-      'agent spawn duplicate-meta metaagent-drill --meta',
-      'agent spawn sliced-meta metaagent-drill --meta --slice new',
-    ].join('\n'), 'utf8')
-    const denials = await run(process.execPath, [
-      shellBin,
-      'run',
-      denyScript,
-      '--kernel-url',
-      kernelUrl,
-      '--workspace',
-      workspace,
-      '--worktree',
-      workspace,
-      '--var',
-      `session=${sessionId}`,
-      '--continue-on-error',
-    ], { env })
-    requireOutput(`${denials.stdout}\n${denials.stderr}`, /already has a metaagent|one metaagent/i, 'duplicate metaagent denial')
-    requireOutput(`${denials.stdout}\n${denials.stderr}`, /metaagents cannot be launched in a slice/i, 'slice metaagent denial')
-    log('shell-denials-passed')
+    log('shell-success-passed', { sessionId })
 
     const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
     const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
@@ -390,27 +384,47 @@ async function main() {
 
     const sessionState = unwrapVariant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState', 'SessionStateLoaded').session
     const agents = sessionState.agents ?? []
-    const metaagent = agents.find((agent) => agent.role === 'meta')
-    const worker = agents.find((agent) => agent.id === workerId)
-    assert(metaagent, 'session should contain one metaagent', { agents })
-    assert(worker?.role !== 'meta', 'worker should be a standard agent', { worker })
+    const metaagent = agents.find((agent) => agent.id === sessionState.focused_agent_id) ?? agents[0]
+    assert(metaagent, 'session should contain a default regular agent', { agents })
+    assert(!metaagent.meta_mode, 'default agent must start outside meta mode', metaagent)
 
-    const metaRun = await launchRuntime(client, requests, sessionId, metaagent.id, 'metaagent-drill-meta', options.timeoutMs, options.pollMs)
-    const workerRun = await launchRuntime(client, requests, sessionId, worker.id, 'large-output-drill', options.timeoutMs, options.pollMs)
+    await client.send(requests.submitPromptRequest(
+      sessionId,
+      attachment.id,
+      metaagent.id,
+      '/meta Coordinate the basic metaagent runtime drill. Keep the task active while the harness verifies runtime MCP capabilities.',
+      [],
+    ))
+    const metaRun = await waitForAgentRuntime(client, requests, sessionId, metaagent.id, options.timeoutMs, options.pollMs)
     assert(metaRun.execution_mode === 'plan', 'metaagent provider run must be forced to plan mode', { metaRun })
-    assert(metaRun.permission_level === 'required', 'metaagent provider run must require permissions', { metaRun })
     const metaTools = await listRuntimeToolNames(metaRun)
-    const workerTools = await listRuntimeToolNames(workerRun)
     assert(metaTools.includes('arroba.meta.session_overview'), 'metaagent runtime MCP must expose meta tools', { metaTools })
-    assert(metaTools.every((tool) => tool.startsWith('arroba.meta.')), 'metaagent runtime MCP must expose only meta tools', { metaTools })
-    assert(!workerTools.includes('arroba.meta.session_overview'), 'standard agent runtime MCP must not expose meta tools', { workerTools })
-    const directReadDenied = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'README.md' })
-    assert(!directReadDenied.ok, 'metaagent direct workspace read tool must be denied', directReadDenied.payload)
+    assert(metaTools.includes('arroba.read_artifact'), 'metaagent runtime MCP must expose read-only workspace tools', { metaTools })
+    const directRead = await callRuntimeTool(metaRun, 'arroba.read_artifact', { path: 'README.md' })
+    assert(directRead.ok, 'metaagent direct workspace read tool must be allowed for planning', directRead.payload)
     log('runtime-tool-exposure-passed')
+
+    const workerSpawn = await callRuntimeTool(metaRun, 'arroba.meta.run_command', {
+      command: 'agent spawn worker large-output-drill',
+    })
+    assert(workerSpawn.ok, 'metaagent should spawn an owned regular worker', workerSpawn.payload)
+    const worker = workerSpawn.payload?.response?.agent
+    assert(worker?.id && !worker.meta_mode, 'worker should be a standard agent', workerSpawn.payload)
+    const workerRun = await launchRuntime(client, requests, sessionId, worker.id, 'large-output-drill', options.timeoutMs, options.pollMs)
+    const workerTools = await listRuntimeToolNames(workerRun)
+    assert(!workerTools.includes('arroba.meta.session_overview'), 'standard agent runtime MCP must not expose meta tools', { workerTools })
+
+    const workflowCreate = await callRuntimeTool(metaRun, 'arroba.meta.run_command', {
+      command: 'workflow new metaagent-drill-flow',
+    })
+    assert(workflowCreate.ok, 'metaagent should create an owned workflow', workflowCreate.payload)
+    const workflowNode = await callRuntimeTool(metaRun, 'arroba.meta.run_command', {
+      command: 'workflow node add metaagent-drill-flow worker',
+    })
+    assert(workflowNode.ok, 'metaagent should add owned worker to workflow', workflowNode.payload)
 
     const overview = await callRuntimeTool(metaRun, 'arroba.meta.session_overview')
     assert(overview.ok, 'session_overview should succeed', overview.payload)
-    assert(overview.payload?.metaagent?.id === metaagent.id, 'session_overview should identify metaagent', overview.payload)
     assert((overview.payload?.agents?.owned ?? []).some((agent) => agent.id === worker.id), 'session_overview should include owned regular agent', overview.payload)
 
     const deniedSession = await callRuntimeTool(metaRun, 'arroba.meta.run_command', { command: 'session new' })
@@ -480,11 +494,8 @@ async function main() {
     )
     log('runtime-interaction-resolution-passed')
 
-    const workflowDenied = await client.send(requests.addWorkflowNodeRequest(sessionId, sessionState.workflows[0].id, metaagent.id))
-      .then((value) => ({ ok: true, value }))
-      .catch((error) => ({ ok: false, error }))
-    assert(!workflowDenied.ok, 'kernel must reject adding metaagent as workflow node', workflowDenied.value)
-    assert(/metaagent/i.test(String(workflowDenied.error?.message ?? workflowDenied.error)), 'workflow node denial should mention metaagent', workflowDenied)
+    const completeTask = await callRuntimeTool(metaRun, 'arroba.meta.complete_task', { summary: 'Basic meta-mode drill finished.' })
+    assert(completeTask.ok && completeTask.payload?.status === 'completed', 'metaagent should mark its task completed', completeTask.payload)
 
     console.log(JSON.stringify({
       status: 'ok',

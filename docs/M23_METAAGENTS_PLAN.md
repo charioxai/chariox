@@ -553,8 +553,9 @@ Current web product drill coverage:
 - `pnpm --filter @arroba-cloud/web run drill:metaagent:web:staging` uses the
   hosted product frontend against an isolated local kernel connected through the
   staging relay.
-- The drill creates a session as a metaagent through the waiting-room product UI,
-  verifies the terminal Freeform pane/footer marks the focused agent as `meta`,
+- The drill creates a regular session through the waiting-room product UI,
+  activates the focused agent with a leading `/meta` prompt, verifies the
+  terminal Freeform pane/footer marks the focused agent as `meta`,
   opens the side-panel spawn dialog, verifies the metaagent control, verifies
   metaagent/slice mutual exclusion, and verifies duplicate metaagent spawn is
   rejected through the product flow. It then spawns a regular agent through the
@@ -569,8 +570,9 @@ Current web product drill coverage:
   hosted staging runs can hit Cloud rate limits while polling the browser relay.
 - `pnpm --filter @arroba-cloud/web run drill:metaagent:web:local` runs the
   same event-prompt validation against a local relay, local kernel, and local
-  product web frontend. It creates the metaagent session and worker agent
-  through product UI, sends the worker prompt through the product terminal
+  product web frontend. It creates a regular session, activates the focused
+  agent with `/meta`, creates a worker agent through product UI, sends the
+  worker prompt through the product terminal
   prompt, verifies the event through the metaagent runtime MCP event list, and
   verifies the product pane renders the inline `agent.turn.completed` prompt.
 

@@ -264,10 +264,11 @@ not evidence of independent metaagent behavior.
 ### Drill Flow
 
 1. Bootstrap a temp git workspace and kernel.
-2. Create a metaagent session.
-3. Launch the metaagent provider run.
+2. Create a regular session and submit a leading `/meta` prompt to the focused
+   agent.
+3. Wait for the same agent to enter meta mode and launch its provider run.
 4. Launch at least one owned regular worker.
-5. Assert the metaagent run is plan mode and permission level is inherited.
+5. Assert the meta-mode run is plan mode and permission level is inherited.
 6. Assert metaagent `tools/list` contains the allowed `arroba.meta.*` tools plus
    read-only planning tools such as artifact and recall reads.
 7. Attempt guessed denied calls for mutation/execution surfaces: workspace live
@@ -331,9 +332,9 @@ target/live-metaagent-code-fix-drill/<run-id>/workspace
 
 1. Create a tiny JavaScript project with one real source bug and one failing
    test, then commit that baseline in the temporary repo.
-2. Start a real kernel and create a metaagent session in the repo.
-3. Launch an actual provider-backed metaagent, never `dev-stub`, and assert the
-   provider run is plan mode.
+2. Start a real kernel and create a regular session in the repo.
+3. Submit the task as a leading `/meta` prompt to the focused agent, never using
+   `dev-stub`, and assert the same agent's provider run is plan mode.
 4. Submit exactly one high-level prompt to the metaagent:
 
    ```text
