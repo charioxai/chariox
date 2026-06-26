@@ -3000,26 +3000,12 @@ fn workflow_node_add_rejects_metaagents() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
-    let metaagent = match harness
-        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-            session_id: session.id().to_string(),
-            alias: Some("meta".to_string()),
-            provider: Some("dev-stub".to_string()),
-            model: Some("default".to_string()),
-            effort: None,
-            execution_mode: None,
-            permission_level: None,
-            worktree_id: None,
-            kernel_ref: None,
-            slice_ref: None,
-            worktree_placement: None,
-            metaagent: true,
-        }))
-        .expect("metaagent should spawn")
-    {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
-        _ => panic!("unexpected local response"),
-    };
+    let metaagent = harness.spawn_workflow_test_agent(session.id(), "meta");
+    let metaagent = harness.with_app_mut(|app| {
+        app.agents_mut()
+            .activate_agent_meta_mode(metaagent.id(), None)
+            .expect("test agent should enter meta mode")
+    });
     let workflow = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
             session_id: session.id().to_string(),

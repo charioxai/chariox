@@ -106,7 +106,7 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentRole, CreateAgentRequest};
+    use crate::agent::CreateAgentRequest;
     use crate::provider::LaunchProviderRequest;
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::CreateSessionRequest;
@@ -208,11 +208,14 @@ mod tests {
         let metaagent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
-                    .with_role(AgentRole::Meta)
                     .with_execution_mode_override(AgentExecutionMode::Build)
                     .with_permission_level_override(AgentPermissionLevel::Yolo),
             )
             .expect("metaagent should spawn");
+        let metaagent = app
+            .agents_mut()
+            .activate_agent_meta_mode(metaagent.id(), None)
+            .expect("agent should enter meta mode");
 
         let prepared = app
             .prepare_app_provider_launch_request(
