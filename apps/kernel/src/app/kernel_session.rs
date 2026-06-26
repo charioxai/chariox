@@ -599,12 +599,12 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
         let metaagent = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(
-                CreateAgentRequest::new(session.id(), "dev-stub")
-                    .with_alias("meta")
-                    .with_role(crate::agent::AgentRole::Meta),
-            )
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
             .expect("metaagent should spawn");
+        let metaagent = app
+            .agents_mut()
+            .activate_agent_meta_mode(metaagent.id(), None)
+            .expect("agent should enter meta mode");
         let peer_worker = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("peer"))
             .expect("peer worker should spawn");
@@ -647,12 +647,12 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
         let metaagent = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(
-                CreateAgentRequest::new(session.id(), "dev-stub")
-                    .with_alias("meta")
-                    .with_role(crate::agent::AgentRole::Meta),
-            )
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
             .expect("metaagent should spawn");
+        let metaagent = app
+            .agents_mut()
+            .activate_agent_meta_mode(metaagent.id(), None)
+            .expect("agent should enter meta mode");
         let agent_count_before = app.agents().get_session_agents(session.id()).len();
         let definition = existing_agent_workflow_code_definition(metaagent.id());
 
@@ -1132,10 +1132,12 @@ workflow.node({
         let (metaagent_id, event_id, subscription_id, deleted_subscription_id) = {
             let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
             let (session, metaagent) = crate::app::KernelSessionService::new(&mut app)
-                .create_session(
-                    CreateSessionRequest::new("workspace", "worktree").with_metaagent(true),
-                )
-                .expect("metaagent session should create");
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should create");
+            let metaagent = app
+                .agents_mut()
+                .activate_agent_meta_mode(metaagent.id(), None)
+                .expect("agent should enter meta mode");
             let metaagent_id = metaagent.id().to_string();
             let event = app.metaagent_event_store().record(
                 crate::runtime::metaagent_event::NewMetaagentEvent {

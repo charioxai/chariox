@@ -1681,11 +1681,13 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_timeout() {
         .expect("session should be created");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
-            crate::agent::CreateAgentRequest::new(session.id(), "codex")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
+            crate::agent::CreateAgentRequest::new(session.id(), "codex").with_alias("meta"),
         )
         .expect("metaagent should spawn");
+    let metaagent = app
+        .agents_mut()
+        .activate_agent_meta_mode(metaagent.id(), None)
+        .expect("agent should enter meta mode");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),

@@ -1071,12 +1071,12 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         ))
         .expect("attachment should attach");
     let metaagent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("meta")
-                .with_role(crate::agent::AgentRole::Meta),
-        )
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
+    let metaagent = app
+        .agents_mut()
+        .activate_agent_meta_mode(metaagent.id(), None)
+        .expect("agent should enter meta mode");
     let trace_subscription = app.metaagent_trace_subscription_store().subscribe(
         session.id(),
         metaagent.id(),

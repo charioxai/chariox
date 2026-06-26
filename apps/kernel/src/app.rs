@@ -692,12 +692,12 @@ mod tests {
                 .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"))
                 .expect("worker should spawn");
             let metaagent = crate::app::KernelSessionService::new(&mut app)
-                .spawn_agent(
-                    CreateAgentRequest::new(session.id(), "dev-stub")
-                        .with_alias("meta")
-                        .with_role(crate::agent::AgentRole::Meta),
-                )
+                .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
                 .expect("metaagent should spawn");
+            let metaagent = app
+                .agents_mut()
+                .activate_agent_meta_mode(metaagent.id(), None)
+                .expect("agent should enter meta mode");
             let event = app.metaagent_event_store().record(
                 crate::runtime::metaagent_event::NewMetaagentEvent {
                     session_id: session.id().to_string(),
