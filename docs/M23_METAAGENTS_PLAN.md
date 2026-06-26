@@ -1,5 +1,13 @@
 # M23 Metaagents Plan
 
+> Superseded: current Arroba meta behavior is temporary agent meta mode,
+> activated by sending a leading `/meta <task>` prompt to a regular agent. Do
+> not implement or expose separate metaagent creation, `metaagent: true`,
+> `--meta`, `--metaagent`, one-metaagent-per-user creation limits, or permanent
+> `AgentRole::Meta` UX from this historical plan. Compatibility code may still
+> use older names internally, but active runtime policy and UI should be based on
+> the agent's current meta mode.
+
 ## Objective
 
 Add metaagents as session-level coordinator agents. A metaagent is a normal Arroba

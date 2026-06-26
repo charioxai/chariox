@@ -84,9 +84,7 @@ impl AgentRuntimeCommandExecutor {
                 .await?;
             (
                 meta_slash.task_prompt,
-                self.prompt_commands
-                    .meta_mode_entered_hidden_context()
-                    .to_string(),
+                self.prompt_commands.meta_mode_entered_hidden_context()?,
             )
         } else {
             (request.prompt.clone(), String::new())

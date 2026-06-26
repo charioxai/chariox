@@ -1,5 +1,10 @@
 # M27 Metaagents Stateful Planner Plan
 
+> Updated model: stateful planning now belongs to an ordinary agent while it is
+> in temporary `/meta` mode. The task and plan are kernel-managed for that
+> active mode; completion, block, or abort exits meta mode and restores the
+> previous provider profile.
+
 ## Summary
 
 Update metaagents into stateful planning supervisors. A metaagent can read

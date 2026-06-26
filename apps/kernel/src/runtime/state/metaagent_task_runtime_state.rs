@@ -21,10 +21,6 @@ pub(crate) fn parse_meta_slash_command(prompt: &str) -> Option<MetaSlashCommand>
     Some(MetaSlashCommand { task_prompt })
 }
 
-const META_MODE_ENTERED_CONTEXT: &str = "Kernel mode transition: this agent is now operating in Arroba meta mode for the active task. Delegate implementation to owned regular agents or workflows, use Arroba meta tools for planning and supervision, and finish by calling arroba.meta.complete_task, arroba.meta.mark_blocked, or by honoring user pause/abort controls.";
-
-const META_MODE_EXITED_CONTEXT: &str = "Kernel mode transition: this agent has left Arroba meta mode and is now a regular agent again. Meta runtime tools are no longer available. Continue future work normally under the restored provider profile.";
-
 impl KernelRuntimeState {
     pub(crate) async fn activate_meta_mode_for_prompt(
         &self,
@@ -44,7 +40,8 @@ impl KernelRuntimeState {
             .activate_agent_meta_mode(agent_id, None)?;
         let session = {
             let mut sessions = self.owned.session_store.write();
-            let session = sessions.start_metaagent_task_if_needed(session_id, agent_id, task_prompt)?;
+            let session =
+                sessions.start_metaagent_task_if_needed(session_id, agent_id, task_prompt)?;
             match session {
                 Some(session) => session,
                 None => sessions.get_session(session_id)?,
@@ -57,9 +54,7 @@ impl KernelRuntimeState {
             .agent_store
             .activate_agent_meta_mode(agent_id, task_id)?;
         let _ = self.reload_agent_provider_if_idle(session_id, agent_id, "meta mode activation")?;
-        Ok(self.project_metaagent_task_session(
-            self.owned.session_store.get_session(session_id)?,
-        ))
+        Ok(self.project_metaagent_task_session(self.owned.session_store.get_session(session_id)?))
     }
 
     pub(crate) async fn deactivate_meta_mode_for_terminal_task(
@@ -72,7 +67,9 @@ impl KernelRuntimeState {
         if agent.session_id() != session_id || !agent.is_metaagent() {
             return Ok(self.owned.session_store.get_session(session_id)?);
         }
-        self.owned.agent_store.deactivate_agent_meta_mode(agent_id)?;
+        self.owned
+            .agent_store
+            .deactivate_agent_meta_mode(agent_id)?;
         let _ = self.reload_agent_provider_if_idle(session_id, agent_id, reason)?;
         if let Err(error) = self
             .submit_meta_mode_exited_prompt(session_id, agent_id, reason)
@@ -92,8 +89,10 @@ impl KernelRuntimeState {
         Ok(self.owned.session_store.get_session(session_id)?)
     }
 
-    pub(crate) fn meta_mode_entered_hidden_context() -> &'static str {
-        META_MODE_ENTERED_CONTEXT
+    pub(crate) fn meta_mode_entered_hidden_context() -> Result<String, DaemonError> {
+        let (context, _manifest) = crate::prompt_assembly::PromptAssemblyService::from_env()?
+            .assemble_meta_mode_entered_context()?;
+        Ok(context)
     }
 
     async fn submit_meta_mode_exited_prompt(
@@ -102,6 +101,8 @@ impl KernelRuntimeState {
         agent_id: &str,
         reason: &str,
     ) -> Result<(), DaemonError> {
+        let (exit_context, _manifest) = crate::prompt_assembly::PromptAssemblyService::from_env()?
+            .assemble_meta_mode_exited_context(reason)?;
         let attachment_id = self.ensure_metaagent_task_attachment(
             session_id,
             &self.owned.agent_store.get_agent(agent_id)?,
@@ -110,12 +111,10 @@ impl KernelRuntimeState {
             self.owned.session_store.reserve_prompt_id(),
             attachment_id,
             agent_id,
-            format!(
-                "Kernel mode transition: meta mode ended after {reason}. You are now a regular agent again. Meta tools are no longer available."
-            ),
+            exit_context.clone(),
             crate::session::PromptStatus::Queued,
         )
-        .with_hidden_system_context(META_MODE_EXITED_CONTEXT);
+        .with_hidden_system_context(exit_context);
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),

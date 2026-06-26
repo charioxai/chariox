@@ -1,5 +1,10 @@
 # M26 Metaagents Delegation-Only Plan
 
+> Updated model: delegation-only behavior now applies while a regular agent is
+> in temporary meta mode, activated by a leading `/meta <task>` prompt. Treat
+> permanent metaagent creation, `AgentRole::Meta` as product identity, and
+> `--meta`/`--metaagent` creation flags as obsolete compatibility concepts.
+
 ## Objective
 
 Make metaagents delegation-only for implementation work while preserving their

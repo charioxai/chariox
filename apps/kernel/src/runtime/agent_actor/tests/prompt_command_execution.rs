@@ -494,7 +494,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     )
     .await
     .expect("meta slash prompt submit should not hang")
-        .expect("meta slash prompt should submit");
+    .expect("meta slash prompt should submit");
 
     let LocalDaemonResponse::PromptSubmitted {
         outcome, session, ..
@@ -536,9 +536,9 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         .expect("provider run should have runtime MCP auth token")
         .to_string();
     let specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
-    assert!(specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
-    }));
+    assert!(specs
+        .iter()
+        .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL));
     let completion = runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &auth_token,

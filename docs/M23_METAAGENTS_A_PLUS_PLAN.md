@@ -1,5 +1,11 @@
 # M23 Metaagents A+ Plan
 
+> Superseded: this hardening plan predates temporary `/meta` mode. Current work
+> should treat "metaagent" as an agent operating in meta mode for an active task,
+> not as a separately created permanent role. Creation UX, command docs, runtime
+> authorization, projection, and drills should use `/meta <task>` activation and
+> mode-based checks.
+
 ## Objective
 
 Take metaagents from a solid kernel-backed feature to professional-grade

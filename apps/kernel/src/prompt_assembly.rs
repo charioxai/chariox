@@ -19,6 +19,8 @@ const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permissio
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
     include_str!("provider/metaagent_delegation_instructions.md");
+const RUNTIME_META_MODE_ENTERED: &str = include_str!("provider/meta_mode_entered_context.md");
+const RUNTIME_META_MODE_EXITED: &str = include_str!("provider/meta_mode_exited_context.md");
 const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.";
 const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Workflow direct JSON fallback:\nArroba runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Arroba workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
 const RUNTIME_METAAGENT_EVENT: &str = "Arroba runtime event for the session metaagent.\n\nEvent id: {{EVENT_ID}}\nKind: {{EVENT_KIND}}\nSource: {{SOURCE}}\nTitle: {{TITLE}}\n\n{{BODY}}\n\nUse `arroba.meta.session_overview`, `arroba.meta.list_events`, or `arroba.meta.read_event` if you need more context. Decide whether to act now or continue your current work.";
@@ -316,6 +318,24 @@ impl PromptAssemblyService {
         ))
     }
 
+    pub(crate) fn assemble_meta_mode_entered_context(
+        &self,
+    ) -> Result<(String, PromptManifest), DaemonError> {
+        self.assemble_hidden_context_only(&["runtime/meta-mode-entered"])
+    }
+
+    pub(crate) fn assemble_meta_mode_exited_context(
+        &self,
+        reason: &str,
+    ) -> Result<(String, PromptManifest), DaemonError> {
+        let (hidden_context, manifest) =
+            self.assemble_hidden_context_only(&["runtime/meta-mode-exited"])?;
+        Ok((
+            hidden_context.replace("{{REASON}}", reason.trim()),
+            manifest,
+        ))
+    }
+
     fn push_template(
         &self,
         template_id: &str,
@@ -367,6 +387,8 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new("runtime/native-permissions", RUNTIME_NATIVE_PERMISSIONS),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
+        BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
+        BundledPromptTemplate::new("runtime/meta-mode-exited", RUNTIME_META_MODE_EXITED),
         BundledPromptTemplate::new(
             "runtime/mcp-skill-continuation",
             RUNTIME_MCP_SKILL_CONTINUATION,
@@ -801,5 +823,43 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.template_id == "runtime/mcp-skill-continuation"));
+    }
+
+    #[test]
+    fn meta_mode_transition_contexts_use_registry_templates() {
+        let root = temp_prompt_root("meta-mode-transition");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("runtime").join("meta-mode-entered.md"),
+            "ENTERED_TEMPLATE",
+        )
+        .expect("user edit should write");
+        fs::write(
+            root.join("runtime").join("meta-mode-exited.md"),
+            "EXITED_TEMPLATE {{REASON}}",
+        )
+        .expect("user edit should write");
+        let service = PromptAssemblyService::new(registry);
+
+        let (entered, entered_manifest) = service
+            .assemble_meta_mode_entered_context()
+            .expect("entered context should assemble");
+        let (exited, exited_manifest) = service
+            .assemble_meta_mode_exited_context("completion")
+            .expect("exited context should assemble");
+
+        assert_eq!(entered, "ENTERED_TEMPLATE");
+        assert_eq!(exited, "EXITED_TEMPLATE completion");
+        assert!(entered_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/meta-mode-entered"));
+        assert!(exited_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/meta-mode-exited"));
     }
 }

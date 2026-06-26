@@ -140,7 +140,7 @@ impl AgentPromptCommandService {
             .await
     }
 
-    pub(crate) fn meta_mode_entered_hidden_context(&self) -> &'static str {
+    pub(crate) fn meta_mode_entered_hidden_context(&self) -> Result<String, DaemonError> {
         crate::runtime::state::KernelRuntimeState::meta_mode_entered_hidden_context()
     }
 
