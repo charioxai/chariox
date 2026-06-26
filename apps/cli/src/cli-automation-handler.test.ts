@@ -165,6 +165,9 @@ test("automation action handler sets waiting room launch placement", async () =>
     action: "set_waiting_room_launch",
     machineRef: "machine-peer",
     kernelRef: "kernel-peer",
+    providerId: "dev-stub",
+    modelId: "dev-stub/test",
+    effort: "low",
     focus: "new",
   })
 
@@ -173,6 +176,9 @@ test("automation action handler sets waiting room launch placement", async () =>
       ...waitingRoomFixture(),
       selectedMachineRef: "machine-peer",
       selectedKernelRef: "kernel-peer",
+      providerId: "dev-stub",
+      modelId: "dev-stub/test",
+      effort: "low",
       focus: "new",
     },
   })

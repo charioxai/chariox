@@ -160,7 +160,10 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
             runtime_state,
             config_projection,
             IssueCloudRelayClientTokenRequest {
-                target_daemon_alias: target_daemon_alias.clone(),
+                // The relay authenticates scoped client tokens against the
+                // connect target id before alias, so scope resolved kernel
+                // connections to the exact kernel id.
+                target_daemon_alias: kernel.kernel_id.clone(),
                 client_id,
                 session_id: request.session_id.clone(),
             },

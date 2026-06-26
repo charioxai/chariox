@@ -350,6 +350,7 @@ impl CommandRouter {
                     &self.app,
                     &self.config_projection,
                     &self.provider_catalog_projection,
+                    &self.remote_relay_inventory_projection,
                     request,
                 )
                 .await

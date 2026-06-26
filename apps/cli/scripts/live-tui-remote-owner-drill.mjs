@@ -217,7 +217,7 @@ async function waitForSessionCount(client, expectedCount, label, timeoutMs = 20_
   const deadline = Date.now() + timeoutMs
   let last = null
   while (Date.now() < deadline) {
-    const listed = unwrapVariant(await client.send({ ListSessions: {} }), "SessionsListed")
+    const listed = unwrapVariant(await client.send({ ListSessions: null }), "SessionsListed")
     last = listed.sessions ?? []
     if (last.length === expectedCount) return last
     await sleep(250)

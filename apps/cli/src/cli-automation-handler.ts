@@ -179,16 +179,29 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         }
         const machineRef = typeof request.machineRef === "string" ? request.machineRef : undefined
         const kernelRef = typeof request.kernelRef === "string" ? request.kernelRef : undefined
+        const providerId = typeof request.providerId === "string" ? request.providerId : undefined
+        const modelId = typeof request.modelId === "string" ? request.modelId : undefined
+        const effort = typeof request.effort === "string" ? request.effort : undefined
         const focus = request.focus === "launch-machine" || request.focus === "launch-kernel" || request.focus === "new"
           ? request.focus
           : undefined
-        if (machineRef === undefined && kernelRef === undefined && focus === undefined) {
-          throw new Error("usage: set_waiting_room_launch machineRef=<id> kernelRef=<id> focus=new|launch-machine|launch-kernel")
+        if (
+          machineRef === undefined
+          && kernelRef === undefined
+          && providerId === undefined
+          && modelId === undefined
+          && effort === undefined
+          && focus === undefined
+        ) {
+          throw new Error("usage: set_waiting_room_launch machineRef=<id> kernelRef=<id> providerId=<id> modelId=<id> effort=<level> focus=new|launch-machine|launch-kernel")
         }
         deps.setWaitingRoomState({
           ...deps.waitingRoomState(),
           ...(machineRef !== undefined ? { selectedMachineRef: machineRef } : {}),
           ...(kernelRef !== undefined ? { selectedKernelRef: kernelRef } : {}),
+          ...(providerId !== undefined ? { providerId: providerId as WaitingRoomState["providerId"] } : {}),
+          ...(modelId !== undefined ? { modelId } : {}),
+          ...(effort !== undefined ? { effort } : {}),
           ...(focus !== undefined ? { focus } : {}),
         })
         return deps.snapshot()

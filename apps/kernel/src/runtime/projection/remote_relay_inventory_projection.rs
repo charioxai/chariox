@@ -65,6 +65,40 @@ impl RemoteRelayInventoryProjectionStore {
         state.refresh_requested_at_ms = state.refreshed_at_ms;
     }
 
+    pub(crate) fn update_machine(&self, machine: RemoteMachineRecord) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("remote relay inventory projection lock should not be poisoned");
+        if let Some(existing) = state
+            .remote_machines
+            .iter_mut()
+            .find(|existing| existing.machine_id == machine.machine_id)
+        {
+            *existing = machine;
+        } else {
+            state.remote_machines.push(machine);
+        }
+        sort_remote_machines(&mut state.remote_machines);
+        state.refreshed_at_ms = unix_epoch_ms();
+        state.refresh_requested_at_ms = state.refreshed_at_ms;
+    }
+
+    pub(crate) fn remove_machine(&self, machine_id: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("remote relay inventory projection lock should not be poisoned");
+        state
+            .remote_machines
+            .retain(|machine| machine.machine_id != machine_id);
+        state
+            .remote_kernels
+            .retain(|kernel| kernel.machine_id != machine_id);
+        state.refreshed_at_ms = unix_epoch_ms();
+        state.refresh_requested_at_ms = state.refreshed_at_ms;
+    }
+
     pub(crate) fn clear(&self) {
         let mut state = self
             .state
@@ -75,6 +109,17 @@ impl RemoteRelayInventoryProjectionStore {
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
     }
+}
+
+fn sort_remote_machines(remote_machines: &mut [RemoteMachineRecord]) {
+    remote_machines.sort_by_key(|record| {
+        (
+            !record.online,
+            record.pending,
+            record.display_name.to_ascii_lowercase(),
+            record.machine_id.clone(),
+        )
+    });
 }
 
 #[cfg(test)]
@@ -93,5 +138,101 @@ mod tests {
             projection.should_request_refresh(16_000, 5_000, 1_000),
             "stale empty projection should request another refresh after the cooldown"
         );
+    }
+
+    #[test]
+    fn remote_relay_inventory_projection_updates_machine_without_refresh() {
+        use crate::local::{RemoteMachineRecord, RemoteMachineTrustStatus};
+
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.update(
+            vec![RemoteMachineRecord {
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("builder".to_string()),
+                registry_alias: None,
+                display_name: "builder".to_string(),
+                trust_status: RemoteMachineTrustStatus::Pending,
+                online: true,
+                pending: true,
+                kernel_count: 1,
+                available_providers: vec!["dev-stub".to_string()],
+                provider_accounts: Vec::new(),
+            }],
+            vec![arroba_relay::protocol::RelayKernelPresence {
+                kernel_id: "kernel-1".to_string(),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("builder".to_string()),
+                relay_alias: None,
+                kernel_alias: Some("default".to_string()),
+                available_providers: vec!["dev-stub".to_string()],
+                provider_accounts: Vec::new(),
+                capabilities: vec!["kernel_ws".to_string()],
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: "public-key".to_string(),
+            }],
+        );
+
+        projection.update_machine(RemoteMachineRecord {
+            machine_id: "machine-1".to_string(),
+            machine_alias: Some("builder".to_string()),
+            registry_alias: Some("build box".to_string()),
+            display_name: "build box".to_string(),
+            trust_status: RemoteMachineTrustStatus::Approved,
+            online: true,
+            pending: false,
+            kernel_count: 1,
+            available_providers: vec!["dev-stub".to_string()],
+            provider_accounts: Vec::new(),
+        });
+
+        let (machines, kernels) = projection.snapshot();
+        assert_eq!(machines.len(), 1);
+        assert_eq!(machines[0].trust_status, RemoteMachineTrustStatus::Approved);
+        assert!(!machines[0].pending);
+        assert_eq!(machines[0].registry_alias.as_deref(), Some("build box"));
+        assert_eq!(kernels.len(), 1);
+    }
+
+    #[test]
+    fn remote_relay_inventory_projection_removes_machine_and_kernels() {
+        use crate::local::{RemoteMachineRecord, RemoteMachineTrustStatus};
+
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.update(
+            vec![RemoteMachineRecord {
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("builder".to_string()),
+                registry_alias: None,
+                display_name: "builder".to_string(),
+                trust_status: RemoteMachineTrustStatus::Approved,
+                online: true,
+                pending: false,
+                kernel_count: 1,
+                available_providers: Vec::new(),
+                provider_accounts: Vec::new(),
+            }],
+            vec![arroba_relay::protocol::RelayKernelPresence {
+                kernel_id: "kernel-1".to_string(),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("builder".to_string()),
+                relay_alias: None,
+                kernel_alias: Some("default".to_string()),
+                available_providers: Vec::new(),
+                provider_accounts: Vec::new(),
+                capabilities: Vec::new(),
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 0,
+                public_key: "public-key".to_string(),
+            }],
+        );
+
+        projection.remove_machine("machine-1");
+
+        let (machines, kernels) = projection.snapshot();
+        assert!(machines.is_empty());
+        assert!(kernels.is_empty());
     }
 }

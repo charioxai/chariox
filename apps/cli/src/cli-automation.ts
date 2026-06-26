@@ -30,6 +30,9 @@ export type CliAutomationRequest = {
   machineRef?: unknown
   kernelRef?: unknown
   focus?: unknown
+  providerId?: unknown
+  modelId?: unknown
+  effort?: unknown
 }
 
 export type CliAutomationResponse = {

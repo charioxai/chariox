@@ -54,15 +54,34 @@ function parseArgs(argv) {
   return options
 }
 
-function makePorts() {
-  const base = 51000 + Math.floor(Math.random() * 1000)
+async function reserveFreePort() {
+  const server = net.createServer()
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  const address = server.address()
+  const port = typeof address === "object" && address ? address.port : 0
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()))
+  })
+  if (!port) throw new Error("failed to reserve a free local port")
+  return port
+}
+
+async function makePorts() {
+  const localKernelPort = await reserveFreePort()
+  const localMcpPort = await reserveFreePort()
+  const localOpenCodePort = await reserveFreePort()
+  const localCodexPort = await reserveFreePort()
+  const remoteKernelPort = 54000 + Math.floor(Math.random() * 3000)
   return {
-    localKernelPort: base,
-    localMcpPort: base + 1000,
-    localOpenCodePort: base + 2000,
-    localCodexPort: base + 2001,
-    remoteKernelPort: base + 3000,
-    remoteMcpPort: base + 3001,
+    localKernelPort,
+    localMcpPort,
+    localOpenCodePort,
+    localCodexPort,
+    remoteKernelPort,
+    remoteMcpPort: remoteKernelPort + 1,
   }
 }
 
@@ -75,6 +94,18 @@ function unwrapVariant(response, ...keys) {
 
 function spawnProcess(command, args, options) {
   return spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] })
+}
+
+function spawnProcessWithInput(command, args, input, options) {
+  const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"] })
+  child.stdin.end(input)
+  return child
+}
+
+function baseChildEnv() {
+  const env = { ...process.env }
+  delete env.ARROBA_CLOUD_DEV_AUTH_SECRET
+  return env
 }
 
 async function terminateChild(child, signal = "SIGTERM") {
@@ -130,6 +161,56 @@ async function readCloudProfile(profilePath) {
   return normalizeProfile(profile)
 }
 
+async function refreshCloudProfileViaDevDeviceLogin(profile, localMachineId) {
+  const devSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET
+  if (!devSecret) return profile
+  const clientId = `tui-cloud-owner-${process.pid}-${Date.now()}`
+  const started = await postJson(`${profile.api_url}/auth/device/start`, {
+    clientId,
+    machineId: localMachineId,
+    machineAlias: "local-tui-cloud-machine",
+  })
+  if (!started?.deviceCode || !started?.userCode) {
+    throw new Error(`cloud device login did not start: ${JSON.stringify(started)}`)
+  }
+  const approved = await fetch(`${profile.api_url}/auth/dev/device/approve`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-arroba-dev-auth-secret": devSecret,
+    },
+    body: JSON.stringify({
+      userCode: started.userCode,
+      email: profile.email,
+      accountSlug: profile.account_slug,
+      displayName: "TUI Remote Owner Hetzner Drill",
+      providerSubject: `dev|${profile.account_slug}`,
+    }),
+  })
+  if (!approved.ok) {
+    throw new Error(`cloud dev device approval failed with ${approved.status}: ${await approved.text()}`)
+  }
+  const expiresAtMs = Math.min(Date.parse(started.expiresAt), Date.now() + 120_000)
+  while (Date.now() < expiresAtMs) {
+    const polled = await postJson(`${profile.api_url}/auth/device/poll`, {
+      deviceCode: started.deviceCode,
+    })
+    if (polled?.status === "approved") {
+      return normalizeProfile({
+        apiUrl: profile.api_url,
+        ...polled.profile,
+        cloudSessionToken: polled.cloudSessionToken,
+        machineCredential: polled.machineCredential,
+      })
+    }
+    if (polled?.status === "expired_token") {
+      throw new Error("cloud device login expired")
+    }
+    await sleep(Math.max(polled?.intervalSeconds ?? 1, 1) * 1000)
+  }
+  throw new Error("cloud device login timed out")
+}
+
 function normalizeProfile(profile) {
   return {
     api_url: profile.api_url ?? profile.apiUrl,
@@ -183,9 +264,9 @@ async function issueMachineToken(profile, machineId) {
   let issued = null
   try {
     issued = await postJson(`${profile.api_url}/relay/token`, {
-      ...(profile.machine_credential
-        ? { machineCredential: profile.machine_credential }
-        : { sessionToken: profile.cloud_session_token }),
+      ...(profile.cloud_session_token
+        ? { sessionToken: profile.cloud_session_token }
+        : { machineCredential: profile.machine_credential }),
       accountId: profile.account_id,
       subject: machineId,
       subjectKind: "machine",
@@ -316,7 +397,7 @@ async function waitForSessionCount(client, expectedCount, label, timeoutMs = 30_
   const deadline = Date.now() + timeoutMs
   let last = null
   while (Date.now() < deadline) {
-    const listed = unwrapVariant(await client.send({ ListSessions: {} }), "SessionsListed")
+    const listed = unwrapVariant(await client.send({ ListSessions: null }), "SessionsListed")
     last = listed.sessions ?? []
     if (last.length === expectedCount) return last
     await sleep(250)
@@ -386,7 +467,7 @@ async function main() {
     console.log("Usage: node apps/cli/scripts/live-tui-remote-owner-cloud-hetzner-drill.mjs [--hetzner-repo PATH] [--profile PATH]")
     return
   }
-  const ports = makePorts()
+  const ports = await makePorts()
   const runId = `tui-cloud-hetzner-${process.pid}-${Date.now()}`
   const rootDir = path.join(repoRoot, ".artifacts", "live-tui-remote-owner-cloud-hetzner-drill", nowStamp())
   const localHome = path.join(rootDir, "local-home")
@@ -398,8 +479,9 @@ async function main() {
   await mkdir(path.join(localConfig, "arroba", "daemon"), { recursive: true })
   await mkdir(localState, { recursive: true })
 
-  const profile = await readCloudProfile(options.profilePath)
+  let profile = await readCloudProfile(options.profilePath)
   const localMachineId = profile.machine_id || `tui-cloud-local-machine-${process.pid}`
+  profile = await refreshCloudProfileViaDevDeviceLogin(profile, localMachineId)
   const localDaemonId = `tui-cloud-local-${process.pid}-${Date.now()}`
   const remoteMachineId = `tui-cloud-hetzner-machine-${process.pid}-${Date.now()}`
   const remoteDaemonId = `tui-cloud-hetzner-${process.pid}-${Date.now()}`
@@ -415,6 +497,10 @@ async function main() {
   let remoteClient = null
   let passed = false
   let failure = null
+  let localKernelStdout = ""
+  let localKernelStderr = ""
+  let remoteKernelStdout = ""
+  let remoteKernelStderr = ""
   let tuiStdout = ""
   let tuiStderr = ""
   let sessionSnapshot = null
@@ -424,12 +510,15 @@ async function main() {
   let workerCompletion = null
 
   try {
-    await writeFile(path.join(localConfig, "arroba", "daemon", "config.json"), `${JSON.stringify({
+    const persistedCloudConfig = `${JSON.stringify({
       cloud_relay: profile,
-    }, null, 2)}\n`, "utf8")
+    }, null, 2)}\n`
+    await writeFile(path.join(localConfig, "arroba", "daemon", "config.json"), persistedCloudConfig, "utf8")
+    await mkdir(path.join(localHome, ".arroba", "daemon"), { recursive: true })
+    await writeFile(path.join(localHome, ".arroba", "daemon", "config.json"), persistedCloudConfig, "utf8")
 
     const localEnv = {
-      ...process.env,
+      ...baseChildEnv(),
       HOME: localHome,
       XDG_CONFIG_HOME: localConfig,
       XDG_STATE_HOME: localState,
@@ -441,11 +530,22 @@ async function main() {
       ARROBA_DAEMON_ALIAS: "local-tui-cloud",
       ARROBA_MACHINE_ID: localMachineId,
       ARROBA_MACHINE_ALIAS: "local-tui-cloud-machine",
+      ARROBA_CLOUD_RELAY_CONFIG_JSON: persistedCloudConfig,
       ARROBA_ACCEPT_REMOTE_LEASES: "1",
       ARROBA_DAEMON_SOCKET: path.join(rootDir, "local.sock"),
       ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "local-history"),
     }
+    const tuiEnv = { ...localEnv }
+    delete tuiEnv.ARROBA_CLOUD_RELAY_CONFIG_JSON
     localKernel = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: localEnv })
+    localKernel.stdout.on("data", (chunk) => {
+      localKernelStdout += chunk.toString()
+      if (localKernelStdout.length > 16_000) localKernelStdout = localKernelStdout.slice(-16_000)
+    })
+    localKernel.stderr.on("data", (chunk) => {
+      localKernelStderr += chunk.toString()
+      if (localKernelStderr.length > 16_000) localKernelStderr = localKernelStderr.slice(-16_000)
+    })
     localClient = new LocalIpcClient(`ws://127.0.0.1:${ports.localKernelPort}`)
     await waitForKernel(localClient, options.workspace, options.worktree)
     await localClient.send({ ConnectCloudRelay: null })
@@ -460,13 +560,9 @@ async function main() {
     if (remotePreflight.code !== 0) {
       throw new Error(`Hetzner preflight failed\n${remotePreflight.stdout}\n${remotePreflight.stderr}`)
     }
-    const remoteCommand = [
-      "set -e",
-      "export PATH=/root/.cargo/bin:/root/.bun/bin:/opt/node-v22/bin:$PATH",
-      `mkdir -p ${shellQuote(remoteRoot)}`,
-      `cd ${shellQuote(options.hetznerRepo)}`,
-      `echo $$ > ${shellQuote(path.posix.join(remoteRoot, "kernel.pid"))}`,
-      "exec env",
+    const remoteKernelEnvCommand = [
+      "exec",
+      "env",
       `HOME=${shellQuote(path.posix.join(remoteRoot, "home"))}`,
       `XDG_CONFIG_HOME=${shellQuote(path.posix.join(remoteRoot, "config"))}`,
       `XDG_STATE_HOME=${shellQuote(path.posix.join(remoteRoot, "state"))}`,
@@ -485,23 +581,41 @@ async function main() {
       `ARROBA_SESSION_HISTORY_DIR=${shellQuote(path.posix.join(remoteRoot, "history"))}`,
       "./apps/kernel/target/debug/arroba-kernel",
     ].join(" ")
-    remoteKernel = spawnProcess("ssh", [
+    const remoteCommand = [
+      "set -e",
+      "export PATH=/root/.cargo/bin:/root/.bun/bin:/opt/node-v22/bin:$PATH",
+      `mkdir -p ${shellQuote(remoteRoot)}`,
+      `cd ${shellQuote(options.hetznerRepo)}`,
+      `echo $$ > ${shellQuote(path.posix.join(remoteRoot, "kernel.pid"))}`,
+      remoteKernelEnvCommand,
+    ].join("\n")
+    remoteKernel = spawnProcessWithInput("ssh", [
       "-i", options.hetznerKey,
       "-o", "IdentitiesOnly=yes",
       "-o", "BatchMode=yes",
       "-o", "ConnectTimeout=10",
       "-o", "StrictHostKeyChecking=accept-new",
       options.hetznerHost,
-      remoteCommand,
-    ], { cwd: repoRoot, env: process.env })
+      "bash",
+      "-s",
+    ], `${remoteCommand}\n`, { cwd: repoRoot, env: baseChildEnv() })
+    remoteKernel.stdout.on("data", (chunk) => {
+      remoteKernelStdout += chunk.toString()
+      if (remoteKernelStdout.length > 16_000) remoteKernelStdout = remoteKernelStdout.slice(-16_000)
+    })
+    remoteKernel.stderr.on("data", (chunk) => {
+      remoteKernelStderr += chunk.toString()
+      if (remoteKernelStderr.length > 16_000) remoteKernelStderr = remoteKernelStderr.slice(-16_000)
+    })
 
     selectedKernel = await waitForRemoteKernel(localClient, remoteMachineId, remoteDaemonId, 90_000)
+    await localClient.send({ ApproveRemoteMachine: { machine_ref: remoteMachineId } })
 
     const tuiArgs = [
       "-q",
       "/dev/null",
       "env",
-      ...Object.entries(localEnv).map(([key, value]) => `${key}=${value}`),
+      ...Object.entries(tuiEnv).map(([key, value]) => `${key}=${value}`),
       "bun",
       path.join(repoRoot, "apps/cli/dist/index.js"),
       "--kernel-url", `ws://127.0.0.1:${ports.localKernelPort}`,
@@ -512,7 +626,7 @@ async function main() {
       "--model", "tui-remote-owner-cloud-hetzner-model",
       "--client-id", `tui-cloud-owner-${process.pid}`,
     ]
-    tui = spawn("script", tuiArgs, { cwd: repoRoot, env: localEnv, stdio: ["ignore", "pipe", "pipe"] })
+    tui = spawn("script", tuiArgs, { cwd: repoRoot, env: tuiEnv, stdio: ["ignore", "pipe", "pipe"] })
     tui.stdout.on("data", (chunk) => {
       tuiStdout += chunk.toString()
       if (tuiStdout.length > 16_000) tuiStdout = tuiStdout.slice(-16_000)
@@ -540,6 +654,9 @@ async function main() {
     await automation.send("set_waiting_room_launch", {
       machineRef: remoteMachineId,
       kernelRef: remoteDaemonId,
+      providerId: "dev-stub",
+      modelId: "tui-remote-owner-cloud-hetzner-model",
+      effort: "medium",
       focus: "new",
     })
     await automation.send("activate_waiting_room")
@@ -556,7 +673,7 @@ async function main() {
           machine_ref: remoteMachineId,
           kernel_ref: remoteDaemonId,
           client_id: `tui-cloud-verifier-${process.pid}`,
-          session_id: sessionId,
+          session_id: null,
         },
       }),
       "KernelClientConnectionResolved",
@@ -664,6 +781,14 @@ async function main() {
         workerAgent,
         workerAgentFinal,
         workerCompletion,
+        localKernelExitCode: localKernel?.exitCode ?? null,
+        localKernelSignal: localKernel?.signalCode ?? null,
+        localKernelStdoutTail: localKernelStdout.slice(-4000),
+        localKernelStderrTail: localKernelStderr.slice(-4000),
+        remoteKernelExitCode: remoteKernel?.exitCode ?? null,
+        remoteKernelSignal: remoteKernel?.signalCode ?? null,
+        remoteKernelStdoutTail: remoteKernelStdout.slice(-4000),
+        remoteKernelStderrTail: remoteKernelStderr.slice(-4000),
         tuiStdoutTail: tuiStdout.slice(-4000),
         tuiStderrTail: tuiStderr.slice(-4000),
       },
