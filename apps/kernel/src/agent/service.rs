@@ -88,10 +88,12 @@ impl AgentService {
         agent.set_owner_user_id(request.owner_user_id);
         agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
         if request.role == crate::agent::AgentRole::Meta {
-            agent.activate_meta_mode(None);
-        } else {
-            agent.set_role(request.role);
+            return Err(DaemonError::LocalTransport {
+                operation: "create agent",
+                message: "creating separate metaagents is deprecated; create a regular agent and send `/meta <task>` to enter meta mode".to_string(),
+            });
         }
+        agent.set_role(request.role);
         agent.set_account_profile(request.account_profile);
         agent.set_execution_mode_override(request.execution_mode_override);
         agent.set_permission_level_override(request.permission_level_override);
