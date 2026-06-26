@@ -509,7 +509,8 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     assert!(
         prompt
             .hidden_system_context()
-            .contains("now operating in Arroba meta mode"),
+            .to_ascii_lowercase()
+            .contains("now operating in arroba meta mode"),
         "meta mode boundary context should be hidden on first meta turn"
     );
     assert_eq!(
@@ -575,11 +576,9 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         .expect("provider run should have runtime MCP auth token")
         .to_string();
     let specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
-    assert!(
-        specs
-            .iter()
-            .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL)
-    );
+    assert!(specs
+        .iter()
+        .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL));
     let completion = runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &auth_token,
@@ -614,6 +613,23 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         }),
         "stale provider auth token must not retain meta tools after mode exit"
     );
+    let stale_call = runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("stale provider auth token must not dispatch meta tools after mode exit");
+    assert!(
+        stale_call
+            .to_string()
+            .contains("agents currently in Meta mode")
+            || stale_call
+                .to_string()
+                .contains("exactly one active provider run for an agent in Meta mode"),
+        "{stale_call:?}"
+    );
     let session_after_completion = runtime_state
         .session_snapshot(&session_id)
         .await
@@ -632,7 +648,8 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
             .any(|prompt| {
                 prompt
                     .hidden_system_context()
-                    .contains("has left Arroba meta mode")
+                    .to_ascii_lowercase()
+                    .contains("has left arroba meta mode")
             }),
         "mode exit should queue a kernel continuation prompt"
     );
@@ -726,12 +743,10 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
             .map(|prompt| prompt.id()),
         Some(prompt.id())
     );
-    assert!(
-        agent_activity
-            .get(&agent_id)
-            .map(|activity| activity.busy)
-            .unwrap_or(false)
-    );
+    assert!(agent_activity
+        .get(&agent_id)
+        .map(|activity| activity.busy)
+        .unwrap_or(false));
 }
 
 #[tokio::test]

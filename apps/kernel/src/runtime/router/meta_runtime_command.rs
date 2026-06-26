@@ -728,21 +728,70 @@ impl CommandRouter {
             let app = self.app.lock().await;
             app.agents().get_session_agents(session_id)
         };
-        agents
+        let owned_agents = agents
             .into_iter()
-            .find(|agent| {
-                !agent.is_metaagent()
-                    && agent.controlled_by_metaagent_id() == Some(metaagent.id())
-                    && (agent.id() == reference
-                        || agent.agent_ref() == reference
-                        || agent.alias() == Some(reference))
+            .filter(|agent| {
+                !agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())
             })
+            .collect::<Vec<_>>();
+        owned_agents
+            .iter()
+            .find(|agent| {
+                agent.id() == reference
+                    || agent.agent_ref() == reference
+                    || agent.alias() == Some(reference)
+            })
+            .cloned()
             .ok_or_else(|| {
-                meta_command_error(format!(
-                    "agent `{reference}` is not an owned regular agent in this session"
-                ))
+                meta_command_error(owned_regular_agent_error_message(reference, &owned_agents))
             })
     }
+}
+
+fn owned_regular_agent_error_message(
+    reference: &str,
+    owned_agents: &[crate::agent::AgentInstance],
+) -> String {
+    if owned_agents.is_empty() {
+        return format!(
+            "agent `{reference}` is not an owned regular agent in this session. No owned regular agents are available; spawn one first with `agent spawn <alias>`."
+        );
+    }
+    let available = owned_agents
+        .iter()
+        .map(|agent| {
+            format!(
+                "{} (agent_ref: {}, id: {})",
+                meta_agent_prompt_ref(agent),
+                agent.agent_ref(),
+                agent.id()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let example_ref = meta_agent_prompt_ref(&owned_agents[0]);
+    format!(
+        "agent `{reference}` is not an owned regular agent in this session. Available owned agents: {available}. Use a listed alias or agent_ref, for example `prompt {} \"<objective, context, constraints, expected report>\"`.",
+        shell_quote_for_meta_command(&example_ref)
+    )
+}
+
+fn meta_agent_prompt_ref(agent: &crate::agent::AgentInstance) -> String {
+    agent
+        .alias()
+        .filter(|alias| !alias.trim().is_empty())
+        .unwrap_or_else(|| agent.agent_ref())
+        .to_string()
+}
+
+fn shell_quote_for_meta_command(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[derive(Debug, Clone)]

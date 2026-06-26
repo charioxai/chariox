@@ -104,8 +104,9 @@ impl KernelRuntimeState {
         if agent.session_id() != session.id() || !agent.is_metaagent() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
-                message: "Meta mode runtime tools are only available to agents currently in Meta mode"
-                    .to_string(),
+                message:
+                    "Meta mode runtime tools are only available to agents currently in Meta mode"
+                        .to_string(),
             });
         }
         self.dispatch_meta_runtime_tool_call_for_session_agent(
@@ -461,6 +462,7 @@ impl KernelRuntimeState {
             META_COMPLETE_TASK_TOOL => {
                 let args = serde_json::from_value::<MetaCompleteTaskArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let metaagent = agent.clone();
                 let updated = self.owned.session_store.write().complete_metaagent_task(
                     session.id(),
                     agent.id(),
@@ -473,6 +475,12 @@ impl KernelRuntimeState {
                         "meta task completion",
                     )
                     .await?;
+                self.cancel_active_metaagent_prompt_if_any(
+                    updated.id(),
+                    &metaagent,
+                    "complete_metaagent_task",
+                )
+                .await?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_task_payload(&projected, agent),
@@ -481,6 +489,7 @@ impl KernelRuntimeState {
             META_MARK_BLOCKED_TOOL => {
                 let args = serde_json::from_value::<MetaMarkBlockedArgs>(arguments)
                     .map_err(invalid_meta_args)?;
+                let metaagent = agent.clone();
                 let updated = self.owned.session_store.write().block_metaagent_task(
                     session.id(),
                     agent.id(),
@@ -493,6 +502,12 @@ impl KernelRuntimeState {
                         "meta task blocked",
                     )
                     .await?;
+                self.cancel_active_metaagent_prompt_if_any(
+                    updated.id(),
+                    &metaagent,
+                    "block_metaagent_task",
+                )
+                .await?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_task_payload(&projected, agent),
@@ -1569,7 +1584,8 @@ impl KernelRuntimeState {
         if !agent.is_metaagent() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
-                message: "Meta mode tools are only available to agents currently in Meta mode".to_string(),
+                message: "Meta mode tools are only available to agents currently in Meta mode"
+                    .to_string(),
             });
         }
         let session = self
@@ -1629,6 +1645,19 @@ impl KernelRuntimeState {
             .filter(|run| owned_workflow_ids.contains(run.workflow_id()))
             .cloned()
             .collect::<Vec<_>>();
+        let agent_activity = self.agent_activity_for_session(&session);
+        let owned_agent_refs = owned_agents
+            .iter()
+            .map(|agent| meta_owned_agent_ref_json(agent))
+            .collect::<Vec<_>>();
+        let completion_recommendation = meta_completion_recommendation(
+            &session,
+            agent,
+            &owned_agents,
+            &owned_workflow_runs,
+            pending_interactions.len(),
+            &agent_activity,
+        );
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
@@ -1654,7 +1683,7 @@ impl KernelRuntimeState {
                 "agents": {
                     "total": session_agents.len(),
                     "owned_total": owned_agents.len(),
-                    "owned": owned_agents,
+                    "owned": owned_agent_refs,
                 },
                 "workflows": if include_workflows {
                     serde_json::json!({
@@ -1670,6 +1699,7 @@ impl KernelRuntimeState {
                 } else {
                     serde_json::Value::Null
                 },
+                "completion_recommendation": completion_recommendation,
             }),
         })
     }
@@ -1973,6 +2003,19 @@ impl KernelRuntimeState {
         }
         let agent_activity = self.agent_activity_for_session(session);
         let worker_activity = agent_activity.get(&subscription.target_agent_id).cloned();
+        let supervision = self.meta_trace_supervision_summary(
+            session,
+            metaagent,
+            &subscription,
+            mode,
+            until,
+            wait,
+            matched,
+            &items,
+            worker_activity.as_ref(),
+            drained_count,
+            suppressed_count,
+        );
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
@@ -1987,7 +2030,114 @@ impl KernelRuntimeState {
                 "items": items,
                 "empty": items.is_empty(),
                 "worker_activity": worker_activity,
+                "supervision": supervision,
             }),
+        })
+    }
+
+    fn meta_trace_supervision_summary(
+        &self,
+        session: &crate::session::RuntimeSession,
+        metaagent: &crate::agent::AgentInstance,
+        subscription: &crate::runtime::metaagent_trace::MetaagentTraceSubscription,
+        mode: crate::runtime::metaagent_trace::MetaagentTraceMode,
+        until: MetaTraceWaitUntil,
+        wait: bool,
+        matched: bool,
+        items: &[serde_json::Value],
+        worker_activity: Option<&crate::runtime::projection::AgentRuntimeActivity>,
+        drained_count: usize,
+        suppressed_count: usize,
+    ) -> serde_json::Value {
+        let agent_activity = self.agent_activity_for_session(session);
+        let active_owned_workers = self
+            .meta_owned_regular_agents(session.id(), metaagent)
+            .into_iter()
+            .filter_map(|agent| {
+                let activity = agent_activity.get(agent.id())?;
+                if activity.busy {
+                    Some(serde_json::json!({
+                        "agent": meta_owned_agent_ref_json(&agent),
+                        "activity": activity,
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let target_agent = self
+            .owned
+            .agent_store
+            .get_agent(&subscription.target_agent_id)
+            .ok()
+            .map(|agent| meta_owned_agent_ref_json(&agent));
+        let last_meaningful_output = items.iter().rev().find_map(|item| {
+            let kind = item_kind(item)?;
+            if kind == "prompt_echo" {
+                return None;
+            }
+            if !item
+                .get("worker_generated")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            Some(serde_json::json!({
+                "kind": kind,
+                "title": item.get("title").cloned().unwrap_or(serde_json::Value::Null),
+                "summary": item.get("summary").cloned().unwrap_or(serde_json::Value::Null),
+                "excerpt": item.get("excerpt").cloned().unwrap_or(serde_json::Value::Null),
+            }))
+        });
+        let completion_events = items
+            .iter()
+            .filter(|item| item_kind(item) == Some("assistant_message_completed"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let failure_events = items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item_kind(item),
+                    Some("provider_error") | Some("runtime_notice")
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let worker_busy = worker_activity.is_some_and(|activity| activity.busy);
+        let suggested_next_action = if !failure_events.is_empty() {
+            "review the failure event, inspect the worker turn if needed, then either steer the owned worker or mark the task blocked"
+        } else if matched && !completion_events.is_empty() {
+            "review the completed worker output; if it proves the task goal, call complete_task"
+        } else if matched {
+            "review the worker output; continue supervision, prompt the owned worker, or complete if the task goal is proven"
+        } else if items.is_empty() && wait {
+            "no meaningful worker output arrived before the wait ended; wait again, inspect turn_overview, or yield for kernel continuation"
+        } else if worker_busy {
+            "the worker is still active; call wait_trace with a clear until condition or yield for kernel continuation"
+        } else if items.is_empty() {
+            "no buffered meaningful worker output is available yet; subscribe before prompting workers and use wait_trace for live supervision"
+        } else {
+            "inspect the compact trace items; use verbose mode only if the summary is insufficient"
+        };
+        serde_json::json!({
+            "mode": mode,
+            "until": until.as_str(),
+            "matched": matched,
+            "target_agent": target_agent,
+            "active_owned_workers": active_owned_workers,
+            "last_meaningful_output": last_meaningful_output,
+            "completion_events": completion_events,
+            "failure_events": failure_events,
+            "drained_count": drained_count,
+            "suppressed_count": suppressed_count,
+            "message": if items.is_empty() {
+                "no meaningful worker output yet"
+            } else {
+                "worker trace activity available"
+            },
+            "suggested_next_action": suggested_next_action,
         })
     }
 
@@ -2307,8 +2457,9 @@ impl KernelRuntimeState {
             })
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "runtime_tool_meta",
-                message: format!(
-                    "agent `{reference}` is not an owned regular agent in this session"
+                message: owned_regular_agent_error_message(
+                    reference,
+                    &self.meta_owned_regular_agents(session_id, metaagent),
                 ),
             })
     }
@@ -2787,11 +2938,155 @@ fn meta_agent_ref_json(agent: &crate::agent::AgentInstance) -> serde_json::Value
     serde_json::json!({
         "id": agent.id(),
         "agent_ref": agent.agent_ref(),
+        "prompt_ref": meta_agent_prompt_ref(agent),
         "alias": agent.alias(),
         "provider": agent.provider(),
         "model": agent.model(),
         "owner_user_id": agent.owner_user_id(),
         "role": agent.role(),
         "state": agent.state(),
+        "example_prompt_command": format!(
+            "prompt {} \"<objective, context, constraints, expected report>\"",
+            shell_quote_for_meta_command(&meta_agent_prompt_ref(agent)),
+        ),
+    })
+}
+
+fn meta_owned_agent_ref_json(agent: &crate::agent::AgentInstance) -> serde_json::Value {
+    meta_agent_ref_json(agent)
+}
+
+fn meta_agent_prompt_ref(agent: &crate::agent::AgentInstance) -> String {
+    agent
+        .alias()
+        .filter(|alias| !alias.trim().is_empty())
+        .unwrap_or_else(|| agent.agent_ref())
+        .to_string()
+}
+
+fn owned_regular_agent_error_message(
+    reference: &str,
+    owned_agents: &[crate::agent::AgentInstance],
+) -> String {
+    if owned_agents.is_empty() {
+        return format!(
+            "agent `{reference}` is not an owned regular agent in this session. No owned regular agents are available; spawn one first with `agent spawn <alias>`."
+        );
+    }
+    let available = owned_agents
+        .iter()
+        .map(|agent| {
+            format!(
+                "{} (agent_ref: {}, id: {})",
+                meta_agent_prompt_ref(agent),
+                agent.agent_ref(),
+                agent.id()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let example_ref = meta_agent_prompt_ref(&owned_agents[0]);
+    format!(
+        "agent `{reference}` is not an owned regular agent in this session. Available owned agents: {available}. Use a listed alias or agent_ref, for example `prompt {} \"<objective, context, constraints, expected report>\"`.",
+        shell_quote_for_meta_command(&example_ref)
+    )
+}
+
+fn shell_quote_for_meta_command(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn meta_completion_recommendation(
+    session: &crate::session::RuntimeSession,
+    metaagent: &crate::agent::AgentInstance,
+    owned_agents: &[&crate::agent::AgentInstance],
+    owned_workflow_runs: &[crate::session::WorkflowRun],
+    pending_interaction_count: usize,
+    agent_activity: &std::collections::BTreeMap<
+        String,
+        crate::runtime::projection::AgentRuntimeActivity,
+    >,
+) -> serde_json::Value {
+    let active_owned_workers = owned_agents
+        .iter()
+        .filter(|agent| {
+            agent_activity
+                .get(agent.id())
+                .is_some_and(|activity| activity.busy)
+                || agent.is_processing()
+        })
+        .map(|agent| meta_owned_agent_ref_json(agent))
+        .collect::<Vec<_>>();
+    let active_workflow_runs = owned_workflow_runs
+        .iter()
+        .filter(|run| {
+            matches!(
+                run.status(),
+                crate::session::WorkflowRunStatus::Created
+                    | crate::session::WorkflowRunStatus::Running
+                    | crate::session::WorkflowRunStatus::Waiting
+                    | crate::session::WorkflowRunStatus::Completing
+            )
+        })
+        .collect::<Vec<_>>();
+    let task_status = session
+        .metaagent_task(metaagent.id())
+        .map(|task| task.status());
+    let (kind, reason, suggested_next_action) = if !active_owned_workers.is_empty()
+        || !active_workflow_runs.is_empty()
+    {
+        (
+                "should_wait",
+                "owned worker or workflow activity is still active",
+                "call wait_trace with a clear condition, inspect workflow runs, or yield for kernel continuation",
+            )
+    } else if pending_interaction_count > 0 {
+        (
+            "should_wait",
+            "owned workers have pending runtime interactions",
+            "resolve or ask the user about the pending interaction before completing",
+        )
+    } else if task_status.is_none() {
+        (
+            "needs_worker",
+            "no active Meta-mode task is visible in the session snapshot",
+            "retry session_overview shortly or ask the user to start a task with /meta",
+        )
+    } else if owned_agents.is_empty() && owned_workflow_runs.is_empty() {
+        (
+            "needs_worker",
+            "no owned workers or workflow runs exist yet",
+            "spawn a regular worker or create and run a workflow before judging the task complete",
+        )
+    } else if matches!(
+        task_status,
+        Some(crate::session::MetaagentTaskStatus::Blocked)
+    ) {
+        (
+            "blocked_candidate",
+            "the task is already marked blocked",
+            "wait for user steering or update the plan if new information removes the block",
+        )
+    } else {
+        (
+            "can_complete",
+            "no owned worker, workflow, or interaction is active",
+            "review worker/workflow evidence and call complete_task if it proves the goal; otherwise prompt a worker or mark_blocked",
+        )
+    };
+    serde_json::json!({
+        "kind": kind,
+        "reason": reason,
+        "active_owned_workers": active_owned_workers,
+        "active_workflow_run_count": active_workflow_runs.len(),
+        "pending_interaction_count": pending_interaction_count,
+        "suggested_next_action": suggested_next_action,
+        "non_authoritative": true,
     })
 }

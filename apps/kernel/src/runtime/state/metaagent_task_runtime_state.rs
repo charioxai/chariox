@@ -566,7 +566,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    async fn cancel_active_metaagent_prompt_if_any(
+    pub(crate) async fn cancel_active_metaagent_prompt_if_any(
         &self,
         session_id: &str,
         metaagent: &crate::agent::AgentInstance,

@@ -1900,6 +1900,15 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
         "{:?}",
         polled.payload
     );
+    assert!(
+        polled
+            .payload
+            .pointer("/supervision/last_meaningful_output/summary")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|summary| summary.contains("printf trace-visible")),
+        "{:?}",
+        polled.payload
+    );
 
     {
         let mut app = app.lock().await;
@@ -1944,6 +1953,15 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
             .get("suppressed_count")
             .and_then(serde_json::Value::as_u64),
         Some(1),
+        "{:?}",
+        duplicate.payload
+    );
+    assert_eq!(
+        duplicate
+            .payload
+            .pointer("/supervision/message")
+            .and_then(serde_json::Value::as_str),
+        Some("no meaningful worker output yet"),
         "{:?}",
         duplicate.payload
     );
@@ -2038,6 +2056,24 @@ async fn metaagent_trace_subscription_drains_live_worker_output() {
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|summary| summary.contains("worker output trace-visible"))
         }),
+        "{:?}",
+        waited.payload
+    );
+    assert_eq!(
+        waited
+            .payload
+            .pointer("/supervision/matched")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "{:?}",
+        waited.payload
+    );
+    assert!(
+        waited
+            .payload
+            .pointer("/supervision/last_meaningful_output/summary")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|summary| summary.contains("worker output trace-visible")),
         "{:?}",
         waited.payload
     );
@@ -2158,6 +2194,15 @@ async fn metaagent_wait_trace_wakes_when_worker_output_arrives_after_wait_starts
                         .and_then(serde_json::Value::as_str)
                         .is_some_and(|summary| summary.contains("after wait started"))
             })),
+        "{:?}",
+        waited.payload
+    );
+    assert!(
+        waited
+            .payload
+            .pointer("/supervision/suggested_next_action")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|action| action.contains("complete") || action.contains("supervision")),
         "{:?}",
         waited.payload
     );
@@ -3163,6 +3208,42 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
     assert!(owned_agents
         .iter()
         .any(|agent| { agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()) }));
+    let owned_worker = owned_agents
+        .iter()
+        .find(|agent| agent.get("id").and_then(serde_json::Value::as_str) == Some(worker.id()))
+        .expect("owned worker should be present");
+    assert_eq!(
+        owned_worker
+            .get("prompt_ref")
+            .and_then(serde_json::Value::as_str),
+        Some("worker")
+    );
+    assert!(
+        owned_worker
+            .get("example_prompt_command")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|command| command.starts_with("prompt worker ")),
+        "{:?}",
+        owned_worker
+    );
+    assert_eq!(
+        overview
+            .payload
+            .pointer("/completion_recommendation/kind")
+            .and_then(serde_json::Value::as_str),
+        Some("should_wait"),
+        "{:?}",
+        overview.payload
+    );
+    assert_eq!(
+        overview
+            .payload
+            .pointer("/completion_recommendation/pending_interaction_count")
+            .and_then(serde_json::Value::as_u64),
+        Some(1),
+        "{:?}",
+        overview.payload
+    );
     assert_eq!(
         overview.payload.get("workflows"),
         Some(&serde_json::Value::Null)
@@ -3676,6 +3757,20 @@ async fn multiple_metaagents_in_one_session_are_isolated_inner() {
             .is_some_and(|message| message.contains("not an owned regular agent")),
         "{:?}",
         prompt_cross.payload
+    );
+    let cross_prompt_error = prompt_cross
+        .payload
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .expect("cross prompt should include an error");
+    assert!(
+        cross_prompt_error.contains("Available owned agents: alpha")
+            && cross_prompt_error.contains("prompt alpha"),
+        "{cross_prompt_error}"
+    );
+    assert!(
+        !cross_prompt_error.contains("Available owned agents: beta"),
+        "{cross_prompt_error}"
     );
 
     let create_workflow = router

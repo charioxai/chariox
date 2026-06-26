@@ -595,7 +595,13 @@ mod tests {
 
         assert!(envelope
             .hidden_system_context
-            .contains("You are an Arroba metaagent"));
+            .contains("This agent is operating in Arroba Meta mode"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("start by calling `arroba.meta.read_task`"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("confirm it appears in"));
         assert!(envelope
             .manifest
             .entries
