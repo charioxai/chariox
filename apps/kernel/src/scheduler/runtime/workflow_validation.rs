@@ -70,6 +70,59 @@ fn workflow_node_control_capabilities(
         format!("inferred-{session_id}-{agent_id}"),
         session_id.to_string(),
         Some(agent_id.to_string()),
-        provider.to_string(),
+        crate::provider::adapter_key_for_provider(provider).to_string(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::CreateAgentRequest;
+    use crate::app::KernelSessionService;
+    use crate::session::{
+        CreateSessionRequest, WorkflowDefinition, WorkflowEdgeDefinition, WorkflowNodeDefinition,
+    };
+    use crate::{DaemonApp, DaemonConfig};
+
+    #[test]
+    fn validates_alias_provider_nodes_before_lazy_launch() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _initial_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let claude_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "claude-p")
+                    .with_alias("filter")
+                    .with_model("sonnet"),
+            )
+            .expect("claude-p agent should spawn");
+        let codex_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "codex")
+                    .with_alias("finisher")
+                    .with_model("gpt-5"),
+            )
+            .expect("codex agent should spawn");
+
+        let mut workflow = WorkflowDefinition::new("workflow-1", Some("alias-provider".into()));
+        workflow.add_node(WorkflowNodeDefinition::new(
+            "node-filter",
+            claude_agent.id(),
+        ));
+        workflow.add_node(WorkflowNodeDefinition::new(
+            "node-finisher",
+            codex_agent.id(),
+        ));
+        workflow.add_edge(WorkflowEdgeDefinition::new(
+            "edge-filter-finisher",
+            "node-filter",
+            "node-finisher",
+            Some("schema-filtered".into()),
+            None,
+        ));
+
+        validate_workflow_agents(&app, session.id(), &workflow)
+            .expect("claude-p should infer claude workflow controls before launch");
+    }
 }

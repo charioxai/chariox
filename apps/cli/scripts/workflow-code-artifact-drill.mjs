@@ -75,12 +75,12 @@ function parseArgs(argv) {
     providerModels: {
       codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_MODEL ?? process.env.ARROBA_CODEX_MODEL ?? 'gpt-5.4-mini',
       opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_MODEL ?? process.env.ARROBA_OPENCODE_MODEL ?? 'opencode/gpt-5.2',
-      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_MODEL ?? process.env.ARROBA_CLAUDE_MODEL ?? 'claude-sonnet-4-6',
+      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_MODEL ?? process.env.ARROBA_CLAUDE_MODEL ?? 'sonnet',
     },
     providerIds: {
       codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_PROVIDER ?? 'codex',
       opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_PROVIDER ?? 'opencode',
-      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_PROVIDER ?? 'claude-headless',
+      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_PROVIDER ?? 'claude-p',
     },
     providerAccounts: {
       codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_ACCOUNT ?? 'default',
@@ -90,7 +90,7 @@ function parseArgs(argv) {
     providerEfforts: {
       codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_EFFORT ?? 'low',
       opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_EFFORT ?? 'low',
-      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_EFFORT ?? '',
+      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_EFFORT ?? 'low',
     },
     hetznerHost: process.env.ARROBA_WORKFLOW_CODE_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
     hetznerKey: process.env.ARROBA_WORKFLOW_CODE_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
@@ -573,6 +573,10 @@ function rebindingByNode(rebindings) {
 function providerFamily(provider) {
   if (provider === 'claude-headless' || provider === 'claude-p') return 'claude'
   return provider
+}
+
+function shouldPrelaunchRealProvider(provider) {
+  return providerFamily(provider) !== 'claude'
 }
 
 const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
@@ -1192,12 +1196,20 @@ async function completeAppliedTopologyWorkflowWithRealProviders(client, sessionI
       if (right === entryNodeHandle) return -1
       return left.localeCompare(right)
     })
-  const launchedProviders = new Set()
-  const launchedProviderFamilies = new Set()
+  const prelaunchedProviders = new Set()
+  const prelaunchedProviderFamilies = new Set()
+  const configuredProviderFamilies = new Set((rebindings ?? []).map((entry) => providerFamily(entry.provider)))
   for (const [handle, agentId] of runtimeAgentEntries) {
     const rebinding = rebindingsByNode.get(handle)
     assert(rebinding, `real-provider example ${exampleName} missing rebinding for node ${handle}`, { handle, rebindings })
     assert(rebinding.provider !== 'dev-stub', `real-provider example ${exampleName} must not launch dev-stub for node ${handle}`, rebinding)
+    if (!shouldPrelaunchRealProvider(rebinding.provider)) {
+      stage(`real-provider ${exampleName}: deferring node ${handle} launch to workflow dispatch`, {
+        provider: rebinding.provider,
+        model: rebinding.model,
+      })
+      continue
+    }
     stage(`real-provider ${exampleName}: launching node ${handle}`, {
       provider: rebinding.provider,
       model: rebinding.model,
@@ -1233,10 +1245,10 @@ async function completeAppliedTopologyWorkflowWithRealProviders(client, sessionI
       provider: rebinding.provider,
       provider_run_id: launchResponse.provider_run.id,
     })
-    launchedProviders.add(rebinding.provider)
-    launchedProviderFamilies.add(providerFamily(rebinding.provider))
+    prelaunchedProviders.add(rebinding.provider)
+    prelaunchedProviderFamilies.add(providerFamily(rebinding.provider))
   }
-  assertSameSet(launchedProviderFamilies, ['claude', 'codex', 'opencode'], `real-provider example ${exampleName} launched provider families`)
+  assertSameSet(configuredProviderFamilies, ['claude', 'codex', 'opencode'], `real-provider example ${exampleName} configured provider families`)
 
   const endpointId = apply.endpoint_ids?.[endpoint.handle]
   assert(endpointId, `real-provider example ${exampleName} runtime should resolve entry endpoint`, { endpoint, apply })
@@ -1283,8 +1295,9 @@ async function completeAppliedTopologyWorkflowWithRealProviders(client, sessionI
     workflowRunId: completedRun.id,
     runtime,
     tuiOutline,
-    launchedProviders: [...launchedProviders].sort(),
-    launchedProviderFamilies: [...launchedProviderFamilies].sort(),
+    configuredProviderFamilies: [...configuredProviderFamilies].sort(),
+    prelaunchedProviders: [...prelaunchedProviders].sort(),
+    prelaunchedProviderFamilies: [...prelaunchedProviderFamilies].sort(),
   }
 }
 
@@ -1330,8 +1343,9 @@ async function applyRealProviderTopology(client, sessionId, nodePath, exampleNam
     rebindings,
     runtime: completed.runtime,
     tuiOutline: completed.tuiOutline,
-    launchedProviders: completed.launchedProviders,
-    launchedProviderFamilies: completed.launchedProviderFamilies,
+    configuredProviderFamilies: completed.configuredProviderFamilies,
+    prelaunchedProviders: completed.prelaunchedProviders,
+    prelaunchedProviderFamilies: completed.prelaunchedProviderFamilies,
   }
 }
 

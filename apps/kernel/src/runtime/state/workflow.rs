@@ -232,11 +232,12 @@ impl KernelRuntimeOwnedState {
                 .provider_store
                 .get_run_for_agent(session_id, node.agent_id())
                 .unwrap_or_else(|| {
+                    let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
                     crate::provider::RuntimeProviderRun::from_control_capability_inference(
                         format!("inferred-{session_id}-{}", node.agent_id()),
                         session_id.to_string(),
                         Some(node.agent_id().to_string()),
-                        agent.provider().to_string(),
+                        adapter_key.to_string(),
                     )
                 });
             if !capabilities
